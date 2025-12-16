@@ -1,0 +1,1490 @@
+{
+  "A00": {
+    "name": "Amar Opening"
+  },
+  "A01": {
+    "name": "Nimzo-Larsen Attack"
+  },
+  "A02": {
+    "name": "Bird Opening"
+  },
+  "A03": {
+    "name": "Bird Opening: Dutch Variation"
+  },
+  "A04": {
+    "name": "Zukertort Opening"
+  },
+  "A05": {
+    "name": "Zukertort Opening"
+  },
+  "A06": {
+    "name": "Zukertort Opening"
+  },
+  "A07": {
+    "name": "King's Indian Attack"
+  },
+  "A08": {
+    "name": "King's Indian Attack: Sicilian Variation"
+  },
+  "A09": {
+    "name": "Réti Opening"
+  },
+  "A10": {
+    "name": "English Opening"
+  },
+  "A11": {
+    "name": "English Opening: Caro-Kann Defensive System"
+  },
+  "A12": {
+    "name": "Réti Opening: Anglo-Slav Variation, Bogoljubow Variation"
+  },
+  "A13": {
+    "name": "English Opening: Agincourt Defense"
+  },
+  "A14": {
+    "name": "English Opening: Agincourt Defense, Neo-Catalan Declined"
+  },
+  "A15": {
+    "name": "English Orangutan"
+  },
+  "A16": {
+    "name": "English Opening: Anglo-Indian Defense, Queen's Knight Variation"
+  },
+  "A17": {
+    "name": "English Opening: Anglo-Indian Defense, Hedgehog System"
+  },
+  "A18": {
+    "name": "English Opening: Mikenas-Carls Variation"
+  },
+  "A19": {
+    "name": "English Opening: Mikenas-Carls, Sicilian"
+  },
+  "A20": {
+    "name": "English Opening: King's English Variation"
+  },
+  "A21": {
+    "name": "English Opening: King's English Variation, Reversed Sicilian"
+  },
+  "A22": {
+    "name": "English Opening: King's English Variation, Two Knights Variation"
+  },
+  "A23": {
+    "name": "English Opening: King's English Variation, Two Knights Variation, Keres Variation"
+  },
+  "A24": {
+    "name": "English Opening: King's English Variation, Two Knights Variation, Fianchetto Line"
+  },
+  "A25": {
+    "name": "English Opening: King's English Variation, Reversed Closed Sicilian"
+  },
+  "A26": {
+    "name": "English Opening: King's English Variation, Closed System, Full Symmetry"
+  },
+  "A27": {
+    "name": "English Opening: King's English Variation, Three Knights System"
+  },
+  "A28": {
+    "name": "English Opening: King's English Variation, Four Knights Variation"
+  },
+  "A29": {
+    "name": "English Opening: King's English Variation, Four Knights Variation, Fianchetto Line"
+  },
+  "A30": {
+    "name": "English Opening: Symmetrical Variation"
+  },
+  "A31": {
+    "name": "English Opening: Symmetrical Variation, Anti-Benoni Variation"
+  },
+  "A32": {
+    "name": "English Opening: Symmetrical Variation, Anti-Benoni Variation, Spielmann Defense"
+  },
+  "A33": {
+    "name": "English Opening: Symmetrical Variation, Anti-Benoni Variation, Spielmann Defense"
+  },
+  "A34": {
+    "name": "English Opening: Symmetrical Variation, Normal Variation"
+  },
+  "A35": {
+    "name": "English Opening: Symmetrical Variation, Two Knights Variation"
+  },
+  "A36": {
+    "name": "English Opening: Symmetrical Variation, Two Knights, Fianchetto Variation"
+  },
+  "A37": {
+    "name": "English Opening: Symmetrical Variation, Three Knights, Fianchetto Variation"
+  },
+  "A38": {
+    "name": "English Opening: Symmetrical Variation, Full Symmetry Line"
+  },
+  "A39": {
+    "name": "English Opening: Symmetrical Variation, Mecking Variation"
+  },
+  "A40": {
+    "name": "Queen's Pawn Game"
+  },
+  "A41": {
+    "name": "Queen's Pawn Game"
+  },
+  "A42": {
+    "name": "Pterodactyl Defense"
+  },
+  "A43": {
+    "name": "Benoni Defense: Old Benoni"
+  },
+  "A44": {
+    "name": "Benoni Defense: Old Benoni"
+  },
+  "A45": {
+    "name": "Indian Defense"
+  },
+  "A46": {
+    "name": "Döry Defense"
+  },
+  "A47": {
+    "name": "Pseudo Queen's Indian Defense"
+  },
+  "A48": {
+    "name": "East Indian Defense"
+  },
+  "A49": {
+    "name": "Indian Defense: Przepiorka Variation"
+  },
+  "A50": {
+    "name": "Slav Indian"
+  },
+  "A51": {
+    "name": "Indian Defense: Budapest Defense"
+  },
+  "A52": {
+    "name": "Indian Defense: Budapest Defense"
+  },
+  "A53": {
+    "name": "Old Indian Defense"
+  },
+  "A54": {
+    "name": "Old Indian Defense: Tartakower-Indian"
+  },
+  "A55": {
+    "name": "Old Indian Defense: Normal Variation"
+  },
+  "A56": {
+    "name": "Benoni Defense"
+  },
+  "A57": {
+    "name": "Benko Gambit"
+  },
+  "A58": {
+    "name": "Benko Gambit Accepted: Fully Accepted Variation"
+  },
+  "A59": {
+    "name": "Benko Gambit"
+  },
+  "A60": {
+    "name": "Benoni Defense: Modern Variation"
+  },
+  "A61": {
+    "name": "Benoni Defense"
+  },
+  "A62": {
+    "name": "Benoni Defense: Fianchetto Variation"
+  },
+  "A63": {
+    "name": "Benoni Defense: Fianchetto Variation, Hastings Defense"
+  },
+  "A64": {
+    "name": "Benoni Defense: Fianchetto Variation, Hastings Defense, Main Line"
+  },
+  "A65": {
+    "name": "Benoni Defense: King's Pawn Line"
+  },
+  "A66": {
+    "name": "Benoni Defense: Pawn Storm Variation"
+  },
+  "A67": {
+    "name": "Benoni Defense: Taimanov Variation"
+  },
+  "A68": {
+    "name": "Benoni Defense: Four Pawns Attack"
+  },
+  "A69": {
+    "name": "Benoni Defense: Four Pawns Attack, Main Line"
+  },
+  "A70": {
+    "name": "Benoni Defense: Classical Variation"
+  },
+  "A71": {
+    "name": "Benoni Defense: Classical Variation, Averbakh-Grivas Attack"
+  },
+  "A72": {
+    "name": "Benoni Defense: Classical Variation"
+  },
+  "A73": {
+    "name": "Benoni Defense: Classical Variation, Main Line"
+  },
+  "A74": {
+    "name": "Benoni Defense: Classical Variation, Full Line"
+  },
+  "A75": {
+    "name": "Benoni Defense: Classical Variation, Argentine Counterattack"
+  },
+  "A76": {
+    "name": "Benoni Defense: Classical Variation, Czerniak Defense"
+  },
+  "A77": {
+    "name": "Benoni Defense: Classical Variation, Czerniak Defense, Tal Line"
+  },
+  "A78": {
+    "name": "Benoni Defense: Classical Variation, Czerniak Defense"
+  },
+  "A79": {
+    "name": "Benoni Defense: Classical Variation, Czerniak Defense"
+  },
+  "A80": {
+    "name": "Dutch Defense"
+  },
+  "A81": {
+    "name": "Dutch Defense: Fianchetto Attack"
+  },
+  "A82": {
+    "name": "Dutch Defense: Staunton Gambit"
+  },
+  "A83": {
+    "name": "Dutch Defense: Staunton Gambit"
+  },
+  "A84": {
+    "name": "Dutch Defense"
+  },
+  "A85": {
+    "name": "Dutch Defense: Queen's Knight Variation"
+  },
+  "A86": {
+    "name": "Dutch Defense: Fianchetto Variation"
+  },
+  "A87": {
+    "name": "Dutch Defense: Leningrad Variation"
+  },
+  "A88": {
+    "name": "Dutch Defense: Leningrad Variation, Warsaw Variation"
+  },
+  "A89": {
+    "name": "Dutch Defense: Leningrad Variation, Matulovic Variation"
+  },
+  "A90": {
+    "name": "Dutch Defense: Classical Variation"
+  },
+  "A91": {
+    "name": "Dutch Defense: Classical Variation"
+  },
+  "A92": {
+    "name": "Dutch Defense: Classical Variation"
+  },
+  "A93": {
+    "name": "Dutch Defense: Stonewall Variation, Botvinnik Variation"
+  },
+  "A94": {
+    "name": "Dutch Defense: Stonewall Variation"
+  },
+  "A95": {
+    "name": "Dutch Defense: Stonewall Variation"
+  },
+  "A96": {
+    "name": "Dutch Defense: Classical Variation"
+  },
+  "A97": {
+    "name": "Dutch Defense: Classical Variation, Ilyin-Zhenevsky Variation"
+  },
+  "A98": {
+    "name": "Dutch Defense: Classical Variation, Ilyin-Zhenevsky Variation, Alatortsev-Lisitsyn Line"
+  },
+  "A99": {
+    "name": "Dutch Defense: Classical Variation, Ilyin-Zhenevsky Variation, Modern Main Line"
+  },
+  "B00": {
+    "name": "King's Pawn Game"
+  },
+  "B01": {
+    "name": "Scandinavian Defense"
+  },
+  "B02": {
+    "name": "Alekhine Defense"
+  },
+  "B03": {
+    "name": "Alekhine Defense"
+  },
+  "B04": {
+    "name": "Alekhine Defense: Modern Variation"
+  },
+  "B05": {
+    "name": "Alekhine Defense: Modern Variation, Main Line"
+  },
+  "B06": {
+    "name": "Modern Defense"
+  },
+  "B07": {
+    "name": "Pirc Defense"
+  },
+  "B08": {
+    "name": "Pirc Defense: Classical Variation"
+  },
+  "B09": {
+    "name": "Pirc Defense: Austrian Attack"
+  },
+  "B10": {
+    "name": "Caro-Kann Defense"
+  },
+  "B11": {
+    "name": "Caro-Kann Defense: Two Knights Attack, Mindeno Variation"
+  },
+  "B12": {
+    "name": "Caro-Kann Defense"
+  },
+  "B13": {
+    "name": "Caro-Kann Defense: Exchange Variation"
+  },
+  "B14": {
+    "name": "Caro-Kann Defense: Panov Attack"
+  },
+  "B15": {
+    "name": "Caro-Kann Defense"
+  },
+  "B16": {
+    "name": "Caro-Kann Defense: Finnish Variation"
+  },
+  "B17": {
+    "name": "Caro-Kann Defense: Karpov Variation"
+  },
+  "B18": {
+    "name": "Caro-Kann Defense: Classical Variation"
+  },
+  "B19": {
+    "name": "Caro-Kann Defense: Classical Variation"
+  },
+  "B20": {
+    "name": "Sicilian Defense"
+  },
+  "B21": {
+    "name": "Sicilian Defense: McDonnell Attack"
+  },
+  "B22": {
+    "name": "Sicilian Defense: Alapin Variation"
+  },
+  "B23": {
+    "name": "Sicilian Defense: Closed"
+  },
+  "B24": {
+    "name": "Sicilian Defense: Closed, Fianchetto Variation"
+  },
+  "B25": {
+    "name": "Sicilian Defense: Closed"
+  },
+  "B26": {
+    "name": "Sicilian Defense: Closed"
+  },
+  "B27": {
+    "name": "Sicilian Defense"
+  },
+  "B28": {
+    "name": "Sicilian Defense: O'Kelly Variation"
+  },
+  "B29": {
+    "name": "Sicilian Defense: Nimzowitsch Variation"
+  },
+  "B30": {
+    "name": "Sicilian Defense: Old Sicilian"
+  },
+  "B31": {
+    "name": "Sicilian Defense: Nyezhmetdinov-Rossolimo Attack, Fianchetto Variation"
+  },
+  "B32": {
+    "name": "Sicilian Defense: Open"
+  },
+  "B33": {
+    "name": "Sicilian Defense: Open"
+  },
+  "B34": {
+    "name": "Sicilian Defense: Accelerated Dragon, Modern Variation"
+  },
+  "B35": {
+    "name": "Sicilian Defense: Accelerated Dragon, Modern Bc4 Variation"
+  },
+  "B36": {
+    "name": "Sicilian Defense: Accelerated Dragon, Maróczy Bind"
+  },
+  "B37": {
+    "name": "Sicilian Defense: Accelerated Dragon, Maróczy Bind"
+  },
+  "B38": {
+    "name": "Sicilian Defense: Accelerated Dragon, Maróczy Bind"
+  },
+  "B39": {
+    "name": "Sicilian Defense: Accelerated Dragon, Maróczy Bind, Breyer Variation"
+  },
+  "B40": {
+    "name": "Sicilian Defense: French Variation"
+  },
+  "B41": {
+    "name": "Sicilian Defense: Kan Variation"
+  },
+  "B42": {
+    "name": "Sicilian Defense: Kan Variation, Modern Variation"
+  },
+  "B43": {
+    "name": "Sicilian Defense: Kan Variation, Knight Variation"
+  },
+  "B44": {
+    "name": "Sicilian Defense: Taimanov Variation"
+  },
+  "B45": {
+    "name": "Sicilian Defense: Taimanov Variation"
+  },
+  "B46": {
+    "name": "Sicilian Defense: Taimanov Variation"
+  },
+  "B47": {
+    "name": "Sicilian Defense: Taimanov Variation, Bastrikov Variation"
+  },
+  "B48": {
+    "name": "Sicilian Defense: Taimanov Variation, Bastrikov Variation, English Attack"
+  },
+  "B49": {
+    "name": "Sicilian Defense: Taimanov Variation, Bastrikov Variation"
+  },
+  "B50": {
+    "name": "Sicilian Defense"
+  },
+  "B51": {
+    "name": "Sicilian Defense: Moscow Variation"
+  },
+  "B52": {
+    "name": "Sicilian Defense: Moscow Variation, Main Line"
+  },
+  "B53": {
+    "name": "Sicilian Defense: Chekhover Variation"
+  },
+  "B54": {
+    "name": "Sicilian Defense: Modern Variations, Main Line"
+  },
+  "B55": {
+    "name": "Sicilian Defense: Prins Variation, Venice Attack"
+  },
+  "B56": {
+    "name": "Sicilian Defense: Classical Variation"
+  },
+  "B57": {
+    "name": "Sicilian Defense: Classical Variation, Sozin Attack"
+  },
+  "B58": {
+    "name": "Sicilian Defense: Classical Variation"
+  },
+  "B59": {
+    "name": "Sicilian Defense: Boleslavsky Variation"
+  },
+  "B60": {
+    "name": "Sicilian Defense: Richter-Rauzer Variation"
+  },
+  "B61": {
+    "name": "Sicilian Defense: Richter-Rauzer Variation, Modern Variation"
+  },
+  "B62": {
+    "name": "Sicilian Defense: Richter-Rauzer Variation"
+  },
+  "B63": {
+    "name": "Sicilian Defense: Richter-Rauzer Variation, Traditional Variation"
+  },
+  "B64": {
+    "name": "Sicilian Defense: Richter-Rauzer Variation, Classical Variation"
+  },
+  "B65": {
+    "name": "Sicilian Defense: Richter-Rauzer Variation, Rauzer Attack"
+  },
+  "B66": {
+    "name": "Sicilian Defense: Richter-Rauzer Variation, Neo-Modern Variation, Early Deviations"
+  },
+  "B67": {
+    "name": "Sicilian Defense: Richter-Rauzer Variation, Neo-Modern Variation"
+  },
+  "B68": {
+    "name": "Sicilian Defense: Richter-Rauzer Variation, Neo-Modern Variation"
+  },
+  "B69": {
+    "name": "Sicilian Defense: Richter-Rauzer Variation, Neo-Modern Variation, Nyezhmetdinov Attack"
+  },
+  "B70": {
+    "name": "Sicilian Defense: Dragon Variation"
+  },
+  "B71": {
+    "name": "Sicilian Defense: Dragon Variation, Levenfish Variation"
+  },
+  "B72": {
+    "name": "Sicilian Defense: Dragon Variation"
+  },
+  "B73": {
+    "name": "Sicilian Defense: Dragon Variation, Classical Variation"
+  },
+  "B74": {
+    "name": "Sicilian Defense: Dragon Variation, Classical Variation, Normal Line"
+  },
+  "B75": {
+    "name": "Sicilian Defense: Dragon Variation, Yugoslav Attack, Early Deviations"
+  },
+  "B76": {
+    "name": "Sicilian Defense: Dragon Variation, Yugoslav Attack"
+  },
+  "B77": {
+    "name": "Sicilian Defense: Dragon Variation, Yugoslav Attack, Main Line"
+  },
+  "B78": {
+    "name": "Sicilian Defense: Dragon Variation, Yugoslav Attack"
+  },
+  "B79": {
+    "name": "Sicilian Defense: Dragon Variation, Yugoslav Attack"
+  },
+  "B80": {
+    "name": "Sicilian Defense: Scheveningen Variation"
+  },
+  "B81": {
+    "name": "Sicilian Defense: Scheveningen Variation, Keres Attack"
+  },
+  "B82": {
+    "name": "Sicilian Defense: Scheveningen Variation, Matanovic Attack"
+  },
+  "B83": {
+    "name": "Sicilian Defense: Scheveningen Variation, Classical Variation"
+  },
+  "B84": {
+    "name": "Sicilian Defense: Scheveningen Variation, Classical Variation"
+  },
+  "B85": {
+    "name": "Sicilian Defense: Scheveningen Variation, Classical Variation, Paulsen Variation"
+  },
+  "B86": {
+    "name": "Sicilian Defense: Sozin Attack"
+  },
+  "B87": {
+    "name": "Sicilian Defense: Sozin Attack, Flank Variation"
+  },
+  "B88": {
+    "name": "Sicilian Defense: Sozin Attack, Leonhardt Variation"
+  },
+  "B89": {
+    "name": "Sicilian Defense: Sozin Attack, Main Line"
+  },
+  "B90": {
+    "name": "Sicilian Defense: Najdorf Variation"
+  },
+  "B91": {
+    "name": "Sicilian Defense: Najdorf Variation, Zagreb Variation"
+  },
+  "B92": {
+    "name": "Sicilian Defense: Najdorf Variation, Opocensky Variation"
+  },
+  "B93": {
+    "name": "Sicilian Defense: Najdorf Variation, Amsterdam Variation"
+  },
+  "B94": {
+    "name": "Sicilian Defense: Najdorf Variation"
+  },
+  "B95": {
+    "name": "Sicilian Defense: Najdorf Variation"
+  },
+  "B96": {
+    "name": "Sicilian Defense: Najdorf Variation"
+  },
+  "B97": {
+    "name": "Sicilian Defense: Najdorf Variation, Poisoned Pawn Variation"
+  },
+  "B98": {
+    "name": "Sicilian Defense: Najdorf Variation"
+  },
+  "B99": {
+    "name": "Sicilian Defense: Najdorf Variation, Main Line"
+  },
+  "C00": {
+    "name": "French Defense"
+  },
+  "C01": {
+    "name": "French Defense: Exchange Variation"
+  },
+  "C02": {
+    "name": "French Defense: Advance Variation"
+  },
+  "C03": {
+    "name": "French Defense: Tarrasch Variation"
+  },
+  "C04": {
+    "name": "French Defense: Tarrasch Variation, Guimard Defense, Main Line"
+  },
+  "C05": {
+    "name": "French Defense: Tarrasch Variation, Closed Variation"
+  },
+  "C06": {
+    "name": "French Defense: Tarrasch Variation, Closed Variation, Main Line"
+  },
+  "C07": {
+    "name": "French Defense: Tarrasch Variation, Open System"
+  },
+  "C08": {
+    "name": "French Defense: Tarrasch Variation, Open System"
+  },
+  "C09": {
+    "name": "French Defense: Tarrasch Variation, Open System, Main Line"
+  },
+  "C10": {
+    "name": "French Defense: Paulsen Variation"
+  },
+  "C11": {
+    "name": "French Defense: Classical Variation"
+  },
+  "C12": {
+    "name": "French Defense: McCutcheon Variation"
+  },
+  "C13": {
+    "name": "French Defense: Classical Variation, Normal Variation"
+  },
+  "C14": {
+    "name": "French Defense: Classical Variation"
+  },
+  "C15": {
+    "name": "French Defense: Winawer Variation"
+  },
+  "C16": {
+    "name": "French Defense: Winawer Variation, Advance Variation"
+  },
+  "C17": {
+    "name": "French Defense: Winawer Variation, Advance Variation"
+  },
+  "C18": {
+    "name": "French Defense: Winawer Variation, Advance Variation"
+  },
+  "C19": {
+    "name": "French Defense: Winawer Variation, Positional Variation"
+  },
+  "C20": {
+    "name": "King's Pawn Game"
+  },
+  "C21": {
+    "name": "Center Game Accepted"
+  },
+  "C22": {
+    "name": "Center Game: Normal Variation"
+  },
+  "C23": {
+    "name": "Bishop's Opening"
+  },
+  "C24": {
+    "name": "Bishop's Opening: Berlin Defense"
+  },
+  "C25": {
+    "name": "Vienna Game"
+  },
+  "C26": {
+    "name": "Vienna Game: Falkbeer Variation"
+  },
+  "C27": {
+    "name": "Vienna Game: Frankenstein-Dracula Variation"
+  },
+  "C28": {
+    "name": "Vienna Game: Stanley Variation, Three Knights Variation"
+  },
+  "C29": {
+    "name": "Vienna Game: Vienna Gambit"
+  },
+  "C30": {
+    "name": "King's Gambit"
+  },
+  "C31": {
+    "name": "King's Gambit Declined: Falkbeer Countergambit"
+  },
+  "C32": {
+    "name": "King's Gambit Declined: Falkbeer Countergambit, Charousek Gambit Accepted"
+  },
+  "C33": {
+    "name": "King's Gambit Accepted"
+  },
+  "C34": {
+    "name": "King's Gambit Accepted: King's Knight's Gambit"
+  },
+  "C35": {
+    "name": "King's Gambit Accepted: Cunningham Defense"
+  },
+  "C36": {
+    "name": "King's Gambit Accepted: Modern Defense"
+  },
+  "C37": {
+    "name": "King's Gambit Accepted: Quaade Gambit"
+  },
+  "C38": {
+    "name": "King's Gambit Accepted: Traditional Variation"
+  },
+  "C39": {
+    "name": "King's Gambit Accepted: King's Knight's Gambit"
+  },
+  "C40": {
+    "name": "King's Knight Opening"
+  },
+  "C41": {
+    "name": "Philidor Defense"
+  },
+  "C42": {
+    "name": "Petrov's Defense"
+  },
+  "C43": {
+    "name": "Petrov's Defense: Modern Attack"
+  },
+  "C44": {
+    "name": "Scotch Game"
+  },
+  "C45": {
+    "name": "Scotch Game"
+  },
+  "C46": {
+    "name": "Three Knights Opening"
+  },
+  "C47": {
+    "name": "Four Knights Game"
+  },
+  "C48": {
+    "name": "Four Knights Game: Spanish Variation"
+  },
+  "C49": {
+    "name": "Four Knights Game: Spanish Variation, Double Spanish"
+  },
+  "C50": {
+    "name": "Italian Game"
+  },
+  "C51": {
+    "name": "Italian Game: Evans Gambit"
+  },
+  "C52": {
+    "name": "Italian Game: Evans Gambit, Main Line"
+  },
+  "C53": {
+    "name": "Italian Game: Classical Variation"
+  },
+  "C54": {
+    "name": "Italian Game: Classical Variation"
+  },
+  "C55": {
+    "name": "Italian Game: Two Knights Defense"
+  },
+  "C56": {
+    "name": "Italian Game: Two Knights Defense, Open Variation"
+  },
+  "C57": {
+    "name": "Italian Game: Two Knights Defense, Knight Attack"
+  },
+  "C58": {
+    "name": "Italian Game: Two Knights Defense, Polerio Defense"
+  },
+  "C59": {
+    "name": "Italian Game: Two Knights Defense, Polerio Defense, Suhle Defense"
+  },
+  "C60": {
+    "name": "Ruy Lopez"
+  },
+  "C61": {
+    "name": "Ruy Lopez: Bird Variation"
+  },
+  "C62": {
+    "name": "Ruy Lopez: Steinitz Defense"
+  },
+  "C63": {
+    "name": "Ruy Lopez: Schliemann Defense"
+  },
+  "C64": {
+    "name": "Ruy Lopez: Classical Variation"
+  },
+  "C65": {
+    "name": "Ruy Lopez: Berlin Defense"
+  },
+  "C66": {
+    "name": "Ruy Lopez: Berlin Defense, Improved Steinitz Defense"
+  },
+  "C67": {
+    "name": "Ruy Lopez: Berlin Defense, Rio Gambit Accepted"
+  },
+  "C68": {
+    "name": "Ruy Lopez: Exchange Variation"
+  },
+  "C69": {
+    "name": "Ruy Lopez: Exchange Variation, Normal Variation"
+  },
+  "C70": {
+    "name": "Ruy Lopez: Morphy Defense"
+  },
+  "C71": {
+    "name": "Ruy Lopez: Morphy Defense, Modern Steinitz Defense"
+  },
+  "C72": {
+    "name": "Ruy Lopez: Morphy Defense, Modern Steinitz Defense"
+  },
+  "C73": {
+    "name": "Ruy Lopez: Morphy Defense, Modern Steinitz Defense"
+  },
+  "C74": {
+    "name": "Ruy Lopez: Morphy Defense, Modern Steinitz Defense"
+  },
+  "C75": {
+    "name": "Ruy Lopez: Morphy Defense, Modern Steinitz Defense"
+  },
+  "C76": {
+    "name": "Ruy Lopez: Morphy Defense, Modern Steinitz Defense, Fianchetto Variation"
+  },
+  "C77": {
+    "name": "Ruy Lopez: Morphy Defense, Jaffe Gambit"
+  },
+  "C78": {
+    "name": "Ruy Lopez: Morphy Defense"
+  },
+  "C79": {
+    "name": "Ruy Lopez: Morphy Defense, Steinitz Deferred"
+  },
+  "C80": {
+    "name": "Ruy Lopez: Open"
+  },
+  "C81": {
+    "name": "Ruy Lopez: Open, Howell Attack"
+  },
+  "C82": {
+    "name": "Ruy Lopez: Open"
+  },
+  "C83": {
+    "name": "Ruy Lopez: Open, Classical Defense"
+  },
+  "C84": {
+    "name": "Ruy Lopez: Closed"
+  },
+  "C85": {
+    "name": "Ruy Lopez: Closed, Delayed Exchange"
+  },
+  "C86": {
+    "name": "Ruy Lopez: Closed, Worrall Attack"
+  },
+  "C87": {
+    "name": "Ruy Lopez: Closed, Averbakh Variation"
+  },
+  "C88": {
+    "name": "Ruy Lopez: Closed"
+  },
+  "C89": {
+    "name": "Ruy Lopez: Marshall Attack"
+  },
+  "C90": {
+    "name": "Ruy Lopez: Closed"
+  },
+  "C91": {
+    "name": "Ruy Lopez: Closed, Yates Variation"
+  },
+  "C92": {
+    "name": "Ruy Lopez: Closed"
+  },
+  "C93": {
+    "name": "Ruy Lopez: Closed, Smyslov Defense"
+  },
+  "C94": {
+    "name": "Ruy Lopez: Closed, Breyer Defense"
+  },
+  "C95": {
+    "name": "Ruy Lopez: Closed, Breyer"
+  },
+  "C96": {
+    "name": "Ruy Lopez: Closed, Chigorin Defense"
+  },
+  "C97": {
+    "name": "Ruy Lopez: Closed, Chigorin Defense"
+  },
+  "C98": {
+    "name": "Ruy Lopez: Closed, Chigorin Defense"
+  },
+  "C99": {
+    "name": "Ruy Lopez: Closed, Chigorin Defense, Panov System"
+  },
+  "D00": {
+    "name": "Queen's Pawn Game"
+  },
+  "D01": {
+    "name": "Rapport-Jobava System"
+  },
+  "D02": {
+    "name": "Queen's Pawn Game: Zukertort Variation"
+  },
+  "D03": {
+    "name": "Queen's Pawn Game: Torre Attack"
+  },
+  "D04": {
+    "name": "Queen's Pawn Game: Colle System"
+  },
+  "D05": {
+    "name": "Rubinstein Opening"
+  },
+  "D06": {
+    "name": "Queen's Gambit"
+  },
+  "D07": {
+    "name": "Queen's Gambit Declined: Chigorin Defense"
+  },
+  "D08": {
+    "name": "Queen's Gambit Declined: Albin Countergambit"
+  },
+  "D09": {
+    "name": "Queen's Gambit Declined: Albin Countergambit, Fianchetto Variation"
+  },
+  "D10": {
+    "name": "Slav Defense"
+  },
+  "D11": {
+    "name": "Slav Defense: Modern Line"
+  },
+  "D12": {
+    "name": "Slav Defense: Quiet Variation, Schallopp Defense"
+  },
+  "D13": {
+    "name": "Slav Defense: Exchange Variation"
+  },
+  "D14": {
+    "name": "Slav Defense: Exchange Variation, Symmetrical Line"
+  },
+  "D15": {
+    "name": "Slav Defense: Three Knights Variation"
+  },
+  "D16": {
+    "name": "Slav Defense: Alapin Variation"
+  },
+  "D17": {
+    "name": "Slav Defense: Czech Variation"
+  },
+  "D18": {
+    "name": "Slav Defense: Czech Variation, Classical System"
+  },
+  "D19": {
+    "name": "Slav Defense: Czech Variation, Dutch Variation"
+  },
+  "D20": {
+    "name": "Queen's Gambit Accepted"
+  },
+  "D21": {
+    "name": "Queen's Gambit Accepted: Normal Variation"
+  },
+  "D22": {
+    "name": "Queen's Gambit Accepted: Alekhine Defense"
+  },
+  "D23": {
+    "name": "Queen's Gambit Accepted"
+  },
+  "D24": {
+    "name": "Queen's Gambit Accepted"
+  },
+  "D25": {
+    "name": "Queen's Gambit Accepted: Normal Variation"
+  },
+  "D26": {
+    "name": "Queen's Gambit Accepted: Normal Variation, Traditional System"
+  },
+  "D27": {
+    "name": "Queen's Gambit Accepted: Classical Defense, Main Line"
+  },
+  "D28": {
+    "name": "Queen's Gambit Accepted: Classical Defense, Alekhine System"
+  },
+  "D29": {
+    "name": "Queen's Gambit Accepted: Classical Defense, Alekhine System, Main Line"
+  },
+  "D30": {
+    "name": "Queen's Gambit Declined"
+  },
+  "D31": {
+    "name": "Queen's Gambit Declined: Queen's Knight Variation"
+  },
+  "D32": {
+    "name": "Tarrasch Defense"
+  },
+  "D33": {
+    "name": "Tarrasch Defense: Rubinstein System"
+  },
+  "D34": {
+    "name": "Tarrasch Defense: Prague Variation, Main Line"
+  },
+  "D35": {
+    "name": "Queen's Gambit Declined: Normal Defense"
+  },
+  "D36": {
+    "name": "Queen's Gambit Declined: Exchange Variation, Reshevsky Variation"
+  },
+  "D37": {
+    "name": "Queen's Gambit Declined: Three Knights Variation"
+  },
+  "D38": {
+    "name": "Queen's Gambit Declined: Ragozin Defense"
+  },
+  "D39": {
+    "name": "Queen's Gambit Declined: Ragozin Defense, Vienna Variation"
+  },
+  "D40": {
+    "name": "Queen's Gambit Declined: Semi-Tarrasch Defense"
+  },
+  "D41": {
+    "name": "Queen's Gambit Declined: Semi-Tarrasch Defense"
+  },
+  "D42": {
+    "name": "Queen's Gambit Declined: Semi-Tarrasch Defense, Main Line"
+  },
+  "D43": {
+    "name": "Semi-Slav Defense"
+  },
+  "D44": {
+    "name": "Semi-Slav Defense Accepted"
+  },
+  "D45": {
+    "name": "Semi-Slav Defense: Main Line"
+  },
+  "D46": {
+    "name": "Semi-Slav Defense: Main Line"
+  },
+  "D47": {
+    "name": "Semi-Slav Defense: Semi-Meran Variation"
+  },
+  "D48": {
+    "name": "Semi-Slav Defense: Meran Variation"
+  },
+  "D49": {
+    "name": "Semi-Slav Defense: Meran Variation, Blumenfeld Variation"
+  },
+  "D50": {
+    "name": "Queen's Gambit Declined: Modern Variation"
+  },
+  "D51": {
+    "name": "Queen's Gambit Declined: Modern Variation, Knight Defense"
+  },
+  "D52": {
+    "name": "Queen's Gambit Declined"
+  },
+  "D53": {
+    "name": "Queen's Gambit Declined"
+  },
+  "D54": {
+    "name": "Queen's Gambit Declined: Neo-Orthodox Variation"
+  },
+  "D55": {
+    "name": "Queen's Gambit Declined: Modern Variation, Normal Line"
+  },
+  "D56": {
+    "name": "Queen's Gambit Declined: Lasker Defense"
+  },
+  "D57": {
+    "name": "Queen's Gambit Declined: Lasker Defense, Main Line"
+  },
+  "D58": {
+    "name": "Queen's Gambit Declined: Tartakower Defense"
+  },
+  "D59": {
+    "name": "Queen's Gambit Declined: Tartakower Defense, Makogonov Exchange Variation"
+  },
+  "D60": {
+    "name": "Queen's Gambit Declined: Orthodox Defense"
+  },
+  "D61": {
+    "name": "Queen's Gambit Declined: Orthodox Defense, Rubinstein Variation"
+  },
+  "D62": {
+    "name": "Queen's Gambit Declined: Orthodox Defense, Rubinstein Variation, Flohr Line"
+  },
+  "D63": {
+    "name": "Queen's Gambit Declined: Orthodox Defense, Main Line"
+  },
+  "D64": {
+    "name": "Queen's Gambit Declined: Orthodox Defense, Rubinstein Attack"
+  },
+  "D65": {
+    "name": "Queen's Gambit Declined: Orthodox Defense, Rubinstein Attack"
+  },
+  "D66": {
+    "name": "Queen's Gambit Declined: Orthodox Defense, Bd3 Line"
+  },
+  "D67": {
+    "name": "Queen's Gambit Declined: Orthodox Defense, Capablanca System"
+  },
+  "D68": {
+    "name": "Queen's Gambit Declined: Orthodox Defense, Classical Variation"
+  },
+  "D69": {
+    "name": "Queen's Gambit Declined: Orthodox Defense, Classical Variation"
+  },
+  "D70": {
+    "name": "Neo-Grünfeld Defense: with g3"
+  },
+  "D71": {
+    "name": "Neo-Grünfeld Defense: Exchange Variation"
+  },
+  "D74": {
+    "name": "Neo-Grünfeld Defense: Delayed Exchange Variation"
+  },
+  "D75": {
+    "name": "Neo-Grünfeld Defense: Delayed Exchange Variation"
+  },
+  "D76": {
+    "name": "Neo-Grünfeld Defense: Delayed Exchange Variation"
+  },
+  "D77": {
+    "name": "Neo-Grünfeld Defense: Classical Variation"
+  },
+  "D78": {
+    "name": "Neo-Grünfeld Defense: Classical Variation, Original Defense"
+  },
+  "D79": {
+    "name": "Neo-Grünfeld Defense: Ultra-Delayed Exchange Variation"
+  },
+  "D80": {
+    "name": "Grünfeld Defense"
+  },
+  "D81": {
+    "name": "Grünfeld Defense: Russian Variation, Accelerated Variation"
+  },
+  "D82": {
+    "name": "Grünfeld Defense: Brinckmann Attack"
+  },
+  "D83": {
+    "name": "Grünfeld Defense: Brinckmann Attack, Grünfeld Gambit"
+  },
+  "D84": {
+    "name": "Grünfeld Defense: Brinckmann Attack, Grünfeld Gambit Accepted"
+  },
+  "D85": {
+    "name": "Grünfeld Defense: Exchange Variation"
+  },
+  "D86": {
+    "name": "Grünfeld Defense: Exchange Variation, Classical Variation"
+  },
+  "D87": {
+    "name": "Grünfeld Defense: Exchange Variation, Spassky Variation"
+  },
+  "D88": {
+    "name": "Grünfeld Defense: Exchange Variation, Spassky Variation"
+  },
+  "D89": {
+    "name": "Grünfeld Defense: Exchange Variation, Spassky Variation"
+  },
+  "D90": {
+    "name": "Grünfeld Defense: Three Knights Variation"
+  },
+  "D91": {
+    "name": "Grünfeld Defense: Three Knights Variation, Petrosian System"
+  },
+  "D92": {
+    "name": "Grünfeld Defense: Three Knights Variation, Hungarian Attack"
+  },
+  "D93": {
+    "name": "Grünfeld Defense: Three Knights Variation, Hungarian Variation"
+  },
+  "D94": {
+    "name": "Grünfeld Defense: Three Knights Variation, Burille Variation"
+  },
+  "D95": {
+    "name": "Grünfeld Defense: Three Knights Variation, Vienna Variation"
+  },
+  "D96": {
+    "name": "Grünfeld Defense: Russian Variation"
+  },
+  "D97": {
+    "name": "Grünfeld Defense: Russian Variation"
+  },
+  "D98": {
+    "name": "Grünfeld Defense: Russian Variation, Smyslov Variation"
+  },
+  "D99": {
+    "name": "Grünfeld Defense: Russian Variation, Smyslov Variation"
+  },
+  "E00": {
+    "name": "Indian Defense"
+  },
+  "E01": {
+    "name": "Catalan Opening: Closed"
+  },
+  "E02": {
+    "name": "Catalan Opening: Open Defense"
+  },
+  "E03": {
+    "name": "Catalan Opening: Open Defense"
+  },
+  "E04": {
+    "name": "Catalan Opening: Open Defense"
+  },
+  "E05": {
+    "name": "Catalan Opening: Open Defense, Classical Line"
+  },
+  "E06": {
+    "name": "Catalan Opening: Closed"
+  },
+  "E07": {
+    "name": "Catalan Opening: Closed"
+  },
+  "E08": {
+    "name": "Catalan Opening: Closed"
+  },
+  "E09": {
+    "name": "Catalan Opening: Closed, Main Line"
+  },
+  "E10": {
+    "name": "Blumenfeld Countergambit"
+  },
+  "E11": {
+    "name": "Bogo-Indian Defense"
+  },
+  "E12": {
+    "name": "Queen's Indian Defense"
+  },
+  "E13": {
+    "name": "Queen's Indian Defense: Kasparov Variation"
+  },
+  "E14": {
+    "name": "Queen's Indian Defense: Spassky System"
+  },
+  "E15": {
+    "name": "Queen's Indian Defense: Fianchetto Variation"
+  },
+  "E16": {
+    "name": "Queen's Indian Defense: Capablanca Variation"
+  },
+  "E17": {
+    "name": "Queen's Indian Defense: Traditional Variation"
+  },
+  "E18": {
+    "name": "Queen's Indian Defense: Classical Variation, Traditional Variation"
+  },
+  "E19": {
+    "name": "Queen's Indian Defense: Classical Variation, Traditional Variation, Main Line"
+  },
+  "E20": {
+    "name": "Nimzo-Indian Defense"
+  },
+  "E21": {
+    "name": "Nimzo-Indian Defense: Three Knights Variation"
+  },
+  "E22": {
+    "name": "Nimzo-Indian Defense: Spielmann Variation"
+  },
+  "E23": {
+    "name": "Nimzo-Indian Defense: Spielmann Variation, Romanovsky Gambit"
+  },
+  "E24": {
+    "name": "Nimzo-Indian Defense: Sämisch Variation"
+  },
+  "E25": {
+    "name": "Nimzo-Indian Defense: Sämisch Variation"
+  },
+  "E26": {
+    "name": "Nimzo-Indian Defense: Sämisch Variation"
+  },
+  "E27": {
+    "name": "Nimzo-Indian Defense: Sämisch Variation"
+  },
+  "E28": {
+    "name": "Nimzo-Indian Defense: Sämisch Variation"
+  },
+  "E29": {
+    "name": "Nimzo-Indian Defense: Sämisch Variation"
+  },
+  "E30": {
+    "name": "Nimzo-Indian Defense: Leningrad Variation"
+  },
+  "E31": {
+    "name": "Nimzo-Indian Defense: Leningrad Variation, Benoni Defense"
+  },
+  "E32": {
+    "name": "Nimzo-Indian Defense: Classical Variation"
+  },
+  "E33": {
+    "name": "Nimzo-Indian Defense: Classical Variation, Zurich Variation"
+  },
+  "E34": {
+    "name": "Nimzo-Indian Defense: Classical Variation, Noa Variation"
+  },
+  "E35": {
+    "name": "Nimzo-Indian Defense: Classical Variation, Noa Variation"
+  },
+  "E36": {
+    "name": "Nimzo-Indian Defense: Classical Variation, Noa Variation"
+  },
+  "E37": {
+    "name": "Nimzo-Indian Defense: Classical Variation, Noa Variation"
+  },
+  "E38": {
+    "name": "Nimzo-Indian Defense: Classical Variation, Berlin Variation"
+  },
+  "E39": {
+    "name": "Nimzo-Indian Defense: Classical Variation, Berlin Variation, Pirc Variation"
+  },
+  "E40": {
+    "name": "Nimzo-Indian Defense: Rubinstein System"
+  },
+  "E41": {
+    "name": "Nimzo-Indian Defense: Rubinstein System"
+  },
+  "E42": {
+    "name": "Nimzo-Indian Defense: Rubinstein System, Rubinstein Variation"
+  },
+  "E43": {
+    "name": "Nimzo-Indian Defense: St. Petersburg Variation"
+  },
+  "E44": {
+    "name": "Nimzo-Indian Defense: St. Petersburg Variation"
+  },
+  "E45": {
+    "name": "Nimzo-Indian Defense: St. Petersburg Variation, Fischer Variation"
+  },
+  "E46": {
+    "name": "Nimzo-Indian Defense: Normal Variation"
+  },
+  "E47": {
+    "name": "Nimzo-Indian Defense: Normal Variation"
+  },
+  "E48": {
+    "name": "Nimzo-Indian Defense: Normal Variation, Classical Defense"
+  },
+  "E49": {
+    "name": "Nimzo-Indian Defense: Normal Variation, Botvinnik System"
+  },
+  "E50": {
+    "name": "Nimzo-Indian Defense"
+  },
+  "E51": {
+    "name": "Nimzo-Indian Defense: Normal Variation, Ragozin Variation"
+  },
+  "E52": {
+    "name": "Nimzo-Indian Defense: Normal Variation, Schlechter Defense"
+  },
+  "E53": {
+    "name": "Nimzo-Indian Defense: Normal Variation, Gligoric System"
+  },
+  "E54": {
+    "name": "Nimzo-Indian Defense: Normal Variation, Gligoric System, Exchange Variation"
+  },
+  "E55": {
+    "name": "Nimzo-Indian Defense: Normal Variation, Gligoric System, Bronstein Variation"
+  },
+  "E56": {
+    "name": "Nimzo-Indian Defense: Normal Variation, Gligoric System, Bernstein Defense"
+  },
+  "E58": {
+    "name": "Nimzo-Indian Defense: Normal Variation, Bernstein Defense, Exchange Line"
+  },
+  "E59": {
+    "name": "Nimzo-Indian Defense: Normal Variation, Bernstein Defense"
+  },
+  "E60": {
+    "name": "Queen's Pawn, Mengarini Attack"
+  },
+  "E61": {
+    "name": "King's Indian Defense"
+  },
+  "E62": {
+    "name": "King's Indian Defense: Fianchetto Variation, Delayed Fianchetto"
+  },
+  "E63": {
+    "name": "King's Indian Defense: Fianchetto Variation, Panno Variation"
+  },
+  "E64": {
+    "name": "King's Indian Defense: Fianchetto Variation, Pterodactyl Variation"
+  },
+  "E65": {
+    "name": "King's Indian Defense: Fianchetto Variation, Yugoslav Variation"
+  },
+  "E66": {
+    "name": "King's Indian Defense: Fianchetto Variation, Yugoslav Variation, Advance Line"
+  },
+  "E67": {
+    "name": "King's Indian Defense: Fianchetto Variation, Debrecen Defense"
+  },
+  "E68": {
+    "name": "King's Indian Defense: Fianchetto Variation, Classical Variation"
+  },
+  "E69": {
+    "name": "King's Indian Defense: Fianchetto Variation, Classical Main Line"
+  },
+  "E70": {
+    "name": "King's Indian Defense: Normal Variation"
+  },
+  "E71": {
+    "name": "King's Indian Defense: Makogonov Variation"
+  },
+  "E72": {
+    "name": "King's Indian Defense: Normal Variation, Deferred Fianchetto"
+  },
+  "E73": {
+    "name": "King's Indian Defense: Normal Variation, Standard Development"
+  },
+  "E74": {
+    "name": "King's Indian Defense: Averbakh Variation, Benoni Defense"
+  },
+  "E75": {
+    "name": "King's Indian Defense: Averbakh Variation, Main Line"
+  },
+  "E76": {
+    "name": "King's Indian Defense: Four Pawns Attack"
+  },
+  "E77": {
+    "name": "King's Indian Defense: Four Pawns Attack"
+  },
+  "E78": {
+    "name": "King's Indian Defense: Four Pawns Attack, Fluid Attack"
+  },
+  "E79": {
+    "name": "King's Indian Defense: Four Pawns Attack, Exchange Variation"
+  },
+  "E80": {
+    "name": "King's Indian Defense: Sämisch Variation"
+  },
+  "E81": {
+    "name": "King's Indian Defense: Sämisch Variation, Normal Defense"
+  },
+  "E82": {
+    "name": "King's Indian Defense: Sämisch Variation, Double Fianchetto"
+  },
+  "E83": {
+    "name": "King's Indian Defense: Sämisch Variation, Yates Defense"
+  },
+  "E84": {
+    "name": "King's Indian Defense: Sämisch Variation, Panno Main Line"
+  },
+  "E85": {
+    "name": "King's Indian Defense: Sämisch Variation, Orthodox Variation"
+  },
+  "E86": {
+    "name": "King's Indian Defense: Sämisch Variation"
+  },
+  "E87": {
+    "name": "King's Indian Defense: Sämisch Variation, Closed Variation"
+  },
+  "E89": {
+    "name": "King's Indian Defense: Sämisch Variation, Closed Variation, Main Line"
+  },
+  "E90": {
+    "name": "King's Indian Defense: Normal Variation, Rare Defenses"
+  },
+  "E91": {
+    "name": "King's Indian Defense: Orthodox Variation"
+  },
+  "E92": {
+    "name": "King's Indian Defense: Orthodox Variation"
+  },
+  "E93": {
+    "name": "King's Indian Defense: Petrosian Variation, Normal Defense"
+  },
+  "E94": {
+    "name": "King's Indian Defense: Orthodox Variation"
+  },
+  "E95": {
+    "name": "King's Indian Defense: Orthodox Variation"
+  },
+  "E96": {
+    "name": "King's Indian Defense: Orthodox Variation, Positional Defense, Main Line"
+  },
+  "E97": {
+    "name": "King's Indian Defense: Orthodox Variation, Aronin-Taimanov Defense"
+  },
+  "E98": {
+    "name": "King's Indian Defense: Orthodox Variation, Classical System"
+  },
+  "E99": {
+    "name": "King's Indian Defense: Orthodox Variation, Classical System, Traditional Line"
+  }
+}

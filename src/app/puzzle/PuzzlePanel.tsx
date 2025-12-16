@@ -1,0 +1,688 @@
+"use client";
+
+import styles from "../page.module.css";
+import type { NormalizedGame } from "@/lib/types/game";
+import type { Puzzle } from "@/lib/analysis/puzzles";
+import { StockfishClient, type EvalResult, type Score } from "@/lib/analysis/stockfishClient";
+import { Chess, type Move, type Square } from "chess.js";
+import { Chessboard } from "react-chessboard";
+import { applyUciLine, moveToUci, parseUci, prettyTurnFromFen } from "@/lib/chess/utils";
+import { ecoName } from "@/lib/chess/eco";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+type VerboseMove = Move;
+
+type LineKind = "best" | "afterUser";
+
+function formatEval(score: Score | null, fen: string): string {
+  if (!score) return "—";
+  const turn = fen.split(" ")[1] === "b" ? "b" : "w";
+  const sign = turn === "w" ? 1 : -1; // convert to White POV
+  if (score.type === "cp") {
+    const v = (score.value / 100) * sign;
+    const s = v >= 0 ? `+${v.toFixed(1)}` : v.toFixed(1);
+    return s;
+  }
+  // mate: positive means side-to-move mates; convert to White POV
+  const mv = score.value * sign;
+  return `#${mv}`;
+}
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function scoreToUnit(score: Score | null, fen: string): number {
+  // Returns 0..1 where 1 is White winning, 0 is Black winning.
+  if (!score) return 0.5;
+  const turn = fen.split(" ")[1] === "b" ? "b" : "w";
+  const sign = turn === "w" ? 1 : -1; // to White POV
+
+  if (score.type === "mate") {
+    const mv = score.value * sign;
+    return mv > 0 ? 1 : 0;
+  }
+  const cp = score.value * sign;
+  // squish with tanh around ~600cp
+  const x = cp / 600;
+  const t = Math.tanh(x);
+  return 0.5 + 0.5 * t;
+}
+
+export function PuzzlePanel(props: {
+  puzzles: Puzzle[];
+  puzzleIdx: number;
+  setPuzzleIdx: React.Dispatch<React.SetStateAction<number>>;
+  currentPuzzle: Puzzle | null;
+  puzzleSourceGame: NormalizedGame | null;
+  puzzleSourceParsed: { startFen: string; moves: VerboseMove[] } | null;
+  userBoardOrientation: "white" | "black";
+  engineClient: StockfishClient | null;
+  setEngineClient: React.Dispatch<React.SetStateAction<StockfishClient | null>>;
+  engineMoveTimeMs: string;
+}) {
+  const {
+    puzzles,
+    puzzleIdx,
+    setPuzzleIdx,
+    currentPuzzle,
+    puzzleSourceGame,
+    puzzleSourceParsed,
+    userBoardOrientation,
+    engineClient,
+    setEngineClient,
+    engineMoveTimeMs,
+  } = props;
+
+  const [tab, setTab] = useState<"puzzle" | "game">("puzzle");
+  const [attemptFen, setAttemptFen] = useState<string>(new Chess().fen());
+  const [attemptLastMove, setAttemptLastMove] = useState<{ from: string; to: string } | null>(null);
+  const [attemptUci, setAttemptUci] = useState<string | null>(null);
+  const [attemptResult, setAttemptResult] = useState<"correct" | "incorrect" | null>(null);
+  const [showSolution, setShowSolution] = useState(false);
+  const [gamePly, setGamePly] = useState(0);
+
+  const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+  const [legalTargets, setLegalTargets] = useState<Set<string>>(new Set());
+  const [showAllLegal, setShowAllLegal] = useState(false);
+  const [showBestArrow, setShowBestArrow] = useState(true);
+  const [showUserArrow, setShowUserArrow] = useState(true);
+
+  const [lineKind, setLineKind] = useState<LineKind>("best");
+  const [lineStep, setLineStep] = useState(0);
+  const [evalPerStep, setEvalPerStep] = useState(false);
+
+  const [afterUserEval, setAfterUserEval] = useState<EvalResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [engineErr, setEngineErr] = useState<string | null>(null);
+
+  const evalCacheRef = useRef<Map<string, EvalResult>>(new Map());
+
+  // reset per puzzle
+  useEffect(() => {
+    if (!currentPuzzle) return;
+    setTab("puzzle");
+    setAttemptFen(currentPuzzle.fen);
+    setAttemptLastMove(null);
+    setAttemptUci(null);
+    setAttemptResult(null);
+    setShowSolution(false);
+    setGamePly(currentPuzzle.sourcePly);
+    setSelectedSquare(null);
+    setLegalTargets(new Set());
+    setLineKind("best");
+    setLineStep(0);
+    setAfterUserEval(null);
+    setEngineErr(null);
+  }, [currentPuzzle]);
+
+  const movetimeMs = useMemo(() => Math.max(1, Math.trunc(Number(engineMoveTimeMs) || 200)), [engineMoveTimeMs]);
+
+  const puzzleGameFen = useMemo(() => {
+    if (!puzzleSourceParsed) return null;
+    const c = new Chess(puzzleSourceParsed.startFen);
+    const until = clamp(gamePly, 0, puzzleSourceParsed.moves.length);
+    try {
+      for (let i = 0; i < until; i++) {
+        const mv = puzzleSourceParsed.moves[i];
+        c.move({ from: mv.from, to: mv.to, promotion: mv.promotion });
+      }
+      return c.fen();
+    } catch {
+      return c.fen();
+    }
+  }, [puzzleSourceParsed, gamePly]);
+
+  const puzzleGameLastMove = useMemo(() => {
+    if (!puzzleSourceParsed) return null;
+    if (gamePly <= 0) return null;
+    const mv = puzzleSourceParsed.moves[gamePly - 1];
+    if (!mv) return null;
+    return { from: mv.from, to: mv.to };
+  }, [puzzleSourceParsed, gamePly]);
+
+  const playedMoveInGame = useMemo(() => {
+    if (!currentPuzzle || !puzzleSourceParsed) return null;
+    const mv = puzzleSourceParsed.moves[currentPuzzle.sourcePly];
+    if (!mv) return null;
+    return { san: mv.san, uci: moveToUci(mv), from: mv.from, to: mv.to, promotion: mv.promotion };
+  }, [currentPuzzle, puzzleSourceParsed]);
+
+  const playedContinuationUci = useMemo(() => {
+    if (!currentPuzzle || !puzzleSourceParsed) return [];
+    return puzzleSourceParsed.moves
+      .slice(currentPuzzle.sourcePly, currentPuzzle.sourcePly + 8)
+      .map((m) => moveToUci(m));
+  }, [currentPuzzle, puzzleSourceParsed]);
+
+  const allowAttemptMove = tab === "puzzle" && attemptResult == null;
+
+  const bestMoveParsed = useMemo(() => {
+    if (!currentPuzzle) return null;
+    return parseUci(currentPuzzle.bestMoveUci);
+  }, [currentPuzzle]);
+
+  const lineBestApplied = useMemo(() => {
+    if (!currentPuzzle) return [{ fen: new Chess().fen(), lastMove: null as { from: string; to: string } | null }];
+    return applyUciLine(currentPuzzle.fen, currentPuzzle.bestLineUci, 12);
+  }, [currentPuzzle]);
+
+  const lineAfterUserUci = useMemo(() => {
+    if (!attemptUci) return [];
+    const pv = afterUserEval?.pvUci ?? [];
+    return [attemptUci, ...pv].slice(0, 12);
+  }, [attemptUci, afterUserEval]);
+
+  const lineAfterUserApplied = useMemo(() => {
+    if (!currentPuzzle) return [{ fen: new Chess().fen(), lastMove: null as { from: string; to: string } | null }];
+    return applyUciLine(currentPuzzle.fen, lineAfterUserUci, 12);
+  }, [currentPuzzle, lineAfterUserUci]);
+
+  const activeLineApplied = lineKind === "best" ? lineBestApplied : lineAfterUserApplied;
+
+  const exploring = attemptResult != null && tab === "puzzle";
+  const displayFen = useMemo(() => {
+    if (!currentPuzzle) return new Chess().fen();
+    if (tab === "game") return puzzleGameFen ?? currentPuzzle.fen;
+    if (exploring) return activeLineApplied[clamp(lineStep, 0, activeLineApplied.length - 1)]?.fen ?? currentPuzzle.fen;
+    return attemptFen;
+  }, [currentPuzzle, tab, puzzleGameFen, exploring, activeLineApplied, lineStep, attemptFen]);
+
+  const displayLastMove = useMemo(() => {
+    if (tab === "game") return puzzleGameLastMove;
+    if (!exploring) return attemptLastMove;
+    return activeLineApplied[clamp(lineStep, 0, activeLineApplied.length - 1)]?.lastMove ?? null;
+  }, [tab, puzzleGameLastMove, exploring, attemptLastMove, activeLineApplied, lineStep]);
+
+  const allLegalTargets = useMemo(() => {
+    if (!showAllLegal || !allowAttemptMove) return new Set<string>();
+    const c = new Chess(displayFen);
+    const moves = c.moves({ verbose: true }) as VerboseMove[];
+    return new Set(moves.map((m) => m.to));
+  }, [showAllLegal, allowAttemptMove, displayFen]);
+
+  const arrows = useMemo(() => {
+    const list: { startSquare: string; endSquare: string; color: string }[] = [];
+    if (tab !== "puzzle") return list;
+    if (showUserArrow && attemptLastMove) list.push({ startSquare: attemptLastMove.from, endSquare: attemptLastMove.to, color: "rgba(255,215,0,0.9)" });
+    if (showBestArrow && attemptResult === "incorrect" && bestMoveParsed) {
+      list.push({ startSquare: bestMoveParsed.from, endSquare: bestMoveParsed.to, color: "rgba(255,70,70,0.9)" });
+    }
+    return list;
+  }, [tab, showUserArrow, attemptLastMove, showBestArrow, attemptResult, bestMoveParsed]);
+
+  const squareStyles = useMemo(() => {
+    const s: Record<string, React.CSSProperties> = {};
+
+    // last move highlight
+    if (displayLastMove) {
+      s[displayLastMove.from] = { backgroundColor: "rgba(255, 215, 0, 0.22)" };
+      s[displayLastMove.to] = { backgroundColor: "rgba(255, 215, 0, 0.45)" };
+    }
+
+    // legal hints for selected piece
+    if (selectedSquare) {
+      s[selectedSquare] = { ...(s[selectedSquare] ?? {}), boxShadow: "inset 0 0 0 3px rgba(64, 132, 255, 0.9)" };
+    }
+    for (const to of legalTargets) {
+      s[to] = { ...(s[to] ?? {}), backgroundColor: "rgba(64, 132, 255, 0.22)" };
+    }
+    for (const to of allLegalTargets) {
+      s[to] = { ...(s[to] ?? {}), backgroundColor: "rgba(64, 132, 255, 0.10)" };
+    }
+
+    // incorrect: highlight best move
+    if (attemptResult === "incorrect" && bestMoveParsed) {
+      s[bestMoveParsed.from] = { ...(s[bestMoveParsed.from] ?? {}), backgroundColor: "rgba(255, 70, 70, 0.25)" };
+      s[bestMoveParsed.to] = { ...(s[bestMoveParsed.to] ?? {}), backgroundColor: "rgba(255, 70, 70, 0.45)" };
+    }
+
+    return s;
+  }, [displayLastMove, selectedSquare, legalTargets, allLegalTargets, attemptResult, bestMoveParsed]);
+
+  const ensureEngine = useCallback(async (): Promise<StockfishClient> => {
+    const client = engineClient ?? new StockfishClient();
+    if (!engineClient) setEngineClient(client);
+    return client;
+  }, [engineClient, setEngineClient]);
+
+  const evalFen = useCallback(
+    async (fen: string): Promise<EvalResult> => {
+      const key = `${fen}::${movetimeMs}`;
+      const cached = evalCacheRef.current.get(key);
+      if (cached) return cached;
+      const client = await ensureEngine();
+      const res = await client.evalPosition({ fen, movetimeMs, cacheKey: key });
+      evalCacheRef.current.set(key, res);
+      return res;
+    },
+    [ensureEngine, movetimeMs],
+  );
+
+  // evaluate after user's move once they attempt
+  useEffect(() => {
+    if (!currentPuzzle) return;
+    if (!attemptResult || !attemptUci) return;
+    if (attemptResult !== "incorrect" && attemptResult !== "correct") return;
+
+    // only compute the continuation that starts from after the user's move
+    const c = new Chess(currentPuzzle.fen);
+    const parsed = parseUci(attemptUci);
+    if (!parsed) return;
+    try {
+      const mv = c.move({ from: parsed.from, to: parsed.to, promotion: parsed.promotion });
+      if (!mv) return;
+    } catch {
+      return;
+    }
+    const afterFen = c.fen();
+    let cancelled = false;
+
+    (async () => {
+      setBusy(true);
+      setEngineErr(null);
+      try {
+        const res = await evalFen(afterFen);
+        if (!cancelled) setAfterUserEval(res);
+      } catch (e: unknown) {
+        if (!cancelled) setEngineErr(e instanceof Error ? e.message : "Engine error");
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentPuzzle, attemptResult, attemptUci, evalFen]);
+
+  // optional per-step eval in explorer
+  const activeStepEval = useMemo(() => {
+    if (!evalPerStep) return null;
+    const fen = displayFen;
+    return evalCacheRef.current.get(`${fen}::${movetimeMs}`) ?? null;
+  }, [evalPerStep, displayFen, movetimeMs]);
+
+  useEffect(() => {
+    if (!evalPerStep) return;
+    if (!exploring) return;
+    let cancelled = false;
+    (async () => {
+      setBusy(true);
+      setEngineErr(null);
+      try {
+        await evalFen(displayFen);
+      } catch (e: unknown) {
+        if (!cancelled) setEngineErr(e instanceof Error ? e.message : "Engine error");
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [evalPerStep, exploring, displayFen, evalFen]);
+
+  function clearHints() {
+    setSelectedSquare(null);
+    setLegalTargets(new Set());
+  }
+
+  function computeHints(square: string) {
+    if (!allowAttemptMove) return;
+    const c = new Chess(displayFen);
+    const moves = c.moves({ square: square as Square, verbose: true }) as VerboseMove[];
+    setSelectedSquare(square);
+    setLegalTargets(new Set(moves.map((m) => m.to)));
+  }
+
+  const startEvalText = useMemo(() => (currentPuzzle ? formatEval(currentPuzzle.score, currentPuzzle.fen) : "—"), [currentPuzzle]);
+  const afterMoveEvalText = useMemo(() => {
+    if (!attemptResult || !afterUserEval) return "—";
+    return formatEval(afterUserEval.score, afterUserEval.fen);
+  }, [attemptResult, afterUserEval]);
+  const activeEvalText = useMemo(() => {
+    if (!evalPerStep) return null;
+    if (!activeStepEval) return "…";
+    return formatEval(activeStepEval.score, activeStepEval.fen);
+  }, [evalPerStep, activeStepEval]);
+
+  const evalUnit = useMemo(() => {
+    if (!currentPuzzle) return 0.5;
+    if (!exploring && !attemptResult) return scoreToUnit(currentPuzzle.score, currentPuzzle.fen);
+    if (!exploring) return afterUserEval?.score ? scoreToUnit(afterUserEval.score, afterUserEval.fen) : scoreToUnit(currentPuzzle.score, currentPuzzle.fen);
+    const s = activeStepEval?.score ?? null;
+    return scoreToUnit(s, displayFen);
+  }, [currentPuzzle, exploring, attemptResult, afterUserEval, activeStepEval, displayFen]);
+
+  const openingText = useMemo(() => {
+    if (!currentPuzzle) return null;
+    const o = currentPuzzle.opening;
+    if (o?.eco || o?.name || o?.variation) {
+      const nm = o.name ?? ecoName(o.eco) ?? "";
+      const base = `${o.eco ? `${o.eco} ` : ""}${nm}`.trim();
+      return o.variation ? `${base} — ${o.variation}` : base || null;
+    }
+    // fallback from tags if opening object is missing (older saved puzzles)
+    const tags = currentPuzzle.tags ?? [];
+    const eco = tags.find((t) => t.startsWith("eco:"))?.slice("eco:".length) ?? "";
+    const name =
+      tags.find((t) => t.startsWith("opening:"))?.slice("opening:".length) ?? ecoName(eco) ?? "";
+    const variation = tags.find((t) => t.startsWith("openingVar:"))?.slice("openingVar:".length) ?? "";
+    const base = `${eco ? `${eco} ` : ""}${name}`.trim();
+    if (!base && !variation) return null;
+    return variation ? `${base} — ${variation}` : base;
+  }, [currentPuzzle]);
+
+  if (!currentPuzzle) {
+    return <p className={styles.muted}>Pick a puzzle to start solving.</p>;
+  }
+
+  return (
+    <>
+      <div className={styles.actions}>
+        <button className={styles.secondaryButton} onClick={() => setPuzzleIdx((i) => Math.max(0, i - 1))} disabled={puzzleIdx === 0}>
+          Prev
+        </button>
+        <button
+          className={styles.secondaryButton}
+          onClick={() => setPuzzleIdx((i) => Math.min(puzzles.length - 1, i + 1))}
+          disabled={puzzleIdx >= puzzles.length - 1}
+        >
+          Next
+        </button>
+        <div className={styles.muted}>
+          Puzzle {puzzleIdx + 1}/{puzzles.length} • {currentPuzzle.type}
+          {openingText ? ` • ${openingText}` : ""}
+        </div>
+      </div>
+
+      <div className={styles.viewer}>
+        <div className={styles.board}>
+          <div className={styles.actions}>
+            <button className={tab === "puzzle" ? styles.primaryButton : styles.secondaryButton} onClick={() => setTab("puzzle")}>
+              Puzzle
+            </button>
+            <button
+              className={tab === "game" ? styles.primaryButton : styles.secondaryButton}
+              onClick={() => setTab("game")}
+              disabled={!puzzleSourceParsed}
+            >
+              Game
+            </button>
+            <div className={styles.muted}>
+              {puzzleSourceGame ? (
+                <>
+                  {puzzleSourceGame.provider} • {puzzleSourceGame.white.name} vs {puzzleSourceGame.black.name}
+                </>
+              ) : (
+                "Source game not loaded"
+              )}
+            </div>
+          </div>
+
+          {tab === "puzzle" && (
+            <div className={styles.puzzleHud}>
+              <div className={styles.turnChip}>{prettyTurnFromFen(displayFen)}</div>
+              <div className={styles.evalWrap}>
+                <div className={styles.evalBar}>
+                  <div className={styles.evalMarker} style={{ left: `${Math.round(evalUnit * 100)}%` }} />
+                </div>
+                <div className={styles.mono}>
+                  Start {startEvalText}
+                  {attemptResult ? ` • After ${afterMoveEvalText}` : ""}
+                  {activeEvalText ? ` • Step ${activeEvalText}` : ""}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <Chessboard
+            options={{
+              position: displayFen,
+              boardOrientation: userBoardOrientation,
+              allowDragging: allowAttemptMove,
+              allowDrawingArrows: false,
+              arrows,
+              squareStyles,
+              onPieceClick: ({ square }) => {
+                if (!square) return;
+                computeHints(square);
+              },
+              onSquareClick: ({ piece, square }) => {
+                if (!piece) return clearHints();
+                computeHints(square);
+              },
+              onSquareMouseDown: ({ piece, square }) => {
+                if (!piece) return;
+                computeHints(square);
+              },
+              onSquareMouseUp: () => {
+                // keep selection until next interaction; feels more puzzle-like
+              },
+              onMouseOutSquare: () => {
+                // no-op
+              },
+              onPieceDrop: allowAttemptMove
+                ? ({ sourceSquare, targetSquare, piece }) => {
+                    clearHints();
+                    if (!targetSquare) return false;
+                    const c = new Chess(attemptFen);
+                    const from = sourceSquare;
+                    const to = targetSquare;
+                    const pt = (piece?.pieceType ?? "").toLowerCase();
+                    const isPawn = pt.endsWith("p");
+                    const promotionRank = to[1] === "8" || to[1] === "1";
+                    const promotion = isPawn && promotionRank ? "q" : undefined;
+                    try {
+                      const mv = c.move({ from, to, promotion });
+                      if (!mv) return false;
+                    } catch {
+                      return false;
+                    }
+                    const uci = moveToUci({ from, to, promotion });
+                    setAttemptFen(c.fen());
+                    setAttemptLastMove({ from, to });
+                    setAttemptUci(uci);
+                    setAttemptResult(uci === currentPuzzle.bestMoveUci ? "correct" : "incorrect");
+                    setLineKind(uci === currentPuzzle.bestMoveUci ? "best" : "best");
+                    setLineStep(0);
+                    return true;
+                  }
+                : undefined,
+            }}
+          />
+
+          {tab === "puzzle" ? (
+            <>
+              <div className={styles.muted}>{currentPuzzle.label}</div>
+
+              <div className={styles.puzzleToggles}>
+                <label className={styles.toggle}>
+                  <input type="checkbox" checked={showAllLegal} onChange={(e) => setShowAllLegal(e.target.checked)} disabled={!allowAttemptMove} />
+                  <span>Show all legal moves</span>
+                </label>
+                <label className={styles.toggle}>
+                  <input type="checkbox" checked={showBestArrow} onChange={(e) => setShowBestArrow(e.target.checked)} />
+                  <span>Best-move arrow</span>
+                </label>
+                <label className={styles.toggle}>
+                  <input type="checkbox" checked={showUserArrow} onChange={(e) => setShowUserArrow(e.target.checked)} />
+                  <span>Your-move arrow</span>
+                </label>
+                <label className={styles.toggle}>
+                  <input type="checkbox" checked={evalPerStep} onChange={(e) => setEvalPerStep(e.target.checked)} disabled={!exploring} />
+                  <span>Eval per step</span>
+                </label>
+              </div>
+
+              <div className={styles.actions}>
+                <button
+                  className={styles.secondaryButton}
+                  onClick={() => {
+                    setAttemptFen(currentPuzzle.fen);
+                    setAttemptLastMove(null);
+                    setAttemptUci(null);
+                    setAttemptResult(null);
+                    setShowSolution(false);
+                    setLineKind("best");
+                    setLineStep(0);
+                    setAfterUserEval(null);
+                    setEngineErr(null);
+                    clearHints();
+                  }}
+                >
+                  Reset
+                </button>
+                <button className={styles.secondaryButton} onClick={() => setShowSolution(true)}>
+                  Solve
+                </button>
+                <div className={styles.muted}>
+                  Best move: <span className={styles.mono}>{currentPuzzle.bestMoveUci}</span>
+                </div>
+                {busy ? <div className={styles.muted}>Engine…</div> : null}
+                {engineErr ? <div className={styles.error}>{engineErr}</div> : null}
+              </div>
+
+              {attemptResult && (
+                <div className={attemptResult === "correct" ? styles.success : styles.warning}>
+                  {attemptResult === "correct" ? `Correct! (${attemptUci})` : `Not best. You played ${attemptUci}.`}
+                </div>
+              )}
+
+              {exploring && (
+                <div className={styles.lineExplorer}>
+                  <div className={styles.actions}>
+                    <button
+                      className={lineKind === "best" ? styles.primaryButton : styles.secondaryButton}
+                      onClick={() => {
+                        setLineKind("best");
+                        setLineStep(0);
+                      }}
+                    >
+                      Best line
+                    </button>
+                    <button
+                      className={lineKind === "afterUser" ? styles.primaryButton : styles.secondaryButton}
+                      onClick={() => {
+                        setLineKind("afterUser");
+                        setLineStep(0);
+                      }}
+                      disabled={!attemptUci}
+                    >
+                      After your move
+                    </button>
+
+                    <button className={styles.secondaryButton} onClick={() => setLineStep(0)} disabled={lineStep === 0}>
+                      Start
+                    </button>
+                    <button className={styles.secondaryButton} onClick={() => setLineStep((s) => Math.max(0, s - 1))} disabled={lineStep === 0}>
+                      Back
+                    </button>
+                    <div className={styles.muted}>
+                      Step {lineStep}/{Math.max(0, activeLineApplied.length - 1)}
+                    </div>
+                    <button
+                      className={styles.secondaryButton}
+                      onClick={() => setLineStep((s) => Math.min(activeLineApplied.length - 1, s + 1))}
+                      disabled={lineStep >= activeLineApplied.length - 1}
+                    >
+                      Next
+                    </button>
+                    <button
+                      className={styles.secondaryButton}
+                      onClick={() => setLineStep(activeLineApplied.length - 1)}
+                      disabled={lineStep >= activeLineApplied.length - 1}
+                    >
+                      End
+                    </button>
+                  </div>
+
+                  <div className={styles.muted}>
+                    {lineKind === "best" ? (
+                      <>
+                        PV: <span className={styles.mono}>{currentPuzzle.bestLineUci.slice(0, 12).join(" ")}</span>
+                      </>
+                    ) : (
+                      <>
+                        Line: <span className={styles.mono}>{lineAfterUserUci.slice(0, 12).join(" ")}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {showSolution && (
+                <div className={styles.solution}>
+                  <div className={styles.muted}>
+                    In-game move: <span className={styles.mono}>{playedMoveInGame?.san ?? "?"} ({playedMoveInGame?.uci ?? "?"})</span>
+                  </div>
+                  <div className={styles.muted}>
+                    Best move: <span className={styles.mono}>{currentPuzzle.bestMoveUci}</span>
+                  </div>
+                  {currentPuzzle.bestLineUci.length > 0 && (
+                    <div className={styles.muted}>
+                      Best continuation: <span className={styles.mono}>{currentPuzzle.bestLineUci.slice(0, 8).join(" ")}</span>
+                    </div>
+                  )}
+                  {playedContinuationUci.length > 0 && (
+                    <div className={styles.muted}>
+                      Game continuation: <span className={styles.mono}>{playedContinuationUci.slice(0, 8).join(" ")}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className={styles.actions}>
+                <button className={styles.secondaryButton} onClick={() => setGamePly(0)} disabled={!puzzleSourceParsed || gamePly === 0}>
+                  Start
+                </button>
+                <button className={styles.secondaryButton} onClick={() => setGamePly((p) => Math.max(0, p - 1))} disabled={!puzzleSourceParsed || gamePly === 0}>
+                  Back
+                </button>
+                <div className={styles.muted}>
+                  Ply {gamePly}/{puzzleSourceParsed?.moves.length ?? 0}
+                </div>
+                <button
+                  className={styles.secondaryButton}
+                  onClick={() => setGamePly((p) => Math.min(puzzleSourceParsed?.moves.length ?? 0, p + 1))}
+                  disabled={!puzzleSourceParsed || gamePly >= (puzzleSourceParsed?.moves.length ?? 0)}
+                >
+                  Next
+                </button>
+                <button
+                  className={styles.secondaryButton}
+                  onClick={() => setGamePly(puzzleSourceParsed?.moves.length ?? 0)}
+                  disabled={!puzzleSourceParsed || gamePly >= (puzzleSourceParsed?.moves.length ?? 0)}
+                >
+                  End
+                </button>
+              </div>
+
+              <ol className={styles.moveList}>
+                {(puzzleSourceParsed?.moves ?? []).map((m, idx) => (
+                  <li key={`${idx}-${m.san}`}>
+                    <button className={idx + 1 === gamePly ? styles.moveActive : styles.moveButton} onClick={() => setGamePly(idx + 1)}>
+                      {m.san}
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            </>
+          )}
+        </div>
+
+        <div className={styles.moves}>
+          <div className={styles.muted}>{currentPuzzle.type}</div>
+          {openingText ? <div className={styles.mono}>Opening: {openingText}</div> : null}
+          <div className={styles.mono}>From: {currentPuzzle.sourceGameId}</div>
+          <div className={styles.mono}>Puzzle ply: {currentPuzzle.sourcePly + 1}</div>
+          <div className={styles.mono}>Orientation: {userBoardOrientation} (user side down)</div>
+        </div>
+      </div>
+    </>
+  );
+}
+
