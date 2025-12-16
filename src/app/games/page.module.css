@@ -1,0 +1,248 @@
+.page {
+    --background: #fafafa;
+    --foreground: #fff;
+    --text-primary: #000;
+    --text-secondary: #666;
+    --border: #e6e6e6;
+    --chip: rgba(0, 0, 0, 0.06);
+
+    display: flex;
+    min-height: 100vh;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-geist-sans);
+    background-color: var(--background);
+}
+
+.main {
+    width: 100%;
+    max-width: 1100px;
+    background: var(--foreground);
+    padding: 40px 28px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.header {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 26px;
+    font-weight: 650;
+    letter-spacing: -0.5px;
+    color: var(--text-primary);
+}
+
+.header p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.panel {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.field input,
+.field select {
+    height: 36px;
+    padding: 0 10px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-primary);
+    outline: none;
+}
+
+.actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.secondaryButton {
+    height: 36px;
+    padding: 0 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-primary);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.muted {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.cards {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.cardTop {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: flex-start;
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    padding: 3px 8px;
+    font-size: 12px;
+    font-weight: 750;
+    border: 1px solid var(--border);
+}
+
+.badgeWin {
+    background: rgba(6, 118, 71, 0.12);
+    color: #067647;
+}
+.badgeLoss {
+    background: rgba(180, 35, 24, 0.12);
+    color: #b42318;
+}
+.badgeDraw {
+    background: rgba(245, 158, 11, 0.16);
+    color: #92400e;
+}
+.badgeUnknown {
+    background: rgba(102, 102, 102, 0.12);
+    color: var(--text-secondary);
+}
+
+.chipRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    padding: 3px 8px;
+    font-size: 12px;
+    background: var(--chip);
+    color: var(--text-primary);
+}
+
+.cardTitle {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.cardTitleStrong {
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.cardTitleSub {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.pagination {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: center;
+}
+
+.skeleton {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    height: 92px;
+    background: linear-gradient(
+        90deg,
+        rgba(0, 0, 0, 0.03),
+        rgba(0, 0, 0, 0.06),
+        rgba(0, 0, 0, 0.03)
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+    0% {
+        background-position: 200% 0;
+    }
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+@media (max-width: 900px) {
+    .grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .cards {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 600px) {
+    .main {
+        padding: 32px 18px;
+    }
+    .grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (prefers-color-scheme: dark) {
+    .page {
+        --background: #000;
+        --foreground: #000;
+        --text-primary: #ededed;
+        --text-secondary: #999;
+        --border: #1a1a1a;
+        --chip: rgba(255, 255, 255, 0.08);
+    }
+}
+

@@ -29,6 +29,7 @@ export const config = {
         '/games/:path*',
         '/puzzles/:path*',
         '/settings/:path*',
+        '/profile/:path*',
         '/insights/:path*',
     ],
 };

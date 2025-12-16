@@ -11,6 +11,7 @@ import { ecoName } from "@/lib/chess/eco";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GameAnalysis, MoveClassification } from "@/lib/analysis/classification";
 import { getClassificationSymbol } from "@/lib/analysis/classification";
+import { usePuzzleAttempt } from "@/lib/hooks/usePuzzleAttempt";
 
 type VerboseMove = Move;
 
@@ -105,6 +106,8 @@ export function PuzzlePanel(props: {
   const [engineErr, setEngineErr] = useState<string | null>(null);
 
   const evalCacheRef = useRef<Map<string, EvalResult>>(new Map());
+  const recordedAttemptRef = useRef(false);
+  const { startAttempt, recordAttempt, saving: attemptSaving, queued: attemptQueued } = usePuzzleAttempt();
 
   // reset per puzzle
   useEffect(() => {
@@ -122,6 +125,8 @@ export function PuzzlePanel(props: {
     setLineStep(0);
     setAfterUserEval(null);
     setEngineErr(null);
+    recordedAttemptRef.current = false;
+    startAttempt(currentPuzzle.id);
   }, [currentPuzzle]);
 
   const movetimeMs = useMemo(() => Math.max(1, Math.trunc(Number(engineMoveTimeMs) || 200)), [engineMoveTimeMs]);
@@ -164,6 +169,20 @@ export function PuzzlePanel(props: {
   }, [currentPuzzle, puzzleSourceParsed]);
 
   const allowAttemptMove = tab === "puzzle" && attemptResult == null;
+
+  // Record the FIRST attempt per puzzle load (not after reset).
+  useEffect(() => {
+    if (!currentPuzzle) return;
+    if (!attemptUci) return;
+    if (!attemptResult) return;
+    if (recordedAttemptRef.current) return;
+    recordedAttemptRef.current = true;
+    void recordAttempt({
+      puzzleId: currentPuzzle.id,
+      move: attemptUci,
+      correct: attemptResult === "correct",
+    });
+  }, [currentPuzzle, attemptUci, attemptResult, recordAttempt]);
 
   const bestMoveParsed = useMemo(() => {
     if (!currentPuzzle) return null;
@@ -588,6 +607,12 @@ export function PuzzlePanel(props: {
                   {attemptResult === "correct" ? `Correct! (${attemptUci})` : `Not best. You played ${attemptUci}.`}
                 </div>
               )}
+              {attemptSaving || attemptQueued > 0 ? (
+                <div className={styles.muted} style={{ fontSize: 12 }}>
+                  {attemptSaving ? "Saving attempt…" : null}
+                  {!attemptSaving && attemptQueued > 0 ? `Attempts queued: ${attemptQueued}` : null}
+                </div>
+              ) : null}
 
               {exploring && (
                 <div className={styles.lineExplorer}>

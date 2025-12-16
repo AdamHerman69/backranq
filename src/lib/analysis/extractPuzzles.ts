@@ -30,7 +30,12 @@ export type PuzzleMode = 'avoidBlunder' | 'punishBlunder' | 'both';
 
 export type ExtractOptions = {
     movetimeMs?: number;
-    maxPuzzlesPerGame?: number;
+    /**
+     * Maximum puzzles to generate per game.
+     * - number: cap
+     * - null: unlimited
+     */
+    maxPuzzlesPerGame?: number | null;
     // Thresholds in centipawns (from mover perspective)
     blunderSwingCp?: number; // e.g. 250
     missedWinSwingCp?: number; // e.g. 150
@@ -363,7 +368,7 @@ function tagsForCandidate(args: {
 
 type ResolvedOptions = {
     movetimeMs: number;
-    maxPuzzlesPerGame: number;
+    maxPuzzlesPerGame: number; // can be Infinity when unlimited
     blunderSwingCp: number;
     missedWinSwingCp: number;
     missedTacticSwingCp: number;
@@ -384,9 +389,13 @@ type ResolvedOptions = {
 };
 
 function resolveOptions(options?: ExtractOptions): ResolvedOptions {
+    const rawMax = options?.maxPuzzlesPerGame;
+    const maxPuzzlesPerGame =
+        rawMax === null ? Number.POSITIVE_INFINITY : rawMax ?? 5;
+
     return {
         movetimeMs: options?.movetimeMs ?? 200,
-        maxPuzzlesPerGame: options?.maxPuzzlesPerGame ?? 5,
+        maxPuzzlesPerGame,
         blunderSwingCp: options?.blunderSwingCp ?? 250,
         missedWinSwingCp: options?.missedWinSwingCp ?? 150,
         missedTacticSwingCp: options?.missedTacticSwingCp ?? 180,
@@ -527,7 +536,15 @@ export async function extractPuzzlesFromGames(args: {
 
         let cooldown = 0;
         for (let ply = 0; ply < plyCount; ply++) {
-            if (puzzlesForGame >= opts.maxPuzzlesPerGame) break;
+            // For puzzle-only mode, stop once we've found enough.
+            // For analysis mode (returnAnalysis), keep analyzing the whole game,
+            // but stop *adding* puzzles once quota is reached.
+            if (
+                !opts.returnAnalysis &&
+                puzzlesForGame >= opts.maxPuzzlesPerGame
+            )
+                break;
+            const puzzlesAllowed = puzzlesForGame < opts.maxPuzzlesPerGame;
             args.onProgress?.({
                 gameId: game.id,
                 gameIndex: gi,
@@ -712,6 +729,7 @@ export async function extractPuzzlesFromGames(args: {
             // Puzzle: position BEFORE user's mistake, find the best move
             // ─────────────────────────────────────────────────────────────────
             if (
+                puzzlesAllowed &&
                 isUserMove &&
                 (opts.puzzleMode === 'avoidBlunder' ||
                     opts.puzzleMode === 'both') &&
@@ -849,6 +867,7 @@ export async function extractPuzzlesFromGames(args: {
             // Only if user DIDN'T punish it in the game
             // ─────────────────────────────────────────────────────────────────
             if (
+                puzzlesAllowed &&
                 isOpponentMove &&
                 (opts.puzzleMode === 'punishBlunder' ||
                     opts.puzzleMode === 'both') &&

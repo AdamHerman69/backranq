@@ -14,6 +14,17 @@ import { useEffect } from "react";
 import { extractStartFenFromPgn } from "@/lib/chess/utils";
 import { ecoName } from "@/lib/chess/eco";
 import { PuzzlePanel } from "@/app/puzzle/PuzzlePanel";
+import { useSession } from "next-auth/react";
+import { LocalStorageMigration } from "@/components/migration/LocalStorageMigration";
+import { AppNav } from "@/components/nav/AppNav";
+import { SyncGamesWidget } from "@/components/sync/SyncGamesWidget";
+import {
+  defaultPreferences,
+  type Filters,
+  type RatedFilter,
+  type PreferencesSchema,
+} from "@/lib/preferences";
+import { fetchDbPreferences, saveDbPreferences } from "@/lib/migration/localStorageToDb";
 
 function errorMessage(e: unknown) {
   return e instanceof Error ? e.message : "Unexpected error";
@@ -53,19 +64,7 @@ function userResultForGame(game: NormalizedGame, userColor: UserColor): UserResu
   return "unknown";
 }
 
-type RatedFilter = "any" | "rated" | "casual";
-
-type Filters = {
-  lichessUsername: string;
-  chesscomUsername: string;
-  timeClass: TimeClass | "any";
-  rated: RatedFilter;
-  since: string; // yyyy-mm-dd
-  until: string; // yyyy-mm-dd
-  minElo: string;
-  maxElo: string;
-  max: string;
-};
+// Filters/RatedFilter now live in src/lib/preferences.ts
 
 function buildQuery(filters: Filters) {
   const p = new URLSearchParams();
@@ -102,17 +101,12 @@ async function fetchProviderGames(
 }
 
 export default function Home() {
-  const [filters, setFilters] = useState<Filters>({
-    lichessUsername: "",
-    chesscomUsername: "",
-    timeClass: "any",
-    rated: "any",
-    since: "",
-    until: "",
-    minElo: "",
-    maxElo: "",
-    max: "100",
-  });
+  const { data: session } = useSession();
+  const isLoggedIn = !!session?.user?.id;
+
+  const defaults = useMemo(() => defaultPreferences(), []);
+
+  const [filters, setFilters] = useState<Filters>(defaults.filters);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -122,30 +116,30 @@ export default function Home() {
   const [engineBusy, setEngineBusy] = useState(false);
   const [engineError, setEngineError] = useState<string | null>(null);
   const [engineResult, setEngineResult] = useState<EvalResult | null>(null);
-  const [engineMoveTimeMs, setEngineMoveTimeMs] = useState("200");
+  const [engineMoveTimeMs, setEngineMoveTimeMs] = useState(defaults.engineMoveTimeMs);
   const [engineClient, setEngineClient] = useState<StockfishClient | null>(null);
-  const [puzzles, setPuzzles] = useState<Puzzle[]>([]);
-  const [puzzleIdx, setPuzzleIdx] = useState(0);
-  const [puzzleTagFilter, setPuzzleTagFilter] = useState<string[]>([]);
-  const [puzzleOpeningFilter, setPuzzleOpeningFilter] = useState<string>("");
+  const [puzzles, setPuzzles] = useState<Puzzle[]>(defaults.puzzles);
+  const [puzzleIdx, setPuzzleIdx] = useState(defaults.puzzleIdx);
+  const [puzzleTagFilter, setPuzzleTagFilter] = useState<string[]>(defaults.puzzleTagFilter);
+  const [puzzleOpeningFilter, setPuzzleOpeningFilter] = useState<string>(defaults.puzzleOpeningFilter);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState<string>("");
   const [gameAnalysisMap, setGameAnalysisMap] = useState<Map<string, GameAnalysis>>(new Map());
 
   // Puzzle extraction options
-  const [puzzleMode, setPuzzleMode] = useState<PuzzleMode>("both");
-  const [maxPuzzlesPerGame, setMaxPuzzlesPerGame] = useState("5");
-  const [blunderSwingCp, setBlunderSwingCp] = useState("250");
-  const [missedTacticSwingCp, setMissedTacticSwingCp] = useState("180");
-  const [evalBandMinCp, setEvalBandMinCp] = useState("-300");
-  const [evalBandMaxCp, setEvalBandMaxCp] = useState("600");
-  const [requireTactical, setRequireTactical] = useState(true);
-  const [tacticalLookaheadPlies, setTacticalLookaheadPlies] = useState("4");
-  const [openingSkipPlies, setOpeningSkipPlies] = useState("8");
-  const [minPvMoves, setMinPvMoves] = useState("2");
-  const [skipTrivialEndgames, setSkipTrivialEndgames] = useState(true);
-  const [minNonKingPieces, setMinNonKingPieces] = useState("4");
-  const [confirmMovetimeMs, setConfirmMovetimeMs] = useState("");
+  const [puzzleMode, setPuzzleMode] = useState<PuzzleMode>(defaults.puzzleMode);
+  const [maxPuzzlesPerGame, setMaxPuzzlesPerGame] = useState(defaults.maxPuzzlesPerGame);
+  const [blunderSwingCp, setBlunderSwingCp] = useState(defaults.blunderSwingCp);
+  const [missedTacticSwingCp, setMissedTacticSwingCp] = useState(defaults.missedTacticSwingCp);
+  const [evalBandMinCp, setEvalBandMinCp] = useState(defaults.evalBandMinCp);
+  const [evalBandMaxCp, setEvalBandMaxCp] = useState(defaults.evalBandMaxCp);
+  const [requireTactical, setRequireTactical] = useState(defaults.requireTactical);
+  const [tacticalLookaheadPlies, setTacticalLookaheadPlies] = useState(defaults.tacticalLookaheadPlies);
+  const [openingSkipPlies, setOpeningSkipPlies] = useState(defaults.openingSkipPlies);
+  const [minPvMoves, setMinPvMoves] = useState(defaults.minPvMoves);
+  const [skipTrivialEndgames, setSkipTrivialEndgames] = useState(defaults.skipTrivialEndgames);
+  const [minNonKingPieces, setMinNonKingPieces] = useState(defaults.minNonKingPieces);
+  const [confirmMovetimeMs, setConfirmMovetimeMs] = useState(defaults.confirmMovetimeMs);
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
 
   function puzzleOpeningKey(p: Puzzle): string {
@@ -204,87 +198,100 @@ export default function Home() {
 
   const currentPuzzle = visiblePuzzles[puzzleIdx] ?? null;
 
-  // localStorage hydration
+  // Hydration:
+  // - logged out: localStorage (guest mode)
+  // - logged in: DB preferences (and show migration prompt if localStorage exists)
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("backrank.miniState.v1");
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as unknown;
-      const state = parsed as {
-        filters?: Partial<Filters>;
-        puzzles?: Puzzle[];
-        puzzleIdx?: number;
-        puzzleTagFilter?: string[];
-        puzzleOpeningFilter?: string;
-        // Puzzle extraction options
-        puzzleMode?: PuzzleMode;
-        maxPuzzlesPerGame?: string;
-        blunderSwingCp?: string;
-        missedTacticSwingCp?: string;
-        evalBandMinCp?: string;
-        evalBandMaxCp?: string;
-        requireTactical?: boolean;
-        tacticalLookaheadPlies?: string;
-        openingSkipPlies?: string;
-        minPvMoves?: string;
-        skipTrivialEndgames?: boolean;
-        minNonKingPieces?: string;
-        confirmMovetimeMs?: string;
-        engineMoveTimeMs?: string;
-      };
-      if (state.filters) setFilters((f) => ({ ...f, ...state.filters }));
-      if (Array.isArray(state.puzzles)) setPuzzles(state.puzzles);
-      if (typeof state.puzzleIdx === "number") setPuzzleIdx(state.puzzleIdx);
-      if (Array.isArray(state.puzzleTagFilter)) setPuzzleTagFilter(state.puzzleTagFilter);
-      if (typeof state.puzzleOpeningFilter === "string") setPuzzleOpeningFilter(state.puzzleOpeningFilter);
-      // Puzzle extraction options
-      if (state.puzzleMode) setPuzzleMode(state.puzzleMode);
-      if (state.maxPuzzlesPerGame) setMaxPuzzlesPerGame(state.maxPuzzlesPerGame);
-      if (state.blunderSwingCp) setBlunderSwingCp(state.blunderSwingCp);
-      if (state.missedTacticSwingCp) setMissedTacticSwingCp(state.missedTacticSwingCp);
-      if (state.evalBandMinCp) setEvalBandMinCp(state.evalBandMinCp);
-      if (state.evalBandMaxCp) setEvalBandMaxCp(state.evalBandMaxCp);
-      if (typeof state.requireTactical === "boolean") setRequireTactical(state.requireTactical);
-      if (state.tacticalLookaheadPlies) setTacticalLookaheadPlies(state.tacticalLookaheadPlies);
-      if (state.openingSkipPlies) setOpeningSkipPlies(state.openingSkipPlies);
-      if (state.minPvMoves) setMinPvMoves(state.minPvMoves);
-      if (typeof state.skipTrivialEndgames === "boolean") setSkipTrivialEndgames(state.skipTrivialEndgames);
-      if (state.minNonKingPieces) setMinNonKingPieces(state.minNonKingPieces);
-      if (state.confirmMovetimeMs) setConfirmMovetimeMs(state.confirmMovetimeMs);
-      if (state.engineMoveTimeMs) setEngineMoveTimeMs(state.engineMoveTimeMs);
-    } catch {
-      // ignore
+    let cancelled = false;
+    async function run() {
+      if (isLoggedIn) {
+        try {
+          const prefs = await fetchDbPreferences();
+          if (cancelled) return;
+          applyPreferences(prefs);
+        } catch {
+          // ignore (stay on defaults)
+        }
+        return;
+      }
+
+      // guest: hydrate from localStorage
+      try {
+        const raw = localStorage.getItem("backrank.miniState.v1");
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as unknown as Partial<PreferencesSchema>;
+        if (parsed && typeof parsed === "object") {
+          applyPreferences({ ...defaults, ...parsed, filters: { ...defaults.filters, ...(parsed as any).filters } } as PreferencesSchema);
+        }
+      } catch {
+        // ignore
+      }
     }
-  }, []);
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoggedIn, defaults]);
+
+  function applyPreferences(p: PreferencesSchema) {
+    setFilters(p.filters);
+    setPuzzles(Array.isArray(p.puzzles) ? p.puzzles : []);
+    setPuzzleIdx(typeof p.puzzleIdx === "number" ? p.puzzleIdx : 0);
+    setPuzzleTagFilter(Array.isArray(p.puzzleTagFilter) ? p.puzzleTagFilter : []);
+    setPuzzleOpeningFilter(typeof p.puzzleOpeningFilter === "string" ? p.puzzleOpeningFilter : "");
+    setPuzzleMode(p.puzzleMode ?? "both");
+    setMaxPuzzlesPerGame(p.maxPuzzlesPerGame ?? "5");
+    setBlunderSwingCp(p.blunderSwingCp ?? "250");
+    setMissedTacticSwingCp(p.missedTacticSwingCp ?? "180");
+    setEvalBandMinCp(p.evalBandMinCp ?? "-300");
+    setEvalBandMaxCp(p.evalBandMaxCp ?? "600");
+    setRequireTactical(typeof p.requireTactical === "boolean" ? p.requireTactical : true);
+    setTacticalLookaheadPlies(p.tacticalLookaheadPlies ?? "4");
+    setOpeningSkipPlies(p.openingSkipPlies ?? "8");
+    setMinPvMoves(p.minPvMoves ?? "2");
+    setSkipTrivialEndgames(typeof p.skipTrivialEndgames === "boolean" ? p.skipTrivialEndgames : true);
+    setMinNonKingPieces(p.minNonKingPieces ?? "4");
+    setConfirmMovetimeMs(p.confirmMovetimeMs ?? "");
+    setEngineMoveTimeMs(p.engineMoveTimeMs ?? "200");
+  }
 
   useEffect(() => {
-    try {
-      const payload = JSON.stringify({
-        filters,
-        puzzles,
-        puzzleIdx,
-        puzzleTagFilter,
-        puzzleOpeningFilter,
-        // Puzzle extraction options
-        puzzleMode,
-        maxPuzzlesPerGame,
-        blunderSwingCp,
-        missedTacticSwingCp,
-        evalBandMinCp,
-        evalBandMaxCp,
-        requireTactical,
-        tacticalLookaheadPlies,
-        openingSkipPlies,
-        minPvMoves,
-        skipTrivialEndgames,
-        minNonKingPieces,
-        confirmMovetimeMs,
-        engineMoveTimeMs,
-      });
-      localStorage.setItem("backrank.miniState.v1", payload);
-    } catch {
-      // ignore
+    const payload = {
+      filters,
+      puzzles,
+      puzzleIdx,
+      puzzleTagFilter,
+      puzzleOpeningFilter,
+      puzzleMode,
+      maxPuzzlesPerGame,
+      blunderSwingCp,
+      missedTacticSwingCp,
+      evalBandMinCp,
+      evalBandMaxCp,
+      requireTactical,
+      tacticalLookaheadPlies,
+      openingSkipPlies,
+      minPvMoves,
+      skipTrivialEndgames,
+      minNonKingPieces,
+      confirmMovetimeMs,
+      engineMoveTimeMs,
+    };
+
+    if (!isLoggedIn) {
+      try {
+        localStorage.setItem("backrank.miniState.v1", JSON.stringify(payload));
+      } catch {
+        // ignore
+      }
+      return;
     }
+
+    // logged in: persist to DB (best-effort, debounced)
+    const t = setTimeout(() => {
+      saveDbPreferences(payload as any).catch(() => {});
+    }, 350);
+    return () => clearTimeout(t);
   }, [
     filters,
     puzzles,
@@ -305,6 +312,7 @@ export default function Home() {
     minNonKingPieces,
     confirmMovetimeMs,
     engineMoveTimeMs,
+    isLoggedIn,
   ]);
 
   // PuzzlePanel owns per-puzzle UI state (attempt, tabs, explorer, etc.)
@@ -596,10 +604,22 @@ export default function Home() {
   return (
     <div className={styles.page}>
       <main className={styles.main}>
+        <AppNav />
         <header className={styles.header}>
           <h1>BackRank — Your games → your puzzles</h1>
           <p>Connect by username (public games). Filter games, then generate puzzles from blunders and missed wins.</p>
         </header>
+
+        {/* Configurable sync entrypoint (UX will evolve later) */}
+        <SyncGamesWidget context="home" enableAnalyze variant="banner" />
+
+        <LocalStorageMigration
+          isLoggedIn={isLoggedIn}
+          onMigrated={() => {
+            // Re-fetch DB preferences after migration.
+            fetchDbPreferences().then(applyPreferences).catch(() => {});
+          }}
+        />
 
         <section className={styles.panel}>
           <h2>1) Fetch games</h2>

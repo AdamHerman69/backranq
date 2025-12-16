@@ -1,0 +1,74 @@
+.page {
+    --background: #fafafa;
+    --foreground: #fff;
+    --text-primary: #000;
+    --text-secondary: #666;
+    --border: #e6e6e6;
+    --button-secondary-border: #ebebeb;
+
+    display: flex;
+    min-height: 100vh;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-geist-sans);
+    background-color: var(--background);
+}
+
+.main {
+    display: flex;
+    width: 100%;
+    max-width: 860px;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    background-color: var(--foreground);
+    padding: 48px 28px;
+    gap: 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+}
+
+.header {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 650;
+    letter-spacing: -0.4px;
+    color: var(--text-primary);
+}
+
+.header p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--text-secondary);
+}
+
+.panel {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+}
+
+@media (max-width: 600px) {
+    .main {
+        padding: 32px 18px;
+    }
+}
+
+@media (prefers-color-scheme: dark) {
+    .page {
+        --background: #000;
+        --foreground: #000;
+        --text-primary: #ededed;
+        --text-secondary: #999;
+        --border: #1a1a1a;
+        --button-secondary-border: #1a1a1a;
+    }
+}
+
