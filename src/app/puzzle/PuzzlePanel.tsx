@@ -9,6 +9,8 @@ import { Chessboard } from "react-chessboard";
 import { applyUciLine, moveToUci, parseUci, prettyTurnFromFen } from "@/lib/chess/utils";
 import { ecoName } from "@/lib/chess/eco";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { GameAnalysis, MoveClassification } from "@/lib/analysis/classification";
+import { getClassificationSymbol } from "@/lib/analysis/classification";
 
 type VerboseMove = Move;
 
@@ -60,6 +62,10 @@ export function PuzzlePanel(props: {
   engineClient: StockfishClient | null;
   setEngineClient: React.Dispatch<React.SetStateAction<StockfishClient | null>>;
   engineMoveTimeMs: string;
+  /** Move-by-move analysis for the source game (if available) */
+  gameAnalysis?: GameAnalysis | null;
+  /** All puzzles (for marking puzzle moves in the game tab) */
+  allPuzzles?: Puzzle[];
 }) {
   const {
     puzzles,
@@ -72,6 +78,8 @@ export function PuzzlePanel(props: {
     engineClient,
     setEngineClient,
     engineMoveTimeMs,
+    gameAnalysis,
+    allPuzzles,
   } = props;
 
   const [tab, setTab] = useState<"puzzle" | "game">("puzzle");
@@ -374,6 +382,37 @@ export function PuzzlePanel(props: {
     return variation ? `${base} — ${variation}` : base;
   }, [currentPuzzle]);
 
+  // Map puzzles to their source plies for the current puzzle's source game
+  const gamePuzzleMap = useMemo(() => {
+    const map = new Map<number, Puzzle>();
+    const gameId = currentPuzzle?.sourceGameId;
+    if (!gameId) return map;
+    const puzzlesToCheck = allPuzzles ?? puzzles;
+    for (const p of puzzlesToCheck) {
+      if (p.sourceGameId === gameId) {
+        map.set(p.sourcePly, p);
+      }
+    }
+    return map;
+  }, [currentPuzzle?.sourceGameId, allPuzzles, puzzles]);
+
+  // Helper to get classification CSS class name
+  function getClassificationClassName(classification: MoveClassification | undefined): string {
+    if (!classification) return "";
+    const classMap: Record<MoveClassification, string> = {
+      brilliant: styles.moveBrilliant,
+      great: styles.moveGreat,
+      best: styles.moveBest,
+      excellent: styles.moveExcellent,
+      good: styles.moveGood,
+      book: styles.moveBook,
+      inaccuracy: styles.moveInaccuracy,
+      mistake: styles.moveMistake,
+      blunder: styles.moveBlunder,
+    };
+    return classMap[classification] ?? "";
+  }
+
   if (!currentPuzzle) {
     return <p className={styles.muted}>Pick a puzzle to start solving.</p>;
   }
@@ -661,14 +700,58 @@ export function PuzzlePanel(props: {
                 </button>
               </div>
 
+              {gameAnalysis && (
+                <div className={styles.accuracyBar}>
+                  <span className={`${styles.accuracyBadge} ${styles.accuracyWhite}`}>
+                    ♔ {gameAnalysis.whiteAccuracy?.toFixed(1) ?? "—"}%
+                  </span>
+                  <span className={`${styles.accuracyBadge} ${styles.accuracyBlack}`}>
+                    ♚ {gameAnalysis.blackAccuracy?.toFixed(1) ?? "—"}%
+                  </span>
+                </div>
+              )}
               <ol className={styles.moveList}>
-                {(puzzleSourceParsed?.moves ?? []).map((m, idx) => (
-                  <li key={`${idx}-${m.san}`}>
-                    <button className={idx + 1 === gamePly ? styles.moveActive : styles.moveButton} onClick={() => setGamePly(idx + 1)}>
-                      {m.san}
-                    </button>
-                  </li>
-                ))}
+                {(puzzleSourceParsed?.moves ?? []).map((m, idx) => {
+                  const analyzedMove = gameAnalysis?.moves.find((am) => am.ply === idx);
+                  const puzzle = gamePuzzleMap.get(idx);
+                  const classificationClass = getClassificationClassName(analyzedMove?.classification);
+                  const hasPuzzle = !!puzzle || analyzedMove?.hasPuzzle;
+                  const symbol = analyzedMove ? getClassificationSymbol(analyzedMove.classification) : "";
+                  const isPuzzlePly = currentPuzzle?.sourcePly === idx;
+                  
+                  // Build tooltip
+                  const tooltipParts: string[] = [];
+                  if (analyzedMove) {
+                    tooltipParts.push(`${analyzedMove.classification}`);
+                    if (analyzedMove.cpLoss > 0) {
+                      tooltipParts.push(`-${analyzedMove.cpLoss}cp`);
+                    }
+                    if (analyzedMove.bestMoveSan && m.san !== analyzedMove.bestMoveSan) {
+                      tooltipParts.push(`Best: ${analyzedMove.bestMoveSan}`);
+                    }
+                  }
+                  if (puzzle) {
+                    tooltipParts.push(`📋 Puzzle: ${puzzle.type}`);
+                  }
+                  if (isPuzzlePly) {
+                    tooltipParts.push(`← Current puzzle`);
+                  }
+                  
+                  return (
+                    <li key={`${idx}-${m.san}`}>
+                      <button 
+                        className={`${idx + 1 === gamePly ? styles.moveActive : styles.moveButton} ${classificationClass} ${hasPuzzle ? styles.puzzleMove : ""}`} 
+                        onClick={() => setGamePly(idx + 1)}
+                        title={tooltipParts.length > 0 ? tooltipParts.join(" • ") : undefined}
+                        style={isPuzzlePly ? { outline: "2px solid #7b61ff", outlineOffset: "2px" } : undefined}
+                      >
+                        {m.san}
+                        {symbol && <span className={styles.classificationSymbol}>{symbol}</span>}
+                        {hasPuzzle && <span className={styles.puzzleIndicator} />}
+                      </button>
+                    </li>
+                  );
+                })}
               </ol>
             </>
           )}

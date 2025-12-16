@@ -11,6 +11,14 @@ import type {
     PuzzleSeverity,
     PuzzleType,
 } from '@/lib/analysis/puzzles';
+import {
+    type AnalyzedMove,
+    type GameAnalysis,
+    type MoveClassification,
+    classifyMove,
+    calculateAccuracy,
+    scoreToCp as classificationScoreToCp,
+} from '@/lib/analysis/classification';
 
 /**
  * Puzzle generation mode:
@@ -96,6 +104,25 @@ export type ExtractOptions = {
      * Set to 0 or null to disable. Defaults to 0 (disabled, as it requires extra eval).
      */
     uniquenessMarginCp?: number | null;
+
+    /**
+     * If true, also return move-by-move analysis with classifications for each game.
+     * This captures eval data for all analyzed moves, not just puzzle-worthy ones.
+     * Defaults to false.
+     */
+    returnAnalysis?: boolean;
+};
+
+/**
+ * Result of puzzle extraction, optionally including move analysis.
+ */
+export type ExtractResult = {
+    puzzles: Puzzle[];
+    /**
+     * Move-by-move analysis for each game, keyed by game ID.
+     * Only populated if options.returnAnalysis is true.
+     */
+    analysis?: Map<string, GameAnalysis>;
 };
 
 function uid(prefix: string) {
@@ -353,6 +380,7 @@ type ResolvedOptions = {
     tacticalLookaheadPlies: number;
     confirmMovetimeMs: number | null;
     uniquenessMarginCp: number | null;
+    returnAnalysis: boolean;
 };
 
 function resolveOptions(options?: ExtractOptions): ResolvedOptions {
@@ -375,7 +403,27 @@ function resolveOptions(options?: ExtractOptions): ResolvedOptions {
         tacticalLookaheadPlies: options?.tacticalLookaheadPlies ?? 4,
         confirmMovetimeMs: options?.confirmMovetimeMs ?? null,
         uniquenessMarginCp: options?.uniquenessMarginCp ?? null,
+        returnAnalysis: options?.returnAnalysis ?? false,
     };
+}
+
+/**
+ * Convert UCI to SAN using chess.js
+ */
+function uciToSan(fen: string, uci: string): string | null {
+    const parsed = parseUci(uci);
+    if (!parsed) return null;
+    try {
+        const c = new Chess(fen);
+        const move = c.move({
+            from: parsed.from,
+            to: parsed.to,
+            promotion: parsed.promotion,
+        });
+        return move?.san ?? null;
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -436,10 +484,11 @@ export async function extractPuzzlesFromGames(args: {
         phase?: string;
     }) => void;
     options?: ExtractOptions;
-}): Promise<Puzzle[]> {
+}): Promise<ExtractResult> {
     const opts = resolveOptions(args.options);
 
     const puzzles: Puzzle[] = [];
+    const analysisMap = new Map<string, GameAnalysis>();
     const selected = args.games.filter((g) => args.selectedGameIds.has(g.id));
 
     for (let gi = 0; gi < selected.length; gi++) {
@@ -470,6 +519,11 @@ export async function extractPuzzlesFromGames(args: {
         } catch {
             replay = new Chess();
         }
+
+        // Initialize analysis for this game if requested
+        const gameAnalysis: AnalyzedMove[] = [];
+        const whiteCpLosses: number[] = [];
+        const blackCpLosses: number[] = [];
 
         let cooldown = 0;
         for (let ply = 0; ply < plyCount; ply++) {
@@ -509,6 +563,21 @@ export async function extractPuzzlesFromGames(args: {
                         promotion: mv.promotion,
                     });
                     if (!played) break;
+
+                    // Record move as book/skipped if analysis is requested
+                    if (opts.returnAnalysis) {
+                        const uci = `${mv.from}${mv.to}${mv.promotion ?? ''}`;
+                        const isOpeningMove = ply < opts.openingSkipPlies;
+                        gameAnalysis.push({
+                            ply,
+                            san: mv.san,
+                            uci,
+                            classification: isOpeningMove ? 'book' : 'good', // Skipped moves assumed okay
+                            evalBefore: null,
+                            evalAfter: null,
+                            cpLoss: 0,
+                        });
+                    }
                 } catch {
                     break;
                 }
@@ -533,6 +602,21 @@ export async function extractPuzzlesFromGames(args: {
                         promotion: mv.promotion,
                     });
                     if (!played) break;
+
+                    // Still record the move with partial info if analysis is requested
+                    if (opts.returnAnalysis) {
+                        const uci = `${mv.from}${mv.to}${mv.promotion ?? ''}`;
+                        gameAnalysis.push({
+                            ply,
+                            san: mv.san,
+                            uci,
+                            classification: 'good', // Assume okay if no deep analysis
+                            evalBefore: bestAtBefore.score,
+                            evalAfter: null,
+                            cpLoss: 0,
+                            bestMoveUci: bestAtBefore.bestMoveUci,
+                        });
+                    }
                 } catch {
                     break;
                 }
@@ -573,6 +657,55 @@ export async function extractPuzzlesFromGames(args: {
             ); // side-to-move flipped
 
             const swing = beforeCpMover - afterCpMover; // positive means mover got worse (blundered)
+
+            // Record move analysis if requested
+            if (opts.returnAnalysis) {
+                const uci = `${mv.from}${mv.to}${mv.promotion ?? ''}`;
+                const isBestMove = uci === bestAtBefore.bestMoveUci;
+                const wasAlreadyLost = beforeCpMover < -300;
+
+                // Check if the move involves tactical elements
+                const { isCheck, isCapture } = isTacticalMove(
+                    new Chess(fenBefore),
+                    uci
+                );
+                const hasTacticalPv = bestAtBefore.pvUci.length >= 3;
+
+                // Determine classification
+                const classification = classifyMove({
+                    cpLoss: Math.max(0, swing),
+                    isBestMove,
+                    isSacrifice: isCapture && swing <= 0, // Captured but didn't lose eval
+                    foundDeepTactic: hasTacticalPv && (isCheck || isCapture),
+                    isBookMove: ply < opts.openingSkipPlies,
+                    wasAlreadyLost,
+                });
+
+                const cpLoss = Math.max(0, swing);
+
+                // Track cp losses for accuracy calculation
+                if (moverColor === 'w') {
+                    whiteCpLosses.push(cpLoss);
+                } else {
+                    blackCpLosses.push(cpLoss);
+                }
+
+                const analyzedMove: AnalyzedMove = {
+                    ply,
+                    san: mv.san,
+                    uci,
+                    classification,
+                    evalBefore: bestAtBefore.score,
+                    evalAfter: bestAtAfter.score,
+                    cpLoss,
+                    bestMoveUci: bestAtBefore.bestMoveUci,
+                    bestMoveSan:
+                        uciToSan(fenBefore, bestAtBefore.bestMoveUci) ??
+                        undefined,
+                };
+
+                gameAnalysis.push(analyzedMove);
+            }
 
             // ─────────────────────────────────────────────────────────────────
             // PUZZLE MODE 1: "Avoid the blunder" (user made a mistake)
@@ -664,8 +797,9 @@ export async function extractPuzzlesFromGames(args: {
                                 if (opening.variation)
                                     tags.add(`openingVar:${opening.variation}`);
 
+                                const puzzleId = uid(`puz-avoid-${type}`);
                                 const puzzle: Puzzle = {
-                                    id: uid(`puz-avoid-${type}`),
+                                    id: puzzleId,
                                     type,
                                     provider: game.provider,
                                     sourceGameId: game.id,
@@ -684,6 +818,21 @@ export async function extractPuzzlesFromGames(args: {
 
                                 puzzles.push(puzzle);
                                 puzzlesForGame++;
+
+                                // Link puzzle to analyzed move
+                                if (
+                                    opts.returnAnalysis &&
+                                    gameAnalysis.length > 0
+                                ) {
+                                    const lastMove =
+                                        gameAnalysis[gameAnalysis.length - 1];
+                                    if (lastMove && lastMove.ply === ply) {
+                                        lastMove.hasPuzzle = true;
+                                        lastMove.puzzleId = puzzleId;
+                                        lastMove.puzzleType = 'avoidBlunder';
+                                    }
+                                }
+
                                 cooldown = Math.max(
                                     0,
                                     Math.trunc(opts.cooldownPliesAfterPuzzle)
@@ -798,8 +947,9 @@ export async function extractPuzzlesFromGames(args: {
                                                 `openingVar:${opening.variation}`
                                             );
 
+                                        const puzzleId = uid(`puz-punish`);
                                         const puzzle: Puzzle = {
-                                            id: uid(`puz-punish`),
+                                            id: puzzleId,
                                             type: 'blunder', // It's always a blunder by opponent
                                             provider: game.provider,
                                             sourceGameId: game.id,
@@ -818,6 +968,27 @@ export async function extractPuzzlesFromGames(args: {
 
                                         puzzles.push(puzzle);
                                         puzzlesForGame++;
+
+                                        // Link puzzle to analyzed move (the opponent's blunder)
+                                        if (
+                                            opts.returnAnalysis &&
+                                            gameAnalysis.length > 0
+                                        ) {
+                                            const lastMove =
+                                                gameAnalysis[
+                                                    gameAnalysis.length - 1
+                                                ];
+                                            if (
+                                                lastMove &&
+                                                lastMove.ply === ply
+                                            ) {
+                                                lastMove.hasPuzzle = true;
+                                                lastMove.puzzleId = puzzleId;
+                                                lastMove.puzzleType =
+                                                    'punishBlunder';
+                                            }
+                                        }
+
                                         cooldown = Math.max(
                                             0,
                                             Math.trunc(
@@ -832,7 +1003,33 @@ export async function extractPuzzlesFromGames(args: {
                 }
             }
         }
+
+        // Store game analysis if requested
+        if (opts.returnAnalysis && gameAnalysis.length > 0) {
+            // Calculate accuracy scores
+            const avgWhiteCpLoss =
+                whiteCpLosses.length > 0
+                    ? whiteCpLosses.reduce((a, b) => a + b, 0) /
+                      whiteCpLosses.length
+                    : 0;
+            const avgBlackCpLoss =
+                blackCpLosses.length > 0
+                    ? blackCpLosses.reduce((a, b) => a + b, 0) /
+                      blackCpLosses.length
+                    : 0;
+
+            analysisMap.set(game.id, {
+                gameId: game.id,
+                moves: gameAnalysis,
+                whiteAccuracy: calculateAccuracy(avgWhiteCpLoss),
+                blackAccuracy: calculateAccuracy(avgBlackCpLoss),
+                analyzedAt: new Date().toISOString(),
+            });
+        }
     }
 
-    return puzzles;
+    return {
+        puzzles,
+        analysis: opts.returnAnalysis ? analysisMap : undefined,
+    };
 }

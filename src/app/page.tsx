@@ -6,8 +6,10 @@ import { useMemo, useState } from "react";
 import { Chess, type Move } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { StockfishClient, type EvalResult } from "@/lib/analysis/stockfishClient";
-import { extractPuzzlesFromGames, type ExtractOptions, type PuzzleMode } from "@/lib/analysis/extractPuzzles";
+import { extractPuzzlesFromGames, type ExtractOptions, type PuzzleMode, type ExtractResult } from "@/lib/analysis/extractPuzzles";
 import type { Puzzle } from "@/lib/analysis/puzzles";
+import type { GameAnalysis, AnalyzedMove, MoveClassification } from "@/lib/analysis/classification";
+import { getClassificationSymbol } from "@/lib/analysis/classification";
 import { useEffect } from "react";
 import { extractStartFenFromPgn } from "@/lib/chess/utils";
 import { ecoName } from "@/lib/chess/eco";
@@ -128,6 +130,7 @@ export default function Home() {
   const [puzzleOpeningFilter, setPuzzleOpeningFilter] = useState<string>("");
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState<string>("");
+  const [gameAnalysisMap, setGameAnalysisMap] = useState<Map<string, GameAnalysis>>(new Map());
 
   // Puzzle extraction options
   const [puzzleMode, setPuzzleMode] = useState<PuzzleMode>("both");
@@ -433,6 +436,41 @@ export default function Home() {
     return c.fen();
   }, [activeGame, parsed, ply]);
 
+  // Get analysis for the active game (for game viewer)
+  const activeGameAnalysis = useMemo(() => {
+    if (!activeGameId) return null;
+    return gameAnalysisMap.get(activeGameId) ?? null;
+  }, [activeGameId, gameAnalysisMap]);
+
+  // Map puzzles to their source plies for the active game
+  const activeGamePuzzleMap = useMemo(() => {
+    const map = new Map<number, Puzzle>();
+    if (!activeGameId) return map;
+    for (const p of puzzles) {
+      if (p.sourceGameId === activeGameId) {
+        map.set(p.sourcePly, p);
+      }
+    }
+    return map;
+  }, [puzzles, activeGameId]);
+
+  // Helper to get classification CSS class name
+  function getClassificationClassName(classification: MoveClassification | undefined): string {
+    if (!classification) return "";
+    const classMap: Record<MoveClassification, string> = {
+      brilliant: styles.moveBrilliant,
+      great: styles.moveGreat,
+      best: styles.moveBest,
+      excellent: styles.moveExcellent,
+      good: styles.moveGood,
+      book: styles.moveBook,
+      inaccuracy: styles.moveInaccuracy,
+      mistake: styles.moveMistake,
+      blunder: styles.moveBlunder,
+    };
+    return classMap[classification] ?? "";
+  }
+
   async function onFetchGames() {
     setError(null);
     setLoading(true);
@@ -503,9 +541,10 @@ export default function Home() {
         skipTrivialEndgames,
         minNonKingPieces: Number(minNonKingPieces) || 4,
         confirmMovetimeMs: confirmMovetimeMs ? Number(confirmMovetimeMs) : null,
+        returnAnalysis: true, // Enable move-by-move analysis
       };
 
-      const list = await extractPuzzlesFromGames({
+      const result = await extractPuzzlesFromGames({
         games,
         selectedGameIds: ids,
         engine: client,
@@ -521,9 +560,21 @@ export default function Home() {
         },
         options: extractOptions,
       });
+      
+      // Store analysis if returned
+      if (result.analysis) {
+        setGameAnalysisMap((prev) => {
+          const next = new Map(prev);
+          for (const [gameId, analysis] of result.analysis!) {
+            next.set(gameId, analysis);
+          }
+          return next;
+        });
+      }
+      
       // Deduplicate by (sourceGameId, sourcePly, fen)
       const dedup = new Map<string, Puzzle>();
-      for (const p of [...puzzles, ...list]) {
+      for (const p of [...puzzles, ...result.puzzles]) {
         const k = `${p.sourceGameId}::${p.sourcePly}::${p.fen}`;
         if (!dedup.has(k)) dedup.set(k, p);
       }
@@ -825,17 +876,53 @@ export default function Home() {
                 <div className={styles.muted}>
                   {activeGame.provider} • {activeGame.timeClass} • {new Date(activeGame.playedAt).toLocaleString()}
                 </div>
+                {activeGameAnalysis && (
+                  <div className={styles.accuracyBar}>
+                    <span className={`${styles.accuracyBadge} ${styles.accuracyWhite}`}>
+                      ♔ {activeGameAnalysis.whiteAccuracy?.toFixed(1) ?? "—"}%
+                    </span>
+                    <span className={`${styles.accuracyBadge} ${styles.accuracyBlack}`}>
+                      ♚ {activeGameAnalysis.blackAccuracy?.toFixed(1) ?? "—"}%
+                    </span>
+                  </div>
+                )}
                 <ol className={styles.moveList}>
-                  {parsed.moves.map((m, idx) => (
-                    <li key={`${idx}-${m}`}>
-                      <button
-                        className={idx + 1 === ply ? styles.moveActive : styles.moveButton}
-                        onClick={() => setPly(idx + 1)}
-                      >
-                        {m}
-                      </button>
-                    </li>
-                  ))}
+                  {parsed.moves.map((m, idx) => {
+                    const analyzedMove = activeGameAnalysis?.moves.find((am) => am.ply === idx);
+                    const puzzle = activeGamePuzzleMap.get(idx);
+                    const classificationClass = getClassificationClassName(analyzedMove?.classification);
+                    const hasPuzzle = !!puzzle || analyzedMove?.hasPuzzle;
+                    const symbol = analyzedMove ? getClassificationSymbol(analyzedMove.classification) : "";
+                    
+                    // Build tooltip
+                    const tooltipParts: string[] = [];
+                    if (analyzedMove) {
+                      tooltipParts.push(`${analyzedMove.classification}`);
+                      if (analyzedMove.cpLoss > 0) {
+                        tooltipParts.push(`-${analyzedMove.cpLoss}cp`);
+                      }
+                      if (analyzedMove.bestMoveSan && analyzedMove.san !== analyzedMove.bestMoveSan) {
+                        tooltipParts.push(`Best: ${analyzedMove.bestMoveSan}`);
+                      }
+                    }
+                    if (puzzle) {
+                      tooltipParts.push(`📋 Puzzle: ${puzzle.type}`);
+                    }
+                    
+                    return (
+                      <li key={`${idx}-${m}`}>
+                        <button
+                          className={`${idx + 1 === ply ? styles.moveActive : styles.moveButton} ${classificationClass} ${hasPuzzle ? styles.puzzleMove : ""}`}
+                          onClick={() => setPly(idx + 1)}
+                          title={tooltipParts.length > 0 ? tooltipParts.join(" • ") : undefined}
+                        >
+                          {m}
+                          {symbol && <span className={styles.classificationSymbol}>{symbol}</span>}
+                          {hasPuzzle && <span className={styles.puzzleIndicator} />}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ol>
               </div>
             </div>
@@ -1104,6 +1191,8 @@ export default function Home() {
                   engineClient={engineClient}
                   setEngineClient={setEngineClient}
                   engineMoveTimeMs={engineMoveTimeMs}
+                  gameAnalysis={puzzleSourceGame ? gameAnalysisMap.get(puzzleSourceGame.id) : null}
+                  allPuzzles={puzzles}
                 />
               )}
 

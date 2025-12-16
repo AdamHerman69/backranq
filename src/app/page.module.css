@@ -281,11 +281,118 @@
     color: var(--text-primary);
     font-family: var(--font-geist-mono);
     font-size: 12px;
+    position: relative;
 }
 
 .moveActive {
     background: rgba(0, 0, 0, 0.08);
     border-color: transparent;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Move Classification Styles (chess.com-like)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.moveBrilliant {
+    color: #1baaa6 !important;
+    background: rgba(27, 170, 166, 0.12);
+    border-color: rgba(27, 170, 166, 0.3);
+}
+
+.moveGreat {
+    color: #5c8bb0 !important;
+    background: rgba(92, 139, 176, 0.12);
+    border-color: rgba(92, 139, 176, 0.3);
+}
+
+.moveBest {
+    color: #96bc4b !important;
+    border-color: rgba(150, 188, 75, 0.3);
+}
+
+.moveExcellent {
+    color: #96bc4b !important;
+}
+
+.moveGood {
+    /* Default styling - no change */
+}
+
+.moveBook {
+    color: #a88b5d !important;
+    background: rgba(168, 139, 93, 0.08);
+    border-color: rgba(168, 139, 93, 0.2);
+}
+
+.moveInaccuracy {
+    color: #f7c631 !important;
+    background: rgba(247, 198, 49, 0.12);
+    border-color: rgba(247, 198, 49, 0.3);
+}
+
+.moveMistake {
+    color: #e58f2a !important;
+    background: rgba(229, 143, 42, 0.12);
+    border-color: rgba(229, 143, 42, 0.3);
+}
+
+.moveBlunder {
+    color: #ca3431 !important;
+    background: rgba(202, 52, 49, 0.12);
+    border-color: rgba(202, 52, 49, 0.3);
+}
+
+/* Classification symbol shown after the move */
+.classificationSymbol {
+    margin-left: 2px;
+    font-weight: 700;
+}
+
+/* Puzzle indicator dot */
+.puzzleIndicator {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #7b61ff;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
+/* Puzzle move - has a puzzle associated with this position */
+.puzzleMove {
+    box-shadow: inset 0 0 0 2px rgba(123, 97, 255, 0.4);
+}
+
+/* Accuracy display */
+.accuracyBadge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--font-geist-mono);
+}
+
+.accuracyWhite {
+    background: rgba(255, 255, 255, 0.9);
+    color: #333;
+    border: 1px solid #ddd;
+}
+
+.accuracyBlack {
+    background: rgba(0, 0, 0, 0.8);
+    color: #fff;
+    border: 1px solid #333;
+}
+
+.accuracyBar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
 }
 
 .success {
@@ -447,5 +554,52 @@
             rgba(255, 255, 255, 0.1),
             rgba(255, 255, 255, 0.85)
         );
+    }
+
+    /* Dark mode classification adjustments */
+    .moveBrilliant {
+        background: rgba(27, 170, 166, 0.2);
+        border-color: rgba(27, 170, 166, 0.4);
+    }
+
+    .moveGreat {
+        background: rgba(92, 139, 176, 0.2);
+        border-color: rgba(92, 139, 176, 0.4);
+    }
+
+    .moveBook {
+        background: rgba(168, 139, 93, 0.15);
+        border-color: rgba(168, 139, 93, 0.3);
+    }
+
+    .moveInaccuracy {
+        background: rgba(247, 198, 49, 0.2);
+        border-color: rgba(247, 198, 49, 0.4);
+    }
+
+    .moveMistake {
+        background: rgba(229, 143, 42, 0.2);
+        border-color: rgba(229, 143, 42, 0.4);
+    }
+
+    .moveBlunder {
+        background: rgba(202, 52, 49, 0.2);
+        border-color: rgba(202, 52, 49, 0.4);
+    }
+
+    .puzzleMove {
+        box-shadow: inset 0 0 0 2px rgba(123, 97, 255, 0.5);
+    }
+
+    .accuracyWhite {
+        background: rgba(255, 255, 255, 0.1);
+        color: #ededed;
+        border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .accuracyBlack {
+        background: rgba(0, 0, 0, 0.6);
+        color: #ededed;
+        border-color: rgba(255, 255, 255, 0.1);
     }
 }

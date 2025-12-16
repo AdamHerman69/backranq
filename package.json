@@ -10,8 +10,13 @@
         "postinstall": "node scripts/copy-stockfish-wasm.mjs"
     },
     "dependencies": {
+        "@auth/prisma-adapter": "^2.11.1",
+        "@prisma/client": "^6.19.1",
+        "@supabase/ssr": "^0.8.0",
+        "@supabase/supabase-js": "^2.88.0",
         "chess.js": "^1.4.0",
         "next": "16.0.10",
+        "next-auth": "5.0.0-beta.30",
         "react": "19.2.1",
         "react-chessboard": "^5.8.6",
         "react-dom": "19.2.1",
@@ -24,6 +29,7 @@
         "babel-plugin-react-compiler": "1.0.0",
         "eslint": "^9",
         "eslint-config-next": "16.0.10",
+        "prisma": "^6.19.1",
         "typescript": "^5"
     }
 }
