@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 export type AnalysisProgressState = {
     label: string;
     percent: number; // 0-100
@@ -14,54 +16,30 @@ export function AnalysisProgress({
     onCancel?: () => void;
 }) {
     return (
-        <div
-            style={{
-                border: '1px solid var(--border, #e6e6e6)',
-                borderRadius: 12,
-                padding: 12,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 10,
-            }}
-        >
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-                <div style={{ fontWeight: 650 }}>
-                    Analyzing… {state.phase ? <span style={{ opacity: 0.7 }}>({state.phase})</span> : null}
+        <div className="rounded-xl border bg-card p-4">
+            <div className="flex items-start justify-between gap-3">
+                <div className="text-sm font-medium">
+                    Analyzing…{' '}
+                    {state.phase ? (
+                        <span className="font-normal text-muted-foreground">
+                            ({state.phase})
+                        </span>
+                    ) : null}
                 </div>
                 {onCancel ? (
-                    <button
-                        type="button"
-                        onClick={onCancel}
-                        style={{
-                            height: 30,
-                            padding: '0 10px',
-                            borderRadius: 10,
-                            border: '1px solid var(--border, #e6e6e6)',
-                            background: 'transparent',
-                            fontWeight: 600,
-                            cursor: 'pointer',
-                        }}
-                    >
+                    <Button type="button" variant="outline" size="sm" onClick={onCancel}>
                         Cancel
-                    </button>
+                    </Button>
                 ) : null}
             </div>
 
-            <div style={{ fontSize: 12, opacity: 0.8 }}>{state.label}</div>
+            <div className="mt-2 text-sm text-muted-foreground">{state.label}</div>
 
-            <div
-                style={{
-                    height: 10,
-                    borderRadius: 999,
-                    border: '1px solid var(--border, #e6e6e6)',
-                    overflow: 'hidden',
-                }}
-            >
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
                 <div
+                    className="h-2 bg-primary/70"
                     style={{
-                        height: '100%',
                         width: `${Math.max(0, Math.min(100, state.percent))}%`,
-                        background: 'rgba(123, 97, 255, 0.6)',
                     }}
                 />
             </div>

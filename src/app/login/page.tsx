@@ -1,6 +1,7 @@
 import { SignInButton } from '@/components/auth/SignInButton';
 import { auth } from '@/lib/auth';
 import { redirect } from 'next/navigation';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export default async function LoginPage({
     searchParams,
@@ -16,17 +17,32 @@ export default async function LoginPage({
     if (session?.user) redirect(callbackUrl);
 
     return (
-        <main style={{ padding: 24 }}>
-            <h1>Sign in</h1>
-            <p>Use Google or GitHub to sign in to BackRank.</p>
-            <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-                <SignInButton provider="google" callbackUrl={callbackUrl}>
-                    Sign in with Google
-                </SignInButton>
-                <SignInButton provider="github" callbackUrl={callbackUrl}>
-                    Sign in with GitHub
-                </SignInButton>
-            </div>
+        <main className="container flex min-h-dvh items-center justify-center py-10">
+            <Card className="w-full max-w-md">
+                <CardHeader>
+                    <CardTitle>Sign in</CardTitle>
+                    <CardDescription>
+                        Use Google or GitHub to sign in to BackRank.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-2">
+                    <SignInButton
+                        provider="google"
+                        callbackUrl={callbackUrl}
+                        className="w-full"
+                    >
+                        Sign in with Google
+                    </SignInButton>
+                    <SignInButton
+                        provider="github"
+                        callbackUrl={callbackUrl}
+                        className="w-full"
+                        variant="outline"
+                    >
+                        Sign in with GitHub
+                    </SignInButton>
+                </CardContent>
+            </Card>
         </main>
     );
 }

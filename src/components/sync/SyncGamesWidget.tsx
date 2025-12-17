@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { SyncGamesModal } from '@/components/sync/SyncGamesModal';
 import { getSyncStatus } from '@/lib/services/gameSync';
+import { Button } from '@/components/ui/button';
 
 export function SyncGamesWidget({
     context,
@@ -30,8 +31,12 @@ export function SyncGamesWidget({
 
     if (!hasLinked) {
         return (
-            <div style={{ fontSize: 12, opacity: 0.8 }}>
-                Link your Lichess/Chess.com usernames in <Link href="/settings">Settings</Link> to sync games.
+            <div className="text-sm text-muted-foreground">
+                Link your Lichess/Chess.com usernames in{' '}
+                <Link className="underline" href="/settings">
+                    Settings
+                </Link>{' '}
+                to sync games.
             </div>
         );
     }
@@ -39,54 +44,18 @@ export function SyncGamesWidget({
     return (
         <>
             {variant === 'banner' ? (
-                <div
-                    style={{
-                        border: '1px solid var(--border, #e6e6e6)',
-                        borderRadius: 12,
-                        padding: 12,
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        gap: 10,
-                        flexWrap: 'wrap',
-                        alignItems: 'center',
-                    }}
-                >
-                    <div style={{ fontSize: 12, opacity: 0.8 }}>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm text-muted-foreground">
                         Sync games from your linked accounts into BackRank.
                     </div>
-                    <button
-                        type="button"
-                        onClick={() => setOpen(true)}
-                        style={{
-                            height: 36,
-                            padding: '0 12px',
-                            borderRadius: 10,
-                            border: '1px solid transparent',
-                            background: 'var(--text-primary, #000)',
-                            color: 'var(--background, #fafafa)',
-                            fontWeight: 750,
-                            cursor: 'pointer',
-                        }}
-                    >
+                    <Button type="button" onClick={() => setOpen(true)}>
                         Sync games
-                    </button>
+                    </Button>
                 </div>
             ) : (
-                <button
-                    type="button"
-                    onClick={() => setOpen(true)}
-                    style={{
-                        height: 36,
-                        padding: '0 12px',
-                        borderRadius: 10,
-                        border: '1px solid var(--border, #e6e6e6)',
-                        background: 'transparent',
-                        fontWeight: 750,
-                        cursor: 'pointer',
-                    }}
-                >
+                <Button type="button" variant="outline" onClick={() => setOpen(true)}>
                     Sync games
-                </button>
+                </Button>
             )}
 
             <SyncGamesModal

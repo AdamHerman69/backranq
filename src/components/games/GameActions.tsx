@@ -9,6 +9,7 @@ import type { GameAnalysis } from '@/lib/analysis/classification';
 import { StockfishClient } from '@/lib/analysis/stockfishClient';
 import { extractPuzzlesFromGames } from '@/lib/analysis/extractPuzzles';
 import { AnalysisProgress, type AnalysisProgressState } from '@/components/analysis/AnalysisProgress';
+import { Button } from '@/components/ui/button';
 
 export function GameActions({
     dbGameId,
@@ -160,93 +161,44 @@ export function GameActions({
     }
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="space-y-4">
             {progress ? <AnalysisProgress state={progress} onCancel={cancel} /> : null}
 
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div className="flex flex-wrap items-center gap-2">
                 {!hasAnalysis ? (
-                    <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => analyze('analyze')}
-                        style={{
-                            height: 36,
-                            padding: '0 12px',
-                            borderRadius: 10,
-                            border: '1px solid transparent',
-                            background: 'var(--text-primary, #000)',
-                            color: 'var(--background, #fafafa)',
-                            fontWeight: 650,
-                            cursor: busy ? 'not-allowed' : 'pointer',
-                            opacity: busy ? 0.7 : 1,
-                        }}
-                    >
+                    <Button type="button" disabled={busy} onClick={() => analyze('analyze')}>
                         Analyze game
-                    </button>
+                    </Button>
                 ) : (
-                    <button
+                    <Button
                         type="button"
+                        variant="outline"
                         disabled={busy}
                         onClick={() => analyze('reanalyze')}
-                        style={{
-                            height: 36,
-                            padding: '0 12px',
-                            borderRadius: 10,
-                            border: '1px solid var(--border, #e6e6e6)',
-                            background: 'transparent',
-                            fontWeight: 650,
-                            cursor: busy ? 'not-allowed' : 'pointer',
-                            opacity: busy ? 0.7 : 1,
-                        }}
                     >
                         Re-analyze
-                    </button>
+                    </Button>
                 )}
 
-                <Link
-                    href="/"
-                    style={{ fontWeight: 650, textDecoration: 'underline' }}
+                <Button
+                    asChild
+                    variant="ghost"
                     title="Puzzle generation runs automatically on analysis"
                 >
-                    Generate puzzles →
-                </Link>
+                    <Link href="/">Generate puzzles →</Link>
+                </Button>
 
-                <button
-                    type="button"
-                    onClick={exportPgn}
-                    style={{
-                        height: 36,
-                        padding: '0 12px',
-                        borderRadius: 10,
-                        border: '1px solid var(--border, #e6e6e6)',
-                        background: 'transparent',
-                        fontWeight: 650,
-                        cursor: 'pointer',
-                    }}
-                >
+                <Button type="button" variant="outline" onClick={exportPgn}>
                     Export PGN
-                </button>
+                </Button>
 
-                <button
-                    type="button"
-                    onClick={deleteGame}
-                    style={{
-                        height: 36,
-                        padding: '0 12px',
-                        borderRadius: 10,
-                        border: '1px solid rgba(180,35,24,0.35)',
-                        background: 'rgba(180,35,24,0.08)',
-                        color: '#b42318',
-                        fontWeight: 750,
-                        cursor: 'pointer',
-                    }}
-                >
+                <Button type="button" variant="destructive" onClick={deleteGame}>
                     Delete
-                </button>
+                </Button>
             </div>
 
             {!canAnalyze ? (
-                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                <div className="text-sm text-muted-foreground">
                     Link your {normalizedGame.provider} username in{' '}
                     <Link href="/settings">Settings</Link> to enable analysis.
                 </div>

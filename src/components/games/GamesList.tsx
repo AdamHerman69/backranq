@@ -1,8 +1,9 @@
 'use client';
 
-import styles from '@/app/games/page.module.css';
 import Link from 'next/link';
 import { GameCard, type GameCardData } from './GameCard';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 
 export function GamesList({
     games,
@@ -26,18 +27,20 @@ export function GamesList({
 
     if (games.length === 0) {
         return (
-            <div className={styles.panel}>
-                <div className={styles.muted}>No games match your filters.</div>
-            </div>
+            <Card>
+                <CardContent className="py-6 text-sm text-muted-foreground">
+                    No games match your filters.
+                </CardContent>
+            </Card>
         );
     }
 
     return (
-        <div className={styles.panel}>
-            <div className={styles.muted}>
+        <div className="space-y-4">
+            <div className="text-sm text-muted-foreground">
                 Showing page {page} of {totalPages} • {total} total
             </div>
-            <div className={styles.cards}>
+            <div className="space-y-2">
                 {games.map((g) => (
                     <GameCard
                         key={g.id}
@@ -51,27 +54,27 @@ export function GamesList({
                 ))}
             </div>
 
-            <div className={styles.pagination}>
+            <div className="flex items-center justify-between gap-3">
                 {page <= 1 ? (
-                    <button className={styles.secondaryButton} disabled>
+                    <Button variant="outline" disabled>
                         Prev
-                    </button>
+                    </Button>
                 ) : (
-                    <Link className={styles.secondaryButton} href={pageHref(page - 1)}>
-                        Prev
-                    </Link>
+                    <Button asChild variant="outline">
+                        <Link href={pageHref(page - 1)}>Prev</Link>
+                    </Button>
                 )}
-                <div className={styles.muted}>
+                <div className="text-sm text-muted-foreground">
                     Page {page} / {totalPages}
                 </div>
                 {page >= totalPages ? (
-                    <button className={styles.secondaryButton} disabled>
+                    <Button variant="outline" disabled>
                         Next
-                    </button>
+                    </Button>
                 ) : (
-                    <Link className={styles.secondaryButton} href={pageHref(page + 1)}>
-                        Next
-                    </Link>
+                    <Button asChild variant="outline">
+                        <Link href={pageHref(page + 1)}>Next</Link>
+                    </Button>
                 )}
             </div>
         </div>

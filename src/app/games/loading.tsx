@@ -1,21 +1,20 @@
-import styles from './page.module.css';
+import { PageHeader } from '@/components/app/PageHeader';
+import { Card, CardContent } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
 
 export default function Loading() {
     return (
-        <div className={styles.page}>
-            <main className={styles.main}>
-                <header className={styles.header}>
-                    <h1>Games</h1>
-                    <p>Loading your games…</p>
-                </header>
-                <section className={styles.panel}>
-                    <div className={styles.cards}>
+        <div className="space-y-6">
+            <PageHeader title="Games" subtitle="Loading your games…" />
+            <Card>
+                <CardContent className="pt-6">
+                    <div className="grid gap-3 md:grid-cols-2">
                         {Array.from({ length: 6 }).map((_, i) => (
-                            <div key={i} className={styles.skeleton} />
+                            <Skeleton key={i} className="h-28 w-full" />
                         ))}
                     </div>
-                </section>
-            </main>
+                </CardContent>
+            </Card>
         </div>
     );
 }

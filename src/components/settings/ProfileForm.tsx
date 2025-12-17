@@ -3,6 +3,7 @@
 import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
 import { ChessAccountLink } from './ChessAccountLink';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export type UserProfile = {
     id: string;
@@ -63,36 +64,37 @@ export function ProfileForm({ initialUser }: Props) {
     }
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ fontWeight: 700 }}>Profile</div>
-                <div style={{ fontSize: 12, opacity: 0.75 }}>
-                    {user.email}
-                    {user.name ? ` • ${user.name}` : ''}
-                </div>
-            </div>
+        <div className="space-y-6">
+            <Card>
+                <CardHeader>
+                    <CardTitle className="text-base">Profile</CardTitle>
+                    <CardDescription>
+                        {user.email}
+                        {user.name ? ` • ${user.name}` : ''}
+                    </CardDescription>
+                </CardHeader>
+            </Card>
 
-            <div
-                style={{
-                    border: '1px solid var(--border, #e6e6e6)',
-                    borderRadius: 12,
-                    padding: 16,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 14,
-                }}
-            >
-                <ChessAccountLink
-                    provider="lichess"
-                    currentUsername={user.lichessUsername}
-                    onUpdate={updateLichess}
-                />
-                <ChessAccountLink
-                    provider="chesscom"
-                    currentUsername={user.chesscomUsername}
-                    onUpdate={updateChesscom}
-                />
-            </div>
+            <Card>
+                <CardHeader>
+                    <CardTitle className="text-base">Linked accounts</CardTitle>
+                    <CardDescription>
+                        Validate usernames so BackRank can import games from your public profiles.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                    <ChessAccountLink
+                        provider="lichess"
+                        currentUsername={user.lichessUsername}
+                        onUpdate={updateLichess}
+                    />
+                    <ChessAccountLink
+                        provider="chesscom"
+                        currentUsername={user.chesscomUsername}
+                        onUpdate={updateChesscom}
+                    />
+                </CardContent>
+            </Card>
         </div>
     );
 }

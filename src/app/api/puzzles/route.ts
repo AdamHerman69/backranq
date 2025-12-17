@@ -142,12 +142,50 @@ export async function POST(req: Request) {
     const ownedSet = new Set(owned.map((g) => g.id));
     const filtered = data.filter((d) => ownedSet.has(d.gameId));
 
-    const created = await prisma.puzzle.createMany({
-        data: filtered,
-        skipDuplicates: true,
+    // Upsert based on @@unique([gameId, sourcePly, fen])
+    // Note: Prisma doesn't support "upsert many", so we do a transaction.
+    let saved = 0;
+    let duplicates = 0;
+    await prisma.$transaction(async (tx) => {
+        for (const p of filtered) {
+            const exists = await tx.puzzle.findUnique({
+                where: {
+                    gameId_sourcePly_fen: {
+                        gameId: p.gameId,
+                        sourcePly: p.sourcePly,
+                        fen: p.fen,
+                    },
+                },
+                select: { id: true },
+            });
+            if (exists) duplicates += 1;
+            else saved += 1;
+
+            await tx.puzzle.upsert({
+                where: {
+                    gameId_sourcePly_fen: {
+                        gameId: p.gameId,
+                        sourcePly: p.sourcePly,
+                        fen: p.fen,
+                    },
+                },
+                create: p,
+                update: {
+                    // keep userId/gameId/sourcePly/fen stable, update content
+                    type: p.type,
+                    severity: p.severity,
+                    bestMoveUci: p.bestMoveUci,
+                    bestLine: p.bestLine,
+                    score: p.score,
+                    tags: p.tags,
+                    openingEco: p.openingEco,
+                    openingName: p.openingName,
+                    openingVariation: p.openingVariation,
+                    label: p.label,
+                },
+            });
+        }
     });
 
-    const saved = created.count;
-    const duplicates = Math.max(0, filtered.length - saved);
     return NextResponse.json({ saved, duplicates });
 }

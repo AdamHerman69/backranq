@@ -2,6 +2,11 @@
 
 import { useMemo, useState } from 'react';
 
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { cn } from '@/lib/utils';
+
 export type ChessProvider = 'lichess' | 'chesscom';
 type Status = 'idle' | 'checking' | 'valid' | 'invalid' | 'error';
 
@@ -13,6 +18,15 @@ type Props = {
 
 function labelFor(provider: ChessProvider) {
     return provider === 'lichess' ? 'Lichess' : 'Chess.com';
+}
+
+function statusBadgeClass(status: Status, isLinked: boolean) {
+    if (status === 'checking') return 'bg-muted text-muted-foreground';
+    if (status === 'valid') return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300';
+    if (status === 'invalid') return 'bg-red-500/15 text-red-700 dark:text-red-300';
+    if (status === 'error') return 'bg-amber-500/20 text-amber-700 dark:text-amber-300';
+    if (isLinked) return 'bg-violet-500/15 text-violet-700 dark:text-violet-300';
+    return 'bg-muted text-muted-foreground';
 }
 
 export function ChessAccountLink({ provider, currentUsername, onUpdate }: Props) {
@@ -83,14 +97,21 @@ export function ChessAccountLink({ provider, currentUsername, onUpdate }: Props)
                     : 'Not linked';
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ minWidth: 84, fontWeight: 650 }}>{title}</div>
-                <div style={{ fontSize: 12, opacity: 0.75 }}>{statusText}</div>
+        <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm font-medium">{title}</div>
+                <Badge
+                    className={cn(
+                        'border-transparent',
+                        statusBadgeClass(status, !!currentUsername)
+                    )}
+                >
+                    {statusText}
+                </Badge>
             </div>
 
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <input
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Input
                     value={username}
                     onChange={(e) => {
                         setUsername(e.target.value);
@@ -98,52 +119,29 @@ export function ChessAccountLink({ provider, currentUsername, onUpdate }: Props)
                         setMessage('');
                     }}
                     placeholder={`${title} username`}
-                    style={{
-                        height: 36,
-                        padding: '0 10px',
-                        borderRadius: 10,
-                        border: '1px solid var(--border, #e6e6e6)',
-                        minWidth: 240,
-                    }}
+                    className="sm:max-w-sm"
                 />
-                <button
-                    type="button"
-                    onClick={validate}
-                    disabled={status === 'checking'}
-                    style={{
-                        height: 36,
-                        padding: '0 12px',
-                        borderRadius: 10,
-                        border: '1px solid var(--button-secondary-border, #ebebeb)',
-                        background: 'transparent',
-                        fontWeight: 600,
-                        cursor: status === 'checking' ? 'not-allowed' : 'pointer',
-                    }}
-                >
-                    Validate
-                </button>
-                <button
-                    type="button"
-                    onClick={save}
-                    disabled={saving}
-                    style={{
-                        height: 36,
-                        padding: '0 12px',
-                        borderRadius: 10,
-                        border: '1px solid transparent',
-                        background: 'var(--text-primary, #000)',
-                        color: 'var(--background, #fafafa)',
-                        fontWeight: 650,
-                        cursor: saving ? 'not-allowed' : 'pointer',
-                        opacity: saving ? 0.7 : 1,
-                    }}
-                >
-                    Save
-                </button>
+                <div className="flex gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        onClick={validate}
+                        disabled={status === 'checking' || !normalizedUsername}
+                    >
+                        Validate
+                    </Button>
+                    <Button
+                        type="button"
+                        onClick={save}
+                        disabled={saving || !normalizedUsername}
+                    >
+                        Save
+                    </Button>
+                </div>
             </div>
 
             {message ? (
-                <div style={{ fontSize: 12, opacity: 0.8 }}>{message}</div>
+                <div className="text-sm text-muted-foreground">{message}</div>
             ) : null}
         </div>
     );

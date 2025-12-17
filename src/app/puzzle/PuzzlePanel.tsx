@@ -229,13 +229,20 @@ export function PuzzlePanel(props: {
   }, [showAllLegal, allowAttemptMove, displayFen]);
 
   const arrows = useMemo(() => {
-    const list: { startSquare: string; endSquare: string; color: string }[] = [];
-    if (tab !== "puzzle") return list;
-    if (showUserArrow && attemptLastMove) list.push({ startSquare: attemptLastMove.from, endSquare: attemptLastMove.to, color: "rgba(255,215,0,0.9)" });
+    const byKey = new Map<string, { startSquare: string; endSquare: string; color: string }>();
+    const put = (a: { startSquare: string; endSquare: string; color: string }) => {
+      // react-chessboard keys arrows by `${from}-${to}`; dedupe to avoid React key collisions.
+      byKey.set(`${a.startSquare}-${a.endSquare}`, a);
+    };
+    if (tab !== "puzzle") return [];
     if (showBestArrow && attemptResult === "incorrect" && bestMoveParsed) {
-      list.push({ startSquare: bestMoveParsed.from, endSquare: bestMoveParsed.to, color: "rgba(255,70,70,0.9)" });
+      put({ startSquare: bestMoveParsed.from, endSquare: bestMoveParsed.to, color: "rgba(255,70,70,0.9)" });
     }
-    return list;
+    if (showUserArrow && attemptLastMove) {
+      // User arrow last so it wins if it matches best move.
+      put({ startSquare: attemptLastMove.from, endSquare: attemptLastMove.to, color: "rgba(255,215,0,0.9)" });
+    }
+    return Array.from(byKey.values());
   }, [tab, showUserArrow, attemptLastMove, showBestArrow, attemptResult, bestMoveParsed]);
 
   const squareStyles = useMemo(() => {

@@ -5,6 +5,7 @@ import type {
 } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import type { AnalyzedGame, Provider, TimeClass } from '@prisma/client';
+import { classifyOpeningFromPgn } from '@/lib/chess/opening';
 
 export function parseExternalId(game: NormalizedGame): string {
     // Our provider APIs currently set ids like "lichess:<id>" and "chesscom:<uuid>"
@@ -61,6 +62,7 @@ export function jsonToGameAnalysis(json: unknown): GameAnalysis | null {
 }
 
 export function normalizedGameToDb(game: NormalizedGame, userId: string) {
+    const opening = classifyOpeningFromPgn(game.pgn);
     return {
         userId,
         provider: providerToDb(game.provider),
@@ -82,10 +84,10 @@ export function normalizedGameToDb(game: NormalizedGame, userId: string) {
             typeof game.black.rating === 'number'
                 ? Math.trunc(game.black.rating)
                 : null,
-        // opening fields are optional and may be backfilled later
-        openingEco: null,
-        openingName: null,
-        openingVariation: null,
+        // opening fields are best-effort derived from PGN headers / small book
+        openingEco: opening.eco ?? null,
+        openingName: opening.name ?? null,
+        openingVariation: opening.variation ?? null,
         analysis: {}, // required by schema; updated later via analysis route
         analyzedAt: null,
     };
@@ -112,4 +114,3 @@ export function dbGameToNormalized(dbGame: AnalyzedGame): NormalizedGame {
         pgn: dbGame.pgn,
     };
 }
-

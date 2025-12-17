@@ -2,6 +2,8 @@
 
 import { useSession } from 'next-auth/react';
 
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+
 function initials(nameOrEmail: string) {
     const parts = nameOrEmail.trim().split(/\s+/).filter(Boolean);
     if (parts.length === 0) return '?';
@@ -17,28 +19,11 @@ export function UserAvatar() {
     const label = user?.name ?? user?.email ?? 'User';
     const img = user?.image ?? undefined;
 
-    if (img) {
-        // eslint-disable-next-line @next/next/no-img-element
-        return <img src={img} alt={label} width={32} height={32} />;
-    }
-
     return (
-        <div
-            aria-label={label}
-            style={{
-                width: 32,
-                height: 32,
-                borderRadius: 999,
-                background: '#eee',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 12,
-                fontWeight: 600,
-            }}
-        >
-            {initials(label)}
-        </div>
+        <Avatar className="h-8 w-8" aria-label={label}>
+            <AvatarImage src={img} alt={label} />
+            <AvatarFallback>{initials(label)}</AvatarFallback>
+        </Avatar>
     );
 }
 

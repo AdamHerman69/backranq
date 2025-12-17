@@ -1,9 +1,9 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { AppNav } from '@/components/nav/AppNav';
 import { ProfileForm, type UserProfile } from '@/components/settings/ProfileForm';
-import styles from './page.module.css';
+import { PageHeader } from '@/components/app/PageHeader';
+import { Card, CardContent } from '@/components/ui/card';
 
 export default async function SettingsPage() {
     const session = await auth();
@@ -33,17 +33,16 @@ export default async function SettingsPage() {
     };
 
     return (
-        <div className={styles.page}>
-            <main className={styles.main}>
-                <AppNav />
-                <header className={styles.header}>
-                    <h1>Settings</h1>
-                    <p>Link your chess accounts so BackRank can import your games.</p>
-                </header>
-                <section className={styles.panel}>
+        <div className="space-y-6">
+            <PageHeader
+                title="Settings"
+                subtitle="Link your chess accounts so BackRank can import your games."
+            />
+            <Card>
+                <CardContent className="pt-6">
                     <ProfileForm initialUser={initialUser} />
-                </section>
-            </main>
+                </CardContent>
+            </Card>
         </div>
     );
 }

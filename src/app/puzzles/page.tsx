@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
-import { AppNav } from '@/components/nav/AppNav';
-import { PuzzleTrainer } from '@/components/puzzles/PuzzleTrainer';
+import { PageHeader } from '@/components/app/PageHeader';
+import { PuzzleTrainerV2 } from '@/components/puzzles/PuzzleTrainerV2';
 
 export default async function PuzzlesPage({
     searchParams,
@@ -14,36 +14,21 @@ export default async function PuzzlesPage({
 
     const sp = (await searchParams) ?? {};
     const mode = typeof sp.mode === 'string' ? sp.mode : '';
-    const trainerMode = mode === 'review' ? 'reviewFailed' : 'quick';
+    const view = typeof sp.view === 'string' ? sp.view : '';
+    const initialQueueMode = mode === 'review' ? 'reviewFailed' : 'quick';
+    const initialViewMode = view === 'analyze' ? 'analyze' : 'solve';
 
     return (
-        <main style={{ padding: 24 }}>
-            <AppNav />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                    <a
-                        href="/puzzles?mode=quick"
-                        style={{
-                            fontWeight: 800,
-                            textDecoration: trainerMode === 'quick' ? 'underline' : 'none',
-                        }}
-                    >
-                        Quick Play
-                    </a>
-                    <a
-                        href="/puzzles?mode=review"
-                        style={{
-                            fontWeight: 800,
-                            textDecoration: trainerMode === 'reviewFailed' ? 'underline' : 'none',
-                        }}
-                    >
-                        Review Failed
-                    </a>
-                </div>
-
-                <PuzzleTrainer mode={trainerMode} />
-            </div>
-        </main>
+        <div className="space-y-6">
+            <PageHeader
+                title="Train"
+                subtitle="Quick puzzles or review the ones you missed."
+            />
+            <PuzzleTrainerV2
+                initialQueueMode={initialQueueMode}
+                initialViewMode={initialViewMode}
+            />
+        </div>
     );
 }
 

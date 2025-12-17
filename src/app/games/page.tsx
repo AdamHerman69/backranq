@@ -1,14 +1,15 @@
 import { redirect } from 'next/navigation';
-import styles from './page.module.css';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { AppNav } from '@/components/nav/AppNav';
 import { GamesFilter } from '@/components/games/GamesFilter';
 import { GamesList } from '@/components/games/GamesList';
 import type { GameCardData } from '@/components/games/GameCard';
 import { SyncGamesWidget } from '@/components/sync/SyncGamesWidget';
 import type { Prisma } from '@prisma/client';
 import type { GameAnalysis } from '@/lib/analysis/classification';
+import { PageHeader } from '@/components/app/PageHeader';
+import { Card, CardContent } from '@/components/ui/card';
+import { classifyOpeningFromPgn } from '@/lib/chess/opening';
 
 function clampInt(v: number, min: number, max: number) {
     return Math.max(min, Math.min(max, v));
@@ -114,16 +115,62 @@ export default async function GamesPage({
                 whiteRating: true,
                 blackName: true,
                 blackRating: true,
+                pgn: true,
                 openingEco: true,
                 openingName: true,
+                openingVariation: true,
                 analyzedAt: true,
                 analysis: true,
             },
         }),
     ]);
 
+    // Backfill opening fields if missing (older imported games)
+    const toBackfill = rows
+        .filter((g) => !g.openingEco && !g.openingName && g.pgn)
+        .map((g) => {
+            const o = classifyOpeningFromPgn(g.pgn);
+            if (!o.eco && !o.name && !o.variation) return null;
+            if (o.source === 'unknown') return null;
+            return { id: g.id, eco: o.eco ?? null, name: o.name ?? null, variation: o.variation ?? null };
+        })
+        .filter(Boolean) as { id: string; eco: string | null; name: string | null; variation: string | null }[];
+
+    if (toBackfill.length > 0) {
+        await prisma.$transaction(
+            toBackfill.map((u) =>
+                prisma.analyzedGame.update({
+                    where: { id: u.id },
+                    data: { openingEco: u.eco, openingName: u.name, openingVariation: u.variation },
+                })
+            )
+        );
+    }
+
+    const puzzlesByGameId = (() => new Map<string, { id: string; sourcePly: number; type: 'AVOID_BLUNDER' | 'PUNISH_BLUNDER' }[]>())();
+    if (rows.length > 0) {
+        const gameIds = rows.map((g) => g.id);
+        const puzzleRows = await prisma.puzzle.findMany({
+            where: { userId, gameId: { in: gameIds } },
+            orderBy: { sourcePly: 'asc' },
+            select: { id: true, gameId: true, sourcePly: true, type: true },
+        });
+        for (const p of puzzleRows) {
+            const list = puzzlesByGameId.get(p.gameId) ?? [];
+            list.push({
+                id: p.id,
+                sourcePly: p.sourcePly,
+                type: p.type,
+            });
+            puzzlesByGameId.set(p.gameId, list);
+        }
+    }
+
     const totalPages = Math.max(1, Math.ceil(total / limit));
-    const games: GameCardData[] = rows.map((g) => ({
+    const byId = new Map(toBackfill.map((x) => [x.id, x]));
+    const games: GameCardData[] = rows.map((g) => {
+        const bf = byId.get(g.id);
+        return ({
         id: g.id,
         provider: g.provider,
         playedAt: g.playedAt.toISOString(),
@@ -135,29 +182,33 @@ export default async function GamesPage({
         whiteRating: g.whiteRating,
         blackName: g.blackName,
         blackRating: g.blackRating,
-        openingEco: g.openingEco,
-        openingName: g.openingName,
+        openingEco: (bf?.eco ?? g.openingEco) ?? null,
+        openingName: (bf?.name ?? g.openingName) ?? null,
+        openingVariation: (bf?.variation ?? g.openingVariation) ?? null,
         analyzedAt: g.analyzedAt ? g.analyzedAt.toISOString() : null,
         analysis:
             g.analysis && typeof g.analysis === 'object'
                 ? ((g.analysis as unknown as Partial<GameAnalysis>) ?? null)
                 : null,
-    }));
+        puzzles: puzzlesByGameId.get(g.id) ?? [],
+    });
+    });
 
     return (
-        <div className={styles.page}>
-            <main className={styles.main}>
-                <AppNav />
-                <header className={styles.header}>
-                    <h1>Games</h1>
-                    <p>Browse your analyzed games library.</p>
-                </header>
+        <div className="space-y-6">
+            <PageHeader
+                title="Games"
+                subtitle="Browse your analyzed games library."
+            />
 
-                <section className={styles.panel}>
+            <Card>
+                <CardContent className="p-4">
                     <SyncGamesWidget context="games" enableAnalyze variant="banner" />
-                </section>
+                </CardContent>
+            </Card>
 
-                <section className={styles.panel}>
+            <Card>
+                <CardContent className="p-4">
                     <GamesFilter
                         total={total}
                         initial={{
@@ -188,31 +239,31 @@ export default async function GamesPage({
                             q,
                         }}
                     />
-                </section>
+                </CardContent>
+            </Card>
 
-                <GamesList
-                    games={games}
-                    total={total}
-                    page={page}
-                    totalPages={totalPages}
-                    baseQueryString={(() => {
-                        const p = new URLSearchParams();
-                        if (provider) p.set('provider', provider);
-                        if (timeClass) p.set('timeClass', timeClass);
-                        if (resultParam) p.set('result', resultParam);
-                        if (hasAnalysis) p.set('hasAnalysis', hasAnalysis);
-                        if (since) p.set('since', since);
-                        if (until) p.set('until', until);
-                        if (q) p.set('q', q);
-                        if (limit !== 20) p.set('limit', String(limit));
-                        return p.toString();
-                    })()}
-                    userNameByProvider={{
-                        lichess: user?.lichessUsername ?? '',
-                        chesscom: user?.chesscomUsername ?? '',
-                    }}
-                />
-            </main>
+            <GamesList
+                games={games}
+                total={total}
+                page={page}
+                totalPages={totalPages}
+                baseQueryString={(() => {
+                    const p = new URLSearchParams();
+                    if (provider) p.set('provider', provider);
+                    if (timeClass) p.set('timeClass', timeClass);
+                    if (resultParam) p.set('result', resultParam);
+                    if (hasAnalysis) p.set('hasAnalysis', hasAnalysis);
+                    if (since) p.set('since', since);
+                    if (until) p.set('until', until);
+                    if (q) p.set('q', q);
+                    if (limit !== 20) p.set('limit', String(limit));
+                    return p.toString();
+                })()}
+                userNameByProvider={{
+                    lichess: user?.lichessUsername ?? '',
+                    chesscom: user?.chesscomUsername ?? '',
+                }}
+            />
         </div>
     );
 }

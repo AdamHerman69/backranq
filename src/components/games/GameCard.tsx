@@ -1,7 +1,11 @@
 'use client';
 
-import styles from '@/app/games/page.module.css';
 import Link from 'next/link';
+
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
 
 export type GameCardData = {
     id: string;
@@ -17,9 +21,10 @@ export type GameCardData = {
     blackRating: number | null;
     openingName: string | null;
     openingEco: string | null;
+    openingVariation?: string | null;
     analyzedAt: string | null;
     analysis: { whiteAccuracy?: number; blackAccuracy?: number } | null;
-    puzzlesCount?: number; // future
+    puzzles?: { id: string; sourcePly: number; type: 'AVOID_BLUNDER' | 'PUNISH_BLUNDER' }[];
 };
 
 function normalizeName(s: string) {
@@ -37,11 +42,11 @@ function outcomeLetter(result: string | null): 'W' | 'L' | 'D' | '?' {
     return '?';
 }
 
-function outcomeClass(letter: 'W' | 'L' | 'D' | '?') {
-    if (letter === 'W') return styles.badgeWin;
-    if (letter === 'L') return styles.badgeLoss;
-    if (letter === 'D') return styles.badgeDraw;
-    return styles.badgeUnknown;
+function outcomeBadgeClass(letter: 'W' | 'L' | 'D' | '?') {
+    if (letter === 'W') return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300';
+    if (letter === 'L') return 'bg-red-500/15 text-red-700 dark:text-red-300';
+    if (letter === 'D') return 'bg-amber-500/20 text-amber-700 dark:text-amber-300';
+    return 'bg-muted text-muted-foreground';
 }
 
 function timeLabel(tc: GameCardData['timeClass']) {
@@ -84,9 +89,11 @@ export function GameCard({
     const played = new Date(game.playedAt).toLocaleDateString();
     const providerLabel = game.provider === 'LICHESS' ? 'Lichess' : 'Chess.com';
 
-    const opening =
-        game.openingName ??
-        (game.openingEco ? `${game.openingEco}` : null);
+    const opening = game.openingName
+        ? `${game.openingEco ? `${game.openingEco} ` : ''}${game.openingName}${game.openingVariation ? ` — ${game.openingVariation}` : ''}`.trim()
+        : game.openingEco
+          ? `${game.openingEco}`
+          : null;
 
     const accuracy =
         userIsWhite
@@ -95,50 +102,70 @@ export function GameCard({
               ? game.analysis?.blackAccuracy
               : null;
 
+    const puzzles = Array.isArray(game.puzzles) ? game.puzzles : [];
+
     return (
-        <div className={styles.card}>
-            <div className={styles.cardTop}>
-                <div className={styles.cardTitle}>
-                    <div className={styles.cardTitleStrong}>
-                        {opponentName}
-                        {typeof opponentRating === 'number'
-                            ? ` (${opponentRating})`
-                            : ''}
+        <Card>
+            <CardContent className="py-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                    <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <div className="truncate text-sm font-semibold">
+                                {opponentName}
+                                {typeof opponentRating === 'number'
+                                    ? ` (${opponentRating})`
+                                    : ''}
+                            </div>
+                            <Badge className={cn('border-transparent', outcomeBadgeClass(badge))}>
+                                {badge}
+                            </Badge>
+                        </div>
+
+                        <div className="text-xs text-muted-foreground">
+                            {providerLabel} • {timeLabel(game.timeClass)} • {played}
+                            {userIsWhite
+                                ? ' • You: White'
+                                : userIsBlack
+                                  ? ' • You: Black'
+                                  : ''}
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 pt-0.5">
+                            <Badge variant="secondary">
+                                {opening ? opening : 'Opening: —'}
+                            </Badge>
+                            {game.analyzedAt ? (
+                                <Badge variant="secondary">
+                                    {typeof accuracy === 'number'
+                                        ? `${accuracy.toFixed(1)}%`
+                                        : 'Analyzed'}
+                                </Badge>
+                            ) : (
+                                <Badge variant="outline">Not analyzed</Badge>
+                            )}
+                        </div>
+
+                        {puzzles.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5 pt-1">
+                                {puzzles.map((p) => (
+                                    <Link key={p.id} href={`/puzzles/${p.id}`} title={`${p.type} • ply ${p.sourcePly + 1}`}>
+                                        <Badge variant="outline" className="cursor-pointer">
+                                            Ply {p.sourcePly + 1}
+                                        </Badge>
+                                    </Link>
+                                ))}
+                            </div>
+                        ) : null}
                     </div>
-                    <div className={styles.cardTitleSub}>
-                        {providerLabel} • {timeLabel(game.timeClass)} • {played}
-                        {userIsWhite ? ' • You: White' : userIsBlack ? ' • You: Black' : ''}
+
+                    <div className="flex shrink-0 items-center gap-2 self-start">
+                        <Button asChild size="sm" variant="outline">
+                            <Link href={`/games/${game.id}`}>View</Link>
+                        </Button>
                     </div>
                 </div>
-
-                <span className={`${styles.badge} ${outcomeClass(badge)}`}>
-                    {badge}
-                </span>
-            </div>
-
-            <div className={styles.chipRow}>
-                <span className={styles.chip}>
-                    {game.rated == null ? 'Rated: ?' : game.rated ? 'Rated' : 'Casual'}
-                </span>
-                {opening ? <span className={styles.chip}>📘 {opening}</span> : null}
-                {game.analyzedAt ? (
-                    <span className={styles.chip}>
-                        🧠 {typeof accuracy === 'number' ? `${accuracy.toFixed(1)}%` : 'Analyzed'}
-                    </span>
-                ) : (
-                    <span className={styles.chip}>Not analyzed</span>
-                )}
-                {typeof game.puzzlesCount === 'number' ? (
-                    <span className={styles.chip}>🧩 {game.puzzlesCount}</span>
-                ) : null}
-            </div>
-
-            <div className={styles.actions}>
-                <Link className={styles.secondaryButton} href={`/games/${game.id}`}>
-                    View
-                </Link>
-            </div>
-        </div>
+            </CardContent>
+        </Card>
     );
 }
 

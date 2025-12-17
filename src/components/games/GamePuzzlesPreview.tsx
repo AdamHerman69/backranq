@@ -1,4 +1,7 @@
 import Link from 'next/link';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 export type GamePuzzleRow = {
     id: string;
@@ -13,46 +16,53 @@ export function GamePuzzlesPreview({
     puzzles: GamePuzzleRow[];
 }) {
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                <div style={{ fontWeight: 750 }}>
-                    Puzzles from this game ({puzzles.length})
+        <Card>
+            <CardHeader className="pb-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                    <CardTitle className="text-base">
+                        Puzzles from this game
+                        <span className="ml-2 text-sm font-normal text-muted-foreground">
+                            ({puzzles.length})
+                        </span>
+                    </CardTitle>
+                    {puzzles.length > 0 ? (
+                        <Button asChild variant="outline" size="sm">
+                            <Link href="/puzzles">Train</Link>
+                        </Button>
+                    ) : null}
                 </div>
-                {puzzles.length > 0 ? <Link href="/puzzles">Train</Link> : null}
-            </div>
-
-            {puzzles.length === 0 ? (
-                <div style={{ fontSize: 12, opacity: 0.75 }}>
-                    No puzzles saved for this game yet.
-                </div>
-            ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
-                    {puzzles.map((p) => (
-                        <div
-                            key={p.id}
-                            style={{
-                                border: '1px solid var(--border, #e6e6e6)',
-                                borderRadius: 12,
-                                padding: 12,
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: 6,
-                            }}
-                        >
-                            <div style={{ fontSize: 12, opacity: 0.8 }}>
-                                Ply {p.sourcePly + 1} • {p.type}
-                            </div>
-                            <div style={{ fontWeight: 750, fontFamily: 'var(--font-geist-mono)' }}>
-                                {p.bestMoveUci}
-                            </div>
-                            <Link href="/puzzles" style={{ fontSize: 12 }}>
-                                Train →
-                            </Link>
-                        </div>
-                    ))}
-                </div>
-            )}
-        </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+                {puzzles.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">
+                        No puzzles saved for this game yet.
+                    </div>
+                ) : (
+                    <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                        {puzzles.map((p) => (
+                            <Card key={p.id} className="shadow-none">
+                                <CardContent className="pt-6">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <Badge variant="secondary">
+                                            Ply {p.sourcePly + 1}
+                                        </Badge>
+                                        <Badge variant="outline">{p.type}</Badge>
+                                    </div>
+                                    <div className="mt-2 font-mono text-sm font-semibold">
+                                        {p.bestMoveUci}
+                                    </div>
+                                    <div className="mt-3">
+                                        <Button asChild variant="outline" size="sm">
+                                            <Link href={`/puzzles/${p.id}`}>Open</Link>
+                                        </Button>
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        ))}
+                    </div>
+                )}
+            </CardContent>
+        </Card>
     );
 }
 

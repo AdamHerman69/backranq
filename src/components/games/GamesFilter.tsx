@@ -3,6 +3,16 @@
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+
 export type GamesFilters = {
     provider: '' | 'lichess' | 'chesscom';
     timeClass: '' | 'bullet' | 'blitz' | 'rapid' | 'classical' | 'unknown';
@@ -24,10 +34,24 @@ export function GamesFilter({
     const pathname = usePathname();
 
     const [filters, setFilters] = useState<GamesFilters>(initial);
+    const [open, setOpen] = useState(false);
 
     useEffect(() => {
         setFilters(initial);
     }, [initial]);
+
+    // auto-collapse when there are no active filters
+    useEffect(() => {
+        const hasAny =
+            !!filters.provider ||
+            !!filters.timeClass ||
+            !!filters.result ||
+            !!filters.hasAnalysis ||
+            !!filters.since ||
+            !!filters.until ||
+            !!filters.q;
+        if (!hasAny) setOpen(false);
+    }, [filters]);
 
     function push(nextFilters: GamesFilters) {
         const next = new URLSearchParams();
@@ -46,67 +70,110 @@ export function GamesFilter({
     }
 
     return (
-        <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>{total} games</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.75 }}>
-                    <span>Provider</span>
-                    <select
-                        value={filters.provider}
-                        onChange={(e) => {
-                            const next = { ...filters, provider: e.target.value as GamesFilters['provider'] };
+        <section className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-sm text-muted-foreground">{total} games</div>
+                <div className="flex items-center gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setOpen((v) => !v)}
+                    >
+                        {open ? 'Hide filters' : 'Show filters'}
+                    </Button>
+                    <Button type="button" variant="outline" onClick={clear}>
+                        Clear
+                    </Button>
+                </div>
+            </div>
+
+            {open ? (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="space-y-2">
+                    <div className="text-sm font-medium">Provider</div>
+                    <Select
+                        value={filters.provider || 'all'}
+                        onValueChange={(v) => {
+                            const next = {
+                                ...filters,
+                                provider: (v === 'all'
+                                    ? ''
+                                    : (v as GamesFilters['provider'])) as GamesFilters['provider'],
+                            };
                             setFilters(next);
                             push(next);
                         }}
-                        style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
                     >
-                        <option value="">All</option>
-                        <option value="lichess">Lichess</option>
-                        <option value="chesscom">Chess.com</option>
-                    </select>
-                </label>
+                        <SelectTrigger>
+                            <SelectValue placeholder="All" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="all">All</SelectItem>
+                            <SelectItem value="lichess">Lichess</SelectItem>
+                            <SelectItem value="chesscom">Chess.com</SelectItem>
+                        </SelectContent>
+                    </Select>
+                </div>
 
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.75 }}>
-                    <span>Time class</span>
-                    <select
-                        value={filters.timeClass}
-                        onChange={(e) => {
-                            const next = { ...filters, timeClass: e.target.value as GamesFilters['timeClass'] };
+                <div className="space-y-2">
+                    <div className="text-sm font-medium">Time class</div>
+                    <Select
+                        value={filters.timeClass || 'all'}
+                        onValueChange={(v) => {
+                            const next = {
+                                ...filters,
+                                timeClass: (v === 'all'
+                                    ? ''
+                                    : (v as GamesFilters['timeClass'])) as GamesFilters['timeClass'],
+                            };
                             setFilters(next);
                             push(next);
                         }}
-                        style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
                     >
-                        <option value="">All</option>
-                        <option value="bullet">Bullet</option>
-                        <option value="blitz">Blitz</option>
-                        <option value="rapid">Rapid</option>
-                        <option value="classical">Classical</option>
-                        <option value="unknown">Unknown</option>
-                    </select>
-                </label>
+                        <SelectTrigger>
+                            <SelectValue placeholder="All" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="all">All</SelectItem>
+                            <SelectItem value="bullet">Bullet</SelectItem>
+                            <SelectItem value="blitz">Blitz</SelectItem>
+                            <SelectItem value="rapid">Rapid</SelectItem>
+                            <SelectItem value="classical">Classical</SelectItem>
+                            <SelectItem value="unknown">Unknown</SelectItem>
+                        </SelectContent>
+                    </Select>
+                </div>
 
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.75 }}>
-                    <span>Result</span>
-                    <select
-                        value={filters.result}
-                        onChange={(e) => {
-                            const next = { ...filters, result: e.target.value as GamesFilters['result'] };
+                <div className="space-y-2">
+                    <div className="text-sm font-medium">Result</div>
+                    <Select
+                        value={filters.result || 'all'}
+                        onValueChange={(v) => {
+                            const next = {
+                                ...filters,
+                                result: (v === 'all'
+                                    ? ''
+                                    : (v as GamesFilters['result'])) as GamesFilters['result'],
+                            };
                             setFilters(next);
                             push(next);
                         }}
-                        style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
                     >
-                        <option value="">All</option>
-                        <option value="wins">Wins</option>
-                        <option value="losses">Losses</option>
-                        <option value="draws">Draws</option>
-                    </select>
-                </label>
+                        <SelectTrigger>
+                            <SelectValue placeholder="All" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="all">All</SelectItem>
+                            <SelectItem value="wins">Wins</SelectItem>
+                            <SelectItem value="losses">Losses</SelectItem>
+                            <SelectItem value="draws">Draws</SelectItem>
+                        </SelectContent>
+                    </Select>
+                </div>
 
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.75 }}>
-                    <span>Since</span>
-                    <input
+                <div className="space-y-2">
+                    <div className="text-sm font-medium">Since</div>
+                    <Input
                         type="date"
                         value={filters.since}
                         onChange={(e) => {
@@ -114,13 +181,12 @@ export function GamesFilter({
                             setFilters(next);
                             push(next);
                         }}
-                        style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
                     />
-                </label>
+                </div>
 
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.75 }}>
-                    <span>Until</span>
-                    <input
+                <div className="space-y-2">
+                    <div className="text-sm font-medium">Until</div>
+                    <Input
                         type="date"
                         value={filters.until}
                         onChange={(e) => {
@@ -128,30 +194,38 @@ export function GamesFilter({
                             setFilters(next);
                             push(next);
                         }}
-                        style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
                     />
-                </label>
+                </div>
 
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.75 }}>
-                    <span>Analysis</span>
-                    <select
-                        value={filters.hasAnalysis}
-                        onChange={(e) => {
-                            const next = { ...filters, hasAnalysis: e.target.value as GamesFilters['hasAnalysis'] };
+                <div className="space-y-2">
+                    <div className="text-sm font-medium">Analysis</div>
+                    <Select
+                        value={filters.hasAnalysis || 'all'}
+                        onValueChange={(v) => {
+                            const next = {
+                                ...filters,
+                                hasAnalysis: (v === 'all'
+                                    ? ''
+                                    : (v as GamesFilters['hasAnalysis'])) as GamesFilters['hasAnalysis'],
+                            };
                             setFilters(next);
                             push(next);
                         }}
-                        style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
                     >
-                        <option value="">All</option>
-                        <option value="true">Analyzed</option>
-                        <option value="false">Not analyzed</option>
-                    </select>
-                </label>
+                        <SelectTrigger>
+                            <SelectValue placeholder="All" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="all">All</SelectItem>
+                            <SelectItem value="true">Analyzed</SelectItem>
+                            <SelectItem value="false">Not analyzed</SelectItem>
+                        </SelectContent>
+                    </Select>
+                </div>
 
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.75, gridColumn: '1 / -1' }}>
-                    <span>Search opponent</span>
-                    <input
+                <div className="space-y-2 sm:col-span-2 lg:col-span-3">
+                    <div className="text-sm font-medium">Search opponent</div>
+                    <Input
                         value={filters.q}
                         onChange={(e) => {
                             const next = { ...filters, q: e.target.value };
@@ -159,28 +233,11 @@ export function GamesFilter({
                             push(next);
                         }}
                         placeholder="Opponent name…"
-                        style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
                     />
-                </label>
+                </div>
             </div>
+            ) : null}
 
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                <button
-                    type="button"
-                    onClick={clear}
-                    style={{
-                        height: 36,
-                        padding: '0 12px',
-                        borderRadius: 10,
-                        border: '1px solid var(--border, #e6e6e6)',
-                        background: 'transparent',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                    }}
-                >
-                    Clear filters
-                </button>
-            </div>
         </section>
     );
 }

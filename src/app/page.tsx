@@ -16,7 +16,6 @@ import { ecoName } from "@/lib/chess/eco";
 import { PuzzlePanel } from "@/app/puzzle/PuzzlePanel";
 import { useSession } from "next-auth/react";
 import { LocalStorageMigration } from "@/components/migration/LocalStorageMigration";
-import { AppNav } from "@/components/nav/AppNav";
 import { SyncGamesWidget } from "@/components/sync/SyncGamesWidget";
 import {
   defaultPreferences,
@@ -604,7 +603,6 @@ export default function Home() {
   return (
     <div className={styles.page}>
       <main className={styles.main}>
-        <AppNav />
         <header className={styles.header}>
           <h1>BackRank — Your games → your puzzles</h1>
           <p>Connect by username (public games). Filter games, then generate puzzles from blunders and missed wins.</p>

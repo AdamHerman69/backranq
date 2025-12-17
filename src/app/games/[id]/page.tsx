@@ -43,40 +43,38 @@ export default async function GameDetailPage({
             : null;
 
     return (
-        <main style={{ padding: 24 }}>
-            <GameDetailClient
-                dbGameId={game.id}
-                header={{
-                    provider: game.provider,
-                    url: game.url,
-                    playedAt: game.playedAt.toISOString(),
-                    timeClass: game.timeClass,
-                    rated: game.rated,
-                    result: game.result,
-                    termination: game.termination,
-                    whiteName: game.whiteName,
-                    whiteRating: game.whiteRating,
-                    blackName: game.blackName,
-                    blackRating: game.blackRating,
-                    openingEco: game.openingEco,
-                    openingName: game.openingName,
-                    openingVariation: game.openingVariation,
-                    analyzedAt: game.analyzedAt ? game.analyzedAt.toISOString() : null,
-                }}
-                normalizedGame={normalized}
-                initialAnalysis={initialAnalysis}
-                puzzles={puzzles.map((p) => ({
-                    id: p.id,
-                    sourcePly: p.sourcePly,
-                    type: String(p.type),
-                    bestMoveUci: p.bestMoveUci,
-                }))}
-                usernameByProvider={{
-                    lichess: user?.lichessUsername ?? undefined,
-                    chesscom: user?.chesscomUsername ?? undefined,
-                }}
-            />
-        </main>
+        <GameDetailClient
+            dbGameId={game.id}
+            header={{
+                provider: game.provider,
+                url: game.url,
+                playedAt: game.playedAt.toISOString(),
+                timeClass: game.timeClass,
+                rated: game.rated,
+                result: game.result,
+                termination: game.termination,
+                whiteName: game.whiteName,
+                whiteRating: game.whiteRating,
+                blackName: game.blackName,
+                blackRating: game.blackRating,
+                openingEco: game.openingEco,
+                openingName: game.openingName,
+                openingVariation: game.openingVariation,
+                analyzedAt: game.analyzedAt ? game.analyzedAt.toISOString() : null,
+            }}
+            normalizedGame={normalized}
+            initialAnalysis={initialAnalysis}
+            puzzles={puzzles.map((p) => ({
+                id: p.id,
+                sourcePly: p.sourcePly,
+                type: String(p.type),
+                bestMoveUci: p.bestMoveUci,
+            }))}
+            usernameByProvider={{
+                lichess: user?.lichessUsername ?? undefined,
+                chesscom: user?.chesscomUsername ?? undefined,
+            }}
+        />
     );
 }
 

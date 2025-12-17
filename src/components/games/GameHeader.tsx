@@ -1,4 +1,13 @@
 import Link from 'next/link';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 export type GameHeaderData = {
     provider: 'LICHESS' | 'CHESSCOM';
@@ -42,44 +51,78 @@ export function GameHeader({ game }: { game: GameHeaderData }) {
         (game.openingEco ? `${game.openingEco}${game.openingVariation ? ` — ${game.openingVariation}` : ''}` : null);
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <div style={{ fontWeight: 750 }}>
-                        {game.whiteName}
-                        {typeof game.whiteRating === 'number' ? ` (${game.whiteRating})` : ''} vs {game.blackName}
-                        {typeof game.blackRating === 'number' ? ` (${game.blackRating})` : ''}
-                    </div>
-                    <div style={{ fontSize: 12, opacity: 0.8 }}>
-                        {providerLabel(game.provider)} • {timeLabel(game.timeClass)} • {played}
-                        {game.rated == null ? '' : game.rated ? ' • Rated' : ' • Casual'}
-                        {game.result ? ` • ${game.result}` : ''}
-                        {game.termination ? ` • ${game.termination}` : ''}
-                    </div>
-                    {opening ? (
-                        <div style={{ fontSize: 12, opacity: 0.8 }}>📘 {opening}</div>
-                    ) : null}
-                </div>
+        <TooltipProvider>
+            <Card>
+                <CardContent className="pt-6">
+                    <div className="flex flex-col gap-2">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0">
+                                <div className="truncate text-sm font-semibold">
+                                    {game.whiteName}
+                                    {typeof game.whiteRating === 'number'
+                                        ? ` (${game.whiteRating})`
+                                        : ''}{' '}
+                                    vs {game.blackName}
+                                    {typeof game.blackRating === 'number'
+                                        ? ` (${game.blackRating})`
+                                        : ''}
+                                </div>
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                    {providerLabel(game.provider)} •{' '}
+                                    {timeLabel(game.timeClass)} • {played}
+                                    {game.rated == null
+                                        ? ''
+                                        : game.rated
+                                          ? ' • Rated'
+                                          : ' • Casual'}
+                                    {game.result ? ` • ${game.result}` : ''}
+                                    {game.termination ? ` • ${game.termination}` : ''}
+                                </div>
+                                {opening ? (
+                                    <div className="mt-1 text-xs text-muted-foreground">
+                                        📘 {opening}
+                                    </div>
+                                ) : null}
+                            </div>
 
-                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                    {game.analyzedAt && (game.accuracy?.white != null || game.accuracy?.black != null) ? (
-                        <div style={{ display: 'flex', gap: 8, fontSize: 12 }}>
-                            <span style={{ padding: '4px 8px', border: '1px solid var(--border, #e6e6e6)', borderRadius: 999 }}>
-                                ♔ {game.accuracy?.white?.toFixed(1) ?? '—'}%
-                            </span>
-                            <span style={{ padding: '4px 8px', border: '1px solid var(--border, #e6e6e6)', borderRadius: 999 }}>
-                                ♚ {game.accuracy?.black?.toFixed(1) ?? '—'}%
-                            </span>
+                            <div className="flex flex-wrap items-center gap-2">
+                                {game.analyzedAt &&
+                                (game.accuracy?.white != null ||
+                                    game.accuracy?.black != null) ? (
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <div className="flex items-center gap-2">
+                                                <Badge variant="outline">
+                                                    ♔ {game.accuracy?.white?.toFixed(1) ?? '—'}%
+                                                </Badge>
+                                                <Badge variant="outline">
+                                                    ♚ {game.accuracy?.black?.toFixed(1) ?? '—'}%
+                                                </Badge>
+                                            </div>
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                            Overall accuracy (0–100) computed from engine eval changes during analysis.
+                                        </TooltipContent>
+                                    </Tooltip>
+                                ) : null}
+
+                                {game.url ? (
+                                    <Button asChild variant="outline" size="sm">
+                                        <Link
+                                            href={game.url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                        >
+                                            Open original
+                                        </Link>
+                                    </Button>
+                                ) : null}
+                            </div>
                         </div>
-                    ) : null}
-                    {game.url ? (
-                        <Link href={game.url} target="_blank" rel="noreferrer">
-                            Open original
-                        </Link>
-                    ) : null}
-                </div>
-            </div>
-        </div>
+                    </div>
+                </CardContent>
+            </Card>
+        </TooltipProvider>
     );
 }
 
