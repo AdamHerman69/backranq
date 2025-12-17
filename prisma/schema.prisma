@@ -87,6 +87,7 @@ model Puzzle {
   type             PuzzleType
   severity         String?
   bestMoveUci      String
+  acceptedMovesUci String[]   @default([])
   bestLine         Json
   score            Json
   tags             String[]   @default([])

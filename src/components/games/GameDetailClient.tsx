@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -11,7 +11,7 @@ import type { GameAnalysis } from '@/lib/analysis/classification';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 
-export function GameDetailClient({
+export default function GameDetailClient({
     dbGameId,
     header,
     normalizedGame,
@@ -72,5 +72,8 @@ export function GameDetailClient({
         </div>
     );
 }
+
+// Also provide a named export for convenience.
+export { GameDetailClient };
 
 

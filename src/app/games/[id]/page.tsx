@@ -3,7 +3,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { dbGameToNormalized } from '@/lib/api/games';
 import type { GameAnalysis } from '@/lib/analysis/classification';
-import { GameDetailClient } from '@/components/games/GameDetailClient';
+import GameDetailClient from '@/components/games/GameDetailClient';
 
 export default async function GameDetailPage({
     params,

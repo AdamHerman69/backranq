@@ -175,6 +175,9 @@ export async function POST(req: Request) {
                     type: p.type,
                     severity: p.severity,
                     bestMoveUci: p.bestMoveUci,
+                    acceptedMovesUci: Array.isArray((p as any).acceptedMovesUci)
+                        ? (p as any).acceptedMovesUci
+                        : [],
                     bestLine: p.bestLine,
                     score: p.score,
                     tags: p.tags,

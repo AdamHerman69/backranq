@@ -205,6 +205,12 @@ export function PuzzleTrainerV2({
 
     const currentPuzzle = queue[idx] ?? null;
     const preferFailed = queueMode === 'reviewFailed';
+    const [directLoadError, setDirectLoadError] = useState<string | null>(null);
+
+    const directPuzzleId = useMemo(() => {
+        const raw = sp?.get('puzzleId');
+        return typeof raw === 'string' ? raw.trim() : '';
+    }, [sp]);
 
     const [sourceGame, setSourceGame] = useState<NormalizedGame | null>(null);
     const [sourceParsed, setSourceParsed] = useState<SourceParsed | null>(null);
@@ -215,7 +221,13 @@ export function PuzzleTrainerV2({
     const [attemptLastMove, setAttemptLastMove] = useState<{ from: Square; to: Square } | null>(null);
     const [attemptUci, setAttemptUci] = useState<string | null>(null);
     const [attemptResult, setAttemptResult] = useState<'correct' | 'incorrect' | null>(null);
+    const [solvedKind, setSolvedKind] = useState<'best' | 'safe' | null>(null);
     const [showSolution, setShowSolution] = useState(false);
+
+    // Solve mode: wrong-move refutation playback + overlay
+    const [refutationLineUci, setRefutationLineUci] = useState<string[] | null>(null);
+    const [refutationStep, setRefutationStep] = useState(0);
+    const [showWrongOverlay, setShowWrongOverlay] = useState(false);
 
     // Context (pre-puzzle) navigation
     const [showContext, setShowContext] = useState(false);
@@ -240,7 +252,6 @@ export function PuzzleTrainerV2({
     const [analysisBusy, setAnalysisBusy] = useState(false);
     const [analysisErr, setAnalysisErr] = useState<string | null>(null);
     const [selectedLine, setSelectedLine] = useState(0);
-    const [refutationToast, setRefutationToast] = useState<string | null>(null);
 
     // Click-to-move hints
     const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
@@ -265,6 +276,29 @@ export function PuzzleTrainerV2({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [viewMode, queueMode]);
 
+    async function fetchPuzzleById(id: string) {
+        const pid = (id ?? '').trim();
+        if (!pid) return null;
+        try {
+            const res = await fetch(`/api/puzzles/${encodeURIComponent(pid)}`);
+            const json: unknown = await res.json().catch(() => ({}));
+            const obj =
+                json && typeof json === 'object'
+                    ? (json as Record<string, unknown>)
+                    : ({} as Record<string, unknown>);
+            const err =
+                'error' in obj && typeof obj.error === 'string'
+                    ? obj.error
+                    : 'Failed to load puzzle';
+            if (!res.ok) throw new Error(err);
+            const puzzle = 'puzzle' in obj ? (obj.puzzle as Puzzle | null) : null;
+            return puzzle ?? null;
+        } catch (e) {
+            setDirectLoadError(e instanceof Error ? e.message : 'Failed to load puzzle');
+            return null;
+        }
+    }
+
     async function fetchNextPuzzle() {
         const excludeIds = queue.slice(-25).map((p) => p.id);
         const res = await getRandom({ count: 1, excludeIds, preferFailed });
@@ -274,12 +308,47 @@ export function PuzzleTrainerV2({
 
     async function ensureOne() {
         if (queue.length > 0) return;
+
+        // If a puzzleId is provided in the URL, load that puzzle into the trainer.
+        if (directPuzzleId) {
+            setDirectLoadError(null);
+            const p = await fetchPuzzleById(directPuzzleId);
+            if (p) {
+                setQueue([p]);
+                setIdx(0);
+                return;
+            }
+            // fall through to random puzzle if direct load fails
+        }
+
         const p = await fetchNextPuzzle();
         if (p) {
             setQueue([p]);
             setIdx(0);
         }
     }
+
+    // If the URL puzzleId changes while the trainer is mounted, switch the queue to that puzzle.
+    useEffect(() => {
+        let cancelled = false;
+        async function run() {
+            if (!directPuzzleId) return;
+            if (queue[0]?.id === directPuzzleId && idx === 0) return;
+            setDirectLoadError(null);
+            const p = await fetchPuzzleById(directPuzzleId);
+            if (cancelled) return;
+            if (p) {
+                setQueue([p]);
+                setIdx(0);
+            }
+        }
+        void run();
+        return () => {
+            cancelled = true;
+        };
+        // Intentionally omit `idx` from deps; we only care about URL changes and current queue head.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [directPuzzleId, queue[0]?.id]);
 
     // initial load + queueMode change
     useEffect(() => {
@@ -294,7 +363,11 @@ export function PuzzleTrainerV2({
         setAttemptLastMove(null);
         setAttemptUci(null);
         setAttemptResult(null);
+        setSolvedKind(null);
         setShowSolution(false);
+        setRefutationLineUci(null);
+        setRefutationStep(0);
+        setShowWrongOverlay(false);
         setPvStep(0);
         setSelectedLine(0);
         setAnalysis(null);
@@ -366,7 +439,7 @@ export function PuzzleTrainerV2({
         return findPuzzleLastMove({ puzzle: currentPuzzle, source: sourceParsed });
     }, [currentPuzzle, sourceParsed]);
 
-    const isReviewState = !!attemptResult || showSolution;
+    const isReviewState = attemptResult === 'correct' || showSolution;
 
     const solveExplorerLine = useMemo(() => {
         if (!currentPuzzle) return [] as string[];
@@ -389,6 +462,12 @@ export function PuzzleTrainerV2({
         return applyUciLine(analysisRootFen, analyzeLineUci, 24);
     }, [analysisRootFen, analyzeLineUci]);
 
+    const refutationApplied = useMemo(() => {
+        if (viewMode !== 'solve') return [];
+        if (attemptResult !== 'incorrect') return [];
+        return applyUciLine(attemptFen, refutationLineUci ?? [], 12);
+    }, [viewMode, attemptResult, attemptFen, refutationLineUci]);
+
     const displayFen = useMemo(() => {
         if (!currentPuzzle) return new Chess().fen();
 
@@ -407,12 +486,17 @@ export function PuzzleTrainerV2({
                 return c.fen();
             }
 
+            if (attemptResult === 'incorrect') {
+                const step = clamp(refutationStep, 0, Math.max(0, refutationApplied.length - 1));
+                return refutationApplied[step]?.fen ?? attemptFen;
+            }
+
             if (isReviewState) {
                 const step = clamp(pvStep, 0, Math.max(0, solveLineApplied.length - 1));
                 return solveLineApplied[step]?.fen ?? currentPuzzle.fen;
             }
 
-            return attemptResult ? attemptFen : currentPuzzle.fen;
+            return currentPuzzle.fen;
         }
 
         // analyze
@@ -430,15 +514,17 @@ export function PuzzleTrainerV2({
         solveLineApplied,
         attemptResult,
         attemptFen,
+        refutationApplied,
+        refutationStep,
         analysisRootFen,
         analyzeApplied,
     ]);
 
     const allowMove = useMemo(() => {
         if (!currentPuzzle) return false;
-        if (viewMode === 'solve') return !showContext && !isReviewState && !attemptResult;
+        if (viewMode === 'solve') return !showContext && !attemptResult;
         return true;
-    }, [currentPuzzle, viewMode, showContext, isReviewState, attemptResult]);
+    }, [currentPuzzle, viewMode, showContext, attemptResult]);
 
     const evalScore = useMemo(() => {
         if (viewMode === 'solve') return currentPuzzle?.score ?? null;
@@ -563,12 +649,12 @@ export function PuzzleTrainerV2({
         if (selectedSquare) {
             s[selectedSquare] = { outline: '2px solid hsl(var(--ring))' };
         }
+        const dot =
+            'radial-gradient(circle at center, rgba(124,58,237,0.55) 0 18%, rgba(0,0,0,0) 20%)';
         for (const t of legalTargets) {
             if (!s[t]) s[t] = {};
-            s[t] = {
-                ...s[t],
-                boxShadow: 'inset 0 0 0 2px rgba(124,58,237,0.35)',
-            };
+            const prev = (s[t] as any).backgroundImage as string | undefined;
+            (s[t] as any).backgroundImage = prev ? `${dot}, ${prev}` : dot;
         }
         return s;
     }, [
@@ -581,6 +667,50 @@ export function PuzzleTrainerV2({
         selectedSquare,
         legalTargets,
     ]);
+
+    function applyMoveResult(res: {
+        fen: string;
+        uci: string;
+        lastMove: { from: Square; to: Square };
+    }) {
+        clearHints();
+        setShowContext(false);
+
+        if (viewMode === 'solve') {
+            setAttemptFen(res.fen);
+            setAttemptLastMove(res.lastMove);
+            setAttemptUci(res.uci);
+            const best = (currentPuzzle?.bestMoveUci ?? '').trim().toLowerCase();
+            const u = res.uci.trim().toLowerCase();
+            const accepted = new Set(
+                [
+                    best,
+                    ...((currentPuzzle?.acceptedMovesUci ?? []) as string[]),
+                ]
+                    .map((s) => (s ?? '').trim().toLowerCase())
+                    .filter(Boolean)
+            );
+            const correct = accepted.has(u);
+            setAttemptResult(correct ? 'correct' : 'incorrect');
+            setSolvedKind(correct ? (u === best ? 'best' : 'safe') : null);
+            setPvStep(0);
+
+            if (!correct) {
+                setRefutationLineUci(null);
+                setRefutationStep(0);
+                setShowWrongOverlay(false);
+            } else {
+                // If it's a safe-but-not-best move, reveal best line for learning.
+                if (u !== best) setShowSolution(true);
+            }
+            return;
+        }
+
+        // analyze sandbox: update root and re-run analysis
+        setAnalysisRootFen(res.fen);
+        setPvStep(0);
+        void runAnalyze(res.fen);
+    }
 
     function getMoveControllerFen() {
         if (viewMode === 'solve') return currentPuzzle?.fen ?? new Chess().fen();
@@ -628,6 +758,9 @@ export function PuzzleTrainerV2({
         setAttemptResult(null);
         setShowSolution(false);
         setPvStep(0);
+        setRefutationLineUci(null);
+        setRefutationStep(0);
+        setShowWrongOverlay(false);
         clearHints();
         startAttempt(currentPuzzle.id);
     }
@@ -672,10 +805,10 @@ export function PuzzleTrainerV2({
         });
     }, [currentPuzzle?.id, attemptUci, attemptResult, recordAttempt]);
 
-    // Solve mode: on wrong move, briefly show Stockfish refutation PV.
+    // Solve mode: on wrong move, auto-play Stockfish refutation then show overlay.
     useEffect(() => {
         let cancelled = false;
-        let t: number | null = null;
+        let interval: number | null = null;
         async function run() {
             if (viewMode !== 'solve') return;
             if (!currentPuzzle) return;
@@ -692,12 +825,29 @@ export function PuzzleTrainerV2({
                     movetimeMs: 250,
                     multiPv: 1,
                 });
-                const pv = res.lines?.[0]?.pvUci?.slice(0, 6) ?? [];
+                const pv = res.lines?.[0]?.pvUci?.slice(0, 10) ?? [];
                 if (cancelled) return;
-                if (pv.length > 0) {
-                    setRefutationToast(`Refutation: ${pv.join(' ')}`);
-                    t = window.setTimeout(() => setRefutationToast(null), 1800);
+                setRefutationLineUci(pv);
+                setRefutationStep(0);
+                setShowWrongOverlay(false);
+
+                const applied = applyUciLine(attemptFen, pv, 12);
+                const lastIdx = Math.max(0, applied.length - 1);
+                if (lastIdx === 0) {
+                    setShowWrongOverlay(true);
+                    return;
                 }
+                interval = window.setInterval(() => {
+                    setRefutationStep((s) => {
+                        if (s >= lastIdx) {
+                            if (interval) window.clearInterval(interval);
+                            interval = null;
+                            setShowWrongOverlay(true);
+                            return s;
+                        }
+                        return s + 1;
+                    });
+                }, 450);
             } catch {
                 // ignore
             }
@@ -705,7 +855,7 @@ export function PuzzleTrainerV2({
         void run();
         return () => {
             cancelled = true;
-            if (t) window.clearTimeout(t);
+            if (interval) window.clearInterval(interval);
         };
     }, [viewMode, currentPuzzle?.id, attemptResult, attemptFen, engineClient]);
 
@@ -751,7 +901,7 @@ export function PuzzleTrainerV2({
                         setContextPly((p) => Math.max(0, p - 1));
                         return;
                     }
-                    if (!isReviewState && sourceParsed) {
+                    if (!attemptResult && !isReviewState && sourceParsed) {
                         const start = Math.max(0, puzzlePly - 1);
                         setShowContext(true);
                         setContextPly(start);
@@ -867,7 +1017,9 @@ export function PuzzleTrainerV2({
                             {viewMode === 'solve' ? (
                                 attemptResult ? (
                                     attemptResult === 'correct' ? (
-                                        'Correct — review the line (←/→)'
+                                        solvedKind === 'safe'
+                                            ? 'Good save — review the best line (←/→)'
+                                            : 'Correct — review the line (←/→)'
                                     ) : (
                                         'Not best — try again'
                                     )
@@ -1178,10 +1330,43 @@ export function PuzzleTrainerV2({
                         ) : null}
                         <div
                             className={
-                                'rounded-xl border bg-card p-3 ' +
+                                'relative rounded-xl border bg-card p-3 ' +
                                 (isOffPuzzlePosition ? 'border-zinc-400' : '')
                             }
                         >
+                            {viewMode === 'solve' && attemptResult === 'incorrect' && showWrongOverlay ? (
+                                <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/70 backdrop-blur-sm">
+                                    <div className="mx-4 w-full max-w-sm rounded-lg border bg-card p-4 shadow-lg">
+                                        <div className="text-sm font-medium">Not best</div>
+                                        <div className="mt-1 text-sm text-muted-foreground">
+                                            Want to analyze this position or try again?
+                                        </div>
+                                        <div className="mt-4 flex flex-wrap gap-2">
+                                            <Button
+                                                onClick={() => {
+                                                    setShowWrongOverlay(false);
+                                                    setRefutationLineUci(null);
+                                                    setRefutationStep(0);
+                                                    setPvStep(0);
+                                                    setAnalysisRootFen(attemptFen);
+                                                    setViewMode('analyze');
+                                                }}
+                                            >
+                                                Analyze
+                                            </Button>
+                                            <Button
+                                                variant="outline"
+                                                onClick={() => {
+                                                    setShowWrongOverlay(false);
+                                                    resetSolve();
+                                                }}
+                                            >
+                                                Try again
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : null}
                             <Chessboard
                                 options={{
                                     position: displayFen,
@@ -1195,8 +1380,36 @@ export function PuzzleTrainerV2({
                                         computeHints(square as Square);
                                     },
                                     onSquareClick: ({ piece, square }) => {
+                                        if (!square) return;
+                                        const sq = square as Square;
+                                        if (!allowMove) {
+                                            clearHints();
+                                            return;
+                                        }
+
+                                        // If a piece is selected, clicking a legal target plays the move.
+                                        if (selectedSquare && legalTargets.has(sq)) {
+                                            const from = selectedSquare;
+                                            const to = sq;
+                                            const c = new Chess(displayFen);
+                                            const pc = c.get(from);
+                                            const isPawn = pc?.type === 'p';
+                                            const promotionRank = to[1] === '8' || to[1] === '1';
+                                            const promotion = isPawn && promotionRank ? 'q' : undefined;
+                                            const res = tryMakeMove({ from, to, promotion });
+                                            if (res) applyMoveResult(res);
+                                            return;
+                                        }
+
+                                        // Clicking the selected square toggles selection off.
+                                        if (selectedSquare && selectedSquare === sq) {
+                                            clearHints();
+                                            return;
+                                        }
+
+                                        // Otherwise, select a piece (if any) or clear selection.
                                         if (!piece) return clearHints();
-                                        computeHints(square as Square);
+                                        computeHints(sq);
                                     },
                                     onPieceDrop: allowMove
                                         ? ({ sourceSquare, targetSquare, piece }) => {
@@ -1211,26 +1424,7 @@ export function PuzzleTrainerV2({
 
                                               const res = tryMakeMove({ from, to, promotion });
                                               if (!res) return false;
-
-                                              if (viewMode === 'solve') {
-                                                  setAttemptFen(res.fen);
-                                                  setAttemptLastMove(res.lastMove);
-                                                  setAttemptUci(res.uci);
-                                                  setAttemptResult(
-                                                      res.uci === currentPuzzle.bestMoveUci
-                                                          ? 'correct'
-                                                          : 'incorrect'
-                                                  );
-                                                  if (res.uci === currentPuzzle.bestMoveUci) {
-                                                      setPvStep(0);
-                                                  }
-                                                  return true;
-                                              }
-
-                                              // analyze sandbox: update root and re-run analysis
-                                              setAnalysisRootFen(res.fen);
-                                              setPvStep(0);
-                                              void runAnalyze(res.fen);
+                                              applyMoveResult(res);
                                               return true;
                                           }
                                         : undefined,
@@ -1244,12 +1438,6 @@ export function PuzzleTrainerV2({
                             </div>
                         ) : null}
 
-                        {refutationToast ? (
-                            <div className="mt-3 rounded-md border bg-muted px-3 py-2 font-mono text-xs text-muted-foreground">
-                                {refutationToast}
-                            </div>
-                        ) : null}
-
                         {viewMode === 'solve' && attemptResult ? (
                             <div className={
                                 'mt-3 rounded-md border px-3 py-2 text-sm ' +
@@ -1257,9 +1445,15 @@ export function PuzzleTrainerV2({
                                     ? 'border-emerald-500/30 bg-emerald-500/10'
                                     : 'border-red-500/30 bg-red-500/10')
                             }>
-                                {attemptResult === 'correct'
-                                    ? `Correct (${attemptUci ?? ''}) — step through the line (←/→).`
-                                    : `Not best (${attemptUci ?? ''}).`}
+                                {attemptResult === 'correct' ? (
+                                    solvedKind === 'safe' ? (
+                                        `Good save (${attemptUci ?? ''}) — best was ${currentPuzzle.bestMoveUci}.`
+                                    ) : (
+                                        `Correct (${attemptUci ?? ''}) — step through the line (←/→).`
+                                    )
+                                ) : (
+                                    `Not best (${attemptUci ?? ''}).`
+                                )}
                             </div>
                         ) : null}
 
@@ -1335,6 +1529,9 @@ export function PuzzleTrainerV2({
 
             {randomError ? (
                 <div className="text-sm text-red-600">{randomError}</div>
+            ) : null}
+            {directLoadError ? (
+                <div className="text-sm text-red-600">{directLoadError}</div>
             ) : null}
             {sourceError ? (
                 <div className="text-sm text-red-600">{sourceError}</div>

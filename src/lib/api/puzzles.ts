@@ -23,6 +23,10 @@ function toStringArray(v: unknown): string[] {
     return v.filter((x) => typeof x === 'string') as string[];
 }
 
+function normalizeUci(s: string): string {
+    return (s ?? '').trim().toLowerCase();
+}
+
 function toScore(v: unknown): UiPuzzle['score'] {
     if (!v || typeof v !== 'object') return null;
     const t = (v as any).type;
@@ -100,6 +104,14 @@ export function puzzleToDb(args: {
         ? 'PUNISH_BLUNDER'
         : 'AVOID_BLUNDER';
 
+    const acceptedMovesUci = Array.from(
+        new Set(
+            [p.bestMoveUci, ...(p.acceptedMovesUci ?? [])]
+                .map(normalizeUci)
+                .filter(Boolean)
+        )
+    ).slice(0, 16);
+
     return {
         userId: args.userId,
         gameId: args.gameId,
@@ -108,6 +120,7 @@ export function puzzleToDb(args: {
         type: mode,
         severity: p.severity ?? null,
         bestMoveUci: p.bestMoveUci,
+        acceptedMovesUci,
         bestLine: p.bestLineUci as any,
         score: (p.score ?? null) as any,
         tags,
@@ -127,6 +140,12 @@ export function dbToPuzzle(
     const bestLineUci = toStringArray(row.bestLine);
     const score = toScore(row.score);
     const kind = inferKindFromTags(tags);
+    const acceptedMovesUci = Array.isArray((row as any).acceptedMovesUci)
+        ? ((row as any).acceptedMovesUci as string[])
+              .filter((s) => typeof s === 'string')
+              .map(normalizeUci)
+              .filter(Boolean)
+        : [];
 
     return {
         id: row.id,
@@ -139,6 +158,7 @@ export function dbToPuzzle(
         sideToMove: (row.fen.split(' ')[1] === 'b' ? 'b' : 'w') as 'w' | 'b',
         bestLineUci,
         bestMoveUci: row.bestMoveUci,
+        acceptedMovesUci,
         score,
         label: row.label ?? 'Find the best move',
         tags,

@@ -88,6 +88,7 @@ export function PuzzlePanel(props: {
   const [attemptLastMove, setAttemptLastMove] = useState<{ from: string; to: string } | null>(null);
   const [attemptUci, setAttemptUci] = useState<string | null>(null);
   const [attemptResult, setAttemptResult] = useState<"correct" | "incorrect" | null>(null);
+  const [solvedKind, setSolvedKind] = useState<"best" | "safe" | null>(null);
   const [showSolution, setShowSolution] = useState(false);
   const [gamePly, setGamePly] = useState(0);
 
@@ -117,6 +118,7 @@ export function PuzzlePanel(props: {
     setAttemptLastMove(null);
     setAttemptUci(null);
     setAttemptResult(null);
+    setSolvedKind(null);
     setShowSolution(false);
     setGamePly(currentPuzzle.sourcePly);
     setSelectedSquare(null);
@@ -549,7 +551,16 @@ export function PuzzlePanel(props: {
                     setAttemptFen(c.fen());
                     setAttemptLastMove({ from, to });
                     setAttemptUci(uci);
-                    setAttemptResult(uci === currentPuzzle.bestMoveUci ? "correct" : "incorrect");
+                    const best = (currentPuzzle.bestMoveUci ?? "").trim().toLowerCase();
+                    const played = uci.trim().toLowerCase();
+                    const accepted = new Set(
+                      [best, ...((currentPuzzle.acceptedMovesUci ?? []) as string[])]
+                        .map((s) => (s ?? "").trim().toLowerCase())
+                        .filter(Boolean),
+                    );
+                    const correct = accepted.has(played);
+                    setAttemptResult(correct ? "correct" : "incorrect");
+                    setSolvedKind(correct ? (played === best ? "best" : "safe") : null);
                     setLineKind(uci === currentPuzzle.bestMoveUci ? "best" : "best");
                     setLineStep(0);
                     return true;
@@ -611,7 +622,11 @@ export function PuzzlePanel(props: {
 
               {attemptResult && (
                 <div className={attemptResult === "correct" ? styles.success : styles.warning}>
-                  {attemptResult === "correct" ? `Correct! (${attemptUci})` : `Not best. You played ${attemptUci}.`}
+                  {attemptResult === "correct"
+                    ? solvedKind === "safe"
+                      ? `Good save! (${attemptUci}) Best was ${currentPuzzle.bestMoveUci}.`
+                      : `Correct! (${attemptUci})`
+                    : `Not best. You played ${attemptUci}.`}
                 </div>
               )}
               {attemptSaving || attemptQueued > 0 ? (

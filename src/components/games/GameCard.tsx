@@ -4,7 +4,7 @@ import Link from 'next/link';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
 export type GameCardData = {
@@ -148,7 +148,11 @@ export function GameCard({
                         {puzzles.length > 0 ? (
                             <div className="flex flex-wrap gap-1.5 pt-1">
                                 {puzzles.map((p) => (
-                                    <Link key={p.id} href={`/puzzles/${p.id}`} title={`${p.type} • ply ${p.sourcePly + 1}`}>
+                                    <Link
+                                        key={p.id}
+                                        href={`/puzzles?puzzleId=${encodeURIComponent(p.id)}`}
+                                        title={`${p.type} • ply ${p.sourcePly + 1}`}
+                                    >
                                         <Badge variant="outline" className="cursor-pointer">
                                             Ply {p.sourcePly + 1}
                                         </Badge>

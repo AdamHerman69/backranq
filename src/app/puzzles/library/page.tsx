@@ -4,7 +4,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import type { Prisma } from '@prisma/client';
 import { aggregatePuzzleStats } from '@/lib/api/puzzles';
-import { PuzzlesFilter, type PuzzlesFilters } from '@/components/puzzles/PuzzlesFilter';
+import PuzzlesFilter, { type PuzzlesFilters } from '@/components/puzzles/PuzzlesFilter';
 import { PuzzlesList, type PuzzleListItem } from '@/components/puzzles/PuzzlesList';
 import { PageHeader } from '@/components/app/PageHeader';
 import { Button } from '@/components/ui/button';
@@ -110,7 +110,9 @@ export default async function PuzzleLibraryPage({
     });
 
     const initialFilters: PuzzlesFilters = {
-        type: type === 'avoidBlunder' || type === 'punishBlunder' ? (type as any) : '',
+        type: (type === 'avoidBlunder' || type === 'punishBlunder'
+            ? type
+            : '') as PuzzlesFilters['type'],
         opening,
         tags: tagsParam,
         gameId,

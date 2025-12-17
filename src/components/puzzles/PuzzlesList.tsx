@@ -115,7 +115,7 @@ export function PuzzlesList({
                                     </TableCell>
                                     <TableCell className="text-right">
                                         <Button asChild variant="outline" size="sm">
-                                            <Link href={`/puzzles/${p.id}`}>Open</Link>
+                                            <Link href={`/puzzles?puzzleId=${encodeURIComponent(p.id)}`}>Open</Link>
                                         </Button>
                                     </TableCell>
                                 </TableRow>

@@ -160,3 +160,5 @@ export function PuzzlesFilter({
     );
 }
 
+export default PuzzlesFilter;
+

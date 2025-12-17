@@ -3,6 +3,7 @@ import type { NormalizedGame } from '@/lib/types/game';
 import { classifyOpeningFromPgn } from '@/lib/chess/opening';
 import type {
     EvalResult,
+    MultiPvResult,
     Score,
     StockfishClient,
 } from '@/lib/analysis/stockfishClient';
@@ -14,10 +15,8 @@ import type {
 import {
     type AnalyzedMove,
     type GameAnalysis,
-    type MoveClassification,
     classifyMove,
     calculateAccuracy,
-    scoreToCp as classificationScoreToCp,
 } from '@/lib/analysis/classification';
 
 /**
@@ -109,6 +108,15 @@ export type ExtractOptions = {
      * Set to 0 or null to disable. Defaults to 0 (disabled, as it requires extra eval).
      */
     uniquenessMarginCp?: number | null;
+
+    /**
+     * For "avoid blunder" puzzles, optionally accept multiple moves as correct.
+     * Uses MultiPV at the puzzle start and accepts moves whose eval is within
+     * avoidBlunderAcceptableLossCp of the best move (from side-to-move POV).
+     */
+    avoidBlunderMultiPv?: number; // default 4 (clamped 1..5)
+    avoidBlunderAcceptableLossCp?: number; // default 80
+    avoidBlunderMaxAcceptedMoves?: number; // default 4
 
     /**
      * If true, also return move-by-move analysis with classifications for each game.
@@ -322,6 +330,557 @@ function applyUciPlies(opts: {
     return { fen: c.fen(), pliesApplied: applied };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Motif tagging (lightweight, deterministic, PV-based)
+// ─────────────────────────────────────────────────────────────────────────────
+
+type Board2d = ReturnType<Chess['board']>;
+type PieceColor = 'w' | 'b';
+type PieceType = 'p' | 'n' | 'b' | 'r' | 'q' | 'k';
+
+function otherColor(c: PieceColor): PieceColor {
+    return c === 'w' ? 'b' : 'w';
+}
+
+function squareToXY(square: string): { x: number; y: number } | null {
+    const s = (square ?? '').trim();
+    if (s.length !== 2) return null;
+    const file = s.charCodeAt(0) - 'a'.charCodeAt(0);
+    const rank = s.charCodeAt(1) - '1'.charCodeAt(0);
+    if (file < 0 || file > 7 || rank < 0 || rank > 7) return null;
+    return { x: file, y: rank };
+}
+
+function xyToSquare(x: number, y: number): string | null {
+    if (x < 0 || x > 7 || y < 0 || y > 7) return null;
+    return `${String.fromCharCode('a'.charCodeAt(0) + x)}${y + 1}`;
+}
+
+function pieceAt(board: Board2d, x: number, y: number) {
+    // chess.board() is rank 8..1 (top to bottom). Our y is rank 1..8 (bottom to top).
+    const row = 7 - y;
+    const col = x;
+    return board[row]?.[col] ?? null;
+}
+
+function findKingSquare(board: Board2d, color: PieceColor): string | null {
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const p = board[row]?.[col];
+            if (!p) continue;
+            if (p.type === 'k' && p.color === color) {
+                const file = String.fromCharCode('a'.charCodeAt(0) + col);
+                const rank = String(8 - row);
+                return `${file}${rank}`;
+            }
+        }
+    }
+    return null;
+}
+
+function rayClear(
+    board: Board2d,
+    fx: number,
+    fy: number,
+    tx: number,
+    ty: number
+) {
+    const dx = Math.sign(tx - fx);
+    const dy = Math.sign(ty - fy);
+    if (dx === 0 && dy === 0) return true;
+    let x = fx + dx;
+    let y = fy + dy;
+    while (x !== tx || y !== ty) {
+        if (pieceAt(board, x, y)) return false;
+        x += dx;
+        y += dy;
+    }
+    return true;
+}
+
+function pieceAttacksSquare(
+    board: Board2d,
+    from: string,
+    piece: { type: PieceType; color: PieceColor },
+    target: string
+): boolean {
+    const f = squareToXY(from);
+    const t = squareToXY(target);
+    if (!f || !t) return false;
+    const dx = t.x - f.x;
+    const dy = t.y - f.y;
+
+    switch (piece.type) {
+        case 'p': {
+            const dir = piece.color === 'w' ? 1 : -1;
+            return dy === dir && (dx === 1 || dx === -1);
+        }
+        case 'n': {
+            const adx = Math.abs(dx);
+            const ady = Math.abs(dy);
+            return (adx === 1 && ady === 2) || (adx === 2 && ady === 1);
+        }
+        case 'k': {
+            return Math.max(Math.abs(dx), Math.abs(dy)) === 1;
+        }
+        case 'b': {
+            if (Math.abs(dx) !== Math.abs(dy)) return false;
+            return rayClear(board, f.x, f.y, t.x, t.y);
+        }
+        case 'r': {
+            if (!(dx === 0 || dy === 0)) return false;
+            return rayClear(board, f.x, f.y, t.x, t.y);
+        }
+        case 'q': {
+            const diag = Math.abs(dx) === Math.abs(dy);
+            const ortho = dx === 0 || dy === 0;
+            if (!diag && !ortho) return false;
+            return rayClear(board, f.x, f.y, t.x, t.y);
+        }
+        default:
+            return false;
+    }
+}
+
+function isSquareAttackedByColor(
+    board: Board2d,
+    target: string,
+    attackerColor: PieceColor
+): boolean {
+    for (let y = 0; y < 8; y++) {
+        for (let x = 0; x < 8; x++) {
+            const p = pieceAt(board, x, y);
+            if (!p) continue;
+            if (p.color !== attackerColor) continue;
+            const from = xyToSquare(x, y);
+            if (!from) continue;
+            if (
+                pieceAttacksSquare(
+                    board,
+                    from,
+                    { type: p.type as PieceType, color: p.color as PieceColor },
+                    target
+                )
+            ) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+function firstTwoPiecesOnRay(
+    board: Board2d,
+    fx: number,
+    fy: number,
+    dx: number,
+    dy: number
+): {
+    first: {
+        x: number;
+        y: number;
+        piece: { type: PieceType; color: PieceColor };
+    };
+    second: {
+        x: number;
+        y: number;
+        piece: { type: PieceType; color: PieceColor };
+    } | null;
+} | null {
+    let x = fx + dx;
+    let y = fy + dy;
+    let first: {
+        x: number;
+        y: number;
+        piece: { type: PieceType; color: PieceColor };
+    } | null = null;
+    while (x >= 0 && x <= 7 && y >= 0 && y <= 7) {
+        const p = pieceAt(board, x, y);
+        if (p) {
+            if (!first) {
+                first = {
+                    x,
+                    y,
+                    piece: {
+                        type: p.type as PieceType,
+                        color: p.color as PieceColor,
+                    },
+                };
+            } else {
+                return {
+                    first,
+                    second: {
+                        x,
+                        y,
+                        piece: {
+                            type: p.type as PieceType,
+                            color: p.color as PieceColor,
+                        },
+                    },
+                };
+            }
+        }
+        x += dx;
+        y += dy;
+    }
+    return first ? { first, second: null } : null;
+}
+
+function isCheckmatePosition(chess: Chess): boolean {
+    // chess.js has different method names across versions; this is reliable.
+    return chess.inCheck() && chess.moves().length === 0;
+}
+
+function motifTagsFromPv(args: {
+    startFen: string;
+    pvUci: string[] | null | undefined;
+    score: Score | null;
+}): string[] {
+    const tags = new Set<string>();
+    const pv = args.pvUci ?? [];
+    if (pv.length === 0) return [];
+
+    type MoveExt = Move & { captured?: string; promotion?: string };
+
+    // Mate tags (from engine score) – keep low-cardinality.
+    if (args.score?.type === 'mate' && args.score.value > 0) {
+        tags.add('mate');
+        const n = Math.abs(Math.trunc(args.score.value));
+        if (Number.isFinite(n) && n > 0 && n <= 5) tags.add(`mateIn${n}`);
+        else tags.add('mateInN');
+    }
+
+    // Sacrifice (very approximate): early material drop while still clearly winning at puzzle start.
+    const mover = sideToMoveFromFen(args.startFen);
+    const baseMat = materialByColorFromFen(args.startFen)[mover];
+    const after2 = applyUciPlies({
+        fen: args.startFen,
+        uciLine: pv,
+        maxPlies: 2,
+    });
+    if (after2.pliesApplied >= 1) {
+        const mat2 = materialByColorFromFen(after2.fen)[mover];
+        const drop = baseMat - mat2;
+        const startCp = scoreToCp(args.score);
+        const isClearlyWinning =
+            (startCp != null && startCp >= 150) ||
+            (args.score?.type === 'mate' && args.score.value > 0);
+        if (drop >= 3 && isClearlyWinning) tags.add('sacrifice');
+    }
+
+    const chess = new Chess(args.startFen);
+    const maxPlies = Math.min(pv.length, 8);
+
+    // Track "mate in N" from PV too (in case score is cp but PV ends in mate).
+    for (let i = 0; i < maxPlies; i++) {
+        const uci = pv[i];
+        if (!uci) break;
+
+        const beforeFen = chess.fen();
+        const before = new Chess(beforeFen);
+        const beforeBoard = before.board();
+        const moverColor = before.turn() as PieceColor;
+        const enemyColor = otherColor(moverColor);
+
+        const parsed = parseUci(uci);
+        if (!parsed) break;
+
+        let mv: Move | null = null;
+        try {
+            mv = chess.move({
+                from: parsed.from,
+                to: parsed.to,
+                promotion: parsed.promotion,
+            });
+        } catch {
+            break;
+        }
+        if (!mv) break;
+
+        const afterBoard = chess.board();
+        const mvExt = mv as MoveExt;
+        const isCapture = !!mvExt.captured; // includes en passant
+        const isPromotion = !!mvExt.promotion;
+        const isCheck = chess.inCheck();
+
+        // Simple surface tags based on the best move (first ply).
+        if (i === 0) {
+            if (isCheck) tags.add('check');
+            if (isCapture) tags.add('capture');
+            if (isPromotion) tags.add('promotion');
+        }
+
+        // Only inspect solver's moves for motifs (plies 0,2,4,...) and keep it cheap.
+        const isSolverMove = i % 2 === 0;
+        const withinMotifWindow = i <= 5;
+        if (isSolverMove && withinMotifWindow) {
+            const movedPieceType =
+                (mv.piece as PieceType | undefined) ?? undefined;
+            const movedTo = mv.to ?? undefined;
+            if (movedPieceType && movedTo) {
+                // Fork: moved piece attacks >=2 valuable enemy pieces (or king+piece) after the move.
+                const valuable = new Set<PieceType>(['k', 'q', 'r', 'b', 'n']);
+                let attackedValuables = 0;
+                for (let y = 0; y < 8; y++) {
+                    for (let x = 0; x < 8; x++) {
+                        const p = pieceAt(afterBoard, x, y);
+                        if (!p) continue;
+                        if (p.color !== enemyColor) continue;
+                        if (!valuable.has(p.type as PieceType)) continue;
+                        const sq = xyToSquare(x, y);
+                        if (!sq) continue;
+                        if (
+                            pieceAttacksSquare(
+                                afterBoard,
+                                movedTo,
+                                { type: movedPieceType, color: moverColor },
+                                sq
+                            )
+                        ) {
+                            attackedValuables++;
+                            if (attackedValuables >= 2) break;
+                        }
+                    }
+                    if (attackedValuables >= 2) break;
+                }
+                if (attackedValuables >= 2) tags.add('fork');
+
+                // Pin / skewer (line pieces only).
+                if (
+                    movedPieceType === 'b' ||
+                    movedPieceType === 'r' ||
+                    movedPieceType === 'q'
+                ) {
+                    const dirs: { dx: number; dy: number }[] = [];
+                    if (movedPieceType === 'b' || movedPieceType === 'q') {
+                        dirs.push(
+                            { dx: 1, dy: 1 },
+                            { dx: 1, dy: -1 },
+                            { dx: -1, dy: 1 },
+                            { dx: -1, dy: -1 }
+                        );
+                    }
+                    if (movedPieceType === 'r' || movedPieceType === 'q') {
+                        dirs.push(
+                            { dx: 1, dy: 0 },
+                            { dx: -1, dy: 0 },
+                            { dx: 0, dy: 1 },
+                            { dx: 0, dy: -1 }
+                        );
+                    }
+                    const mxy = squareToXY(movedTo);
+                    if (mxy) {
+                        for (const d of dirs) {
+                            const ray = firstTwoPiecesOnRay(
+                                afterBoard,
+                                mxy.x,
+                                mxy.y,
+                                d.dx,
+                                d.dy
+                            );
+                            if (!ray?.first) continue;
+                            const first = ray.first;
+                            const second = ray.second;
+                            if (
+                                first.piece.color === enemyColor &&
+                                second?.piece?.color === enemyColor
+                            ) {
+                                if (second.piece.type === 'k') tags.add('pin');
+                            }
+                            if (
+                                first.piece.color === enemyColor &&
+                                first.piece.type === 'k' &&
+                                second?.piece?.color === enemyColor
+                            ) {
+                                const skewTarget = second.piece.type;
+                                if (skewTarget === 'q' || skewTarget === 'r')
+                                    tags.add('skewer');
+                            }
+                        }
+                    }
+                }
+
+                // Discovered check: opponent is in check, but moved piece is NOT the one giving it,
+                // and the king was not already attacked before the move.
+                const enemyKingAfter = findKingSquare(afterBoard, enemyColor);
+                if (enemyKingAfter && isCheck) {
+                    const wasAttackedBefore = isSquareAttackedByColor(
+                        beforeBoard,
+                        enemyKingAfter,
+                        moverColor
+                    );
+                    const movedGivesCheck = pieceAttacksSquare(
+                        afterBoard,
+                        movedTo,
+                        { type: movedPieceType, color: moverColor },
+                        enemyKingAfter
+                    );
+                    if (!wasAttackedBefore && !movedGivesCheck) {
+                        const attackedAfter = isSquareAttackedByColor(
+                            afterBoard,
+                            enemyKingAfter,
+                            moverColor
+                        );
+                        if (attackedAfter) tags.add('discoveredCheck');
+                    }
+                }
+
+                // Discovered attack (approx): an enemy queen/rook becomes newly attacked by some other piece.
+                // We only tag once per puzzle to keep tags stable/low.
+                if (!tags.has('discoveredAttack')) {
+                    const targets: string[] = [];
+                    for (let y = 0; y < 8; y++) {
+                        for (let x = 0; x < 8; x++) {
+                            const p = pieceAt(afterBoard, x, y);
+                            if (!p) continue;
+                            if (p.color !== enemyColor) continue;
+                            if (p.type !== 'q' && p.type !== 'r') continue;
+                            const sq = xyToSquare(x, y);
+                            if (sq) targets.push(sq);
+                        }
+                    }
+                    for (const sq of targets) {
+                        const was = isSquareAttackedByColor(
+                            beforeBoard,
+                            sq,
+                            moverColor
+                        );
+                        const now = isSquareAttackedByColor(
+                            afterBoard,
+                            sq,
+                            moverColor
+                        );
+                        const movedAttacks = pieceAttacksSquare(
+                            afterBoard,
+                            movedTo,
+                            { type: movedPieceType, color: moverColor },
+                            sq
+                        );
+                        if (!was && now && !movedAttacks) {
+                            tags.add('discoveredAttack');
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mate/back-rank mate detection from PV itself.
+        if (isCheckmatePosition(chess)) {
+            tags.add('mate');
+
+            // mateInN based on PV ply index (only meaningful if solver delivers mate).
+            if (i % 2 === 0) {
+                const mateIn = Math.trunc(i / 2) + 1;
+                if (mateIn > 0 && mateIn <= 5) tags.add(`mateIn${mateIn}`);
+                else tags.add('mateInN');
+            }
+
+            // backRankMate (approx): checkmated king is on back rank with pawns trapping it,
+            // and the mating piece is a rook/queen delivering a straight-line check.
+            const victim = chess.turn() as PieceColor; // side to move is checkmated
+            const victimKing = findKingSquare(chess.board(), victim);
+            if (victimKing) {
+                const kxy = squareToXY(victimKing);
+                if (kxy) {
+                    const backRank = victim === 'w' ? 0 : 7; // y coordinate: rank1 for white, rank8 for black
+                    if (kxy.y === backRank) {
+                        const pawnRank = victim === 'w' ? 1 : 6;
+                        let pawnBlockers = 0;
+                        for (const fx of [kxy.x - 1, kxy.x, kxy.x + 1]) {
+                            if (fx < 0 || fx > 7) continue;
+                            const p = pieceAt(chess.board(), fx, pawnRank);
+                            if (p && p.color === victim && p.type === 'p')
+                                pawnBlockers++;
+                        }
+                        const matingPiece =
+                            (mv.piece as PieceType | undefined) ?? undefined;
+                        const matingTo = mv.to ?? undefined;
+                        let rookLikeGivesCheck = false;
+                        if (
+                            (matingPiece === 'r' || matingPiece === 'q') &&
+                            matingTo
+                        ) {
+                            rookLikeGivesCheck = pieceAttacksSquare(
+                                chess.board(),
+                                matingTo,
+                                {
+                                    type: matingPiece,
+                                    color: otherColor(victim),
+                                },
+                                victimKing
+                            );
+                        }
+                        if (pawnBlockers >= 2 && rookLikeGivesCheck)
+                            tags.add('backRankMate');
+                    }
+                }
+            }
+
+            break;
+        }
+    }
+
+    // Deflection / attraction (approximate, very conservative):
+    // - attraction: opponent king captures the checking/sacrificed piece immediately.
+    // - deflection: check-sac and (forced) capture followed by another check.
+    if (pv.length >= 2) {
+        const c0 = new Chess(args.startFen);
+        const m1 = parseUci(pv[0] ?? '');
+        const m2 = parseUci(pv[1] ?? '');
+        if (m1 && m2) {
+            const mv1 = c0.move({
+                from: m1.from,
+                to: m1.to,
+                promotion: m1.promotion,
+            }) as MoveExt | null;
+            if (mv1) {
+                const gaveCheck = c0.inCheck();
+                const oppKingSq = findKingSquare(
+                    c0.board(),
+                    c0.turn() as PieceColor
+                );
+                if (gaveCheck && oppKingSq) {
+                    // attraction: king takes the checking piece on the next move
+                    if (m2.from === oppKingSq && m2.to === mv1.to)
+                        tags.add('attraction');
+                }
+            }
+        }
+    }
+    if (pv.length >= 3) {
+        const c0 = new Chess(args.startFen);
+        const m1 = parseUci(pv[0] ?? '');
+        const m2 = parseUci(pv[1] ?? '');
+        const m3 = parseUci(pv[2] ?? '');
+        if (m1 && m2 && m3) {
+            const mv1 = c0.move({
+                from: m1.from,
+                to: m1.to,
+                promotion: m1.promotion,
+            }) as MoveExt | null;
+            const gaveCheck = !!mv1 && c0.inCheck();
+            const mv2 = c0.move({
+                from: m2.from,
+                to: m2.to,
+                promotion: m2.promotion,
+            }) as MoveExt | null;
+            const capturedAttacker =
+                !!mv2 && !!mv1 && mv2.to === mv1.to && !!mv2.captured;
+            const mv3 = c0.move({
+                from: m3.from,
+                to: m3.to,
+                promotion: m3.promotion,
+            }) as MoveExt | null;
+            const nextCheck = !!mv3 && c0.inCheck();
+            if (gaveCheck && capturedAttacker && nextCheck)
+                tags.add('deflection');
+        }
+    }
+
+    return Array.from(tags).sort();
+}
+
 function severityFromSwing(swingCp: number): PuzzleSeverity {
     if (swingCp >= 400) return 'big';
     if (swingCp >= 200) return 'medium';
@@ -337,6 +896,15 @@ function tagsForCandidate(args: {
     swingCp: number;
 }): { tags: string[]; severity: PuzzleSeverity } {
     const tags = new Set<string>();
+
+    // Motif tags from puzzle start FEN + best line PV (deterministic, no extra engine calls).
+    for (const t of motifTagsFromPv({
+        startFen: args.fenBefore,
+        pvUci: args.bestAtBefore.pvUci,
+        score: args.bestAtBefore.score,
+    })) {
+        tags.add(t);
+    }
 
     // Heuristic tag 1: mate threat
     if (args.bestAtBefore.score?.type === 'mate') {
@@ -386,6 +954,10 @@ type ResolvedOptions = {
     confirmMovetimeMs: number | null;
     uniquenessMarginCp: number | null;
     returnAnalysis: boolean;
+
+    avoidBlunderMultiPv: number;
+    avoidBlunderAcceptableLossCp: number;
+    avoidBlunderMaxAcceptedMoves: number;
 };
 
 function resolveOptions(options?: ExtractOptions): ResolvedOptions {
@@ -413,6 +985,17 @@ function resolveOptions(options?: ExtractOptions): ResolvedOptions {
         confirmMovetimeMs: options?.confirmMovetimeMs ?? null,
         uniquenessMarginCp: options?.uniquenessMarginCp ?? null,
         returnAnalysis: options?.returnAnalysis ?? false,
+
+        avoidBlunderMultiPv: Math.max(
+            1,
+            Math.min(5, Math.trunc(options?.avoidBlunderMultiPv ?? 4))
+        ),
+        avoidBlunderAcceptableLossCp:
+            options?.avoidBlunderAcceptableLossCp ?? 80,
+        avoidBlunderMaxAcceptedMoves: Math.max(
+            1,
+            Math.min(16, Math.trunc(options?.avoidBlunderMaxAcceptedMoves ?? 4))
+        ),
     };
 }
 
@@ -469,6 +1052,57 @@ async function confirmCandidate(args: {
     }
 
     return { confirmed: true, newEval };
+}
+
+function normalizeUci(uci: string): string {
+    return (uci ?? '').trim().toLowerCase();
+}
+
+async function computeAcceptedMovesForAvoidBlunder(args: {
+    engine: StockfishClient;
+    fen: string;
+    movetimeMs: number;
+    multiPv: number;
+    acceptableLossCp: number;
+    maxAcceptedMoves: number;
+    bestMoveUci: string;
+}): Promise<string[]> {
+    const res: MultiPvResult = await args.engine.analyzeMultiPv({
+        fen: args.fen,
+        movetimeMs: args.movetimeMs,
+        multiPv: args.multiPv,
+    });
+
+    const lines = Array.isArray(res.lines) ? res.lines : [];
+    const scored = lines
+        .map((l) => {
+            const first = (l.pvUci ?? [])[0];
+            const cp = scoreToCp(l.score);
+            return {
+                uci: typeof first === 'string' ? normalizeUci(first) : '',
+                cp,
+                multipv: l.multipv ?? 999,
+            };
+        })
+        .filter((x) => x.uci && typeof x.cp === 'number');
+
+    // Determine "best" score from multipv=1 if present, else top score.
+    const bestLine = scored.find((l) => l.multipv === 1) ?? scored[0];
+    const bestCp = typeof bestLine?.cp === 'number' ? bestLine.cp : null;
+    if (bestCp == null) {
+        // Fallback: only accept best move.
+        return [normalizeUci(args.bestMoveUci)].filter(Boolean).slice(0, 1);
+    }
+
+    // Accept moves within acceptableLossCp of best (side-to-move POV).
+    const accepted = scored
+        .filter((l) => bestCp - (l.cp as number) <= args.acceptableLossCp)
+        .map((l) => l.uci);
+
+    // Always include best move, even if MultiPV omitted it.
+    const best = normalizeUci(args.bestMoveUci);
+    const uniq = Array.from(new Set([best, ...accepted].filter(Boolean)));
+    return uniq.slice(0, args.maxAcceptedMoves);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -816,6 +1450,29 @@ export async function extractPuzzlesFromGames(args: {
                                     tags.add(`openingVar:${opening.variation}`);
 
                                 const puzzleId = uid(`puz-avoid-${type}`);
+                                let acceptedMovesUci: string[] | undefined =
+                                    undefined;
+                                try {
+                                    acceptedMovesUci =
+                                        await computeAcceptedMovesForAvoidBlunder(
+                                            {
+                                                engine: args.engine,
+                                                fen: fenBefore,
+                                                movetimeMs: opts.movetimeMs,
+                                                multiPv:
+                                                    opts.avoidBlunderMultiPv,
+                                                acceptableLossCp:
+                                                    opts.avoidBlunderAcceptableLossCp,
+                                                maxAcceptedMoves:
+                                                    opts.avoidBlunderMaxAcceptedMoves,
+                                                bestMoveUci:
+                                                    finalEval.bestMoveUci,
+                                            }
+                                        );
+                                } catch {
+                                    // Ignore MultiPV failures; fall back to single-solution.
+                                }
+
                                 const puzzle: Puzzle = {
                                     id: puzzleId,
                                     type,
@@ -827,8 +1484,12 @@ export async function extractPuzzlesFromGames(args: {
                                     sideToMove: stm,
                                     bestLineUci: finalEval.pvUci,
                                     bestMoveUci: finalEval.bestMoveUci,
+                                    acceptedMovesUci,
                                     score: finalEval.score,
-                                    label: 'Find the best move (avoid the mistake)',
+                                    label:
+                                        (acceptedMovesUci ?? []).length > 1
+                                            ? 'Avoid the blunder — play a safe move'
+                                            : 'Find the best move (avoid the mistake)',
                                     tags: Array.from(tags).sort(),
                                     opening,
                                     severity: tagsAndSeverity.severity,

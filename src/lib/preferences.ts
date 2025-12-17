@@ -1,6 +1,6 @@
 import type { TimeClass } from '@/lib/types/game';
 import type { Puzzle } from '@/lib/analysis/puzzles';
-import type { PuzzleMode } from '@/lib/analysis/extractPuzzles';
+import type { ExtractOptions, PuzzleMode } from '@/lib/analysis/extractPuzzles';
 
 export type RatedFilter = 'any' | 'rated' | 'casual';
 
@@ -40,11 +40,31 @@ export type PreferencesSchema = {
     minNonKingPieces: string;
     confirmMovetimeMs: string;
     engineMoveTimeMs: string;
+    uniquenessMarginCp: string;
 };
 
 export type PartialPreferences = Partial<PreferencesSchema> & {
     filters?: Partial<Filters>;
 };
+
+export type AnalysisDefaults = Pick<
+    PreferencesSchema,
+    | 'puzzleMode'
+    | 'engineMoveTimeMs'
+    | 'openingSkipPlies'
+    | 'minPvMoves'
+    | 'skipTrivialEndgames'
+    | 'minNonKingPieces'
+    | 'evalBandMinCp'
+    | 'evalBandMaxCp'
+    | 'requireTactical'
+    | 'tacticalLookaheadPlies'
+    | 'maxPuzzlesPerGame'
+    | 'blunderSwingCp'
+    | 'missedTacticSwingCp'
+    | 'confirmMovetimeMs'
+    | 'uniquenessMarginCp'
+>;
 
 export function defaultPreferences(): PreferencesSchema {
     return {
@@ -77,6 +97,91 @@ export function defaultPreferences(): PreferencesSchema {
         minNonKingPieces: '4',
         confirmMovetimeMs: '',
         engineMoveTimeMs: '200',
+        uniquenessMarginCp: '',
+    };
+}
+
+export function pickAnalysisDefaults(
+    prefs: PreferencesSchema
+): AnalysisDefaults {
+    return {
+        puzzleMode: prefs.puzzleMode,
+        engineMoveTimeMs: prefs.engineMoveTimeMs,
+        openingSkipPlies: prefs.openingSkipPlies,
+        minPvMoves: prefs.minPvMoves,
+        skipTrivialEndgames: prefs.skipTrivialEndgames,
+        minNonKingPieces: prefs.minNonKingPieces,
+        evalBandMinCp: prefs.evalBandMinCp,
+        evalBandMaxCp: prefs.evalBandMaxCp,
+        requireTactical: prefs.requireTactical,
+        tacticalLookaheadPlies: prefs.tacticalLookaheadPlies,
+        maxPuzzlesPerGame: prefs.maxPuzzlesPerGame,
+        blunderSwingCp: prefs.blunderSwingCp,
+        missedTacticSwingCp: prefs.missedTacticSwingCp,
+        confirmMovetimeMs: prefs.confirmMovetimeMs,
+        uniquenessMarginCp: prefs.uniquenessMarginCp,
+    };
+}
+
+function parseFiniteNumber(s: string): number | null {
+    const n = Number(s);
+    if (!Number.isFinite(n)) return null;
+    return n;
+}
+
+function parseFiniteNumberOrDefault(s: string, fallback: number): number {
+    const n = parseFiniteNumber(s);
+    return n ?? fallback;
+}
+
+function parseOptionalFiniteNumber(s: string): number | null {
+    const t = (s ?? '').trim();
+    if (!t) return null;
+    return parseFiniteNumber(t);
+}
+
+function parseOptionalPositiveNumber(s: string): number | null {
+    const n = parseOptionalFiniteNumber(s);
+    if (n == null) return null;
+    return n > 0 ? n : null;
+}
+
+function parseMaxPuzzlesPerGame(s: string): number | null {
+    const t = (s ?? '').trim();
+    if (!t) return null; // blank = unlimited
+    const n = Math.trunc(Number(t));
+    if (!Number.isFinite(n)) return null;
+    if (n <= 0) return null; // 0 or negative = unlimited
+    return n;
+}
+
+export function analysisDefaultsToExtractOptions(
+    a: AnalysisDefaults,
+    opts?: { returnAnalysis?: boolean }
+): ExtractOptions {
+    return {
+        movetimeMs: parseFiniteNumberOrDefault(a.engineMoveTimeMs, 200),
+        puzzleMode: a.puzzleMode ?? 'both',
+        maxPuzzlesPerGame: parseMaxPuzzlesPerGame(a.maxPuzzlesPerGame),
+        blunderSwingCp: parseFiniteNumberOrDefault(a.blunderSwingCp, 250),
+        missedTacticSwingCp: parseFiniteNumberOrDefault(
+            a.missedTacticSwingCp,
+            180
+        ),
+        evalBandMinCp: parseOptionalFiniteNumber(a.evalBandMinCp),
+        evalBandMaxCp: parseOptionalFiniteNumber(a.evalBandMaxCp),
+        requireTactical: !!a.requireTactical,
+        tacticalLookaheadPlies: parseFiniteNumberOrDefault(
+            a.tacticalLookaheadPlies,
+            4
+        ),
+        openingSkipPlies: parseFiniteNumberOrDefault(a.openingSkipPlies, 8),
+        minPvMoves: parseFiniteNumberOrDefault(a.minPvMoves, 2),
+        skipTrivialEndgames: !!a.skipTrivialEndgames,
+        minNonKingPieces: parseFiniteNumberOrDefault(a.minNonKingPieces, 4),
+        confirmMovetimeMs: parseOptionalPositiveNumber(a.confirmMovetimeMs),
+        uniquenessMarginCp: parseOptionalPositiveNumber(a.uniquenessMarginCp),
+        returnAnalysis: opts?.returnAnalysis ?? false,
     };
 }
 
@@ -114,4 +219,3 @@ export function mergePreferences(
 
     return merged;
 }
-

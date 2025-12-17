@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { ProfileForm, type UserProfile } from '@/components/settings/ProfileForm';
 import { PageHeader } from '@/components/app/PageHeader';
 import { Card, CardContent } from '@/components/ui/card';
+import { AnalysisDefaultsCard } from '@/components/settings/AnalysisDefaultsCard';
 
 export default async function SettingsPage() {
     const session = await auth();
@@ -43,6 +44,7 @@ export default async function SettingsPage() {
                     <ProfileForm initialUser={initialUser} />
                 </CardContent>
             </Card>
+            <AnalysisDefaultsCard />
         </div>
     );
 }

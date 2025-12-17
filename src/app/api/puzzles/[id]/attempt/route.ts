@@ -5,6 +5,10 @@ import { aggregatePuzzleStats } from '@/lib/api/puzzles';
 
 export const runtime = 'nodejs';
 
+function normalizeUci(s: string): string {
+    return (s ?? '').trim().toLowerCase();
+}
+
 export async function POST(
     req: Request,
     { params }: { params: Promise<{ id: string }> }
@@ -23,7 +27,6 @@ export async function POST(
 
     const userMoveUci =
         typeof body?.userMoveUci === 'string' ? body.userMoveUci.trim() : '';
-    const wasCorrect = body?.wasCorrect === true;
     const timeSpentMs =
         typeof body?.timeSpentMs === 'number' &&
         Number.isFinite(body.timeSpentMs)
@@ -39,16 +42,26 @@ export async function POST(
 
     const puzzle = await prisma.puzzle.findFirst({
         where: { id, userId },
-        select: { id: true },
+        select: { id: true, bestMoveUci: true, acceptedMovesUci: true },
     });
     if (!puzzle)
         return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+    // Compute correctness server-side (do not trust client).
+    const move = normalizeUci(userMoveUci);
+    const best = normalizeUci(puzzle.bestMoveUci);
+    const accepted = new Set(
+        [best, ...((puzzle.acceptedMovesUci ?? []) as any)]
+            .map((s: any) => (typeof s === 'string' ? normalizeUci(s) : ''))
+            .filter(Boolean)
+    );
+    const wasCorrect = accepted.has(move);
 
     await prisma.puzzleAttempt.create({
         data: {
             puzzleId: id,
             userId,
-            userMoveUci,
+            userMoveUci: move,
             wasCorrect,
             timeSpentMs,
         },

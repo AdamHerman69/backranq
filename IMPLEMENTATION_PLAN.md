@@ -689,10 +689,22 @@ This provides a reference for the data we display.
     - Shows progress during fetch
     - Saves fetched games to database
 
-6. Create styles in `src/app/games/games.module.css`:
+6. Create unanalyzed games banner `src/components/games/UnanalyzedGamesBanner.tsx`:
+
+    - Shows when there are games without analysis
+    - Displays count: "X games need analysis"
+    - Prominent banner/card at top of games list (in the sync section div.p-4)
+    - Click opens game selection modal
+    - User can select which games to analyze (checkboxes)
+    - "Analyze Selected" button triggers batch analysis
+    - Progress indicator for analysis queue
+    - Dismissible but reappears if unanalyzed games remain
+
+7. Create styles in `src/app/games/games.module.css`:
     - Responsive grid layout
     - Card styles matching app theme
     - Filter bar styling
+    - Banner/prompt styling for unanalyzed games alert
     - Mobile-first approach
 
 ## Design Notes
@@ -701,6 +713,7 @@ This provides a reference for the data we display.
 -   Result colors: Win (green), Loss (red), Draw (gray)
 -   Provider icons or badges for Lichess/Chess.com
 -   Subtle hover effects on cards
+-   Unanalyzed games banner should be prominent but not intrusive (info/warning style)
 
 ## Acceptance Criteria
 
@@ -710,6 +723,9 @@ This provides a reference for the data we display.
 -   [ ] Pagination works correctly
 -   [ ] Empty state shows when no games
 -   [ ] "Sync New Games" fetches and saves games
+-   [ ] Unanalyzed games banner shows when applicable
+-   [ ] Game selection modal for batch analysis works
+-   [ ] Batch analysis can be triggered from banner
 -   [ ] Responsive on mobile
 -   [ ] Loading states for async operations
 
@@ -873,17 +889,24 @@ I'm improving the game sync flow to better handle fetching, saving, and analyzin
 
 4. Create batch analysis flow `src/components/analysis/BatchAnalysis.tsx`:
 
-    - Select multiple games to analyze
-    - Queue-based processing
-    - Progress for entire batch
-    - Option to generate puzzles after analysis
+    - Reusable component for analyzing multiple games
+    - Can be triggered from: UnanalyzedGamesBanner, game selection modal, or individual game actions
+    - Accepts array of game IDs to analyze
+    - Queue-based processing (analyze one at a time)
+    - Progress for entire batch (shows: "Analyzing game 3/10 • Ply 15/42")
+    - Option to generate puzzles after analysis completes
     - Runs client-side Stockfish (current approach)
+    - Pause/Resume/Cancel controls
+    - Results summary when complete
 
-5. Update games list to show sync status:
+5. Update games list to show analysis status clearly:
 
-    - Last synced timestamp
-    - Games pending analysis count
-    - Quick filter for "needs analysis"
+    - Visual indicator on each game card (badge or icon)
+    - "Analyzed" badge (green) vs "Needs Analysis" badge (yellow/orange)
+    - Show last synced timestamp
+    - Display total "X games pending analysis" count at top
+    - Quick filter for "needs analysis" in filter bar
+    - Analysis status visible without hovering
 
 6. Add smart defaults:
 

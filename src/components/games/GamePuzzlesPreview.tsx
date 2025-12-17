@@ -53,7 +53,7 @@ export function GamePuzzlesPreview({
                                     </div>
                                     <div className="mt-3">
                                         <Button asChild variant="outline" size="sm">
-                                            <Link href={`/puzzles/${p.id}`}>Open</Link>
+                                            <Link href={`/puzzles?puzzleId=${encodeURIComponent(p.id)}`}>Open</Link>
                                         </Button>
                                     </div>
                                 </CardContent>

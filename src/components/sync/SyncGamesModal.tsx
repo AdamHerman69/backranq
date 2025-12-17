@@ -1,12 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import type { NormalizedGame } from '@/lib/types/game';
-import type { GameAnalysis } from '@/lib/analysis/classification';
-import { StockfishClient } from '@/lib/analysis/stockfishClient';
-import { extractPuzzlesFromGames } from '@/lib/analysis/extractPuzzles';
-import { AnalysisProgress } from '@/components/analysis/AnalysisProgress';
+import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
 import {
     fetchGamesFromProvider,
     getExistingExternalIds,
@@ -18,7 +15,7 @@ import {
 } from '@/lib/services/gameSync';
 import { parseExternalId } from '@/lib/api/games';
 
-type Step = 'config' | 'review' | 'saving' | 'analyzing' | 'done';
+type Step = 'config' | 'review' | 'saving' | 'done';
 
 type FetchedRow = {
     game: NormalizedGame;
@@ -27,6 +24,18 @@ type FetchedRow = {
     isNew: boolean;
     selected: boolean;
 };
+
+const SYNC_GAMES_MODAL_STORAGE_KEY = 'backrank.syncGamesModal.v1';
+
+function defaultSinceUntilRange(): { since: string; until: string } {
+    // Default: last ~30 days, inclusive through end-of-today (UTC).
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const sinceStr = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    return {
+        since: new Date(sinceStr).toISOString(),
+        until: new Date(`${todayStr}T23:59:59.999Z`).toISOString(),
+    };
+}
 
 export function SyncGamesModal({
     open,
@@ -60,21 +69,32 @@ export function SyncGamesModal({
     });
     const [analyzeAfter, setAnalyzeAfter] = useState(false);
     const [rows, setRows] = useState<FetchedRow[]>([]);
-    const [savedIds, setSavedIds] = useState<Record<string, string>>({});
-    const [analysisProgress, setAnalysisProgress] = useState<{ label: string; percent: number; phase?: string } | null>(
-        null
-    );
-
-    const engineRef = useRef<StockfishClient | null>(null);
 
     useEffect(() => {
         if (!open) return;
         setStep('config');
         setRows([]);
-        setSavedIds({});
-        setAnalysisProgress(null);
         setAnalyzeAfter(false);
         setBusy(false);
+
+        // Restore last-used date inputs (or default to last month).
+        const defaults = defaultSinceUntilRange();
+        try {
+            const raw = localStorage.getItem(SYNC_GAMES_MODAL_STORAGE_KEY);
+            const parsed = raw ? (JSON.parse(raw) as { since?: string; until?: string }) : null;
+            setFilters((f) => ({
+                ...f,
+                since: parsed?.since ?? f.since ?? defaults.since,
+                until: parsed?.until ?? f.until ?? defaults.until,
+            }));
+        } catch {
+            setFilters((f) => ({
+                ...f,
+                since: f.since ?? defaults.since,
+                until: f.until ?? defaults.until,
+            }));
+        }
+
         getSyncStatus()
             .then((s) => {
                 setStatus(s);
@@ -83,16 +103,22 @@ export function SyncGamesModal({
                     lichess: !!s.linked.lichessUsername,
                     chesscom: !!s.linked.chesscomUsername,
                 });
-                // default since = last sync across selected provider (or undefined)
-                const fallbackSince =
-                    s.lastSync.lichess || s.lastSync.chesscom || undefined;
-                setFilters((f) => ({
-                    ...f,
-                    since: fallbackSince,
-                }));
             })
             .catch(() => {});
     }, [open]);
+
+    useEffect(() => {
+        if (!open) return;
+        // Persist date filters so reopening the modal restores them.
+        try {
+            localStorage.setItem(
+                SYNC_GAMES_MODAL_STORAGE_KEY,
+                JSON.stringify({ since: filters.since, until: filters.until })
+            );
+        } catch {
+            // ignore
+        }
+    }, [open, filters.since, filters.until]);
 
     const enabledProviders = useMemo(() => {
         const list: SyncProvider[] = [];
@@ -208,16 +234,19 @@ export function SyncGamesModal({
         const toastId = toast.loading('Saving games…');
         try {
             const res = await saveGamesToLibrary({ games: toSave });
-            setSavedIds(res.ids ?? {});
             toast.success(`Saved ${res.saved} games`, { id: toastId });
 
             if (enableAnalyze && analyzeAfter) {
-                setStep('analyzing');
-                await analyzeBatch(toSave, res.ids ?? {});
-                setStep('done');
-            } else {
-                setStep('done');
+                const dbIds = Object.values(res.ids ?? {}).filter(Boolean);
+                if (dbIds.length > 0) {
+                    backgroundAnalysis.enqueueGameDbIds(dbIds);
+                    toast.message('Analysis started in the background.');
+                }
             }
+            // Update the global bar prompt quickly.
+            void backgroundAnalysis.refreshPendingUnanalyzedCount();
+
+            setStep('done');
 
             onFinished?.();
         } catch (e) {
@@ -226,79 +255,6 @@ export function SyncGamesModal({
         } finally {
             setBusy(false);
         }
-    }
-
-    function cancelAnalysis() {
-        engineRef.current?.cancelAll();
-        engineRef.current?.terminate();
-        engineRef.current = null;
-        setAnalysisProgress(null);
-        setBusy(false);
-        setStep('review');
-        toast.message('Cancelled analysis');
-    }
-
-    async function analyzeBatch(games: NormalizedGame[], ids: Record<string, string>) {
-        if (!status) return;
-        const engine = engineRef.current ?? new StockfishClient();
-        engineRef.current = engine;
-
-        for (let i = 0; i < games.length; i++) {
-            const g = games[i]!;
-            const dbId = ids[g.id];
-            if (!dbId) continue;
-
-            const res = await extractPuzzlesFromGames({
-                games: [g],
-                selectedGameIds: new Set([g.id]),
-                engine,
-                usernameByProvider: {
-                    lichess: status.linked.lichessUsername ?? undefined,
-                    chesscom: status.linked.chesscomUsername ?? undefined,
-                },
-                onProgress: (p) => {
-                    const localPercent =
-                        p.plyCount > 0 ? ((p.ply + 1) / p.plyCount) * 100 : 0;
-                    const percent = ((i + localPercent / 100) / games.length) * 100;
-                    setAnalysisProgress({
-                        label: `Game ${i + 1}/${games.length} • Ply ${p.ply + 1}/${p.plyCount}`,
-                        percent,
-                        phase: p.phase,
-                    });
-                },
-                options: {
-                    movetimeMs: 200,
-                    returnAnalysis: true,
-                    // Unlimited for analyzed games.
-                    maxPuzzlesPerGame: null,
-                    puzzleMode: 'both',
-                },
-            });
-
-            const analysis = res.analysis?.get(g.id) as GameAnalysis | undefined;
-            if (!analysis) continue;
-
-            const saveRes = await fetch(`/api/games/${dbId}/analysis`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(analysis),
-            });
-            if (!saveRes.ok) {
-                // keep going; show toast at end
-            } else {
-                const puzzlesForGame = (res.puzzles ?? []).filter(
-                    (p) => p.sourceGameId === g.id
-                );
-                // Save/replace puzzles for this game (ok if empty).
-                await fetch(`/api/games/${dbId}/puzzles`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ puzzles: puzzlesForGame }),
-                }).catch(() => null);
-            }
-        }
-        setAnalysisProgress(null);
-        toast.success('Batch analysis complete');
     }
 
     function toggleAllNew(v: boolean) {
@@ -329,9 +285,11 @@ export function SyncGamesModal({
             <div
                 style={{
                     width: 'min(980px, 100%)',
-                    background: 'var(--foreground, #fff)',
+                    // shadcn theme vars are HSL triplets; must wrap in hsl(...)
+                    background: 'hsl(var(--card, 0 0% 100%))',
+                    color: 'hsl(var(--card-foreground, 222.2 84% 4.9%))',
                     borderRadius: 12,
-                    border: '1px solid var(--border, #e6e6e6)',
+                    border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))',
                     padding: 16,
                     display: 'flex',
                     flexDirection: 'column',
@@ -348,8 +306,8 @@ export function SyncGamesModal({
                             height: 30,
                             padding: '0 10px',
                             borderRadius: 10,
-                            border: '1px solid var(--border, #e6e6e6)',
-                            background: 'transparent',
+                            border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))',
+                            background: 'hsl(var(--background, 0 0% 100%))',
                             fontWeight: 700,
                             cursor: busy ? 'not-allowed' : 'pointer',
                             opacity: busy ? 0.5 : 1,
@@ -358,10 +316,6 @@ export function SyncGamesModal({
                         Close
                     </button>
                 </div>
-
-                {analysisProgress ? (
-                    <AnalysisProgress state={analysisProgress} onCancel={cancelAnalysis} />
-                ) : null}
 
                 {step === 'config' ? (
                     <>
@@ -393,7 +347,7 @@ export function SyncGamesModal({
                                     inputMode="numeric"
                                     value={String(filters.max)}
                                     onChange={(e) => setFilters((f) => ({ ...f, max: Number(e.target.value) || 50 }))}
-                                    style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
+                                    style={{ height: 36, borderRadius: 10, border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', padding: '0 10px', background: 'transparent', color: 'inherit' }}
                                 />
                             </label>
 
@@ -401,8 +355,8 @@ export function SyncGamesModal({
                                 <span>Time class</span>
                                 <select
                                     value={filters.timeClass}
-                                    onChange={(e) => setFilters((f) => ({ ...f, timeClass: e.target.value as any }))}
-                                    style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
+                                    onChange={(e) => setFilters((f) => ({ ...f, timeClass: e.target.value as SyncFilters['timeClass'] }))}
+                                    style={{ height: 36, borderRadius: 10, border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', padding: '0 10px', background: 'transparent', color: 'inherit' }}
                                 >
                                     <option value="any">Any</option>
                                     <option value="bullet">Bullet</option>
@@ -417,8 +371,8 @@ export function SyncGamesModal({
                                 <span>Rated</span>
                                 <select
                                     value={filters.rated}
-                                    onChange={(e) => setFilters((f) => ({ ...f, rated: e.target.value as any }))}
-                                    style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
+                                    onChange={(e) => setFilters((f) => ({ ...f, rated: e.target.value as SyncFilters['rated'] }))}
+                                    style={{ height: 36, borderRadius: 10, border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', padding: '0 10px', background: 'transparent', color: 'inherit' }}
                                 >
                                     <option value="any">Any</option>
                                     <option value="rated">Rated only</option>
@@ -432,7 +386,7 @@ export function SyncGamesModal({
                                     value={filters.since ? filters.since.slice(0, 10) : ''}
                                     type="date"
                                     onChange={(e) => setFilters((f) => ({ ...f, since: e.target.value ? new Date(e.target.value).toISOString() : undefined }))}
-                                    style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
+                                    style={{ height: 36, borderRadius: 10, border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', padding: '0 10px', background: 'transparent', color: 'inherit' }}
                                 />
                             </label>
 
@@ -442,7 +396,7 @@ export function SyncGamesModal({
                                     value={filters.until ? filters.until.slice(0, 10) : ''}
                                     type="date"
                                     onChange={(e) => setFilters((f) => ({ ...f, until: e.target.value ? new Date(e.target.value + 'T23:59:59.999Z').toISOString() : undefined }))}
-                                    style={{ height: 36, borderRadius: 10, border: '1px solid var(--border, #e6e6e6)', padding: '0 10px' }}
+                                    style={{ height: 36, borderRadius: 10, border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', padding: '0 10px', background: 'transparent', color: 'inherit' }}
                                 />
                             </label>
                         </div>
@@ -468,8 +422,8 @@ export function SyncGamesModal({
                                     padding: '0 12px',
                                     borderRadius: 10,
                                     border: '1px solid transparent',
-                                    background: 'var(--text-primary, #000)',
-                                    color: 'var(--background, #fafafa)',
+                                    background: 'hsl(var(--primary, 222.2 47.4% 11.2%))',
+                                    color: 'hsl(var(--primary-foreground, 210 40% 98%))',
                                     fontWeight: 750,
                                     cursor: busy ? 'not-allowed' : 'pointer',
                                     opacity: busy ? 0.7 : 1,
@@ -498,7 +452,7 @@ export function SyncGamesModal({
                                         height: 32,
                                         padding: '0 10px',
                                         borderRadius: 10,
-                                        border: '1px solid var(--border, #e6e6e6)',
+                                        border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))',
                                         background: 'transparent',
                                         fontWeight: 650,
                                         cursor: 'pointer',
@@ -513,7 +467,7 @@ export function SyncGamesModal({
                                         height: 32,
                                         padding: '0 10px',
                                         borderRadius: 10,
-                                        border: '1px solid var(--border, #e6e6e6)',
+                                        border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))',
                                         background: 'transparent',
                                         fontWeight: 650,
                                         cursor: 'pointer',
@@ -524,7 +478,7 @@ export function SyncGamesModal({
                             </div>
                         </div>
 
-                        <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--border, #e6e6e6)', borderRadius: 12 }}>
+                        <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', borderRadius: 12 }}>
                             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                                 <thead>
                                     <tr style={{ textAlign: 'left', opacity: 0.8 }}>
@@ -538,7 +492,7 @@ export function SyncGamesModal({
                                 </thead>
                                 <tbody>
                                     {rows.map((r) => (
-                                        <tr key={`${r.provider}:${r.externalId}`} style={{ borderTop: '1px solid var(--border, #e6e6e6)' }}>
+                                        <tr key={`${r.provider}:${r.externalId}`} style={{ borderTop: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))' }}>
                                             <td style={{ padding: 10 }}>
                                                 {r.isNew ? (
                                                     <input
@@ -587,8 +541,8 @@ export function SyncGamesModal({
                                     padding: '0 12px',
                                     borderRadius: 10,
                                     border: '1px solid transparent',
-                                    background: 'var(--text-primary, #000)',
-                                    color: 'var(--background, #fafafa)',
+                                    background: 'hsl(var(--primary, 222.2 47.4% 11.2%))',
+                                    color: 'hsl(var(--primary-foreground, 210 40% 98%))',
                                     fontWeight: 750,
                                     cursor: busy || selectedCount === 0 ? 'not-allowed' : 'pointer',
                                     opacity: busy || selectedCount === 0 ? 0.6 : 1,
@@ -604,7 +558,7 @@ export function SyncGamesModal({
                                     height: 36,
                                     padding: '0 12px',
                                     borderRadius: 10,
-                                    border: '1px solid var(--border, #e6e6e6)',
+                                    border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))',
                                     background: 'transparent',
                                     fontWeight: 650,
                                     cursor: busy ? 'not-allowed' : 'pointer',
@@ -621,15 +575,11 @@ export function SyncGamesModal({
                     <div style={{ fontSize: 12, opacity: 0.8 }}>Saving…</div>
                 ) : null}
 
-                {step === 'analyzing' ? (
-                    <div style={{ fontSize: 12, opacity: 0.8 }}>Analyzing…</div>
-                ) : null}
-
                 {step === 'done' ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                         <div style={{ fontWeight: 800 }}>Done</div>
                         <div style={{ fontSize: 12, opacity: 0.8 }}>
-                            Imported {selectedCount} games{enableAnalyze && analyzeAfter ? ' and analyzed them' : ''}.
+                            Imported {selectedCount} games{enableAnalyze && analyzeAfter ? '. Analysis is running in the background.' : '.'}
                         </div>
                         <div style={{ display: 'flex', gap: 10 }}>
                             <button
@@ -642,8 +592,8 @@ export function SyncGamesModal({
                                     padding: '0 12px',
                                     borderRadius: 10,
                                     border: '1px solid transparent',
-                                    background: 'var(--text-primary, #000)',
-                                    color: 'var(--background, #fafafa)',
+                                    background: 'hsl(var(--primary, 222.2 47.4% 11.2%))',
+                                    color: 'hsl(var(--primary-foreground, 210 40% 98%))',
                                     fontWeight: 750,
                                     cursor: 'pointer',
                                 }}

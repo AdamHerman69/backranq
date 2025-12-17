@@ -16,6 +16,13 @@ export type Puzzle = {
     sideToMove: 'w' | 'b';
     bestLineUci: string[]; // PV UCI moves
     bestMoveUci: string;
+    /**
+     * Moves that should be accepted as "correct" for this puzzle (in UCI).
+     * Used mainly for "avoid blunder" puzzles where multiple safe moves exist.
+     *
+     * Best move should always be considered accepted even if this is empty.
+     */
+    acceptedMovesUci?: string[];
     score:
         | { type: 'cp'; value: number }
         | { type: 'mate'; value: number }
