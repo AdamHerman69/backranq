@@ -7,12 +7,24 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { backgroundAnalysis, type BackgroundAnalysisSnapshot } from "@/lib/analysis/backgroundAnalysisManager";
 
-const DISMISS_KEY = "backrank.analysisBar.dismiss.v1";
+const NEW_DISMISS_KEY = "backranq.analysisBar.dismiss.v1";
+const OLD_DISMISS_KEY = "backrank.analysisBar.dismiss.v1";
 
 function readDismissedCount(): number {
   try {
-    const raw = localStorage.getItem(DISMISS_KEY);
+    const rawNew = localStorage.getItem(NEW_DISMISS_KEY);
+    const rawOld = rawNew ? null : localStorage.getItem(OLD_DISMISS_KEY);
+    const raw = rawNew ?? rawOld;
     const parsed = raw ? (JSON.parse(raw) as { dismissedForPending?: number }) : null;
+    if (rawOld) {
+      // Back-compat: migrate old key to new key.
+      try {
+        localStorage.setItem(NEW_DISMISS_KEY, rawOld);
+        localStorage.removeItem(OLD_DISMISS_KEY);
+      } catch {
+        // ignore
+      }
+    }
     return typeof parsed?.dismissedForPending === "number" ? parsed.dismissedForPending : 0;
   } catch {
     return 0;
@@ -21,7 +33,8 @@ function readDismissedCount(): number {
 
 function writeDismissedCount(n: number) {
   try {
-    localStorage.setItem(DISMISS_KEY, JSON.stringify({ dismissedForPending: n }));
+    localStorage.setItem(NEW_DISMISS_KEY, JSON.stringify({ dismissedForPending: n }));
+    localStorage.removeItem(OLD_DISMISS_KEY);
   } catch {
     // ignore
   }

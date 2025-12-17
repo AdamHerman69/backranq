@@ -99,6 +99,31 @@ export default async function PuzzleDetailPage({
                         </CardContent>
                     </Card>
 
+                    {(puzzle.acceptedMovesUci ?? []).length > 1 ? (
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="text-base">Solutions</CardTitle>
+                            </CardHeader>
+                            <CardContent className="text-sm text-muted-foreground space-y-2">
+                                <Badge variant="secondary">Multiple correct moves</Badge>
+                                <div>
+                                    Best move: <span className="font-mono text-xs">{puzzle.bestMoveUci}</span>
+                                </div>
+                                <div>
+                                    Accepted moves:{' '}
+                                    <span className="font-mono text-xs">
+                                        {[puzzle.bestMoveUci, ...(puzzle.acceptedMovesUci ?? [])]
+                                            .map((m) => (m ?? '').trim())
+                                            .filter(Boolean)
+                                            .filter((m, i, arr) => arr.indexOf(m) === i)
+                                            .slice(0, 10)
+                                            .join(' ')}
+                                    </span>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    ) : null}
+
                     <Card>
                         <CardHeader>
                             <CardTitle className="text-base">History</CardTitle>

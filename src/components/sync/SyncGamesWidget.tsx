@@ -75,7 +75,7 @@ export function SyncGamesWidget({
             {variant === 'banner' ? (
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-sm text-muted-foreground">
-                        <div>Sync games from your linked accounts into BackRank.</div>
+                        <div>Sync games from your linked accounts into Backranq.</div>
                         {context === 'games' && typeof pendingUnanalyzed === 'number' && pendingUnanalyzed > 0 ? (
                             <div className="mt-1">
                                 You have <span className="font-semibold">{pendingUnanalyzed}</span> games not analyzed yet.

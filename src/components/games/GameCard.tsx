@@ -64,9 +64,17 @@ function timeLabel(tc: GameCardData['timeClass']) {
 export function GameCard({
     game,
     userNameForProvider,
+    selectable = false,
+    selected = false,
+    selectionDisabled = false,
+    onSelectedChange,
 }: {
     game: GameCardData;
     userNameForProvider: string;
+    selectable?: boolean;
+    selected?: boolean;
+    selectionDisabled?: boolean;
+    onSelectedChange?: (selected: boolean) => void;
 }) {
     const user = normalizeName(userNameForProvider);
     const w = normalizeName(game.whiteName);
@@ -137,7 +145,7 @@ export function GameCard({
                             {game.analyzedAt ? (
                                 <Badge variant="secondary">
                                     {typeof accuracy === 'number'
-                                        ? `${accuracy.toFixed(1)}%`
+                                        ? `${userIsWhite ? '♔' : userIsBlack ? '♚' : 'Acc'} ${accuracy.toFixed(1)}%`
                                         : 'Analyzed'}
                                 </Badge>
                             ) : (
@@ -163,6 +171,16 @@ export function GameCard({
                     </div>
 
                     <div className="flex shrink-0 items-center gap-2 self-start">
+                        {selectable ? (
+                            <input
+                                type="checkbox"
+                                className="h-4 w-4 accent-foreground"
+                                checked={!!selected}
+                                disabled={selectionDisabled || !onSelectedChange}
+                                onChange={(e) => onSelectedChange?.(e.target.checked)}
+                                aria-label="Select game"
+                            />
+                        ) : null}
                         <Button asChild size="sm" variant="outline">
                             <Link href={`/games/${game.id}`}>View</Link>
                         </Button>

@@ -460,6 +460,7 @@ export function PuzzlePanel(props: {
         </button>
         <div className={styles.muted}>
           Puzzle {puzzleIdx + 1}/{puzzles.length} • {currentPuzzle.type}
+          {(currentPuzzle.acceptedMovesUci ?? []).length > 1 ? " • Multiple correct" : ""}
           {openingText ? ` • ${openingText}` : ""}
         </div>
       </div>
@@ -624,7 +625,9 @@ export function PuzzlePanel(props: {
                 <div className={attemptResult === "correct" ? styles.success : styles.warning}>
                   {attemptResult === "correct"
                     ? solvedKind === "safe"
-                      ? `Good save! (${attemptUci}) Best was ${currentPuzzle.bestMoveUci}.`
+                      ? (currentPuzzle.tags ?? []).includes("avoidBlunder")
+                        ? `Good save! (${attemptUci}) Best was ${currentPuzzle.bestMoveUci}.`
+                        : `Correct! (${attemptUci}) Best was ${currentPuzzle.bestMoveUci}.`
                       : `Correct! (${attemptUci})`
                     : `Not best. You played ${attemptUci}.`}
                 </div>

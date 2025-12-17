@@ -79,7 +79,7 @@ export function ProfileForm({ initialUser }: Props) {
                 <CardHeader>
                     <CardTitle className="text-base">Linked accounts</CardTitle>
                     <CardDescription>
-                        Validate usernames so BackRank can import games from your public profiles.
+                        Validate usernames so Backranq can import games from your public profiles.
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">

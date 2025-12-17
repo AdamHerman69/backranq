@@ -247,11 +247,19 @@ export function PuzzleTrainerV2({
     const [pvStep, setPvStep] = useState(0);
 
     // Analyze mode
+    const [analysisHistory, setAnalysisHistory] = useState<string[]>([]);
+    const [analysisHistoryIdx, setAnalysisHistoryIdx] = useState(0);
     const [analysisRootFen, setAnalysisRootFen] = useState<string | null>(null);
     const [analysis, setAnalysis] = useState<MultiPvResult | null>(null);
     const [analysisBusy, setAnalysisBusy] = useState(false);
     const [analysisErr, setAnalysisErr] = useState<string | null>(null);
     const [selectedLine, setSelectedLine] = useState(0);
+
+    // Eval reveal (solve mode)
+    const [evalRevealed, setEvalRevealed] = useState(false);
+    const [positionEvalFen, setPositionEvalFen] = useState<string>('');
+    const [positionEvalScore, setPositionEvalScore] = useState<Score | null>(null);
+    const [positionEvalBusy, setPositionEvalBusy] = useState(false);
 
     // Click-to-move hints
     const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
@@ -378,9 +386,28 @@ export function PuzzleTrainerV2({
         setShowContext(false);
         setContextPly(typeof currentPuzzle.sourcePly === 'number' ? currentPuzzle.sourcePly : 0);
 
+        setEvalRevealed(false);
+        setPositionEvalFen('');
+        setPositionEvalScore(null);
+        setPositionEvalBusy(false);
+
         startAttempt(currentPuzzle.id);
         setAnalysisRootFen(currentPuzzle.fen);
+        setAnalysisHistory([currentPuzzle.fen]);
+        setAnalysisHistoryIdx(0);
     }, [currentPuzzle?.id, startAttempt]);
+
+    // Blur by default when entering solve mode.
+    useEffect(() => {
+        if (viewMode !== 'solve') return;
+        setEvalRevealed(false);
+    }, [viewMode]);
+
+    // If user hides eval mid-request, clear the spinner.
+    useEffect(() => {
+        if (evalRevealed) return;
+        setPositionEvalBusy(false);
+    }, [evalRevealed]);
 
     // Always load source game
     useEffect(() => {
@@ -526,19 +553,109 @@ export function PuzzleTrainerV2({
         return true;
     }, [currentPuzzle, viewMode, showContext, attemptResult]);
 
-    const evalScore = useMemo(() => {
+    const rootEvalFen = useMemo(() => {
+        if (viewMode === 'solve') return currentPuzzle?.fen ?? null;
+        return analysis?.fen ?? analysisRootFen ?? null;
+    }, [viewMode, currentPuzzle?.fen, analysis?.fen, analysisRootFen]);
+
+    const rootEvalScore = useMemo(() => {
         if (viewMode === 'solve') return currentPuzzle?.score ?? null;
         const line = analysis?.lines[selectedLine] ?? analysis?.lines[0];
         return line?.score ?? null;
     }, [viewMode, currentPuzzle?.score, analysis, selectedLine]);
 
+    const displayEval = useMemo(() => {
+        // If we've evaluated the currently displayed position, prefer that (true "current position" eval).
+        if (positionEvalFen && positionEvalFen === displayFen) {
+            return { score: positionEvalScore, fenForSign: displayFen };
+        }
+
+        // Otherwise, fall back to the root score (puzzle start / analysis root) and use its own FEN for sign.
+        if (rootEvalFen && rootEvalScore) {
+            return { score: rootEvalScore, fenForSign: rootEvalFen };
+        }
+
+        return { score: null as Score | null, fenForSign: displayFen };
+    }, [positionEvalFen, positionEvalScore, displayFen, rootEvalFen, rootEvalScore]);
+
     const evalText = useMemo(() => {
-        return formatEval(evalScore, displayFen);
-    }, [evalScore, displayFen]);
+        return formatEval(displayEval.score, displayEval.fenForSign);
+    }, [displayEval]);
 
     const evalUnit = useMemo(() => {
-        return scoreToUnit(evalScore, displayFen);
-    }, [evalScore, displayFen]);
+        return scoreToUnit(displayEval.score, displayEval.fenForSign);
+    }, [displayEval]);
+
+    const solveEvalPending = useMemo(() => {
+        if (viewMode !== 'solve') return false;
+        if (!evalRevealed) return false;
+        if (!displayFen) return true;
+        if (currentPuzzle?.fen === displayFen && currentPuzzle?.score) return false;
+        return positionEvalFen !== displayFen;
+    }, [
+        viewMode,
+        evalRevealed,
+        displayFen,
+        currentPuzzle?.fen,
+        currentPuzzle?.score,
+        positionEvalFen,
+    ]);
+
+    // When eval is revealed in solve mode, keep it in sync with the currently displayed position.
+    useEffect(() => {
+        if (viewMode !== 'solve') return;
+        if (!evalRevealed) return;
+        if (!displayFen) return;
+        if (positionEvalFen === displayFen) return;
+
+        // If we're exactly at the puzzle start and have a precomputed score, use it immediately.
+        if (currentPuzzle?.fen === displayFen && currentPuzzle?.score) {
+            setPositionEvalFen(displayFen);
+            setPositionEvalScore(currentPuzzle.score);
+            setPositionEvalBusy(false);
+            return;
+        }
+
+        let cancelled = false;
+        const t = window.setTimeout(async () => {
+            setPositionEvalBusy(true);
+            try {
+                const client = engineClient ?? new StockfishClient();
+                if (!engineClient) {
+                    engineRef.current = client;
+                    setEngineClient(client);
+                }
+                const res = await client.evalPosition({
+                    fen: displayFen,
+                    movetimeMs: engineMoveTimeMsSolve,
+                });
+                if (cancelled) return;
+                setPositionEvalFen(displayFen);
+                setPositionEvalScore(res.score ?? null);
+            } catch {
+                if (!cancelled) {
+                    setPositionEvalFen(displayFen);
+                    setPositionEvalScore(null);
+                }
+            } finally {
+                if (!cancelled) setPositionEvalBusy(false);
+            }
+        }, 120);
+
+        return () => {
+            cancelled = true;
+            window.clearTimeout(t);
+        };
+    }, [
+        viewMode,
+        evalRevealed,
+        displayFen,
+        positionEvalFen,
+        currentPuzzle?.fen,
+        currentPuzzle?.score,
+        engineClient,
+        engineMoveTimeMsSolve,
+    ]);
 
     const arrows = useMemo(() => {
         const byKey = new Map<
@@ -634,16 +751,16 @@ export function PuzzleTrainerV2({
         const s: Record<string, React.CSSProperties> = {};
         const atPuzzlePosition = !showContext || contextPly === puzzlePly;
         if (puzzleLastMove && atPuzzlePosition) {
-            s[puzzleLastMove.from] = { background: 'rgba(124,58,237,0.22)' };
-            s[puzzleLastMove.to] = { background: 'rgba(124,58,237,0.30)' };
+            s[puzzleLastMove.from] = { backgroundColor: 'rgba(124,58,237,0.22)' };
+            s[puzzleLastMove.to] = { backgroundColor: 'rgba(124,58,237,0.30)' };
         }
         if (attemptLastMove) {
             const bad = attemptResult === 'incorrect';
             s[attemptLastMove.from] = {
-                background: bad ? 'rgba(220,38,38,0.18)' : 'rgba(16,185,129,0.18)',
+                backgroundColor: bad ? 'rgba(220,38,38,0.18)' : 'rgba(16,185,129,0.18)',
             };
             s[attemptLastMove.to] = {
-                background: bad ? 'rgba(220,38,38,0.26)' : 'rgba(16,185,129,0.26)',
+                backgroundColor: bad ? 'rgba(220,38,38,0.26)' : 'rgba(16,185,129,0.26)',
             };
         }
         if (selectedSquare) {
@@ -653,8 +770,8 @@ export function PuzzleTrainerV2({
             'radial-gradient(circle at center, rgba(124,58,237,0.55) 0 18%, rgba(0,0,0,0) 20%)';
         for (const t of legalTargets) {
             if (!s[t]) s[t] = {};
-            const prev = (s[t] as any).backgroundImage as string | undefined;
-            (s[t] as any).backgroundImage = prev ? `${dot}, ${prev}` : dot;
+            const prev = s[t].backgroundImage as string | undefined;
+            s[t].backgroundImage = prev ? `${dot}, ${prev}` : dot;
         }
         return s;
     }, [
@@ -707,6 +824,12 @@ export function PuzzleTrainerV2({
         }
 
         // analyze sandbox: update root and re-run analysis
+        setAnalysisHistory((prev) => {
+            const base = prev.slice(0, Math.max(0, analysisHistoryIdx) + 1);
+            base.push(res.fen);
+            return base;
+        });
+        setAnalysisHistoryIdx((i) => i + 1);
         setAnalysisRootFen(res.fen);
         setPvStep(0);
         void runAnalyze(res.fen);
@@ -885,15 +1008,19 @@ export function PuzzleTrainerV2({
                 return;
             }
             if (e.key === 'u') {
-                // optional: undo in analyze sandbox (not full history yet)
                 if (viewMode !== 'analyze') return;
                 e.preventDefault();
-                setPvStep((s) => Math.max(0, s - 1));
+                // Undo in analyze sandbox (position history)
+                setAnalysisHistoryIdx((i) => Math.max(0, i - 1));
                 return;
             }
 
             if (e.key === 'ArrowLeft') {
                 e.preventDefault();
+                if (viewMode === 'analyze' && !e.shiftKey) {
+                    setAnalysisHistoryIdx((i) => Math.max(0, i - 1));
+                    return;
+                }
                 if (viewMode === 'solve') {
                     // In solve mode, arrow keys navigate context (prelude) when enabled.
                     // If context is not currently shown, ArrowLeft enters context one ply before the puzzle.
@@ -915,6 +1042,12 @@ export function PuzzleTrainerV2({
             }
             if (e.key === 'ArrowRight') {
                 e.preventDefault();
+                if (viewMode === 'analyze' && !e.shiftKey) {
+                    setAnalysisHistoryIdx((i) =>
+                        Math.min(Math.max(0, analysisHistory.length - 1), i + 1)
+                    );
+                    return;
+                }
                 if (viewMode === 'solve' && showContext && sourceParsed) {
                     setContextPly((p) => {
                         const next = Math.min(puzzlePly, p + 1);
@@ -932,6 +1065,22 @@ export function PuzzleTrainerV2({
                         : Math.max(0, analyzeApplied.length - 1);
                 setPvStep((s) => Math.min(max, s + 1));
             }
+
+            if (e.key === 'Home') {
+                if (viewMode !== 'analyze') return;
+                if (e.shiftKey) return;
+                e.preventDefault();
+                setAnalysisHistoryIdx(0);
+                return;
+            }
+
+            if (e.key === 'End') {
+                if (viewMode !== 'analyze') return;
+                if (e.shiftKey) return;
+                e.preventDefault();
+                setAnalysisHistoryIdx(Math.max(0, analysisHistory.length - 1));
+                return;
+            }
         }
 
         window.addEventListener('keydown', onKeyDown);
@@ -946,7 +1095,19 @@ export function PuzzleTrainerV2({
         solveLineApplied.length,
         analyzeApplied.length,
         analysisRootFen,
+        analysisHistory.length,
     ]);
+
+    // When scrubbing analyze history, update root + restart PV browsing.
+    useEffect(() => {
+        if (viewMode !== 'analyze') return;
+        const fen = analysisHistory[analysisHistoryIdx];
+        if (!fen) return;
+        if (fen === analysisRootFen) return;
+        setAnalysisRootFen(fen);
+        setPvStep(0);
+        // runAnalyze is triggered by the existing analysisRootFen effect
+    }, [viewMode, analysisHistory, analysisHistoryIdx, analysisRootFen]);
 
     const topMeta = useMemo(() => {
         if (!currentPuzzle) return null;
@@ -1001,6 +1162,8 @@ export function PuzzleTrainerV2({
                                 onClick={() => {
                                     if (!analysisRootFen) return;
                                     setAnalysisRootFen(displayFen);
+                                    setAnalysisHistory([displayFen]);
+                                    setAnalysisHistoryIdx(0);
                                     setPvStep(0);
                                 }}
                             >
@@ -1018,7 +1181,9 @@ export function PuzzleTrainerV2({
                                 attemptResult ? (
                                     attemptResult === 'correct' ? (
                                         solvedKind === 'safe'
-                                            ? 'Good save — review the best line (←/→)'
+                                            ? (currentPuzzle?.tags ?? []).includes('avoidBlunder')
+                                                ? 'Good save — review the best line (←/→)'
+                                                : 'Correct (alternative) — review the best line (←/→)'
                                             : 'Correct — review the line (←/→)'
                                     ) : (
                                         'Not best — try again'
@@ -1234,6 +1399,15 @@ export function PuzzleTrainerV2({
                             if (v === 'solve' || v === 'analyze') {
                                 setViewMode(v);
                                 setPvStep(0);
+                                if (v === 'analyze') {
+                                    // When entering analyze, start a fresh history at the current board position.
+                                    const fen = attemptFen || currentPuzzle?.fen;
+                                    if (fen) {
+                                        setAnalysisRootFen(fen);
+                                        setAnalysisHistory([fen]);
+                                        setAnalysisHistoryIdx(0);
+                                    }
+                                }
                             }
                         }}
                     >
@@ -1248,6 +1422,9 @@ export function PuzzleTrainerV2({
                             {queueMode === 'reviewFailed' ? 'Review Failed' : 'Quick'}
                         </Badge>
                         {currentPuzzle ? <Badge variant="outline">{currentPuzzle.type}</Badge> : null}
+                    {currentPuzzle && (currentPuzzle.acceptedMovesUci ?? []).length > 1 ? (
+                        <Badge variant="secondary">Multiple correct</Badge>
+                    ) : null}
                         {openingText ? <Badge variant="outline">{openingText}</Badge> : null}
                     </div>
                 </div>
@@ -1270,13 +1447,51 @@ export function PuzzleTrainerV2({
                     <span className="font-mono">{prettyTurnFromFen(displayFen)}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                    <div className="hidden sm:block text-sm font-mono text-muted-foreground">{evalText}</div>
-                    <div className="h-2 w-40 rounded-full bg-muted overflow-hidden">
-                        <div
-                            className="h-2 bg-foreground/70"
-                            style={{ width: `${Math.round(evalUnit * 100)}%` }}
-                        />
-                    </div>
+                    {viewMode === 'solve' ? (
+                        <button
+                            type="button"
+                            className="group flex items-center gap-2"
+                            onClick={() => setEvalRevealed((v) => !v)}
+                            title={evalRevealed ? 'Hide eval' : 'Show eval'}
+                            aria-pressed={evalRevealed}
+                        >
+                            <div className="hidden sm:block relative text-sm font-mono text-muted-foreground select-none">
+                                <span className={!evalRevealed ? 'blur-md opacity-40' : ''}>
+                                    {solveEvalPending || (positionEvalBusy && evalRevealed) ? '…' : evalText}
+                                </span>
+                                {!evalRevealed ? (
+                                    <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[11px] font-sans font-medium text-foreground/80 opacity-0 transition-opacity group-hover:opacity-100">
+                                        Show eval
+                                    </span>
+                                ) : null}
+                            </div>
+                            <div className="relative h-2 w-40 rounded-full bg-muted overflow-hidden">
+                                <div
+                                    className={!evalRevealed ? 'h-2 bg-muted-foreground/25' : 'h-2 bg-foreground/70'}
+                                    style={{
+                                        width: `${!evalRevealed || solveEvalPending ? 50 : Math.round(evalUnit * 100)}%`,
+                                    }}
+                                />
+                                {!evalRevealed ? (
+                                    <div className="sm:hidden pointer-events-none absolute inset-0 flex items-center justify-center text-[10px] font-medium text-foreground/80 opacity-0 transition-opacity group-hover:opacity-100">
+                                        Show eval
+                                    </div>
+                                ) : null}
+                            </div>
+                        </button>
+                    ) : (
+                        <>
+                            <div className="hidden sm:block text-sm font-mono text-muted-foreground">
+                                {evalText}
+                            </div>
+                            <div className="h-2 w-40 rounded-full bg-muted overflow-hidden">
+                                <div
+                                    className="h-2 bg-foreground/70"
+                                    style={{ width: `${Math.round(evalUnit * 100)}%` }}
+                                />
+                            </div>
+                        </>
+                    )}
                 </div>
             </div>
         </div>
@@ -1349,6 +1564,8 @@ export function PuzzleTrainerV2({
                                                     setRefutationStep(0);
                                                     setPvStep(0);
                                                     setAnalysisRootFen(attemptFen);
+                                                    setAnalysisHistory([attemptFen]);
+                                                    setAnalysisHistoryIdx(0);
                                                     setViewMode('analyze');
                                                 }}
                                             >
@@ -1447,7 +1664,9 @@ export function PuzzleTrainerV2({
                             }>
                                 {attemptResult === 'correct' ? (
                                     solvedKind === 'safe' ? (
-                                        `Good save (${attemptUci ?? ''}) — best was ${currentPuzzle.bestMoveUci}.`
+                                        (currentPuzzle?.tags ?? []).includes('avoidBlunder')
+                                            ? `Good save (${attemptUci ?? ''}) — best was ${currentPuzzle.bestMoveUci}.`
+                                            : `Correct (${attemptUci ?? ''}) — best was ${currentPuzzle.bestMoveUci}.`
                                     ) : (
                                         `Correct (${attemptUci ?? ''}) — step through the line (←/→).`
                                     )

@@ -22,7 +22,7 @@ export default async function LoginPage({
                 <CardHeader>
                     <CardTitle>Sign in</CardTitle>
                     <CardDescription>
-                        Use Google or GitHub to sign in to BackRank.
+                        Use Google or GitHub to sign in to Backranq.
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2">

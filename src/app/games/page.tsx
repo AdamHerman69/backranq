@@ -1,8 +1,6 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { GamesFilter } from '@/components/games/GamesFilter';
-import { GamesList } from '@/components/games/GamesList';
 import type { GameCardData } from '@/components/games/GameCard';
 import { SyncGamesWidget } from '@/components/sync/SyncGamesWidget';
 import type { Prisma } from '@prisma/client';
@@ -10,6 +8,7 @@ import type { GameAnalysis } from '@/lib/analysis/classification';
 import { PageHeader } from '@/components/app/PageHeader';
 import { Card, CardContent } from '@/components/ui/card';
 import { classifyOpeningFromPgn } from '@/lib/chess/opening';
+import { GamesIndexClient } from '@/components/games/GamesIndexClient';
 
 function clampInt(v: number, min: number, max: number) {
     return Math.max(min, Math.min(max, v));
@@ -207,42 +206,7 @@ export default async function GamesPage({
                 </CardContent>
             </Card>
 
-            <Card>
-                <CardContent className="p-4">
-                    <GamesFilter
-                        total={total}
-                        initial={{
-                            provider:
-                                provider === 'lichess' || provider === 'chesscom'
-                                    ? provider
-                                    : '',
-                            timeClass:
-                                timeClass === 'bullet' ||
-                                timeClass === 'blitz' ||
-                                timeClass === 'rapid' ||
-                                timeClass === 'classical' ||
-                                timeClass === 'unknown'
-                                    ? timeClass
-                                    : '',
-                            result:
-                                resultParam === 'wins' ||
-                                resultParam === 'losses' ||
-                                resultParam === 'draws'
-                                    ? (resultParam as 'wins' | 'losses' | 'draws')
-                                    : '',
-                            hasAnalysis:
-                                hasAnalysis === 'true' || hasAnalysis === 'false'
-                                    ? (hasAnalysis as 'true' | 'false')
-                                    : '',
-                            since,
-                            until,
-                            q,
-                        }}
-                    />
-                </CardContent>
-            </Card>
-
-            <GamesList
+            <GamesIndexClient
                 games={games}
                 total={total}
                 page={page}
@@ -262,6 +226,31 @@ export default async function GamesPage({
                 userNameByProvider={{
                     lichess: user?.lichessUsername ?? '',
                     chesscom: user?.chesscomUsername ?? '',
+                }}
+                initialFilters={{
+                    provider:
+                        provider === 'lichess' || provider === 'chesscom' ? provider : '',
+                    timeClass:
+                        timeClass === 'bullet' ||
+                        timeClass === 'blitz' ||
+                        timeClass === 'rapid' ||
+                        timeClass === 'classical' ||
+                        timeClass === 'unknown'
+                            ? timeClass
+                            : '',
+                    result:
+                        resultParam === 'wins' ||
+                        resultParam === 'losses' ||
+                        resultParam === 'draws'
+                            ? (resultParam as 'wins' | 'losses' | 'draws')
+                            : '',
+                    hasAnalysis:
+                        hasAnalysis === 'true' || hasAnalysis === 'false'
+                            ? (hasAnalysis as 'true' | 'false')
+                            : '',
+                    since,
+                    until,
+                    q,
                 }}
             />
         </div>

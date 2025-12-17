@@ -26,6 +26,12 @@ export type AnalyzedMove = {
     evalBefore: Score | null; // Eval before move (from side-to-move perspective)
     evalAfter: Score | null; // Eval after move (from side-to-move perspective)
     cpLoss: number; // Centipawn loss (positive = player lost eval)
+    /**
+     * Lichess-style move accuracy (0-100), derived from Win% drop.
+     * Present only when we have evalBefore + evalAfter and the move wasn't excluded
+     * from accuracy computation (e.g., forced move).
+     */
+    accuracy?: number;
     bestMoveUci?: string;
     bestMoveSan?: string;
     // Puzzle linkage
@@ -149,18 +155,102 @@ export function classifyMove(args: {
 }
 
 /**
- * Calculate accuracy percentage from average centipawn loss.
- * Formula similar to chess.com: accuracy decreases with cp loss.
+ * Convert centipawn evaluation to Lichess win probability (0-100).
+ *
+ * Lichess mapping:
+ *   win% = 50 + 50 * (2 / (1 + exp(-0.00368208 * cp)) - 1)
+ *
+ * Where `cp` is from the player's perspective (positive = better for that player).
  */
-export function calculateAccuracy(avgCpLoss: number): number {
-    // Using a formula that gives ~98% for 10cp loss, ~90% for 50cp, etc.
-    // accuracy = 103.1668 * exp(-0.04354 * avgCpLoss) - 3.1669
-    // Simplified: 100 - (avgCpLoss * 0.5) clamped to 0-100
-    const accuracy = Math.max(
-        0,
-        Math.min(100, 103.1668 * Math.exp(-0.04354 * avgCpLoss) - 3.1669)
-    );
-    return Math.round(accuracy * 10) / 10; // Round to 1 decimal
+export function lichessWinPercentFromCp(cp: number): number {
+    const x = -0.00368208 * cp;
+    const logistic = 1 / (1 + Math.exp(x)); // in (0,1)
+    const centered = 2 * logistic - 1; // in (-1,1)
+    return 50 + 50 * centered;
+}
+
+/**
+ * Lichess move accuracy (0-100) from win% drop (deltaWin >= 0).
+ *
+ * Lichess mapping:
+ *   acc = 103.1668 * exp(-0.04354 * deltaWin) - 3.1669
+ */
+export function lichessMoveAccuracyFromWinPercentDrop(
+    deltaWin: number
+): number {
+    const acc = 103.1668 * Math.exp(-0.04354 * deltaWin) - 3.1669;
+    return Math.max(0, Math.min(100, acc));
+}
+
+export function lichessMoveAccuracyFromCps(args: {
+    beforeCp: number;
+    afterCp: number;
+}): {
+    winPercentBefore: number;
+    winPercentAfter: number;
+    deltaWin: number;
+    accuracy: number;
+} {
+    const winPercentBefore = lichessWinPercentFromCp(args.beforeCp);
+    const winPercentAfter = lichessWinPercentFromCp(args.afterCp);
+    const deltaWin = Math.max(0, winPercentBefore - winPercentAfter);
+    return {
+        winPercentBefore,
+        winPercentAfter,
+        deltaWin,
+        accuracy: lichessMoveAccuracyFromWinPercentDrop(deltaWin),
+    };
+}
+
+function harmonicMean(values: number[]): number | null {
+    if (values.length === 0) return null;
+    // Avoid division by zero; a single 0 should yield 0 overall.
+    if (values.some((v) => v <= 0)) return 0;
+    const denom = values.reduce((sum, v) => sum + 1 / v, 0);
+    return values.length / denom;
+}
+
+function weightedMean(values: number[], weights: number[]): number | null {
+    if (values.length === 0) return null;
+    if (values.length !== weights.length) return null;
+    let wSum = 0;
+    let vwSum = 0;
+    for (let i = 0; i < values.length; i++) {
+        const v = values[i]!;
+        const w = weights[i]!;
+        if (!Number.isFinite(v) || !Number.isFinite(w) || w <= 0) continue;
+        wSum += w;
+        vwSum += v * w;
+    }
+    if (wSum <= 0) return null;
+    return vwSum / wSum;
+}
+
+/**
+ * Lichess game accuracy aggregates move accuracies by averaging:
+ * - a (volatility-)weighted mean, and
+ * - the harmonic mean
+ *
+ * If `weights` are omitted, uses equal weights (1 per move).
+ */
+export function lichessGameAccuracy(args: {
+    moveAccuracies: number[];
+    weights?: number[];
+}): number | null {
+    const moves = args.moveAccuracies.filter((x) => Number.isFinite(x));
+    if (moves.length === 0) return null;
+
+    const weights =
+        args.weights && args.weights.length === args.moveAccuracies.length
+            ? args.weights
+            : moves.map(() => 1);
+
+    const wMean = weightedMean(moves, weights);
+    const hMean = harmonicMean(moves);
+    if (wMean == null && hMean == null) return null;
+    if (wMean == null) return hMean;
+    if (hMean == null) return wMean;
+    return (wMean + hMean) / 2;
 }
 
 /**
@@ -191,5 +281,3 @@ export function isMaterialSacrifice(args: {
     // - This is very simplified; real detection needs more context
     return evalAfterCp >= evalBeforeCp - 50;
 }
-
-

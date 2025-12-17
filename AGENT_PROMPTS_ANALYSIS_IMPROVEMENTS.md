@@ -8,7 +8,7 @@ This file contains **separate, well-scoped prompts** for agents to implement ana
 -   **Lichess puzzle tagging reference implementation**: `https://github.com/ornicar/lichess-puzzler/tree/master/tagger`
 -   **Lichess puzzle themes taxonomy** (useful for tag naming): [Lichess training themes](https://lichess.org/training/themes)
 
-### Current code hotspots (BackRank)
+### Current code hotspots (Backranq)
 
 -   **Move classification**: `src/lib/analysis/classification.ts`
 -   **Puzzle extraction**: `src/lib/analysis/extractPuzzles.ts`

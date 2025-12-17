@@ -55,7 +55,7 @@ export function LocalStorageMigration({ isLoggedIn, onMigrated }: Props) {
         >
             <div style={{ fontWeight: 650 }}>Sync from this browser</div>
             <div style={{ fontSize: 12, opacity: 0.8 }}>
-                We found local BackRank data in this browser
+                We found local Backranq data in this browser
                 {count ? ` (${count} puzzles)` : ''}. Import it into your account so it
                 syncs across devices.
             </div>

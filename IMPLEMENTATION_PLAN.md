@@ -1,4 +1,4 @@
-# BackRank Implementation Plan
+# Backranq Implementation Plan
 
 > A step-by-step guide for AI agents to transform the proof-of-concept into a full-fledged chess puzzle application.
 
@@ -54,7 +54,7 @@ main
 ### Prompt
 
 ````
-I'm building a chess puzzle app called BackRank. I need to set up a PostgreSQL database using Supabase.
+I'm building a chess puzzle app called Backranq. I need to set up a PostgreSQL database using Supabase.
 
 ## Current State
 - Next.js 14+ app with App Router
@@ -102,7 +102,7 @@ I'm building a chess puzzle app called BackRank. I need to set up a PostgreSQL d
 ### Prompt
 
 ````
-I'm setting up Prisma ORM for my chess puzzle app BackRank. The app analyzes chess games and generates puzzles from blunders.
+I'm setting up Prisma ORM for my chess puzzle app Backranq. The app analyzes chess games and generates puzzles from blunders.
 
 ## Current State
 - Next.js app with Supabase PostgreSQL database
@@ -421,7 +421,7 @@ I need to migrate from localStorage persistence to database storage in my chess 
 
 ## Current State
 
--   App currently saves state to localStorage under key "backrank.miniState.v1"
+-   App currently saves state to localStorage under key "backranq.miniState.v1"
 -   This includes: filters, puzzles, puzzleIdx, various analysis options
 -   Users now have accounts with database storage available
 -   Prisma models exist for AnalyzedGame, Puzzle, PuzzleAttempt
@@ -1919,8 +1919,8 @@ I'm adding Progressive Web App support for offline puzzle training and app insta
 
 2. Create web manifest `public/manifest.json`:
 
-    - App name: "BackRank"
-    - Short name: "BackRank"
+    - App name: "Backranq"
+    - Short name: "Backranq"
     - Theme color matching app
     - Icons in multiple sizes (192, 512)
     - Display: standalone

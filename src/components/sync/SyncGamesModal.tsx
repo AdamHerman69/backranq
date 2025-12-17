@@ -25,7 +25,8 @@ type FetchedRow = {
     selected: boolean;
 };
 
-const SYNC_GAMES_MODAL_STORAGE_KEY = 'backrank.syncGamesModal.v1';
+const NEW_SYNC_GAMES_MODAL_STORAGE_KEY = 'backranq.syncGamesModal.v1';
+const OLD_SYNC_GAMES_MODAL_STORAGE_KEY = 'backrank.syncGamesModal.v1';
 
 function defaultSinceUntilRange(): { since: string; until: string } {
     // Default: last ~30 days, inclusive through end-of-today (UTC).
@@ -80,13 +81,24 @@ export function SyncGamesModal({
         // Restore last-used date inputs (or default to last month).
         const defaults = defaultSinceUntilRange();
         try {
-            const raw = localStorage.getItem(SYNC_GAMES_MODAL_STORAGE_KEY);
+            const rawNew = localStorage.getItem(NEW_SYNC_GAMES_MODAL_STORAGE_KEY);
+            const rawOld = rawNew ? null : localStorage.getItem(OLD_SYNC_GAMES_MODAL_STORAGE_KEY);
+            const raw = rawNew ?? rawOld;
             const parsed = raw ? (JSON.parse(raw) as { since?: string; until?: string }) : null;
             setFilters((f) => ({
                 ...f,
                 since: parsed?.since ?? f.since ?? defaults.since,
                 until: parsed?.until ?? f.until ?? defaults.until,
             }));
+            if (rawOld) {
+                // Back-compat: migrate old key to new key.
+                try {
+                    localStorage.setItem(NEW_SYNC_GAMES_MODAL_STORAGE_KEY, rawOld);
+                    localStorage.removeItem(OLD_SYNC_GAMES_MODAL_STORAGE_KEY);
+                } catch {
+                    // ignore
+                }
+            }
         } catch {
             setFilters((f) => ({
                 ...f,
@@ -112,9 +124,10 @@ export function SyncGamesModal({
         // Persist date filters so reopening the modal restores them.
         try {
             localStorage.setItem(
-                SYNC_GAMES_MODAL_STORAGE_KEY,
+                NEW_SYNC_GAMES_MODAL_STORAGE_KEY,
                 JSON.stringify({ since: filters.since, until: filters.until })
             );
+            localStorage.removeItem(OLD_SYNC_GAMES_MODAL_STORAGE_KEY);
         } catch {
             // ignore
         }

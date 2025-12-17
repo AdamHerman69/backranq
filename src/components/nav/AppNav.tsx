@@ -94,8 +94,8 @@ export function AppNav() {
     <>
       <div className="flex items-center gap-3">
         <Button asChild variant="ghost" className="px-2 text-base font-semibold">
-          <Link href="/dashboard" aria-label="BackRank">
-            BackRank
+          <Link href="/dashboard" aria-label="Backranq">
+            Backranq
           </Link>
         </Button>
 
@@ -131,7 +131,7 @@ export function AppNav() {
           <SheetContent side="left" className="p-0">
             <div className="p-6">
               <SheetHeader>
-                <SheetTitle>BackRank</SheetTitle>
+                <SheetTitle>Backranq</SheetTitle>
               </SheetHeader>
 
               <div className="mt-4 flex flex-col gap-1">

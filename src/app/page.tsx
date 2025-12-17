@@ -216,11 +216,24 @@ export default function Home() {
 
       // guest: hydrate from localStorage
       try {
-        const raw = localStorage.getItem("backrank.miniState.v1");
+        const NEW_KEY = "backranq.miniState.v1";
+        const OLD_KEY = "backrank.miniState.v1";
+        const rawNew = localStorage.getItem(NEW_KEY);
+        const rawOld = rawNew ? null : localStorage.getItem(OLD_KEY);
+        const raw = rawNew ?? rawOld;
         if (!raw) return;
         const parsed = JSON.parse(raw) as unknown as Partial<PreferencesSchema>;
         if (parsed && typeof parsed === "object") {
           applyPreferences({ ...defaults, ...parsed, filters: { ...defaults.filters, ...(parsed as any).filters } } as PreferencesSchema);
+        }
+        if (rawOld) {
+          // Back-compat: migrate old key to new key.
+          try {
+            localStorage.setItem(NEW_KEY, rawOld);
+            localStorage.removeItem(OLD_KEY);
+          } catch {
+            // ignore
+          }
         }
       } catch {
         // ignore
@@ -279,7 +292,8 @@ export default function Home() {
 
     if (!isLoggedIn) {
       try {
-        localStorage.setItem("backrank.miniState.v1", JSON.stringify(payload));
+        localStorage.setItem("backranq.miniState.v1", JSON.stringify(payload));
+        localStorage.removeItem("backrank.miniState.v1");
       } catch {
         // ignore
       }
@@ -522,7 +536,7 @@ export default function Home() {
     }
   }
 
-  async function onGeneratePuzzles() {
+  async function generatePuzzles(opts?: { basePuzzles?: Puzzle[] }) {
     setEngineError(null);
     setAnalyzing(true);
     setAnalysisProgress("");
@@ -580,8 +594,9 @@ export default function Home() {
       }
       
       // Deduplicate by (sourceGameId, sourcePly, fen)
+      const basePuzzles = opts?.basePuzzles ?? puzzles;
       const dedup = new Map<string, Puzzle>();
-      for (const p of [...puzzles, ...result.puzzles]) {
+      for (const p of [...basePuzzles, ...result.puzzles]) {
         const k = `${p.sourceGameId}::${p.sourcePly}::${p.fen}`;
         if (!dedup.has(k)) dedup.set(k, p);
       }
@@ -594,17 +609,66 @@ export default function Home() {
     }
   }
 
+  async function onGeneratePuzzles() {
+    await generatePuzzles();
+  }
+
   function toggleAll(v: boolean) {
     const next: Record<string, boolean> = {};
     for (const g of games) next[g.id] = v;
     setSelected(next);
   }
 
+  async function onReevaluateSelectedGames() {
+    const ids = Object.entries(selected).filter(([, v]) => v).map(([k]) => k);
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const basePuzzles = puzzles.filter((p) => !idSet.has(p.sourceGameId));
+    setPuzzles(basePuzzles);
+    setPuzzleIdx(0);
+    setGameAnalysisMap((prev) => {
+      const next = new Map(prev);
+      for (const id of idSet) next.delete(id);
+      return next;
+    });
+    await generatePuzzles({ basePuzzles });
+  }
+
+  function onDeleteSelectedGames() {
+    const ids = Object.entries(selected).filter(([, v]) => v).map(([k]) => k);
+    if (ids.length === 0) return;
+    const ok = window.confirm(
+      `Remove ${ids.length} selected game${ids.length === 1 ? "" : "s"} from this list?`
+    );
+    if (!ok) return;
+    const idSet = new Set(ids);
+
+    const nextGames = games.filter((g) => !idSet.has(g.id));
+    setGames(nextGames);
+
+    const nextSelected: Record<string, boolean> = {};
+    for (const g of nextGames) nextSelected[g.id] = false;
+    setSelected(nextSelected);
+
+    setPuzzles((prev) => prev.filter((p) => !idSet.has(p.sourceGameId)));
+    setPuzzleIdx(0);
+
+    setGameAnalysisMap((prev) => {
+      const next = new Map(prev);
+      for (const id of idSet) next.delete(id);
+      return next;
+    });
+
+    if (activeGameId && idSet.has(activeGameId)) {
+      setActiveGameId(null);
+    }
+  }
+
   return (
     <div className={styles.page}>
       <main className={styles.main}>
         <header className={styles.header}>
-          <h1>BackRank — Your games → your puzzles</h1>
+          <h1>Backranq — Your games → your puzzles</h1>
           <p>Connect by username (public games). Filter games, then generate puzzles from blunders and missed wins.</p>
         </header>
 
@@ -719,13 +783,19 @@ export default function Home() {
             <button className={styles.primaryButton} disabled={loading} onClick={onFetchGames}>
               {loading ? "Fetching…" : "Fetch games"}
             </button>
-            {games.length > 0 && (
+            {games.length > 0 && selectedCount > 0 && (
               <>
                 <button className={styles.secondaryButton} onClick={() => toggleAll(true)}>
                   Select all
                 </button>
                 <button className={styles.secondaryButton} onClick={() => toggleAll(false)}>
-                  Select none
+                  Deselect all
+                </button>
+                <button className={styles.secondaryButton} disabled={analyzing} onClick={onReevaluateSelectedGames}>
+                  Reevaluate
+                </button>
+                <button className={styles.secondaryButton} disabled={analyzing} onClick={onDeleteSelectedGames}>
+                  Delete
                 </button>
                 <div className={styles.muted}>
                   {games.length} games • {selectedCount} selected

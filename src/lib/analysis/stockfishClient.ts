@@ -62,7 +62,7 @@ function loadScriptOnce(src: string, id: string): Promise<void> {
 async function createStockfishWasm(): Promise<StockfishWasmInstance> {
     await loadScriptOnce(
         '/vendor/stockfish/stockfish.js',
-        'backrank-stockfish-wasm'
+        'backranq-stockfish-wasm'
     );
     const sfFactory = (
         window as unknown as {

@@ -37,7 +37,7 @@ export default async function SettingsPage() {
         <div className="space-y-6">
             <PageHeader
                 title="Settings"
-                subtitle="Link your chess accounts so BackRank can import your games."
+                subtitle="Link your chess accounts so Backranq can import your games."
             />
             <Card>
                 <CardContent className="pt-6">

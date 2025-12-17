@@ -12,6 +12,9 @@ export function GamesList({
     totalPages,
     baseQueryString,
     userNameByProvider,
+    selected,
+    onSelectedChange,
+    selectionDisabled,
 }: {
     games: GameCardData[];
     total: number;
@@ -19,6 +22,9 @@ export function GamesList({
     totalPages: number;
     baseQueryString: string;
     userNameByProvider: { lichess: string; chesscom: string };
+    selected?: Record<string, boolean>;
+    onSelectedChange?: (id: string, selected: boolean) => void;
+    selectionDisabled?: boolean;
 }) {
     function pageHref(nextPage: number) {
         const qs = baseQueryString ? `${baseQueryString}&page=${nextPage}` : `page=${nextPage}`;
@@ -50,6 +56,10 @@ export function GamesList({
                                 ? userNameByProvider.lichess
                                 : userNameByProvider.chesscom
                         }
+                        selectable={!!onSelectedChange}
+                        selected={!!selected?.[g.id]}
+                        selectionDisabled={selectionDisabled}
+                        onSelectedChange={(v) => onSelectedChange?.(g.id, v)}
                     />
                 ))}
             </div>

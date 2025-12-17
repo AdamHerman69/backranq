@@ -16,7 +16,8 @@ import {
     type AnalyzedMove,
     type GameAnalysis,
     classifyMove,
-    calculateAccuracy,
+    lichessGameAccuracy,
+    lichessMoveAccuracyFromCps,
 } from '@/lib/analysis/classification';
 
 /**
@@ -117,6 +118,16 @@ export type ExtractOptions = {
     avoidBlunderMultiPv?: number; // default 4 (clamped 1..5)
     avoidBlunderAcceptableLossCp?: number; // default 80
     avoidBlunderMaxAcceptedMoves?: number; // default 4
+
+    /**
+     * For ALL puzzle types, optionally accept multiple moves as correct when the
+     * engine considers them essentially equivalent (MultiPV).
+     *
+     * This prevents "0.2 eval difference" second-lines from being graded as wrong.
+     */
+    multiSolutionMultiPv?: number; // default 4 (clamped 1..5)
+    multiSolutionAcceptableLossCp?: number; // default 30
+    multiSolutionMaxAcceptedMoves?: number; // default 4
 
     /**
      * If true, also return move-by-move analysis with classifications for each game.
@@ -958,6 +969,10 @@ type ResolvedOptions = {
     avoidBlunderMultiPv: number;
     avoidBlunderAcceptableLossCp: number;
     avoidBlunderMaxAcceptedMoves: number;
+
+    multiSolutionMultiPv: number;
+    multiSolutionAcceptableLossCp: number;
+    multiSolutionMaxAcceptedMoves: number;
 };
 
 function resolveOptions(options?: ExtractOptions): ResolvedOptions {
@@ -995,6 +1010,20 @@ function resolveOptions(options?: ExtractOptions): ResolvedOptions {
         avoidBlunderMaxAcceptedMoves: Math.max(
             1,
             Math.min(16, Math.trunc(options?.avoidBlunderMaxAcceptedMoves ?? 4))
+        ),
+
+        multiSolutionMultiPv: Math.max(
+            1,
+            Math.min(5, Math.trunc(options?.multiSolutionMultiPv ?? 4))
+        ),
+        multiSolutionAcceptableLossCp:
+            options?.multiSolutionAcceptableLossCp ?? 30,
+        multiSolutionMaxAcceptedMoves: Math.max(
+            1,
+            Math.min(
+                16,
+                Math.trunc(options?.multiSolutionMaxAcceptedMoves ?? 4)
+            )
         ),
     };
 }
@@ -1058,7 +1087,7 @@ function normalizeUci(uci: string): string {
     return (uci ?? '').trim().toLowerCase();
 }
 
-async function computeAcceptedMovesForAvoidBlunder(args: {
+async function computeAcceptedMovesForPosition(args: {
     engine: StockfishClient;
     fen: string;
     movetimeMs: number;
@@ -1165,8 +1194,8 @@ export async function extractPuzzlesFromGames(args: {
 
         // Initialize analysis for this game if requested
         const gameAnalysis: AnalyzedMove[] = [];
-        const whiteCpLosses: number[] = [];
-        const blackCpLosses: number[] = [];
+        const whiteMoveAccuracies: number[] = [];
+        const blackMoveAccuracies: number[] = [];
 
         let cooldown = 0;
         for (let ply = 0; ply < plyCount; ply++) {
@@ -1315,6 +1344,32 @@ export async function extractPuzzlesFromGames(args: {
                 const isBestMove = uci === bestAtBefore.bestMoveUci;
                 const wasAlreadyLost = beforeCpMover < -300;
 
+                // Lichess-style move accuracy is based on win% drop (not cp loss).
+                // Exclude forced moves (only one legal move) since there was no choice.
+                let moveAccuracy: number | undefined;
+                try {
+                    const legalCount = new Chess(fenBefore).moves().length;
+                    const isForced = legalCount <= 1;
+                    if (!isForced) {
+                        const acc = lichessMoveAccuracyFromCps({
+                            beforeCp: beforeCpMover,
+                            afterCp: afterCpMover,
+                        }).accuracy;
+                        moveAccuracy = acc;
+                        if (moverColor === 'w') whiteMoveAccuracies.push(acc);
+                        else blackMoveAccuracies.push(acc);
+                    }
+                } catch {
+                    // If we can't enumerate legal moves for some reason, fall back to including it.
+                    const acc = lichessMoveAccuracyFromCps({
+                        beforeCp: beforeCpMover,
+                        afterCp: afterCpMover,
+                    }).accuracy;
+                    moveAccuracy = acc;
+                    if (moverColor === 'w') whiteMoveAccuracies.push(acc);
+                    else blackMoveAccuracies.push(acc);
+                }
+
                 // Check if the move involves tactical elements
                 const { isCheck, isCapture } = isTacticalMove(
                     new Chess(fenBefore),
@@ -1334,13 +1389,6 @@ export async function extractPuzzlesFromGames(args: {
 
                 const cpLoss = Math.max(0, swing);
 
-                // Track cp losses for accuracy calculation
-                if (moverColor === 'w') {
-                    whiteCpLosses.push(cpLoss);
-                } else {
-                    blackCpLosses.push(cpLoss);
-                }
-
                 const analyzedMove: AnalyzedMove = {
                     ply,
                     san: mv.san,
@@ -1349,6 +1397,7 @@ export async function extractPuzzlesFromGames(args: {
                     evalBefore: bestAtBefore.score,
                     evalAfter: bestAtAfter.score,
                     cpLoss,
+                    accuracy: moveAccuracy,
                     bestMoveUci: bestAtBefore.bestMoveUci,
                     bestMoveSan:
                         uciToSan(fenBefore, bestAtBefore.bestMoveUci) ??
@@ -1454,24 +1503,24 @@ export async function extractPuzzlesFromGames(args: {
                                     undefined;
                                 try {
                                     acceptedMovesUci =
-                                        await computeAcceptedMovesForAvoidBlunder(
-                                            {
-                                                engine: args.engine,
-                                                fen: fenBefore,
-                                                movetimeMs: opts.movetimeMs,
-                                                multiPv:
-                                                    opts.avoidBlunderMultiPv,
-                                                acceptableLossCp:
-                                                    opts.avoidBlunderAcceptableLossCp,
-                                                maxAcceptedMoves:
-                                                    opts.avoidBlunderMaxAcceptedMoves,
-                                                bestMoveUci:
-                                                    finalEval.bestMoveUci,
-                                            }
-                                        );
+                                        await computeAcceptedMovesForPosition({
+                                            engine: args.engine,
+                                            fen: fenBefore,
+                                            movetimeMs: opts.movetimeMs,
+                                            multiPv: opts.avoidBlunderMultiPv,
+                                            acceptableLossCp:
+                                                opts.avoidBlunderAcceptableLossCp,
+                                            maxAcceptedMoves:
+                                                opts.avoidBlunderMaxAcceptedMoves,
+                                            bestMoveUci: finalEval.bestMoveUci,
+                                        });
                                 } catch {
                                     // Ignore MultiPV failures; fall back to single-solution.
                                 }
+
+                                const isMulti =
+                                    (acceptedMovesUci ?? []).length > 1;
+                                if (isMulti) tags.add('multiSolution');
 
                                 const puzzle: Puzzle = {
                                     id: puzzleId,
@@ -1484,12 +1533,13 @@ export async function extractPuzzlesFromGames(args: {
                                     sideToMove: stm,
                                     bestLineUci: finalEval.pvUci,
                                     bestMoveUci: finalEval.bestMoveUci,
-                                    acceptedMovesUci,
+                                    acceptedMovesUci: isMulti
+                                        ? acceptedMovesUci
+                                        : undefined,
                                     score: finalEval.score,
-                                    label:
-                                        (acceptedMovesUci ?? []).length > 1
-                                            ? 'Avoid the blunder — play a safe move'
-                                            : 'Find the best move (avoid the mistake)',
+                                    label: isMulti
+                                        ? 'Avoid the blunder — play a safe move'
+                                        : 'Find the best move (avoid the mistake)',
                                     tags: Array.from(tags).sort(),
                                     opening,
                                     severity: tagsAndSeverity.severity,
@@ -1628,6 +1678,35 @@ export async function extractPuzzlesFromGames(args: {
                                             );
 
                                         const puzzleId = uid(`puz-punish`);
+                                        let acceptedMovesUci:
+                                            | string[]
+                                            | undefined = undefined;
+                                        try {
+                                            acceptedMovesUci =
+                                                await computeAcceptedMovesForPosition(
+                                                    {
+                                                        engine: args.engine,
+                                                        fen: fenAfter,
+                                                        movetimeMs:
+                                                            opts.movetimeMs,
+                                                        multiPv:
+                                                            opts.multiSolutionMultiPv,
+                                                        acceptableLossCp:
+                                                            opts.multiSolutionAcceptableLossCp,
+                                                        maxAcceptedMoves:
+                                                            opts.multiSolutionMaxAcceptedMoves,
+                                                        bestMoveUci:
+                                                            finalEval.bestMoveUci,
+                                                    }
+                                                );
+                                        } catch {
+                                            // Ignore MultiPV failures; fall back to single-solution.
+                                        }
+
+                                        const isMulti =
+                                            (acceptedMovesUci ?? []).length > 1;
+                                        if (isMulti) tags.add('multiSolution');
+
                                         const puzzle: Puzzle = {
                                             id: puzzleId,
                                             type: 'blunder', // It's always a blunder by opponent
@@ -1639,8 +1718,13 @@ export async function extractPuzzlesFromGames(args: {
                                             sideToMove: userColor,
                                             bestLineUci: finalEval.pvUci,
                                             bestMoveUci: finalEval.bestMoveUci,
+                                            acceptedMovesUci: isMulti
+                                                ? acceptedMovesUci
+                                                : undefined,
                                             score: finalEval.score,
-                                            label: 'Punish the blunder!',
+                                            label: isMulti
+                                                ? 'Find a strong continuation (multiple correct moves)'
+                                                : 'Punish the blunder!',
                                             tags: Array.from(tags).sort(),
                                             opening,
                                             severity: tagsAndSeverity.severity,
@@ -1686,23 +1770,25 @@ export async function extractPuzzlesFromGames(args: {
 
         // Store game analysis if requested
         if (opts.returnAnalysis && gameAnalysis.length > 0) {
-            // Calculate accuracy scores
-            const avgWhiteCpLoss =
-                whiteCpLosses.length > 0
-                    ? whiteCpLosses.reduce((a, b) => a + b, 0) /
-                      whiteCpLosses.length
-                    : 0;
-            const avgBlackCpLoss =
-                blackCpLosses.length > 0
-                    ? blackCpLosses.reduce((a, b) => a + b, 0) /
-                      blackCpLosses.length
-                    : 0;
+            const round1 = (n: number) => Math.round(n * 10) / 10;
+            const whiteAccuracy = lichessGameAccuracy({
+                moveAccuracies: whiteMoveAccuracies,
+            });
+            const blackAccuracy = lichessGameAccuracy({
+                moveAccuracies: blackMoveAccuracies,
+            });
 
             analysisMap.set(game.id, {
                 gameId: game.id,
                 moves: gameAnalysis,
-                whiteAccuracy: calculateAccuracy(avgWhiteCpLoss),
-                blackAccuracy: calculateAccuracy(avgBlackCpLoss),
+                whiteAccuracy:
+                    typeof whiteAccuracy === 'number'
+                        ? round1(whiteAccuracy)
+                        : undefined,
+                blackAccuracy:
+                    typeof blackAccuracy === 'number'
+                        ? round1(blackAccuracy)
+                        : undefined,
                 analyzedAt: new Date().toISOString(),
             });
         }

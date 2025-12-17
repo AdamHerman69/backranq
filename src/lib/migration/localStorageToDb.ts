@@ -5,11 +5,12 @@ import {
     type PreferencesSchema,
 } from '@/lib/preferences';
 
-const KEY = 'backrank.miniState.v1';
+const NEW_KEY = 'backranq.miniState.v1';
+const OLD_KEY = 'backrank.miniState.v1';
 
-export function readLocalMiniState(): PartialPreferences | null {
+function readKey(key: string): PartialPreferences | null {
     try {
-        const raw = localStorage.getItem(KEY);
+        const raw = localStorage.getItem(key);
         if (!raw) return null;
         const parsed = JSON.parse(raw) as unknown;
         if (!parsed || typeof parsed !== 'object') return null;
@@ -17,6 +18,23 @@ export function readLocalMiniState(): PartialPreferences | null {
     } catch {
         return null;
     }
+}
+
+export function readLocalMiniState(): PartialPreferences | null {
+    const next = readKey(NEW_KEY);
+    if (next) return next;
+
+    // Back-compat: migrate old key to new key.
+    const old = readKey(OLD_KEY);
+    if (old) {
+        try {
+            localStorage.setItem(NEW_KEY, JSON.stringify(old));
+            localStorage.removeItem(OLD_KEY);
+        } catch {
+            // ignore
+        }
+    }
+    return old;
 }
 
 export function hasLocalMiniState(): boolean {
@@ -61,7 +79,8 @@ export async function migrateLocalStorageToDb(): Promise<{
     await saveDbPreferences(merged);
 
     try {
-        localStorage.removeItem(KEY);
+        localStorage.removeItem(NEW_KEY);
+        localStorage.removeItem(OLD_KEY);
     } catch {
         // ignore
     }
@@ -72,4 +91,3 @@ export async function migrateLocalStorageToDb(): Promise<{
             : 0,
     };
 }
-
