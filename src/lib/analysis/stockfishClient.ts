@@ -50,6 +50,8 @@ export class StockfishClient {
     private cacheEval = new Map<string, EvalResult>();
     private cacheMulti = new Map<string, MultiPvResult>();
 
+    private debugLabel = `sf:${Math.random().toString(16).slice(2, 8)}`;
+
     private pending = new Map<
         string,
         | {
@@ -58,6 +60,7 @@ export class StockfishClient {
               resolve: (v: EvalResult) => void;
               reject: (e: Error) => void;
               latest?: MultiPvStreamingUpdate;
+              timeoutId?: number;
           }
         | {
               kind: 'multipv';
@@ -65,6 +68,7 @@ export class StockfishClient {
               resolve: (v: MultiPvResult) => void;
               reject: (e: Error) => void;
               latest?: MultiPvStreamingUpdate;
+              timeoutId?: number;
           }
     >();
 
@@ -86,13 +90,58 @@ export class StockfishClient {
             throw new Error('Stockfish can only run in the browser.');
         }
         this.worker = new Worker('/vendor/stockfish/backranq-engine.worker.js');
+        this.debugLog('worker created');
         this.worker.onmessage = (ev: MessageEvent) => {
             this.onWorkerMessage(ev.data);
         };
         this.worker.onerror = (ev: ErrorEvent) => {
             const msg = ev?.message || 'Stockfish worker crashed unexpectedly';
+            this.debugLog('worker error', msg);
             this.failAll(new Error(msg));
         };
+    }
+
+    private debugEnabled(): boolean {
+        // Enable by running in DevTools:
+        // localStorage.setItem('debugStockfish', '1')
+        try {
+            return window.localStorage?.getItem('debugStockfish') === '1';
+        } catch {
+            return false;
+        }
+    }
+
+    private debugLog(...args: unknown[]) {
+        if (!this.debugEnabled()) return;
+        console.log(`[StockfishClient ${this.debugLabel}]`, ...args);
+    }
+
+    private installTimeout(id: string, ms: number) {
+        const p = this.pending.get(id);
+        if (!p) return;
+        if (p.timeoutId) window.clearTimeout(p.timeoutId);
+        const timeoutMs = Math.max(50, Math.trunc(ms));
+        p.timeoutId = window.setTimeout(() => {
+            const still = this.pending.get(id);
+            if (!still) return;
+            this.pending.delete(id);
+            if (this.activeJobId === id) this.activeJobId = null;
+            try {
+                this.worker?.postMessage({ type: 'stop', id });
+            } catch {
+                // ignore
+            }
+            const err = new Error(`Engine timeout after ${timeoutMs}ms`);
+            this.debugLog('timeout', { id, timeoutMs });
+            still.reject(err);
+        }, timeoutMs);
+    }
+
+    private clearTimeoutFor(id: string) {
+        const p = this.pending.get(id);
+        if (!p?.timeoutId) return;
+        window.clearTimeout(p.timeoutId);
+        p.timeoutId = undefined;
     }
 
     terminate() {
@@ -124,6 +173,9 @@ export class StockfishClient {
                 reject,
             });
             this.activeJobId = id;
+            // movetime is best-effort; add buffer for startup/GC/etc.
+            this.installTimeout(id, movetimeMs + 2000);
+            this.debugLog('start eval', { id, movetimeMs });
             this.worker?.postMessage({
                 type: 'start',
                 id,
@@ -163,6 +215,8 @@ export class StockfishClient {
                 reject,
             });
             this.activeJobId = id;
+            this.installTimeout(id, movetimeMs + 2500);
+            this.debugLog('start multipv', { id, movetimeMs, multiPv });
             this.worker?.postMessage({
                 type: 'start',
                 id,
@@ -201,6 +255,14 @@ export class StockfishClient {
         this.cancelAll();
 
         this.activeJobId = id;
+        this.debugLog('start streaming', {
+            id,
+            multiPv,
+            minDepth: opts.minDepth,
+            maxDepth: opts.maxDepth,
+            maxTimeMs: opts.maxTimeMs,
+            emitIntervalMs,
+        });
         this.streaming.set(id, {
             stopped: false,
             onUpdate: opts.onUpdate,
@@ -225,6 +287,7 @@ export class StockfishClient {
                 if (s) s.stopped = true;
                 this.streaming.delete(id);
                 if (this.activeJobId === id) this.activeJobId = null;
+                this.debugLog('stop streaming', { id });
                 this.worker?.postMessage({ type: 'stop', id });
             },
         };
@@ -232,6 +295,7 @@ export class StockfishClient {
 
     cancelAll() {
         if (this.activeJobId) {
+            this.debugLog('cancelAll stop active', { id: this.activeJobId });
             this.worker?.postMessage({ type: 'stop', id: this.activeJobId });
         }
 
@@ -243,6 +307,7 @@ export class StockfishClient {
 
         // reject any pending futures
         for (const [id, p] of this.pending.entries()) {
+            if (p.timeoutId) window.clearTimeout(p.timeoutId);
             this.pending.delete(id);
             p.reject(new Error('Cancelled'));
         }
@@ -251,6 +316,7 @@ export class StockfishClient {
 
     private failAll(e: Error) {
         for (const [, p] of this.pending) {
+            if (p.timeoutId) window.clearTimeout(p.timeoutId);
             p.reject(e);
         }
         this.pending.clear();
@@ -283,6 +349,9 @@ export class StockfishClient {
             const id = String(msg.id ?? '');
             const bestMoveUci = String(msg.bestMoveUci ?? '');
             const final = msg.final as MultiPvStreamingUpdate | undefined;
+
+            this.debugLog('done', { id, bestMoveUci });
+            this.clearTimeoutFor(id);
 
             if (final && typeof final.fen === 'string') {
                 const s = this.streaming.get(id);
@@ -337,6 +406,8 @@ export class StockfishClient {
             const id = String(msg.id ?? '');
             const message = String(msg.message ?? 'Engine error');
             const err = new Error(message);
+            this.debugLog('error', { id, message });
+            this.clearTimeoutFor(id);
             const s = this.streaming.get(id);
             if (s && !s.stopped) s.onError?.(err);
             this.streaming.delete(id);

@@ -1255,13 +1255,18 @@ export function PuzzleTrainerV2({
             if (!currentPuzzle) return;
             if (attemptResult !== 'incorrect') return;
 
+            // Avoid a race where we create/set the engineClient and *also* start a refutation
+            // analysis in the same pass (which can get cancelled by the state update and leave
+            // a hung/queued engine job behind).
+            if (!engineClient) {
+                const client = new StockfishClient();
+                engineRef.current = client;
+                setEngineClient(client);
+                return;
+            }
+
             try {
-                const client = engineClient ?? new StockfishClient();
-                if (!engineClient) {
-                    engineRef.current = client;
-                    setEngineClient(client);
-                }
-                const res = await client.analyzeMultiPv({
+                const res = await engineClient.analyzeMultiPv({
                     fen: attemptFen,
                     movetimeMs: 250,
                     multiPv: 1,
@@ -1289,10 +1294,17 @@ export function PuzzleTrainerV2({
                         return s + 1;
                     });
                 }, 450);
-            } catch {
+            } catch (e) {
                 // If refutation analysis fails (engine busy/crashed/cancelled), still show the
                 // "Not best" overlay so the user can choose Analyze / Try again.
                 if (!cancelled) {
+                    try {
+                        if (window.localStorage?.getItem('debugStockfish') === '1') {
+                            console.warn('[puzzles] refutation analysis failed', e);
+                        }
+                    } catch {
+                        // ignore
+                    }
                     setRefutationLineUci(null);
                     setRefutationStep(0);
                     setShowWrongOverlay(true);
