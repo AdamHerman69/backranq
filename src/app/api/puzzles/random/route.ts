@@ -2,11 +2,28 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { aggregatePuzzleStats, dbToPuzzle } from '@/lib/api/puzzles';
+import type { Prisma } from '@prisma/client';
 
 export const runtime = 'nodejs';
 
 function clampInt(v: number, min: number, max: number) {
     return Math.max(min, Math.min(max, v));
+}
+
+function parseCsv(v: string | null, max: number): string[] {
+    const s = (v ?? '').trim();
+    if (!s) return [];
+    return s
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .slice(0, max);
+}
+
+function parseBool(v: string | null): boolean | null {
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+    return null;
 }
 
 function shuffle<T>(arr: T[]) {
@@ -30,6 +47,16 @@ export async function GET(req: Request) {
         20
     );
     const type = url.searchParams.get('type'); // avoidBlunder | punishBlunder
+    const kind = url.searchParams.get('kind'); // blunder | missedWin | missedTactic
+    const phase = url.searchParams.get('phase'); // opening | middlegame | endgame
+    const gameId = (url.searchParams.get('gameId') ?? '').trim();
+    const multiSolution = (url.searchParams.get('multiSolution') ?? '').trim(); // any | single | multi
+    const openingEco = parseCsv(url.searchParams.get('openingEco'), 32).map(
+        (s) => s.toUpperCase()
+    );
+    const tags = parseCsv(url.searchParams.get('tags'), 16);
+    const solvedFilter = parseBool(url.searchParams.get('solved'));
+    const failedFilter = parseBool(url.searchParams.get('failed'));
     const excludeIdsParam = (url.searchParams.get('excludeIds') ?? '').trim();
     const preferFailed = url.searchParams.get('preferFailed') === 'true';
     const excludeIds = excludeIdsParam
@@ -40,31 +67,68 @@ export async function GET(req: Request) {
               .slice(0, 200)
         : [];
 
-    const baseWhere: any = { userId };
+    const baseWhere: Prisma.PuzzleWhereInput = { userId };
+    const and: Prisma.PuzzleWhereInput[] = [];
     if (type === 'avoidBlunder') baseWhere.type = 'AVOID_BLUNDER';
     if (type === 'punishBlunder') baseWhere.type = 'PUNISH_BLUNDER';
+    if (kind === 'blunder') baseWhere.kind = 'BLUNDER';
+    if (kind === 'missedWin') baseWhere.kind = 'MISSED_WIN';
+    if (kind === 'missedTactic') baseWhere.kind = 'MISSED_TACTIC';
+    if (phase === 'opening') baseWhere.phase = 'OPENING';
+    if (phase === 'middlegame') baseWhere.phase = 'MIDDLEGAME';
+    if (phase === 'endgame') baseWhere.phase = 'ENDGAME';
+    if (gameId) baseWhere.gameId = gameId;
+    if (openingEco.length > 0) baseWhere.openingEco = { in: openingEco };
     if (excludeIds.length > 0) baseWhere.id = { notIn: excludeIds };
+
+    if (multiSolution === 'multi') {
+        const need = Array.from(new Set([...tags, 'multiSolution'])).slice(
+            0,
+            16
+        );
+        if (need.length > 0) baseWhere.tags = { hasEvery: need };
+    } else if (tags.length > 0) {
+        baseWhere.tags = { hasEvery: tags };
+    }
+    if (multiSolution === 'single') {
+        and.push({ NOT: { tags: { has: 'multiSolution' } } });
+    }
+
+    if (solvedFilter === true && failedFilter === true) {
+        baseWhere.attempts = { some: { userId } }; // attempted
+    } else if (solvedFilter === true) {
+        baseWhere.attempts = { some: { userId, wasCorrect: true } };
+    } else if (failedFilter === true) {
+        baseWhere.attempts = { some: { userId } };
+        and.push({ NOT: { attempts: { some: { userId, wasCorrect: true } } } });
+    }
+
+    if (and.length > 0) baseWhere.AND = and;
 
     // Buckets:
     // - failed: attempted, no correct
     // - unsolved: no correct (includes unattempted)
     // - solved: has correct
-    const failedWhere = {
-        ...baseWhere,
-        attempts: { some: { userId } },
-        NOT: { attempts: { some: { userId, wasCorrect: true } } },
+    const failedWhere: Prisma.PuzzleWhereInput = {
+        AND: [
+            baseWhere,
+            {
+                attempts: { some: { userId } },
+                NOT: { attempts: { some: { userId, wasCorrect: true } } },
+            },
+        ],
     };
-    const unsolvedWhere = {
-        ...baseWhere,
-        NOT: { attempts: { some: { userId, wasCorrect: true } } },
+    const unsolvedWhere: Prisma.PuzzleWhereInput = {
+        AND: [
+            baseWhere,
+            { NOT: { attempts: { some: { userId, wasCorrect: true } } } },
+        ],
     };
-    const unattemptedWhere = {
-        ...baseWhere,
-        attempts: { none: { userId } },
+    const unattemptedWhere: Prisma.PuzzleWhereInput = {
+        AND: [baseWhere, { attempts: { none: { userId } } }],
     };
-    const solvedWhere = {
-        ...baseWhere,
-        attempts: { some: { userId, wasCorrect: true } },
+    const solvedWhere: Prisma.PuzzleWhereInput = {
+        AND: [baseWhere, { attempts: { some: { userId, wasCorrect: true } } }],
     };
 
     // Pull a reasonably sized pool then sample in memory.
@@ -143,8 +207,9 @@ export async function GET(req: Request) {
         .map((id) => byId.get(id))
         .filter(Boolean)
         .map((r) => {
-            const puzzle = dbToPuzzle(r as any);
-            const stats = aggregatePuzzleStats((r as any).attempts ?? []);
+            const row = r as NonNullable<typeof r>;
+            const puzzle = dbToPuzzle(row as Parameters<typeof dbToPuzzle>[0]);
+            const stats = aggregatePuzzleStats(row.attempts);
             return { ...puzzle, attemptStats: stats };
         });
 

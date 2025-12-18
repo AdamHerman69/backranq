@@ -5,9 +5,23 @@ export type PuzzleType = 'blunder' | 'missedWin' | 'missedTactic';
 
 export type PuzzleSeverity = 'small' | 'medium' | 'big';
 
+export type PuzzleCategory = 'avoidBlunder' | 'punishBlunder';
+
+export type GamePhase = 'opening' | 'middlegame' | 'endgame';
+
 export type Puzzle = {
     id: string;
+    /**
+     * "Kind" of tactical moment (what happened in the game).
+     * This is NOT the same as the puzzle category (avoid vs punish).
+     */
     type: PuzzleType;
+    /**
+     * Puzzle category (who blundered / when the puzzle starts).
+     * - avoidBlunder: position BEFORE user's mistake, find best/safe move
+     * - punishBlunder: position AFTER opponent's mistake, find the punishment
+     */
+    mode: PuzzleCategory;
     provider: Provider;
     sourceGameId: string;
     sourcePly: number; // 0-based ply index at puzzle start (before the mistake)
@@ -42,4 +56,8 @@ export type Puzzle = {
      * Rough importance bucket, primarily based on eval swing and mate presence.
      */
     severity?: PuzzleSeverity;
+    /**
+     * Rough phase bucket for the puzzle start position.
+     */
+    phase?: GamePhase;
 };

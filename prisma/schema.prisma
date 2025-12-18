@@ -25,6 +25,18 @@ enum PuzzleType {
   PUNISH_BLUNDER
 }
 
+enum PuzzleKind {
+  BLUNDER
+  MISSED_WIN
+  MISSED_TACTIC
+}
+
+enum GamePhase {
+  OPENING
+  MIDDLEGAME
+  ENDGAME
+}
+
 model User {
   id               String   @id @default(uuid()) @db.Uuid
   email            String   @unique
@@ -85,6 +97,8 @@ model Puzzle {
   sourcePly        Int
   fen              String
   type             PuzzleType
+  kind             PuzzleKind @default(BLUNDER)
+  phase            GamePhase?
   severity         String?
   bestMoveUci      String
   acceptedMovesUci String[]   @default([])

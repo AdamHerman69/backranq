@@ -146,12 +146,6 @@ export default function Home() {
     if (o?.eco || o?.name || o?.variation) {
       return `${o.eco ?? ""}::${o.name ?? ""}::${o.variation ?? ""}`;
     }
-    // Fallback for older saved puzzles: attempt to read from tags.
-    const tags = p.tags ?? [];
-    const eco = tags.find((t) => t.startsWith("eco:"))?.slice("eco:".length) ?? "";
-    const name = tags.find((t) => t.startsWith("opening:"))?.slice("opening:".length) ?? "";
-    const variation = tags.find((t) => t.startsWith("openingVar:"))?.slice("openingVar:".length) ?? "";
-    if (eco || name || variation) return `${eco}::${name}::${variation}`;
     return "unknown";
   }
 

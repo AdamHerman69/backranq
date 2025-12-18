@@ -463,15 +463,7 @@ export function PuzzlePanel(props: {
       const base = `${o.eco ? `${o.eco} ` : ""}${nm}`.trim();
       return o.variation ? `${base} — ${o.variation}` : base || null;
     }
-    // fallback from tags if opening object is missing (older saved puzzles)
-    const tags = currentPuzzle.tags ?? [];
-    const eco = tags.find((t) => t.startsWith("eco:"))?.slice("eco:".length) ?? "";
-    const name =
-      tags.find((t) => t.startsWith("opening:"))?.slice("opening:".length) ?? ecoName(eco) ?? "";
-    const variation = tags.find((t) => t.startsWith("openingVar:"))?.slice("openingVar:".length) ?? "";
-    const base = `${eco ? `${eco} ` : ""}${name}`.trim();
-    if (!base && !variation) return null;
-    return variation ? `${base} — ${variation}` : base;
+    return null;
   }, [currentPuzzle]);
 
   // Map puzzles to their source plies for the current puzzle's source game
@@ -700,7 +692,7 @@ export function PuzzlePanel(props: {
                 <div className={attemptResult === "correct" ? styles.success : styles.warning}>
                   {attemptResult === "correct"
                     ? solvedKind === "safe"
-                      ? (currentPuzzle.tags ?? []).includes("avoidBlunder")
+                      ? currentPuzzle.mode === "avoidBlunder"
                         ? `Good save! (${attemptUci}) Best was ${currentPuzzle.bestMoveUci}.`
                         : `Correct! (${attemptUci}) Best was ${currentPuzzle.bestMoveUci}.`
                       : `Correct! (${attemptUci})`

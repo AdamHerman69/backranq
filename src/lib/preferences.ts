@@ -194,6 +194,21 @@ function dedupPuzzles(puzzles: Puzzle[]): Puzzle[] {
     return Array.from(map.values());
 }
 
+function ensurePuzzleHasMode(p: Puzzle): Puzzle {
+    const x = p as unknown as { mode?: unknown; tags?: unknown };
+    if (x.mode === 'avoidBlunder' || x.mode === 'punishBlunder') return p;
+
+    const tags = Array.isArray(x.tags)
+        ? (x.tags as unknown[]).filter(
+              (t): t is string => typeof t === 'string'
+          )
+        : [];
+    const mode = tags.includes('punishBlunder')
+        ? 'punishBlunder'
+        : 'avoidBlunder';
+    return { ...(p as unknown as Record<string, unknown>), mode } as Puzzle;
+}
+
 export function mergePreferences(
     base: PreferencesSchema,
     patch: PartialPreferences
@@ -205,7 +220,7 @@ export function mergePreferences(
     };
 
     if (patch.puzzles) {
-        merged.puzzles = dedupPuzzles(patch.puzzles);
+        merged.puzzles = dedupPuzzles(patch.puzzles.map(ensurePuzzleHasMode));
     }
 
     // Clamp puzzleIdx if puzzles changed

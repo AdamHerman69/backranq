@@ -316,6 +316,38 @@ function materialByColorFromFen(fen: string): { w: number; b: number } {
     return { w, b };
 }
 
+function queenCountFromFen(fen: string): number {
+    const placement = fen.split(' ')[0] ?? '';
+    let n = 0;
+    for (let i = 0; i < placement.length; i++) {
+        const c = placement[i]!;
+        if (c === 'q' || c === 'Q') n++;
+    }
+    return n;
+}
+
+function phaseFromPosition(args: {
+    fen: string;
+    ply: number;
+}): 'opening' | 'middlegame' | 'endgame' {
+    // Heuristic buckets:
+    // - opening: early in the game
+    // - endgame: low material / simplified (often no queens)
+    // - else: middlegame
+    const plyThresholdForOpening = 24; // ~12 moves
+    if (args.ply < plyThresholdForOpening) return 'opening';
+
+    const nonKing = nonKingPieceCountFromFen(args.fen);
+    const mat = materialByColorFromFen(args.fen);
+    const totalMat = mat.w + mat.b;
+    const queens = queenCountFromFen(args.fen);
+
+    const endgameByMaterial =
+        nonKing <= 10 || totalMat <= 22 || (queens === 0 && nonKing <= 14);
+
+    return endgameByMaterial ? 'endgame' : 'middlegame';
+}
+
 function applyUciPlies(opts: {
     fen: string;
     uciLine: string[];
@@ -1100,6 +1132,58 @@ function normalizeUciList(
     return uniq.slice(0, Math.max(1, Math.trunc(maxAcceptedMoves)));
 }
 
+function computeBestSecondAndGapCpFromMultiPvScoredLines(
+    scored: Array<{ cp: number; multipv: number }>
+): {
+    bestCp: number | null;
+    secondBestCp: number | null;
+    gapCp: number | null;
+} {
+    const byMultiPv = scored
+        .slice()
+        .sort((a, b) => (a.multipv ?? 999) - (b.multipv ?? 999));
+
+    const bestLine = byMultiPv.find((l) => l.multipv === 1) ?? byMultiPv[0];
+    const bestCp = typeof bestLine?.cp === 'number' ? bestLine.cp : null;
+    if (bestCp == null) {
+        return { bestCp: null, secondBestCp: null, gapCp: null };
+    }
+
+    const secondLine =
+        byMultiPv.find((l) => l.multipv === 2) ??
+        byMultiPv.find((l) => l.multipv !== (bestLine?.multipv ?? 1)) ??
+        null;
+    const secondBestCp =
+        typeof secondLine?.cp === 'number' ? secondLine.cp : null;
+    const gapCp = secondBestCp == null ? null : bestCp - secondBestCp;
+
+    return { bestCp, secondBestCp, gapCp };
+}
+
+// Lightweight unit-level sanity check for the uniqueness gap logic.
+// We don't have a test runner configured in this repo, so this is only executed
+// in explicit "test" NODE_ENV contexts and has no production/runtime impact.
+if (process.env.NODE_ENV === 'test') {
+    const a = computeBestSecondAndGapCpFromMultiPvScoredLines([
+        { multipv: 1, cp: 120 },
+        { multipv: 2, cp: 10 },
+    ]);
+    console.assert(a.bestCp === 120, 'bestCp should be 120');
+    console.assert(a.secondBestCp === 10, 'secondBestCp should be 10');
+    console.assert(a.gapCp === 110, 'gap should be 110');
+
+    const b = computeBestSecondAndGapCpFromMultiPvScoredLines([
+        { multipv: 2, cp: 50 },
+        { multipv: 1, cp: 55 },
+    ]);
+    console.assert(b.gapCp === 5, 'gap should be 5 (55-50)');
+
+    const c = computeBestSecondAndGapCpFromMultiPvScoredLines([
+        { multipv: 1, cp: 99999 },
+    ]);
+    console.assert(c.gapCp == null, 'gap should be null when missing #2');
+}
+
 async function computeAcceptedMovesForPosition(args: {
     engine: StockfishClient;
     fen: string;
@@ -1108,7 +1192,12 @@ async function computeAcceptedMovesForPosition(args: {
     acceptableLossCp: number;
     maxAcceptedMoves: number;
     bestMoveUci: string;
-}): Promise<string[]> {
+}): Promise<{
+    acceptedMovesUci: string[];
+    bestCp: number | null;
+    secondBestCp: number | null;
+    uniquenessGapCp: number | null;
+}> {
     const res: MultiPvResult = await args.engine.analyzeMultiPv({
         fen: args.fen,
         movetimeMs: args.movetimeMs,
@@ -1128,12 +1217,22 @@ async function computeAcceptedMovesForPosition(args: {
         })
         .filter((x) => x.uci && typeof x.cp === 'number');
 
-    // Determine "best" score from multipv=1 if present, else top score.
-    const bestLine = scored.find((l) => l.multipv === 1) ?? scored[0];
-    const bestCp = typeof bestLine?.cp === 'number' ? bestLine.cp : null;
+    // Determine best/2nd-best cp and their gap (side-to-move perspective at this FEN).
+    const { bestCp, secondBestCp, gapCp } =
+        computeBestSecondAndGapCpFromMultiPvScoredLines(
+            scored.map((s) => ({
+                cp: s.cp as number,
+                multipv: s.multipv ?? 999,
+            }))
+        );
     if (bestCp == null) {
         // Fallback: only accept best move.
-        return normalizeUciList(args.bestMoveUci, [], 1);
+        return {
+            acceptedMovesUci: normalizeUciList(args.bestMoveUci, [], 1),
+            bestCp: null,
+            secondBestCp: null,
+            uniquenessGapCp: null,
+        };
     }
 
     // Accept moves within acceptableLossCp of best (side-to-move POV).
@@ -1142,7 +1241,16 @@ async function computeAcceptedMovesForPosition(args: {
         .map((l) => l.uci);
 
     // Always include best move, normalize/dedupe/limit.
-    return normalizeUciList(args.bestMoveUci, accepted, args.maxAcceptedMoves);
+    return {
+        acceptedMovesUci: normalizeUciList(
+            args.bestMoveUci,
+            accepted,
+            args.maxAcceptedMoves
+        ),
+        bestCp,
+        secondBestCp,
+        uniquenessGapCp: gapCp,
+    };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1502,33 +1610,64 @@ export async function extractPuzzlesFromGames(args: {
                                 const tags = new Set<string>(
                                     tagsAndSeverity.tags
                                 );
-                                tags.add('avoidBlunder');
-                                if (opening.eco) tags.add(`eco:${opening.eco}`);
-                                if (opening.name)
-                                    tags.add(`opening:${opening.name}`);
-                                if (opening.variation)
-                                    tags.add(`openingVar:${opening.variation}`);
 
                                 const puzzleId = uid(`puz-avoid-${type}`);
                                 let acceptedMovesUci: string[] | undefined =
                                     undefined;
                                 let acceptedMovesError = false;
+                                const uniquenessEnabled =
+                                    typeof opts.uniquenessMarginCp ===
+                                        'number' && opts.uniquenessMarginCp > 0;
+                                let uniquenessGapCp: number | null = null;
+                                let uniquenessUnknown = false;
                                 try {
-                                    acceptedMovesUci =
+                                    const acceptedRes =
                                         await computeAcceptedMovesForPosition({
                                             engine: args.engine,
                                             fen: fenBefore,
                                             movetimeMs: opts.movetimeMs,
-                                            multiPv: opts.avoidBlunderMultiPv,
+                                            // If uniqueness is enabled, we need at least 2 PV lines at the
+                                            // puzzle-start position to compute best-vs-2nd-best gap.
+                                            multiPv: Math.max(
+                                                opts.avoidBlunderMultiPv,
+                                                uniquenessEnabled ? 2 : 1
+                                            ),
                                             acceptableLossCp:
                                                 opts.avoidBlunderAcceptableLossCp,
                                             maxAcceptedMoves:
                                                 opts.avoidBlunderMaxAcceptedMoves,
                                             bestMoveUci: finalEval.bestMoveUci,
                                         });
+                                    acceptedMovesUci =
+                                        acceptedRes.acceptedMovesUci;
+                                    uniquenessGapCp =
+                                        acceptedRes.uniquenessGapCp;
+                                    if (
+                                        uniquenessEnabled &&
+                                        uniquenessGapCp == null
+                                    ) {
+                                        // Conservative fallback: if we couldn't get a 2nd PV (engine
+                                        // returned fewer lines), don't reject; just mark as unknown.
+                                        uniquenessUnknown = true;
+                                    }
                                 } catch {
                                     // Ignore MultiPV failures; fall back to single-solution.
                                     acceptedMovesError = true;
+                                    if (uniquenessEnabled)
+                                        uniquenessUnknown = true;
+                                }
+
+                                // Uniqueness filter (puzzle start FEN = fenBefore for avoid-blunder):
+                                // Require best - 2nd best >= X (side-to-move perspective at start).
+                                if (
+                                    uniquenessEnabled &&
+                                    uniquenessGapCp != null &&
+                                    uniquenessGapCp <
+                                        (opts.uniquenessMarginCp as number)
+                                ) {
+                                    // Too "multi-solution": many moves are similarly good.
+                                    // Discard this candidate puzzle.
+                                    continue;
                                 }
 
                                 const acceptedNormalized = acceptedMovesError
@@ -1547,10 +1686,13 @@ export async function extractPuzzlesFromGames(args: {
                                 else tags.delete('multiSolution');
                                 if (acceptedMovesError)
                                     tags.add('acceptedMovesMissing');
+                                if (uniquenessUnknown && uniquenessEnabled)
+                                    tags.add('uniquenessUnknown');
 
                                 const puzzle: Puzzle = {
                                     id: puzzleId,
                                     type,
+                                    mode: 'avoidBlunder',
                                     provider: game.provider,
                                     sourceGameId: game.id,
                                     sourcePly: ply,
@@ -1569,6 +1711,10 @@ export async function extractPuzzlesFromGames(args: {
                                     tags: Array.from(tags).sort(),
                                     opening,
                                     severity: tagsAndSeverity.severity,
+                                    phase: phaseFromPosition({
+                                        fen: fenBefore,
+                                        ply,
+                                    }),
                                 };
 
                                 puzzles.push(puzzle);
@@ -1693,31 +1839,35 @@ export async function extractPuzzlesFromGames(args: {
                                         const tags = new Set<string>(
                                             tagsAndSeverity.tags
                                         );
-                                        tags.add('punishBlunder');
-                                        if (opening.eco)
-                                            tags.add(`eco:${opening.eco}`);
-                                        if (opening.name)
-                                            tags.add(`opening:${opening.name}`);
-                                        if (opening.variation)
-                                            tags.add(
-                                                `openingVar:${opening.variation}`
-                                            );
 
                                         const puzzleId = uid(`puz-punish`);
                                         let acceptedMovesUci:
                                             | string[]
                                             | undefined = undefined;
                                         let acceptedMovesError = false;
+                                        const uniquenessEnabled =
+                                            typeof opts.uniquenessMarginCp ===
+                                                'number' &&
+                                            opts.uniquenessMarginCp > 0;
+                                        let uniquenessGapCp: number | null =
+                                            null;
+                                        let uniquenessUnknown = false;
                                         try {
-                                            acceptedMovesUci =
+                                            const acceptedRes =
                                                 await computeAcceptedMovesForPosition(
                                                     {
                                                         engine: args.engine,
                                                         fen: fenAfter,
                                                         movetimeMs:
                                                             opts.movetimeMs,
-                                                        multiPv:
+                                                        // If uniqueness is enabled, we need at least 2 PV
+                                                        // lines at the puzzle-start position (fenAfter).
+                                                        multiPv: Math.max(
                                                             opts.multiSolutionMultiPv,
+                                                            uniquenessEnabled
+                                                                ? 2
+                                                                : 1
+                                                        ),
                                                         acceptableLossCp:
                                                             opts.multiSolutionAcceptableLossCp,
                                                         maxAcceptedMoves:
@@ -1726,9 +1876,36 @@ export async function extractPuzzlesFromGames(args: {
                                                             finalEval.bestMoveUci,
                                                     }
                                                 );
+                                            acceptedMovesUci =
+                                                acceptedRes.acceptedMovesUci;
+                                            uniquenessGapCp =
+                                                acceptedRes.uniquenessGapCp;
+                                            if (
+                                                uniquenessEnabled &&
+                                                uniquenessGapCp == null
+                                            ) {
+                                                // Conservative fallback: if we couldn't get a 2nd PV,
+                                                // don't reject; just mark as unknown.
+                                                uniquenessUnknown = true;
+                                            }
                                         } catch {
                                             // Ignore MultiPV failures; fall back to single-solution.
                                             acceptedMovesError = true;
+                                            if (uniquenessEnabled)
+                                                uniquenessUnknown = true;
+                                        }
+
+                                        // Uniqueness filter (puzzle start FEN = fenAfter for punish-blunder):
+                                        // Require best - 2nd best >= X (side-to-move perspective at start).
+                                        if (
+                                            uniquenessEnabled &&
+                                            uniquenessGapCp != null &&
+                                            uniquenessGapCp <
+                                                (opts.uniquenessMarginCp as number)
+                                        ) {
+                                            // Too "multi-solution": many moves are similarly good.
+                                            // Discard this candidate puzzle.
+                                            continue;
                                         }
 
                                         const acceptedNormalized =
@@ -1749,10 +1926,16 @@ export async function extractPuzzlesFromGames(args: {
                                         else tags.delete('multiSolution');
                                         if (acceptedMovesError)
                                             tags.add('acceptedMovesMissing');
+                                        if (
+                                            uniquenessUnknown &&
+                                            uniquenessEnabled
+                                        )
+                                            tags.add('uniquenessUnknown');
 
                                         const puzzle: Puzzle = {
                                             id: puzzleId,
                                             type: 'blunder', // It's always a blunder by opponent
+                                            mode: 'punishBlunder',
                                             provider: game.provider,
                                             sourceGameId: game.id,
                                             sourcePly: nextPly, // Puzzle starts after opponent's blunder
@@ -1771,6 +1954,10 @@ export async function extractPuzzlesFromGames(args: {
                                             tags: Array.from(tags).sort(),
                                             opening,
                                             severity: tagsAndSeverity.severity,
+                                            phase: phaseFromPosition({
+                                                fen: fenAfter,
+                                                ply: nextPly,
+                                            }),
                                         };
 
                                         puzzles.push(puzzle);

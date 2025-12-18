@@ -4,10 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Puzzle } from '@/lib/analysis/puzzles';
 import type { PuzzleAttemptStats } from '@/lib/api/puzzles';
 
+type ApiError = { error?: string };
+
 export type PuzzlesListFilters = {
     page?: number;
     limit?: number;
     type?: '' | 'avoidBlunder' | 'punishBlunder';
+    kind?: '' | 'blunder' | 'missedWin' | 'missedTactic';
+    phase?: '' | 'opening' | 'middlegame' | 'endgame';
     gameId?: string;
     opening?: string;
     tags?: string[];
@@ -30,6 +34,8 @@ export function usePuzzles(filters: PuzzlesListFilters) {
         if (filters.page) p.set('page', String(filters.page));
         if (filters.limit) p.set('limit', String(filters.limit));
         if (filters.type) p.set('type', filters.type);
+        if (filters.kind) p.set('kind', filters.kind);
+        if (filters.phase) p.set('phase', filters.phase);
         if (filters.gameId) p.set('gameId', filters.gameId);
         if (filters.opening) p.set('opening', filters.opening);
         if (filters.tags && filters.tags.length > 0)
@@ -46,7 +52,14 @@ export function usePuzzles(filters: PuzzlesListFilters) {
         setError(null);
         try {
             const res = await fetch(`/api/puzzles?${qs}`);
-            const json = (await res.json().catch(() => ({}))) as any;
+            const json = (await res.json().catch(() => ({}))) as
+                | ({
+                      puzzles?: PuzzleWithStats[];
+                      total?: number;
+                      page?: number;
+                      totalPages?: number;
+                  } & ApiError)
+                | ApiError;
             if (!res.ok)
                 throw new Error(json?.error ?? 'Failed to load puzzles');
             setPuzzles(Array.isArray(json?.puzzles) ? json.puzzles : []);
@@ -99,7 +112,18 @@ export function usePuzzle(id: string | null) {
         setError(null);
         try {
             const res = await fetch(`/api/puzzles/${id}`);
-            const json = (await res.json().catch(() => ({}))) as any;
+            const json = (await res.json().catch(() => ({}))) as
+                | ({
+                      puzzle?: PuzzleWithStats | null;
+                      attempts?: {
+                          id: string;
+                          attemptedAt: string;
+                          userMoveUci: string;
+                          wasCorrect: boolean;
+                          timeSpentMs: number | null;
+                      }[];
+                  } & ApiError)
+                | ApiError;
             if (!res.ok)
                 throw new Error(json?.error ?? 'Failed to load puzzle');
             setPuzzle(json?.puzzle ?? null);
@@ -126,6 +150,14 @@ export function useRandomPuzzles() {
         async (args: {
             count?: number;
             type?: '' | 'avoidBlunder' | 'punishBlunder';
+            kind?: '' | 'blunder' | 'missedWin' | 'missedTactic';
+            phase?: '' | 'opening' | 'middlegame' | 'endgame';
+            multiSolution?: '' | 'any' | 'single' | 'multi';
+            openingEco?: string[];
+            tags?: string[];
+            solved?: boolean;
+            failed?: boolean;
+            gameId?: string;
             excludeIds?: string[];
             preferFailed?: boolean;
         }) => {
@@ -135,11 +167,26 @@ export function useRandomPuzzles() {
                 const p = new URLSearchParams();
                 if (args.count) p.set('count', String(args.count));
                 if (args.type) p.set('type', args.type);
+                if (args.kind) p.set('kind', args.kind);
+                if (args.phase) p.set('phase', args.phase);
+                if (args.multiSolution && args.multiSolution !== 'any')
+                    p.set('multiSolution', args.multiSolution);
+                if (args.openingEco && args.openingEco.length > 0)
+                    p.set('openingEco', args.openingEco.join(','));
+                if (args.tags && args.tags.length > 0)
+                    p.set('tags', args.tags.join(','));
+                if (typeof args.solved === 'boolean')
+                    p.set('solved', String(args.solved));
+                if (typeof args.failed === 'boolean')
+                    p.set('failed', String(args.failed));
+                if (args.gameId) p.set('gameId', args.gameId);
                 if (args.excludeIds && args.excludeIds.length > 0)
                     p.set('excludeIds', args.excludeIds.join(','));
                 if (args.preferFailed) p.set('preferFailed', 'true');
                 const res = await fetch(`/api/puzzles/random?${p.toString()}`);
-                const json = (await res.json().catch(() => ({}))) as any;
+                const json = (await res.json().catch(() => ({}))) as
+                    | ({ puzzles?: PuzzleWithStats[] } & ApiError)
+                    | ApiError;
                 if (!res.ok)
                     throw new Error(
                         json?.error ?? 'Failed to load random puzzles'
@@ -190,10 +237,28 @@ export function useRecordAttempt() {
                         }),
                     }
                 );
-                const json = (await res.json().catch(() => ({}))) as any;
+                const json = (await res.json().catch(() => ({}))) as
+                    | ({
+                          ok?: true;
+                          attemptStats?: PuzzleAttemptStats;
+                      } & ApiError)
+                    | ApiError;
                 if (!res.ok)
                     throw new Error(json?.error ?? 'Failed to record attempt');
-                return json as { ok: true; attemptStats: PuzzleAttemptStats };
+                if (
+                    json &&
+                    typeof json === 'object' &&
+                    'ok' in json &&
+                    (json as { ok?: unknown }).ok === true &&
+                    'attemptStats' in json &&
+                    (json as { attemptStats?: unknown }).attemptStats
+                ) {
+                    return json as {
+                        ok: true;
+                        attemptStats: PuzzleAttemptStats;
+                    };
+                }
+                return null;
             } catch (e) {
                 setError(
                     e instanceof Error ? e.message : 'Failed to record attempt'
@@ -210,7 +275,7 @@ export function useRecordAttempt() {
 }
 
 export function usePuzzleStats() {
-    const [stats, setStats] = useState<any>(null);
+    const [stats, setStats] = useState<unknown>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -219,7 +284,9 @@ export function usePuzzleStats() {
         setError(null);
         try {
             const res = await fetch('/api/puzzles/stats');
-            const json = (await res.json().catch(() => ({}))) as any;
+            const json = (await res.json().catch(() => ({}))) as
+                | (Record<string, unknown> & ApiError)
+                | ApiError;
             if (!res.ok) throw new Error(json?.error ?? 'Failed to load stats');
             setStats(json);
         } catch (e) {

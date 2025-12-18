@@ -3,6 +3,8 @@ import type {
     Puzzle as DbPuzzle,
     PuzzleAttempt,
     AnalyzedGame,
+    PuzzleKind,
+    GamePhase,
 } from '@prisma/client';
 import type { Puzzle as UiPuzzle } from '@/lib/analysis/puzzles';
 
@@ -18,6 +20,45 @@ function inferKindFromTags(tags: string[]): UiPuzzle['type'] {
         : 'blunder';
 }
 
+function dbKindToUi(kind: PuzzleKind): UiPuzzle['type'] {
+    if (kind === 'MISSED_WIN') return 'missedWin';
+    if (kind === 'MISSED_TACTIC') return 'missedTactic';
+    return 'blunder';
+}
+
+function uiKindToDb(kind: UiPuzzle['type']): PuzzleKind {
+    if (kind === 'missedWin') return 'MISSED_WIN';
+    if (kind === 'missedTactic') return 'MISSED_TACTIC';
+    return 'BLUNDER';
+}
+
+function dbPhaseToUi(phase: GamePhase | null): UiPuzzle['phase'] | undefined {
+    if (phase === 'OPENING') return 'opening';
+    if (phase === 'MIDDLEGAME') return 'middlegame';
+    if (phase === 'ENDGAME') return 'endgame';
+    return undefined;
+}
+
+function uiPhaseToDb(phase: UiPuzzle['phase'] | undefined): GamePhase | null {
+    if (phase === 'opening') return 'OPENING';
+    if (phase === 'middlegame') return 'MIDDLEGAME';
+    if (phase === 'endgame') return 'ENDGAME';
+    return null;
+}
+
+function stripLegacyPseudoTags(tags: string[]): string[] {
+    const out = tags.filter((t) => {
+        if (!t) return false;
+        if (t === 'avoidBlunder' || t === 'punishBlunder') return false;
+        if (t.startsWith('kind:')) return false;
+        if (t.startsWith('eco:')) return false;
+        if (t.startsWith('opening:')) return false;
+        if (t.startsWith('openingVar:')) return false;
+        return true;
+    });
+    return out;
+}
+
 function toStringArray(v: unknown): string[] {
     if (!Array.isArray(v)) return [];
     return v.filter((x) => typeof x === 'string') as string[];
@@ -29,8 +70,9 @@ function normalizeUci(s: string): string {
 
 function toScore(v: unknown): UiPuzzle['score'] {
     if (!v || typeof v !== 'object') return null;
-    const t = (v as any).type;
-    const value = (v as any).value;
+    const obj = v as Record<string, unknown>;
+    const t = obj.type;
+    const value = obj.value;
     if (t !== 'cp' && t !== 'mate') return null;
     if (typeof value !== 'number') return null;
     return { type: t, value };
@@ -95,14 +137,20 @@ export function puzzleToDb(args: {
     gameId: string;
 }): Prisma.PuzzleCreateManyInput {
     const p = args.puzzle;
-    const tags = Array.from(new Set([...(p.tags ?? []), `kind:${p.type}`]))
-        .filter((t) => typeof t === 'string' && t.length > 0)
-        .slice(0, 64);
+    const rawTags = Array.isArray(p.tags) ? p.tags : [];
+    const tags = Array.from(
+        new Set(
+            stripLegacyPseudoTags(rawTags).filter(
+                (t) => typeof t === 'string' && t.length > 0
+            )
+        )
+    ).slice(0, 64);
 
-    // The DB enum stores "mode" (avoid/punish). We infer from tags (the extractor adds these).
-    const mode = tags.includes('punishBlunder')
-        ? 'PUNISH_BLUNDER'
-        : 'AVOID_BLUNDER';
+    // The DB enum stores "mode" (avoid/punish). Prefer explicit field, fall back to legacy tags.
+    const mode =
+        p.mode === 'punishBlunder' || rawTags.includes('punishBlunder')
+            ? 'PUNISH_BLUNDER'
+            : 'AVOID_BLUNDER';
 
     const acceptedMovesUci = Array.from(
         new Set(
@@ -118,11 +166,13 @@ export function puzzleToDb(args: {
         sourcePly: Math.max(0, Math.trunc(p.sourcePly)),
         fen: p.fen,
         type: mode,
+        kind: uiKindToDb(p.type),
+        phase: uiPhaseToDb(p.phase),
         severity: p.severity ?? null,
         bestMoveUci: p.bestMoveUci,
         acceptedMovesUci,
-        bestLine: p.bestLineUci as any,
-        score: (p.score ?? null) as any,
+        bestLine: p.bestLineUci as unknown as Prisma.InputJsonValue,
+        score: (p.score ?? null) as unknown as Prisma.InputJsonValue,
         tags,
         openingEco: p.opening?.eco ?? null,
         openingName: p.opening?.name ?? null,
@@ -136,20 +186,27 @@ export function dbToPuzzle(
         game: Pick<AnalyzedGame, 'provider' | 'playedAt'>;
     }
 ): UiPuzzle {
-    const tags = Array.isArray(row.tags) ? row.tags : [];
+    const rawTags = Array.isArray(row.tags) ? row.tags : [];
+    const tags = stripLegacyPseudoTags(rawTags);
     const bestLineUci = toStringArray(row.bestLine);
     const score = toScore(row.score);
-    const kind = inferKindFromTags(tags);
-    const acceptedMovesUci = Array.isArray((row as any).acceptedMovesUci)
-        ? ((row as any).acceptedMovesUci as string[])
-              .filter((s) => typeof s === 'string')
-              .map(normalizeUci)
-              .filter(Boolean)
-        : [];
+    const kind = row.kind ? dbKindToUi(row.kind) : inferKindFromTags(rawTags);
+    const acceptedMovesUci = (row.acceptedMovesUci ?? [])
+        .filter((s) => typeof s === 'string')
+        .map(normalizeUci)
+        .filter(Boolean);
+
+    const severity =
+        row.severity === 'small' ||
+        row.severity === 'medium' ||
+        row.severity === 'big'
+            ? row.severity
+            : undefined;
 
     return {
         id: row.id,
         type: kind,
+        mode: row.type === 'PUNISH_BLUNDER' ? 'punishBlunder' : 'avoidBlunder',
         provider: providerToUi(row.game.provider),
         sourceGameId: row.gameId,
         sourcePly: row.sourcePly,
@@ -168,6 +225,7 @@ export function dbToPuzzle(
             variation: row.openingVariation ?? undefined,
             source: 'unknown',
         },
-        severity: (row.severity as any) ?? undefined,
+        severity,
+        phase: dbPhaseToUi(row.phase ?? null),
     };
 }

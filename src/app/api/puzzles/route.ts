@@ -7,6 +7,7 @@ import {
     puzzleToDb,
 } from '@/lib/api/puzzles';
 import type { Puzzle as UiPuzzle } from '@/lib/analysis/puzzles';
+import type { Prisma } from '@prisma/client';
 
 export const runtime = 'nodejs';
 
@@ -18,6 +19,16 @@ function parseBool(v: string | null): boolean | null {
     if (v === 'true') return true;
     if (v === 'false') return false;
     return null;
+}
+
+function parseCsv(v: string | null, max: number): string[] {
+    const s = (v ?? '').trim();
+    if (!s) return [];
+    return s
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .slice(0, max);
 }
 
 export async function GET(req: Request) {
@@ -38,26 +49,49 @@ export async function GET(req: Request) {
         50
     );
     const type = url.searchParams.get('type'); // avoidBlunder | punishBlunder
+    const kind = url.searchParams.get('kind'); // blunder | missedWin | missedTactic
+    const phase = url.searchParams.get('phase'); // opening | middlegame | endgame
     const gameId = url.searchParams.get('gameId');
     const opening = (url.searchParams.get('opening') ?? '').trim();
-    const tagsParam = (url.searchParams.get('tags') ?? '').trim();
+    const openingEcoParam = (url.searchParams.get('openingEco') ?? '').trim();
+    const multiSolution = (url.searchParams.get('multiSolution') ?? '').trim(); // any | single | multi
     const solved = parseBool(url.searchParams.get('solved'));
     const failed = parseBool(url.searchParams.get('failed'));
+    const tags = parseCsv(url.searchParams.get('tags'), 16);
+    const openingEco = parseCsv(openingEcoParam, 32).map((s) =>
+        s.toUpperCase()
+    );
 
-    const tags = tagsParam
-        ? tagsParam
-              .split(',')
-              .map((t) => t.trim())
-              .filter(Boolean)
-              .slice(0, 16)
-        : [];
+    const where: Prisma.PuzzleWhereInput = { userId };
+    const and: Prisma.PuzzleWhereInput[] = [];
 
-    const where: any = { userId };
     if (type === 'avoidBlunder') where.type = 'AVOID_BLUNDER';
     if (type === 'punishBlunder') where.type = 'PUNISH_BLUNDER';
+    if (kind === 'blunder') where.kind = 'BLUNDER';
+    if (kind === 'missedWin') where.kind = 'MISSED_WIN';
+    if (kind === 'missedTactic') where.kind = 'MISSED_TACTIC';
+    if (phase === 'opening') where.phase = 'OPENING';
+    if (phase === 'middlegame') where.phase = 'MIDDLEGAME';
+    if (phase === 'endgame') where.phase = 'ENDGAME';
     if (gameId) where.gameId = gameId;
-    if (tags.length > 0) where.tags = { hasEvery: tags };
-    if (opening) {
+
+    if (multiSolution === 'multi') {
+        const need = Array.from(new Set([...tags, 'multiSolution'])).slice(
+            0,
+            16
+        );
+        if (need.length > 0) where.tags = { hasEvery: need };
+    } else if (tags.length > 0) {
+        where.tags = { hasEvery: tags };
+    }
+
+    if (multiSolution === 'single') {
+        and.push({ NOT: { tags: { has: 'multiSolution' } } });
+    }
+
+    if (openingEco.length > 0) {
+        where.openingEco = { in: openingEco };
+    } else if (opening) {
         where.OR = [
             { openingEco: { contains: opening, mode: 'insensitive' } },
             { openingName: { contains: opening, mode: 'insensitive' } },
@@ -72,8 +106,10 @@ export async function GET(req: Request) {
         where.attempts = { some: { userId, wasCorrect: true } };
     } else if (failed === true) {
         where.attempts = { some: { userId } };
-        where.NOT = { attempts: { some: { userId, wasCorrect: true } } };
+        and.push({ NOT: { attempts: { some: { userId, wasCorrect: true } } } });
     }
+
+    if (and.length > 0) where.AND = and;
 
     const [total, rows] = await Promise.all([
         prisma.puzzle.count({ where }),
@@ -99,7 +135,7 @@ export async function GET(req: Request) {
 
     const totalPages = Math.max(1, Math.ceil(total / limit));
     const puzzles = rows.map((r) => {
-        const puzzle = dbToPuzzle(r as any);
+        const puzzle = dbToPuzzle(r as Parameters<typeof dbToPuzzle>[0]);
         const stats = aggregatePuzzleStats(r.attempts);
         return { ...puzzle, attemptStats: stats };
     });
@@ -175,8 +211,8 @@ export async function POST(req: Request) {
                     type: p.type,
                     severity: p.severity,
                     bestMoveUci: p.bestMoveUci,
-                    acceptedMovesUci: Array.isArray((p as any).acceptedMovesUci)
-                        ? (p as any).acceptedMovesUci
+                    acceptedMovesUci: Array.isArray(p.acceptedMovesUci)
+                        ? p.acceptedMovesUci
                         : [],
                     bestLine: p.bestLine,
                     score: p.score,

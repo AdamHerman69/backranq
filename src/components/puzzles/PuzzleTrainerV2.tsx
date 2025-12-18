@@ -1,8 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Chess, type Move, type Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
@@ -42,12 +42,24 @@ import {
 
 type TrainerQueueMode = 'quick' | 'reviewFailed';
 type TrainerViewMode = 'solve' | 'analyze';
+type ContinuationMode = 'off' | 'short' | 'full';
 
-type VerboseMove = Move;
+type VerboseMove = Move & { promotion?: string };
 
 type SourceParsed = { startFen: string; moves: VerboseMove[] };
+type TrainerFilters = {
+    type: '' | 'avoidBlunder' | 'punishBlunder';
+    kind: '' | 'blunder' | 'missedWin' | 'missedTactic';
+    phase: '' | 'opening' | 'middlegame' | 'endgame';
+    multiSolution: '' | 'single' | 'multi';
+    openingEco: string[];
+    tags: string[];
+    solved: boolean | undefined;
+    failed: boolean | undefined;
+    gameId: string;
+};
 
-type DbGameLoose = any;
+type DbGameLoose = Record<string, unknown>;
 
 function timeClassToUi(tc: string): NormalizedGame['timeClass'] {
     const t = (tc ?? '').toUpperCase();
@@ -64,33 +76,33 @@ function providerToUi(p: string): NormalizedGame['provider'] {
 
 function dbGameToNormalizedLoose(game: DbGameLoose): NormalizedGame {
     return {
-        id: String(game.id),
-        provider: providerToUi(game.provider),
-        url: game.url ?? undefined,
+        id: String(game['id']),
+        provider: providerToUi(String(game['provider'] ?? '')),
+        url: typeof game['url'] === 'string' ? game['url'] : undefined,
         playedAt:
-            typeof game.playedAt === 'string'
-                ? game.playedAt
-                : new Date(game.playedAt).toISOString(),
-        timeClass: timeClassToUi(game.timeClass),
-        rated: typeof game.rated === 'boolean' ? game.rated : undefined,
+            typeof game['playedAt'] === 'string'
+                ? String(game['playedAt'])
+                : new Date(String(game['playedAt'] ?? Date.now())).toISOString(),
+        timeClass: timeClassToUi(String(game['timeClass'] ?? '')),
+        rated: typeof game['rated'] === 'boolean' ? game['rated'] : undefined,
         white: {
-            name: String(game.whiteName ?? ''),
+            name: String(game['whiteName'] ?? ''),
             rating:
-                typeof game.whiteRating === 'number'
-                    ? game.whiteRating
+                typeof game['whiteRating'] === 'number'
+                    ? game['whiteRating']
                     : undefined,
         },
         black: {
-            name: String(game.blackName ?? ''),
+            name: String(game['blackName'] ?? ''),
             rating:
-                typeof game.blackRating === 'number'
-                    ? game.blackRating
+                typeof game['blackRating'] === 'number'
+                    ? game['blackRating']
                     : undefined,
         },
-        result: typeof game.result === 'string' ? game.result : undefined,
+        result: typeof game['result'] === 'string' ? game['result'] : undefined,
         termination:
-            typeof game.termination === 'string' ? game.termination : undefined,
-        pgn: String(game.pgn ?? ''),
+            typeof game['termination'] === 'string' ? game['termination'] : undefined,
+        pgn: String(game['pgn'] ?? ''),
     };
 }
 
@@ -167,7 +179,7 @@ function findPuzzleLastMove(args: {
     for (let i = 0; i < max; i++) {
         const m = source.moves[i];
         try {
-            const mv = c.move({ from: m.from, to: m.to, promotion: (m as any).promotion });
+            const mv = c.move({ from: m.from, to: m.to, promotion: m.promotion });
             if (!mv) break;
             last = { from: mv.from as Square, to: mv.to as Square };
         } catch {
@@ -185,6 +197,16 @@ function uciToArrow(uci: string): { from: Square; to: Square } | null {
     return { from: p.from as Square, to: p.to as Square };
 }
 
+function parseCsv(v: string | null, max: number): string[] {
+    const s = (v ?? '').trim();
+    if (!s) return [];
+    return s
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .slice(0, max);
+}
+
 export function PuzzleTrainerV2({
     initialQueueMode,
     initialViewMode,
@@ -192,7 +214,6 @@ export function PuzzleTrainerV2({
     initialQueueMode: TrainerQueueMode;
     initialViewMode: TrainerViewMode;
 }) {
-    const router = useRouter();
     const pathname = usePathname();
     const sp = useSearchParams();
 
@@ -213,6 +234,57 @@ export function PuzzleTrainerV2({
     const currentPuzzle = queue[idx] ?? null;
     const preferFailed = queueMode === 'reviewFailed';
     const [directLoadError, setDirectLoadError] = useState<string | null>(null);
+
+    // Keep refs to avoid URL<->state feedback loops.
+    // We intentionally do NOT want "URL puzzleId changed" logic to re-run just because queue/idx changed
+    // (e.g. when the user presses Next). It should only react to actual puzzleId changes.
+    const queueRef = useRef<Puzzle[]>([]);
+    const idxRef = useRef(0);
+    const ensureOneInFlightRef = useRef(false);
+    const ensureOneRequestIdRef = useRef(0);
+    useEffect(() => {
+        queueRef.current = queue;
+    }, [queue]);
+    useEffect(() => {
+        idxRef.current = idx;
+    }, [idx]);
+
+    const trainerFilters = useMemo<TrainerFilters>(() => {
+        const type = (sp?.get('type') ?? '').trim();
+        const kind = (sp?.get('kind') ?? '').trim();
+        const phase = (sp?.get('phase') ?? '').trim();
+        const multiSolution = (sp?.get('multiSolution') ?? '').trim();
+        const openingEco = parseCsv(sp?.get('openingEco') ?? '', 32).map((s) =>
+            s.toUpperCase()
+        );
+        const tags = parseCsv(sp?.get('tags') ?? '', 16);
+        const solved = sp?.get('solved');
+        const failed = sp?.get('failed');
+        const gameId = (sp?.get('gameId') ?? '').trim();
+        return {
+            type:
+                type === 'avoidBlunder' || type === 'punishBlunder'
+                    ? (type as 'avoidBlunder' | 'punishBlunder')
+                    : '',
+            kind:
+                kind === 'blunder' || kind === 'missedWin' || kind === 'missedTactic'
+                    ? (kind as 'blunder' | 'missedWin' | 'missedTactic')
+                    : '',
+            phase:
+                phase === 'opening' || phase === 'middlegame' || phase === 'endgame'
+                    ? (phase as 'opening' | 'middlegame' | 'endgame')
+                    : '',
+            multiSolution:
+                multiSolution === 'single' || multiSolution === 'multi'
+                    ? (multiSolution as 'single' | 'multi')
+                    : '',
+            openingEco,
+            tags,
+            solved: solved === 'true' ? true : solved === 'false' ? false : undefined,
+            failed: failed === 'true' ? true : failed === 'false' ? false : undefined,
+            gameId,
+        };
+    }, [sp]);
 
     const directPuzzleId = useMemo(() => {
         const raw = sp?.get('puzzleId');
@@ -239,6 +311,10 @@ export function PuzzleTrainerV2({
     // Context (pre-puzzle) navigation
     const [showContext, setShowContext] = useState(false);
     const [contextPly, setContextPly] = useState(0);
+
+    // Source-game reveal (post-solve)
+    const [showRealMove, setShowRealMove] = useState(false);
+    const [continuationMode, setContinuationMode] = useState<ContinuationMode>('off');
 
     const puzzlePly = useMemo(() => {
         if (!currentPuzzle) return 0;
@@ -274,6 +350,18 @@ export function PuzzleTrainerV2({
 
     const engineMoveTimeMsSolve = 200;
 
+    const replaceUrlSearch = useCallback(
+        (next: URLSearchParams) => {
+            if (typeof window === 'undefined') return;
+            const qs = next.toString();
+            const url = qs ? `${pathname}?${qs}` : pathname;
+            // Important: use the History API to avoid triggering Next.js navigation /
+            // server component re-renders on every puzzle change.
+            window.history.replaceState(null, '', url);
+        },
+        [pathname]
+    );
+
     useEffect(() => {
         return () => {
             engineRef.current?.terminate();
@@ -283,12 +371,28 @@ export function PuzzleTrainerV2({
 
     // keep URL in sync (view + queue)
     useEffect(() => {
-        const next = new URLSearchParams(sp?.toString() ?? '');
+        if (typeof window === 'undefined') return;
+        const cur = window.location.search.replace(/^\?/, '');
+        const next = new URLSearchParams(cur);
         next.set('view', viewMode);
         next.set('mode', queueMode === 'reviewFailed' ? 'review' : 'quick');
-        router.replace(`${pathname}?${next.toString()}`);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [viewMode, queueMode]);
+        const nextStr = next.toString();
+        if (nextStr === cur) return;
+        replaceUrlSearch(next);
+    }, [viewMode, queueMode, replaceUrlSearch]);
+
+    // keep URL in sync (current puzzle)
+    useEffect(() => {
+        if (!currentPuzzle?.id) return;
+        if (typeof window === 'undefined') return;
+        const cur = window.location.search.replace(/^\?/, '');
+        const next = new URLSearchParams(cur);
+        if (next.get('puzzleId') === currentPuzzle.id) return;
+        next.set('puzzleId', currentPuzzle.id);
+        const nextStr = next.toString();
+        if (nextStr === cur) return;
+        replaceUrlSearch(next);
+    }, [currentPuzzle?.id, replaceUrlSearch]);
 
     async function fetchPuzzleById(id: string) {
         const pid = (id ?? '').trim();
@@ -315,30 +419,72 @@ export function PuzzleTrainerV2({
 
     async function fetchNextPuzzle() {
         const excludeIds = queue.slice(-25).map((p) => p.id);
-        const res = await getRandom({ count: 1, excludeIds, preferFailed });
+        const res = await getRandom({
+            count: 1,
+            excludeIds,
+            preferFailed,
+            type: trainerFilters.type,
+            kind: trainerFilters.kind,
+            phase: trainerFilters.phase,
+            multiSolution: trainerFilters.multiSolution,
+            openingEco: trainerFilters.openingEco,
+            tags: trainerFilters.tags,
+            solved: trainerFilters.solved,
+            failed: trainerFilters.failed,
+            gameId: trainerFilters.gameId,
+        });
         const p = res[0] as Puzzle | undefined;
         return p ?? null;
     }
 
-    async function ensureOne() {
-        if (queue.length > 0) return;
+    function cancelEnsureOneInFlight() {
+        // Bump the request id so any in-flight completion becomes a no-op.
+        ensureOneRequestIdRef.current += 1;
+        ensureOneInFlightRef.current = false;
+    }
 
-        // If a puzzleId is provided in the URL, load that puzzle into the trainer.
-        if (directPuzzleId) {
-            setDirectLoadError(null);
-            const p = await fetchPuzzleById(directPuzzleId);
+    async function ensureOne(opts?: { force?: boolean }) {
+        const force = opts?.force === true;
+
+        // Guard against concurrent initial loads (we can get multiple effects calling ensureOne on mount).
+        // Without this, we can fetch multiple random puzzles and rapidly update URL a few times.
+        if (!force) {
+            if (queueRef.current.length > 0) return;
+            if (ensureOneInFlightRef.current) return;
+        } else {
+            cancelEnsureOneInFlight();
+            // If we're forcing a refetch, make sure we don't consult stale refs.
+            queueRef.current = [];
+            idxRef.current = 0;
+        }
+
+        ensureOneInFlightRef.current = true;
+        const requestId = ++ensureOneRequestIdRef.current;
+
+        try {
+            // If a puzzleId is provided in the URL, load that puzzle into the trainer.
+            if (directPuzzleId) {
+                setDirectLoadError(null);
+                const p = await fetchPuzzleById(directPuzzleId);
+                if (ensureOneRequestIdRef.current !== requestId) return;
+                if (p) {
+                    setQueue([p]);
+                    setIdx(0);
+                    return;
+                }
+                // fall through to random puzzle if direct load fails
+            }
+
+            const p = await fetchNextPuzzle();
+            if (ensureOneRequestIdRef.current !== requestId) return;
             if (p) {
                 setQueue([p]);
                 setIdx(0);
-                return;
             }
-            // fall through to random puzzle if direct load fails
-        }
-
-        const p = await fetchNextPuzzle();
-        if (p) {
-            setQueue([p]);
-            setIdx(0);
+        } finally {
+            if (ensureOneRequestIdRef.current === requestId) {
+                ensureOneInFlightRef.current = false;
+            }
         }
     }
 
@@ -347,7 +493,11 @@ export function PuzzleTrainerV2({
         let cancelled = false;
         async function run() {
             if (!directPuzzleId) return;
-            if (queue[0]?.id === directPuzzleId && idx === 0) return;
+            const existingIdx = queueRef.current.findIndex((p) => p.id === directPuzzleId);
+            if (existingIdx >= 0) {
+                if (existingIdx !== idxRef.current) setIdx(existingIdx);
+                return;
+            }
             setDirectLoadError(null);
             const p = await fetchPuzzleById(directPuzzleId);
             if (cancelled) return;
@@ -360,15 +510,42 @@ export function PuzzleTrainerV2({
         return () => {
             cancelled = true;
         };
-        // Intentionally omit `idx` from deps; we only care about URL changes and current queue head.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [directPuzzleId, queue[0]?.id]);
+    }, [directPuzzleId]);
 
     // initial load + queueMode change
     useEffect(() => {
-        void ensureOne();
+        // Switching queue should fetch a new puzzle (unless a direct puzzleId is pinned in the URL).
+        if (directPuzzleId) {
+            void ensureOne();
+            return;
+        }
+        setQueue([]);
+        setIdx(0);
+        // Force ensures we don't get stuck due to stale queueRef before React flushes state updates.
+        void ensureOne({ force: true });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [queueMode]);
+
+    // If filters change, clear the queue and refetch a matching puzzle.
+    useEffect(() => {
+        // Don't clobber a direct puzzle load (explicit puzzleId takes precedence).
+        if (directPuzzleId) return;
+        setQueue([]);
+        setIdx(0);
+        // Force ensures we don't get stuck due to stale queueRef before React flushes state updates.
+        void ensureOne({ force: true });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        trainerFilters.type,
+        trainerFilters.kind,
+        trainerFilters.phase,
+        trainerFilters.multiSolution,
+        trainerFilters.openingEco.join(','),
+        trainerFilters.tags.join(','),
+        String(trainerFilters.solved),
+        String(trainerFilters.failed),
+        trainerFilters.gameId,
+    ]);
 
     // reset per-puzzle state
     useEffect(() => {
@@ -390,6 +567,8 @@ export function PuzzleTrainerV2({
         setLegalTargets(new Set());
         setShowContext(false);
         setContextPly(typeof currentPuzzle.sourcePly === 'number' ? currentPuzzle.sourcePly : 0);
+        setShowRealMove(false);
+        setContinuationMode('off');
 
         setEvalRevealed(false);
         setPositionEvalFen('');
@@ -429,10 +608,17 @@ export function PuzzleTrainerV2({
             setSourceError(null);
             try {
                 const res = await fetch(`/api/games/${currentPuzzle.sourceGameId}`);
-                const json = (await res.json().catch(() => ({}))) as any;
+                const json = (await res.json().catch(() => ({}))) as {
+                    game?: unknown;
+                    error?: string;
+                };
                 if (!res.ok)
                     throw new Error(json?.error ?? 'Failed to load source game');
-                const ng = dbGameToNormalizedLoose(json?.game);
+                const ng = dbGameToNormalizedLoose(
+                    (json?.game && typeof json.game === 'object'
+                        ? (json.game as Record<string, unknown>)
+                        : {}) as Record<string, unknown>
+                );
                 const parsed = parseSourceGame(ng.pgn);
                 if (!parsed) throw new Error('Failed to parse source game PGN');
                 if (cancelled) return;
@@ -494,6 +680,67 @@ export function PuzzleTrainerV2({
 
     const isReviewState = attemptResult === 'correct' || showSolution;
 
+    const sourcePlyRaw = useMemo(() => {
+        const v = currentPuzzle?.sourcePly;
+        if (typeof v !== 'number') return null;
+        if (!Number.isFinite(v)) return null;
+        return Math.trunc(v);
+    }, [currentPuzzle?.id, currentPuzzle?.sourcePly]);
+
+    const realSourceMove = useMemo(() => {
+        if (!sourceParsed) return null;
+        if (sourcePlyRaw === null) return null;
+        if (sourcePlyRaw < 0 || sourcePlyRaw >= sourceParsed.moves.length) return null;
+        return sourceParsed.moves[sourcePlyRaw] ?? null;
+    }, [sourceParsed, sourcePlyRaw]);
+
+    const realSourceMoveUci = useMemo(() => {
+        if (!realSourceMove) return '';
+        const promo = (realSourceMove.promotion ?? '').toString().toLowerCase();
+        return `${realSourceMove.from}${realSourceMove.to}${promo}`;
+    }, [realSourceMove]);
+
+    const continuationText = useMemo(() => {
+        if (continuationMode === 'off') return '';
+        if (!sourceParsed) return '';
+        if (sourcePlyRaw === null) return '';
+        if (sourcePlyRaw < 0 || sourcePlyRaw >= sourceParsed.moves.length) return '';
+
+        const fenParts = (sourceParsed.startFen ?? '').split(' ');
+        const startTurn = fenParts[1] === 'b' ? 'b' : 'w';
+        const baseFullmove = Math.max(1, Math.trunc(Number(fenParts[5]) || 1));
+        const startIsWhite = startTurn === 'w';
+
+        const endExclusive =
+            continuationMode === 'short'
+                ? Math.min(sourceParsed.moves.length, sourcePlyRaw + 8)
+                : sourceParsed.moves.length;
+        const slice = sourceParsed.moves.slice(sourcePlyRaw, endExclusive);
+        if (slice.length === 0) return '';
+
+        const tokens: string[] = [];
+        for (let k = 0; k < slice.length; k++) {
+            const m = slice[k];
+            const ply = sourcePlyRaw + k;
+            const side =
+                startIsWhite
+                    ? ply % 2 === 0
+                        ? 'w'
+                        : 'b'
+                    : ply % 2 === 0
+                      ? 'b'
+                      : 'w';
+            const moveNo =
+                baseFullmove + Math.floor((ply + (startIsWhite ? 0 : 1)) / 2);
+
+            if (side === 'w') tokens.push(`${moveNo}. ${m.san}`);
+            else if (k === 0) tokens.push(`${moveNo}... ${m.san}`);
+            else tokens.push(m.san);
+        }
+
+        return tokens.join(' ');
+    }, [continuationMode, sourceParsed, sourcePlyRaw]);
+
     const solveExplorerLine = useMemo(() => {
         if (!currentPuzzle) return [] as string[];
         return currentPuzzle.bestLineUci;
@@ -526,8 +773,10 @@ export function PuzzleTrainerV2({
     });
 
     const analysis = liveAnalyze.update;
-    const analysisBusy = liveAnalyze.running;
     const analysisErr = liveAnalyze.error;
+    const analysisBusy =
+        liveAnalyze.running ||
+        (analyzeStreamingEnabled && !analysis && !analysisErr);
 
     useEffect(() => {
         if (viewMode !== 'analyze') return;
@@ -573,7 +822,7 @@ export function PuzzleTrainerV2({
                 for (let i = 0; i < plies; i++) {
                     const m = sourceParsed.moves[i];
                     try {
-                        c.move({ from: m.from, to: m.to, promotion: (m as any).promotion });
+                        c.move({ from: m.from, to: m.to, promotion: m.promotion });
                     } catch {
                         break;
                     }
@@ -779,6 +1028,29 @@ export function PuzzleTrainerV2({
                     }
                 }
             }
+
+            // When reviewing a solved/revealed puzzle, optionally show the *real* move played in the source game.
+            // Only show at the puzzle start position to avoid misleading arrows while scrubbing.
+            if (
+                atPuzzlePosition &&
+                atStartFen &&
+                showRealMove &&
+                (showSolution || attemptResult === 'correct') &&
+                currentPuzzle &&
+                realSourceMove
+            ) {
+                const best = (currentPuzzle.bestMoveUci ?? '').trim().toLowerCase();
+                const real = (realSourceMoveUci ?? '').trim().toLowerCase();
+                // Avoid overwriting the solution arrow when the real move equals the best move.
+                if (real && real !== best) {
+                    put({
+                        startSquare: realSourceMove.from as Square,
+                        endSquare: realSourceMove.to as Square,
+                        color: 'rgba(245,158,11,0.85)', // amber: distinct from solution green
+                    });
+                }
+            }
+
             // Attempt arrow last so it wins if it matches bestMove/lastMove
             if (attemptLastMove) {
                 put({
@@ -836,6 +1108,9 @@ export function PuzzleTrainerV2({
         attemptLastMove,
         attemptResult,
         showSolution,
+        showRealMove,
+        realSourceMove,
+        realSourceMoveUci,
         currentPuzzle,
         isMultiSolutionPuzzle,
         acceptedMoves,
@@ -936,7 +1211,7 @@ export function PuzzleTrainerV2({
     function computeHints(square: Square) {
         if (!allowMove) return;
         const c = new Chess(displayFen);
-        const moves = c.moves({ square, verbose: true }) as any[];
+        const moves = c.moves({ square, verbose: true }) as unknown as VerboseMove[];
         const targets = new Set<Square>();
         for (const m of moves) targets.add(m.to as Square);
         setSelectedSquare(square);
@@ -1310,7 +1585,7 @@ export function PuzzleTrainerV2({
                                 attemptResult ? (
                                     attemptResult === 'correct' ? (
                                         solvedKind === 'safe'
-                                            ? (currentPuzzle?.tags ?? []).includes('avoidBlunder')
+                                            ? currentPuzzle?.mode === 'avoidBlunder'
                                                 ? 'Good save — review the best line (←/→)'
                                                 : 'Correct (alternative) — review the best line (←/→)'
                                             : 'Correct — review the line (←/→)'
@@ -1420,6 +1695,76 @@ export function PuzzleTrainerV2({
                                     </Button>
                                 </div>
                             </div>
+                        ) : null}
+
+                        {isReviewState && sourceParsed ? (
+                            <>
+                                <Separator />
+                                <div className="space-y-2">
+                                    <div className="text-sm font-medium">Source game</div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <Button
+                                            size="sm"
+                                            variant={showRealMove ? 'default' : 'outline'}
+                                            onClick={() => setShowRealMove((v) => !v)}
+                                        >
+                                            {showRealMove ? 'Hide real move' : 'Show real move'}
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            variant={continuationMode !== 'off' ? 'default' : 'outline'}
+                                            onClick={() =>
+                                                setContinuationMode((m) =>
+                                                    m === 'off' ? 'short' : m === 'short' ? 'full' : 'off'
+                                                )
+                                            }
+                                        >
+                                            {continuationMode === 'off'
+                                                ? 'Show continuation'
+                                                : continuationMode === 'short'
+                                                  ? 'Full continuation'
+                                                  : 'Hide continuation'}
+                                        </Button>
+                                        {currentPuzzle?.sourceGameId ? (
+                                            <Button asChild variant="outline">
+                                                <Link href={`/games/${currentPuzzle.sourceGameId}`}>
+                                                    Open game
+                                                </Link>
+                                            </Button>
+                                        ) : null}
+                                    </div>
+
+                                    {showRealMove ? (
+                                        realSourceMove ? (
+                                            <div className="text-sm">
+                                                Real move played:{' '}
+                                                <span className="font-mono">
+                                                    {realSourceMove.san}
+                                                </span>{' '}
+                                                <span className="text-muted-foreground">
+                                                    ({realSourceMoveUci || '—'})
+                                                </span>
+                                            </div>
+                                        ) : (
+                                            <div className="text-sm text-muted-foreground">
+                                                Real move unavailable
+                                            </div>
+                                        )
+                                    ) : null}
+
+                                    {continuationMode !== 'off' ? (
+                                        continuationText ? (
+                                            <div className="font-mono text-xs leading-relaxed text-muted-foreground">
+                                                {continuationText}
+                                            </div>
+                                        ) : (
+                                            <div className="text-sm text-muted-foreground">
+                                                Continuation unavailable
+                                            </div>
+                                        )
+                                    ) : null}
+                                </div>
+                            </>
                         ) : null}
                     </CardContent>
                 </Card>
@@ -1557,6 +1902,10 @@ export function PuzzleTrainerV2({
                         value={viewMode}
                         onValueChange={(v) => {
                             if (v === 'solve' || v === 'analyze') {
+                                if (v === 'analyze' && viewMode !== 'analyze') {
+                                    // Entering Analyze should auto-start unless user explicitly stops again.
+                                    setAnalysisEnabled(true);
+                                }
                                 setViewMode(v);
                                 setPvStep(0);
                                 if (v === 'analyze') {
@@ -1830,7 +2179,7 @@ export function PuzzleTrainerV2({
                             }>
                                 {attemptResult === 'correct' ? (
                                     solvedKind === 'safe' ? (
-                                        (currentPuzzle?.tags ?? []).includes('avoidBlunder')
+                                        currentPuzzle?.mode === 'avoidBlunder'
                                             ? `Good save (${attemptUci ?? ''}) — best was ${currentPuzzle.bestMoveUci}.`
                                             : `Correct (${attemptUci ?? ''}) — best was ${currentPuzzle.bestMoveUci}.`
                                     ) : (
