@@ -24,9 +24,7 @@ export default async function PuzzlesPage({
     if (!userId) redirect('/login?callbackUrl=/puzzles');
 
     const sp = (await searchParams) ?? {};
-    const mode = typeof sp.mode === 'string' ? sp.mode : '';
     const view = typeof sp.view === 'string' ? sp.view : '';
-    const initialQueueMode = mode === 'review' ? 'reviewFailed' : 'quick';
     const initialViewMode = view === 'analyze' ? 'analyze' : 'solve';
 
     const type = typeof sp.type === 'string' ? sp.type : '';
@@ -82,16 +80,13 @@ export default async function PuzzlesPage({
                 <div className="px-4 pb-4">
                     <PuzzlesFilter
                         initial={initialFilters}
-                        preserveKeys={['mode', 'view']}
+                        preserveKeys={['view']}
                         autoApply={false}
                     />
                 </div>
             </details>
 
-            <PuzzleTrainerV2
-                initialQueueMode={initialQueueMode}
-                initialViewMode={initialViewMode}
-            />
+            <PuzzleTrainerV2 initialViewMode={initialViewMode} />
         </div>
     );
 }

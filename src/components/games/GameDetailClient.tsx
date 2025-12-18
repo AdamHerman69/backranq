@@ -28,6 +28,32 @@ export default function GameDetailClient({
 }) {
     const [analysis, setAnalysis] = useState<GameAnalysis | null>(initialAnalysis);
 
+    const userBoardOrientation = (() => {
+        const providerKey = normalizedGame.provider;
+        const linked =
+            providerKey === 'lichess'
+                ? usernameByProvider.lichess
+                : usernameByProvider.chesscom;
+        const norm = (s: string | undefined) =>
+            (s ?? '')
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9_]+/g, '');
+
+        const me = norm(linked);
+        if (!me) return 'white' as const;
+
+        const white = norm(normalizedGame.white?.name);
+        const black = norm(normalizedGame.black?.name);
+
+        const matches = (a: string, b: string) =>
+            !!a && !!b && (a === b || a.includes(b) || b.includes(a));
+
+        if (matches(me, black)) return 'black' as const;
+        if (matches(me, white)) return 'white' as const;
+        return 'white' as const;
+    })();
+
     return (
         <div className="space-y-6">
             <div>
@@ -55,6 +81,7 @@ export default function GameDetailClient({
                     pgn={normalizedGame.pgn}
                     metaLabel={`${normalizedGame.provider} • ${normalizedGame.timeClass} • ${new Date(normalizedGame.playedAt).toLocaleString()}`}
                     analysis={analysis}
+                    userBoardOrientation={userBoardOrientation}
                     puzzles={puzzles.map((p) => ({
                         sourcePly: p.sourcePly,
                         type: p.type,

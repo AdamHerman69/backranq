@@ -71,6 +71,38 @@ function buildSnapshot(job) {
 
 let activeJob = null; // { id, fen, multiPv, minDepth, maxDepth, maxTimeMs, emitIntervalMs, mode, ... }
 let queuedStart = null; // job args to start after activeJob ends
+let forceStopTimer = null;
+let forceStopForJobId = null;
+
+function clearForceStopTimer() {
+    if (forceStopTimer) clearTimeout(forceStopTimer);
+    forceStopTimer = null;
+    forceStopForJobId = null;
+}
+
+function scheduleForceStop(timeoutMs) {
+    // If Stockfish doesn't emit "bestmove" after "stop", jobs can get stuck forever.
+    // This watchdog force-clears the active job so queued jobs can start.
+    if (!activeJob) return;
+    if (!activeJob.stopRequested) return;
+    clearForceStopTimer();
+    forceStopForJobId = activeJob.id;
+    forceStopTimer = setTimeout(() => {
+        // Only force-stop if we're still on the same job and it's still stopped.
+        if (!activeJob) return;
+        if (activeJob.id !== forceStopForJobId) return;
+        if (!activeJob.stopRequested) return;
+
+        // Abandon the stuck job without attributing a late "bestmove" to the next job.
+        activeJob = null;
+
+        const next = queuedStart;
+        queuedStart = null;
+        if (next) {
+            void startJob(next);
+        }
+    }, Math.max(50, timeoutMs | 0));
+}
 
 function setActive(job) {
     activeJob = {
@@ -118,6 +150,7 @@ function emitUpdate(job, force) {
 
 async function startJob(job) {
     const e = await ensureEngine();
+    clearForceStopTimer();
     setActive(job);
     const j = activeJob;
     if (!j) return;
@@ -135,7 +168,16 @@ async function startJob(job) {
     } else if (j.mode === 'movetime') {
         e.postMessage(`go movetime ${j.maxTimeMs}`);
     } else {
-        e.postMessage('go infinite');
+        // Some Stockfish WASM builds/browsers are flaky with `go infinite` and may
+        // not emit incremental `info pv ...` lines reliably.
+        //
+        // Using a large movetime behaves like "infinite" for UI purposes (user
+        // stops/position changes), while staying on the well-trodden codepath
+        // that streams PV updates.
+        //
+        // 10 minutes is effectively infinite for interactive analysis.
+        const fallbackMs = 10 * 60 * 1000;
+        e.postMessage(`go movetime ${fallbackMs}`);
     }
 }
 
@@ -148,6 +190,8 @@ async function requestStart(job) {
             const e = await ensureEngine();
             e.postMessage('stop');
         }
+        // If stop doesn't result in a bestmove, unstick after a short delay.
+        scheduleForceStop(600);
         return;
     }
     queuedStart = null;
@@ -155,15 +199,23 @@ async function requestStart(job) {
 }
 
 async function requestStop(id) {
+    // If the job hasn't started yet (it's queued), cancel it here.
+    if (queuedStart && queuedStart.id === id) {
+        queuedStart = null;
+        return;
+    }
     if (!activeJob || activeJob.id !== id) return;
     activeJob.stopRequested = true;
     const e = await ensureEngine();
     e.postMessage('stop');
+    // If stop doesn't yield a bestmove, force-clear the job.
+    scheduleForceStop(600);
 }
 
 function finishJob(bestMoveUci) {
     if (!activeJob) return;
     const job = activeJob;
+    clearForceStopTimer();
     emitUpdate(job, true);
     postMessage({
         type: 'done',

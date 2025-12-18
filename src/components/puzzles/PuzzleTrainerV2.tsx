@@ -40,7 +40,6 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 
-type TrainerQueueMode = 'quick' | 'reviewFailed';
 type TrainerViewMode = 'solve' | 'analyze';
 type ContinuationMode = 'off' | 'short' | 'full';
 
@@ -208,10 +207,8 @@ function parseCsv(v: string | null, max: number): string[] {
 }
 
 export function PuzzleTrainerV2({
-    initialQueueMode,
     initialViewMode,
 }: {
-    initialQueueMode: TrainerQueueMode;
     initialViewMode: TrainerViewMode;
 }) {
     const pathname = usePathname();
@@ -225,14 +222,12 @@ export function PuzzleTrainerV2({
     const { startAttempt, recordAttempt, saving: attemptSaving, queued: attemptQueued } =
         usePuzzleAttempt();
 
-    const [queueMode, setQueueMode] = useState<TrainerQueueMode>(initialQueueMode);
     const [viewMode, setViewMode] = useState<TrainerViewMode>(initialViewMode);
 
     const [queue, setQueue] = useState<Puzzle[]>([]);
     const [idx, setIdx] = useState(0);
 
     const currentPuzzle = queue[idx] ?? null;
-    const preferFailed = queueMode === 'reviewFailed';
     const [directLoadError, setDirectLoadError] = useState<string | null>(null);
 
     // Keep refs to avoid URL<->state feedback loops.
@@ -369,17 +364,16 @@ export function PuzzleTrainerV2({
         };
     }, []);
 
-    // keep URL in sync (view + queue)
+    // keep URL in sync (view)
     useEffect(() => {
         if (typeof window === 'undefined') return;
         const cur = window.location.search.replace(/^\?/, '');
         const next = new URLSearchParams(cur);
         next.set('view', viewMode);
-        next.set('mode', queueMode === 'reviewFailed' ? 'review' : 'quick');
         const nextStr = next.toString();
         if (nextStr === cur) return;
         replaceUrlSearch(next);
-    }, [viewMode, queueMode, replaceUrlSearch]);
+    }, [viewMode, replaceUrlSearch]);
 
     // keep URL in sync (current puzzle)
     useEffect(() => {
@@ -422,7 +416,6 @@ export function PuzzleTrainerV2({
         const res = await getRandom({
             count: 1,
             excludeIds,
-            preferFailed,
             type: trainerFilters.type,
             kind: trainerFilters.kind,
             phase: trainerFilters.phase,
@@ -512,19 +505,11 @@ export function PuzzleTrainerV2({
         };
     }, [directPuzzleId]);
 
-    // initial load + queueMode change
+    // initial load
     useEffect(() => {
-        // Switching queue should fetch a new puzzle (unless a direct puzzleId is pinned in the URL).
-        if (directPuzzleId) {
-            void ensureOne();
-            return;
-        }
-        setQueue([]);
-        setIdx(0);
-        // Force ensures we don't get stuck due to stale queueRef before React flushes state updates.
-        void ensureOne({ force: true });
+        void ensureOne();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [queueMode]);
+    }, []);
 
     // If filters change, clear the queue and refetch a matching puzzle.
     useEffect(() => {
@@ -1305,7 +1290,13 @@ export function PuzzleTrainerV2({
                     });
                 }, 450);
             } catch {
-                // ignore
+                // If refutation analysis fails (engine busy/crashed/cancelled), still show the
+                // "Not best" overlay so the user can choose Analyze / Try again.
+                if (!cancelled) {
+                    setRefutationLineUci(null);
+                    setRefutationStep(0);
+                    setShowWrongOverlay(true);
+                }
             }
         }
         void run();
@@ -1927,9 +1918,6 @@ export function PuzzleTrainerV2({
                     </Tabs>
 
                     <div className="hidden sm:flex items-center gap-2">
-                        <Badge variant="secondary">
-                            {queueMode === 'reviewFailed' ? 'Review Failed' : 'Quick'}
-                        </Badge>
                         {currentPuzzle ? <Badge variant="outline">{currentPuzzle.type}</Badge> : null}
                         {currentPuzzle && isMultiSolutionPuzzle ? (
                             <Badge variant="secondary">Multiple correct</Badge>
@@ -1948,12 +1936,6 @@ export function PuzzleTrainerV2({
                     <div className="text-sm text-muted-foreground">
                         {queue.length > 0 ? `Puzzle ${idx + 1}` : ''}
                     </div>
-                    <Button
-                        variant="outline"
-                        onClick={() => setQueueMode((m) => (m === 'quick' ? 'reviewFailed' : 'quick'))}
-                    >
-                        Switch queue
-                    </Button>
                 </div>
             </div>
 

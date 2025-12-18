@@ -167,7 +167,7 @@ export function GameActions({
             <div className="flex flex-wrap items-center gap-2">
                 {!hasAnalysis ? (
                     <Button type="button" disabled={busy} onClick={() => analyze('analyze')}>
-                        Analyze game
+                        Analyze + generate puzzles
                     </Button>
                 ) : (
                     <Button
@@ -176,16 +176,12 @@ export function GameActions({
                         disabled={busy}
                         onClick={() => analyze('reanalyze')}
                     >
-                        Re-analyze
+                        Re-analyze + regenerate puzzles
                     </Button>
                 )}
 
-                <Button
-                    asChild
-                    variant="ghost"
-                    title="Puzzle generation runs automatically on analysis"
-                >
-                    <Link href="/">Generate puzzles →</Link>
+                <Button asChild variant="ghost" title="Browse your puzzle library">
+                    <Link href="/puzzles/library">Open puzzle library →</Link>
                 </Button>
 
                 <Button type="button" variant="outline" onClick={exportPgn}>

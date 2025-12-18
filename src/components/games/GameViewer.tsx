@@ -135,21 +135,20 @@ export function GameViewer({
     metaLabel,
     analysis,
     puzzles,
+    userBoardOrientation,
 }: {
     pgn: string;
     metaLabel?: string;
     analysis?: GameAnalysis | null;
     puzzles?: PuzzlePreview[];
+    userBoardOrientation?: 'white' | 'black';
 }) {
     const [ply, setPly] = useState(0);
     const [showPvArrows, setShowPvArrows] = useState(true);
+    const movesScrollRef = useRef<HTMLDivElement | null>(null);
 
     const engineRef = useRef<StockfishClient | null>(null);
-    const [engineClient] = useState<StockfishClient>(() => {
-        const client = new StockfishClient();
-        engineRef.current = client;
-        return client;
-    });
+    const [engineClient, setEngineClient] = useState<StockfishClient | null>(null);
     const [analysisEnabled, setAnalysisEnabled] = useState(true);
     const [analysisMultiPv, setAnalysisMultiPv] = useState(3);
     const [selection, setSelection] = useState<{
@@ -207,19 +206,45 @@ export function GameViewer({
         return clamp(ply, 0, parsed.positions.length - 1);
     }, [ply, parsed]);
 
-    // Keep the active move visible in the move list (keyboard scrubbing).
+    // Keep the active move visible in the move list, without scrolling the page.
+    // `scrollIntoView()` can scroll the *window* which feels like the page is jumping.
     useEffect(() => {
         if (!parsed) return;
         if (clampedPly <= 0) return;
+        const container = movesScrollRef.current;
+        if (!container) return;
+
         const idx = clampedPly - 1;
-        const el = document.getElementById(`game-move-${idx}`);
-        el?.scrollIntoView({ block: 'nearest' });
+        const el = container.querySelector<HTMLElement>(`#game-move-${idx}`);
+        if (!el) return;
+
+        const padding = 12;
+        const elTop = el.offsetTop;
+        const elBottom = elTop + el.offsetHeight;
+        const viewTop = container.scrollTop;
+        const viewBottom = viewTop + container.clientHeight;
+
+        if (elTop - padding < viewTop) {
+            container.scrollTop = Math.max(0, elTop - padding);
+        } else if (elBottom + padding > viewBottom) {
+            container.scrollTop = Math.max(0, elBottom + padding - container.clientHeight);
+        }
     }, [clampedPly, parsed]);
 
     const fen = useMemo(() => {
         if (!parsed) return START_FEN;
         return parsed.positions[clampedPly]?.fen ?? parsed.startFen;
     }, [parsed, clampedPly]);
+
+    // Mirror PuzzleTrainerV2: only construct the engine when analysis is needed.
+    useEffect(() => {
+        if (!analysisEnabled) return;
+        if (!fen) return;
+        if (engineClient) return;
+        const client = new StockfishClient();
+        engineRef.current = client;
+        setEngineClient(client);
+    }, [analysisEnabled, fen, engineClient]);
 
     const lastMove = useMemo(() => {
         if (!parsed) return null;
@@ -267,14 +292,20 @@ export function GameViewer({
         return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
     }, [parsed]);
 
+    const analyzeStreamingEnabled = analysisEnabled && !!fen && !!engineClient;
     const live = useStockfishLiveMultiPvAnalysis({
         client: engineClient,
-        fen,
+        fen: analyzeStreamingEnabled ? fen : null,
         multiPv: analysisMultiPv,
-        enabled: analysisEnabled,
+        enabled: analyzeStreamingEnabled,
         emitIntervalMs: 150,
-        // Run continuously until stopped or position changes.
     });
+
+    const analysisBusy =
+        live.running ||
+        (analysisEnabled &&
+            // show busy while engine is being created or before first update arrives
+            (!engineClient || (!live.update && !live.error)));
 
     const selectedLine = useMemo(() => {
         const lines = live.lines;
@@ -294,6 +325,14 @@ export function GameViewer({
             engineRef.current = null;
         };
     }, []);
+
+    useEffect(() => {
+        // Reset PV selection when the position changes (matches trainer behavior).
+        setSelection((prev) => {
+            if (prev.fen === fen) return prev;
+            return { fen, idx: 0, key: null };
+        });
+    }, [fen]);
 
     const analysisEvalScore = useMemo(() => {
         const line = live.lines?.[selectedLine] ?? live.lines?.[0];
@@ -372,6 +411,7 @@ export function GameViewer({
                         <Chessboard
                             options={{
                                 position: fen,
+                                boardOrientation: userBoardOrientation ?? 'white',
                                 allowDragging: false,
                                 allowDrawingArrows: false,
                                 arrows: showPvArrows ? analysisArrows : [],
@@ -510,14 +550,14 @@ export function GameViewer({
                             <div
                                 className={cn(
                                     'h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground/70',
-                                    live.running ? 'opacity-100' : 'opacity-0'
+                                    analysisBusy ? 'opacity-100' : 'opacity-0'
                                 )}
-                                aria-hidden={!live.running}
+                                aria-hidden={!analysisBusy}
                             />
                             <div
                                 className={cn(
                                     'text-xs text-muted-foreground',
-                                    live.running ? 'opacity-100' : 'opacity-0'
+                                    analysisBusy ? 'opacity-100' : 'opacity-0'
                                 )}
                             >
                                 Thinking…
@@ -587,7 +627,10 @@ export function GameViewer({
                         <CardTitle className="text-base">Moves</CardTitle>
                     </CardHeader>
                     <CardContent>
-                        <div className="max-h-[420px] space-y-1 overflow-auto pr-1">
+                        <div
+                            ref={movesScrollRef}
+                            className="max-h-[420px] space-y-1 overflow-auto pr-1"
+                        >
                             {(() => {
                                 const rows: { moveNo: number; w?: number; b?: number }[] =
                                     [];
