@@ -2,6 +2,21 @@ export type Score =
     | { type: 'cp'; value: number }
     | { type: 'mate'; value: number };
 
+export type MultiPvStreamingUpdate = {
+    fen: string;
+    depth?: number;
+    timeMs?: number;
+    lines: Array<{
+        multipv: number;
+        score: Score | null;
+        pvUci: string[];
+    }>;
+};
+
+export interface StreamingAnalysisHandle {
+    stop(): void;
+}
+
 export type EvalResult = {
     fen: string;
     bestMoveUci: string;
@@ -29,56 +44,12 @@ function uid() {
     return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-type StockfishWasmInstance = {
-    postMessage: (cmd: string) => void;
-    addMessageListener: (cb: (line: string) => void) => void;
-    // optional
-    removeMessageListener?: (cb: (line: string) => void) => void;
-    terminate?: () => void;
-};
-
-function loadScriptOnce(src: string, id: string): Promise<void> {
-    if (typeof window === 'undefined')
-        return Promise.reject(
-            new Error('Stockfish can only run in the browser.')
-        );
-    const existing = document.getElementById(id) as HTMLScriptElement | null;
-    if (existing?.dataset.loaded === 'true') return Promise.resolve();
-
-    return new Promise<void>((resolve, reject) => {
-        const script = existing ?? document.createElement('script');
-        script.id = id;
-        script.src = src;
-        script.async = true;
-        script.onload = () => {
-            script.dataset.loaded = 'true';
-            resolve();
-        };
-        script.onerror = () => reject(new Error(`Failed to load ${src}`));
-        if (!existing) document.head.appendChild(script);
-    });
-}
-
-async function createStockfishWasm(): Promise<StockfishWasmInstance> {
-    await loadScriptOnce(
-        '/vendor/stockfish/stockfish.js',
-        'backranq-stockfish-wasm'
-    );
-    const sfFactory = (
-        window as unknown as {
-            Stockfish?: () => Promise<StockfishWasmInstance>;
-        }
-    ).Stockfish;
-    if (!sfFactory)
-        throw new Error(
-            'Stockfish() not found on window (script load failed).'
-        );
-    return await sfFactory();
-}
-
 export class StockfishClient {
-    private enginePromise: Promise<StockfishWasmInstance>;
-    private engine: StockfishWasmInstance | null = null;
+    private worker: Worker | null = null;
+
+    private cacheEval = new Map<string, EvalResult>();
+    private cacheMulti = new Map<string, MultiPvResult>();
+
     private pending = new Map<
         string,
         | {
@@ -86,66 +57,50 @@ export class StockfishClient {
               cacheKey?: string;
               resolve: (v: EvalResult) => void;
               reject: (e: Error) => void;
+              latest?: MultiPvStreamingUpdate;
           }
         | {
               kind: 'multipv';
               cacheKey?: string;
               resolve: (v: MultiPvResult) => void;
               reject: (e: Error) => void;
+              latest?: MultiPvStreamingUpdate;
           }
     >();
-    private cacheEval = new Map<string, EvalResult>();
-    private cacheMulti = new Map<string, MultiPvResult>();
-    private queue: (
-        | {
-              id: string;
-              kind: 'single';
-              fen: string;
-              movetimeMs: number;
-              cacheKey?: string;
-          }
-        | {
-              id: string;
-              kind: 'multipv';
-              fen: string;
-              movetimeMs: number;
-              multiPv: number;
-              cacheKey?: string;
-          }
-    )[] = [];
-    private current: {
-        id: string;
-        kind: 'single' | 'multipv';
-        fen: string;
-        movetimeMs: number;
-        multiPv: number;
-        lastScore: Score | null;
-        lastDepth?: number;
-        lastTimeMs?: number;
-        lastPvUci: string[];
-        lastMultiPv: Map<number, MultiPvLine>;
-    } | null = null;
-    private onLineBound = (line: string) => this.onLine(line);
+
+    private streaming = new Map<
+        string,
+        {
+            stopped: boolean;
+            onUpdate: (u: MultiPvStreamingUpdate) => void;
+            onError?: (e: Error) => void;
+            onDone?: () => void;
+        }
+    >();
+
+    private activeJobId: string | null = null;
+    private terminated = false;
 
     constructor() {
-        this.enginePromise = createStockfishWasm().then((e) => {
-            this.engine = e;
-            e.addMessageListener(this.onLineBound);
-            // bootstrap UCI
-            e.postMessage('uci');
-            e.postMessage('isready');
-            return e;
-        });
+        if (typeof window === 'undefined') {
+            throw new Error('Stockfish can only run in the browser.');
+        }
+        this.worker = new Worker('/vendor/stockfish/backranq-engine.worker.js');
+        this.worker.onmessage = (ev: MessageEvent) => {
+            this.onWorkerMessage(ev.data);
+        };
+        this.worker.onerror = (ev: ErrorEvent) => {
+            const msg = ev?.message || 'Stockfish worker crashed unexpectedly';
+            this.failAll(new Error(msg));
+        };
     }
 
     terminate() {
-        this.queue = [];
-        this.current = null;
-        if (this.engine?.removeMessageListener)
-            this.engine.removeMessageListener(this.onLineBound);
-        if (this.engine?.terminate) this.engine.terminate();
-        this.engine = null;
-        this.pending.clear();
+        if (this.terminated) return;
+        this.terminated = true;
+        this.cancelAll();
+        this.worker?.terminate();
+        this.worker = null;
         this.cacheEval.clear();
         this.cacheMulti.clear();
     }
@@ -168,16 +123,16 @@ export class StockfishClient {
                 resolve,
                 reject,
             });
-            this.queue.push({
+            this.activeJobId = id;
+            this.worker?.postMessage({
+                type: 'start',
                 id,
-                kind: 'single',
                 fen: opts.fen,
-                movetimeMs,
-                cacheKey: key,
+                multiPv: 1,
+                maxTimeMs: movetimeMs,
+                emitIntervalMs: 120,
             });
         });
-        await this.enginePromise;
-        this.startNext();
         const res = await p;
         this.cacheEval.set(key, res);
         return res;
@@ -207,144 +162,190 @@ export class StockfishClient {
                 resolve,
                 reject,
             });
-            this.queue.push({
+            this.activeJobId = id;
+            this.worker?.postMessage({
+                type: 'start',
                 id,
-                kind: 'multipv',
                 fen: opts.fen,
-                movetimeMs,
                 multiPv,
-                cacheKey: key,
+                maxTimeMs: movetimeMs,
+                emitIntervalMs: 120,
             });
         });
 
-        await this.enginePromise;
-        this.startNext();
-        return await p;
+        const res = await p;
+        this.cacheMulti.set(key, res);
+        return res;
+    }
+
+    startAnalyzeMultiPvStreaming(opts: {
+        fen: string;
+        multiPv: number; // 1..5
+        minDepth?: number;
+        maxDepth?: number;
+        maxTimeMs?: number;
+        emitIntervalMs?: number;
+        onUpdate(u: MultiPvStreamingUpdate): void;
+        onError?(e: Error): void;
+        onDone?(): void;
+    }): StreamingAnalysisHandle {
+        const id = uid();
+        const multiPv = Math.max(1, Math.min(5, Math.trunc(opts.multiPv)));
+        const emitIntervalMs = Math.max(
+            50,
+            Math.trunc(opts.emitIntervalMs ?? 150)
+        );
+
+        // Streaming takes over the worker: kill any queued/pending one-shot jobs to
+        // avoid stale updates and confusing cross-calls.
+        this.cancelAll();
+
+        this.activeJobId = id;
+        this.streaming.set(id, {
+            stopped: false,
+            onUpdate: opts.onUpdate,
+            onError: opts.onError,
+            onDone: opts.onDone,
+        });
+
+        this.worker?.postMessage({
+            type: 'start',
+            id,
+            fen: opts.fen,
+            multiPv,
+            minDepth: opts.minDepth,
+            maxDepth: opts.maxDepth,
+            maxTimeMs: opts.maxTimeMs,
+            emitIntervalMs,
+        });
+
+        return {
+            stop: () => {
+                const s = this.streaming.get(id);
+                if (s) s.stopped = true;
+                this.streaming.delete(id);
+                if (this.activeJobId === id) this.activeJobId = null;
+                this.worker?.postMessage({ type: 'stop', id });
+            },
+        };
     }
 
     cancelAll() {
-        this.queue = [];
-        if (this.engine) this.engine.postMessage('stop');
-        // reject any pending futures (current + queued)
+        if (this.activeJobId) {
+            this.worker?.postMessage({ type: 'stop', id: this.activeJobId });
+        }
+
+        for (const [id, s] of this.streaming.entries()) {
+            s.stopped = true;
+            this.worker?.postMessage({ type: 'stop', id });
+        }
+        this.streaming.clear();
+
+        // reject any pending futures
         for (const [id, p] of this.pending.entries()) {
             this.pending.delete(id);
             p.reject(new Error('Cancelled'));
         }
-        this.current = null;
+        this.activeJobId = null;
     }
 
-    private startNext() {
-        if (this.current || this.queue.length === 0 || !this.engine) return;
-        const job = this.queue.shift()!;
-        this.current = {
-            id: job.id,
-            kind: job.kind,
-            fen: job.fen,
-            movetimeMs: job.movetimeMs,
-            multiPv: job.kind === 'multipv' ? job.multiPv : 1,
-            lastScore: null,
-            lastPvUci: [],
-            lastMultiPv: new Map<number, MultiPvLine>(),
-        };
-        this.engine.postMessage('ucinewgame');
-        this.engine.postMessage('isready');
-        this.engine.postMessage(
-            `setoption name MultiPV value ${this.current.multiPv}`
-        );
-        this.engine.postMessage(`position fen ${job.fen}`);
-        this.engine.postMessage(`go movetime ${job.movetimeMs}`);
+    private failAll(e: Error) {
+        for (const [, p] of this.pending) {
+            p.reject(e);
+        }
+        this.pending.clear();
+        for (const [, s] of this.streaming) {
+            if (!s.stopped) s.onError?.(e);
+        }
+        this.streaming.clear();
+        this.activeJobId = null;
     }
 
-    private onLine(line: string) {
-        if (!this.current) return;
-        if (line === 'readyok') return;
+    private onWorkerMessage(data: unknown) {
+        if (this.terminated) return;
+        if (!data || typeof data !== 'object') return;
+        const msg = data as Record<string, unknown>;
 
-        if (line.startsWith('info ')) {
-            const time = line.match(/\btime\s+(\d+)\b/);
-            const scoreMate = line.match(/\bscore\s+mate\s+(-?\d+)\b/);
-            const scoreCp = line.match(/\bscore\s+cp\s+(-?\d+)\b/);
-            const depth = line.match(/\bdepth\s+(\d+)\b/);
-            const multipv = line.match(/\bmultipv\s+(\d+)\b/);
-            const pv = line.match(/\bpv\s+(.+)\s*$/);
+        if (msg.type === 'update') {
+            const id = String(msg.id ?? '');
+            const update = msg.update as MultiPvStreamingUpdate | undefined;
+            if (!update || typeof update?.fen !== 'string') return;
 
-            if (depth) this.current.lastDepth = Number(depth[1]);
-            if (time) this.current.lastTimeMs = Number(time[1]);
-            if (scoreMate)
-                this.current.lastScore = {
-                    type: 'mate',
-                    value: Number(scoreMate[1]),
-                };
-            else if (scoreCp)
-                this.current.lastScore = {
-                    type: 'cp',
-                    value: Number(scoreCp[1]),
-                };
+            const p = this.pending.get(id);
+            if (p) p.latest = update;
 
-            if (pv)
-                this.current.lastPvUci = pv[1]
-                    .trim()
-                    .split(/\s+/)
-                    .filter(Boolean);
-
-            // Track MultiPV lines (if present). Stockfish emits multipv 1..N.
-            const mp = multipv ? Number(multipv[1]) : 1;
-            if (pv) {
-                this.current.lastMultiPv.set(mp, {
-                    multipv: mp,
-                    pvUci: this.current.lastPvUci,
-                    score: this.current.lastScore,
-                    depth: this.current.lastDepth,
-                    timeMs: this.current.lastTimeMs,
-                });
-            }
+            const s = this.streaming.get(id);
+            if (s && !s.stopped) s.onUpdate(update);
             return;
         }
 
-        if (line.startsWith('bestmove ')) {
-            const bestMoveUci = line.split(/\s+/)[1] ?? '';
-            const id = this.current.id;
-            const fen = this.current.fen;
-            const p = this.pending.get(id);
-            this.pending.delete(id);
-            const singleRes: EvalResult = {
-                fen,
-                bestMoveUci,
-                pvUci: this.current.lastPvUci,
-                score: this.current.lastScore,
-                depth: this.current.lastDepth,
-                timeMs: this.current.lastTimeMs,
-            };
+        if (msg.type === 'done') {
+            const id = String(msg.id ?? '');
+            const bestMoveUci = String(msg.bestMoveUci ?? '');
+            const final = msg.final as MultiPvStreamingUpdate | undefined;
 
-            const mpLines = Array.from(this.current.lastMultiPv.values())
-                .sort((a, b) => a.multipv - b.multipv)
-                .filter((l) => l.pvUci.length > 0);
-            const mpRes: MultiPvResult = {
-                fen,
-                bestMoveUci,
-                lines:
-                    mpLines.length > 0
-                        ? mpLines
-                        : [
-                              {
-                                  multipv: 1,
-                                  pvUci: this.current.lastPvUci,
-                                  score: this.current.lastScore,
-                                  depth: this.current.lastDepth,
-                                  timeMs: this.current.lastTimeMs,
-                              },
-                          ],
-            };
-            this.current = null;
+            if (final && typeof final.fen === 'string') {
+                const s = this.streaming.get(id);
+                if (s && !s.stopped) s.onUpdate(final);
+                const p = this.pending.get(id);
+                if (p) p.latest = final;
+            }
+
+            const s = this.streaming.get(id);
+            if (s && !s.stopped) s.onDone?.();
+            this.streaming.delete(id);
+
+            const p = this.pending.get(id);
             if (p) {
-                if (p.kind === 'multipv') {
-                    if (p.cacheKey) this.cacheMulti.set(p.cacheKey, mpRes);
-                    p.resolve(mpRes);
+                this.pending.delete(id);
+                const latest = p.latest ?? final;
+                if (!latest) {
+                    p.reject(new Error('Engine returned no analysis.'));
+                } else if (p.kind === 'single') {
+                    const line0 = latest.lines?.[0] ?? null;
+                    p.resolve({
+                        fen: latest.fen,
+                        bestMoveUci,
+                        pvUci: line0?.pvUci ?? [],
+                        score: line0?.score ?? null,
+                        depth: latest.depth,
+                        timeMs: latest.timeMs,
+                    });
                 } else {
-                    if (p.cacheKey) this.cacheEval.set(p.cacheKey, singleRes);
-                    p.resolve(singleRes);
+                    const lines: MultiPvLine[] = (latest.lines ?? []).map(
+                        (l) => ({
+                            multipv: l.multipv,
+                            pvUci: l.pvUci ?? [],
+                            score: l.score ?? null,
+                            depth: latest.depth,
+                            timeMs: latest.timeMs,
+                        })
+                    );
+                    p.resolve({
+                        fen: latest.fen,
+                        bestMoveUci,
+                        lines,
+                    });
                 }
             }
-            this.startNext();
+
+            if (this.activeJobId === id) this.activeJobId = null;
+            return;
+        }
+
+        if (msg.type === 'error') {
+            const id = String(msg.id ?? '');
+            const message = String(msg.message ?? 'Engine error');
+            const err = new Error(message);
+            const s = this.streaming.get(id);
+            if (s && !s.stopped) s.onError?.(err);
+            this.streaming.delete(id);
+            const p = this.pending.get(id);
+            if (p) {
+                this.pending.delete(id);
+                p.reject(err);
+            }
+            if (this.activeJobId === id) this.activeJobId = null;
         }
     }
 }

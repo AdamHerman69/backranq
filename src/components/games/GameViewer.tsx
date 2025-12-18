@@ -11,12 +11,19 @@ import {
 } from '@/lib/analysis/classification';
 import {
     StockfishClient,
-    type MultiPvResult,
     type Score,
 } from '@/lib/analysis/stockfishClient';
+import { useStockfishLiveMultiPvAnalysis } from '@/lib/hooks/useStockfishLiveMultiPvAnalysis';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 
@@ -138,13 +145,18 @@ export function GameViewer({
     const [showPvArrows, setShowPvArrows] = useState(true);
 
     const engineRef = useRef<StockfishClient | null>(null);
-    const [engineClient, setEngineClient] = useState<StockfishClient | null>(
-        null
-    );
-    const [multiPv, setMultiPv] = useState<MultiPvResult | null>(null);
-    const [engineBusy, setEngineBusy] = useState(false);
-    const [engineErr, setEngineErr] = useState<string | null>(null);
-    const [selectedLine, setSelectedLine] = useState(0);
+    const [engineClient] = useState<StockfishClient>(() => {
+        const client = new StockfishClient();
+        engineRef.current = client;
+        return client;
+    });
+    const [analysisEnabled, setAnalysisEnabled] = useState(true);
+    const [analysisMultiPv, setAnalysisMultiPv] = useState(3);
+    const [selection, setSelection] = useState<{
+        fen: string;
+        idx: number;
+        key: string | null;
+    }>({ fen: START_FEN, idx: 0, key: null });
 
     const parsed = useMemo(() => {
         const chess = new Chess();
@@ -176,7 +188,7 @@ export function GameViewer({
                 const mv = c.move({
                     from: m.from,
                     to: m.to,
-                    promotion: (m as any).promotion,
+                    promotion: (m as unknown as { promotion?: string }).promotion,
                 });
                 if (!mv) break;
                 positions.push({
@@ -225,6 +237,18 @@ export function GameViewer({
         function onKeyDown(e: KeyboardEvent) {
             if (isEditableTarget(e.target)) return;
             if (!parsed) return;
+            // Prevent focused UI (e.g. Radix Tabs) from hijacking arrow keys.
+            if (
+                e.key === 'ArrowLeft' ||
+                e.key === 'ArrowRight' ||
+                e.key === 'Home' ||
+                e.key === 'End'
+            ) {
+                e.stopPropagation();
+                // @ts-expect-error - not in lib.dom typings for all TS targets
+                e.stopImmediatePropagation?.();
+            }
+
             if (e.key === 'ArrowLeft') {
                 e.preventDefault();
                 setPly((p) => Math.max(0, p - 1));
@@ -239,46 +263,30 @@ export function GameViewer({
                 setPly(parsed.positions.length - 1);
             }
         }
-        window.addEventListener('keydown', onKeyDown);
-        return () => window.removeEventListener('keydown', onKeyDown);
+        window.addEventListener('keydown', onKeyDown, { capture: true });
+        return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
     }, [parsed]);
 
-    // analysis: run stockfish multipv for current ply (debounced)
-    useEffect(() => {
-        let cancelled = false;
-        const t = window.setTimeout(async () => {
-            if (!parsed) return;
-            setEngineBusy(true);
-            setEngineErr(null);
-            try {
-                const client = engineClient ?? new StockfishClient();
-                if (!engineClient) {
-                    engineRef.current = client;
-                    setEngineClient(client);
-                } else {
-                    // Cancel queued analysis work when scrubbing quickly.
-                    client.cancelAll();
-                }
-                const res = await client.analyzeMultiPv({
-                    fen,
-                    movetimeMs: 600,
-                    multiPv: 3,
-                });
-                if (cancelled) return;
-                setMultiPv(res);
-                setSelectedLine(0);
-            } catch (e) {
-                if (cancelled) return;
-                setEngineErr(e instanceof Error ? e.message : 'Engine error');
-            } finally {
-                if (!cancelled) setEngineBusy(false);
-            }
-        }, 180);
-        return () => {
-            cancelled = true;
-            window.clearTimeout(t);
-        };
-    }, [fen, parsed, engineClient]);
+    const live = useStockfishLiveMultiPvAnalysis({
+        client: engineClient,
+        fen,
+        multiPv: analysisMultiPv,
+        enabled: analysisEnabled,
+        emitIntervalMs: 150,
+        // Run continuously until stopped or position changes.
+    });
+
+    const selectedLine = useMemo(() => {
+        const lines = live.lines;
+        if (selection.fen !== fen) return 0;
+        if (selection.key) {
+            const idx = lines.findIndex(
+                (l) => (l.pvUci ?? []).join(' ') === selection.key
+            );
+            if (idx >= 0) return idx;
+        }
+        return Math.max(0, Math.min(selection.idx, lines.length - 1));
+    }, [live.lines, selection, fen]);
 
     useEffect(() => {
         return () => {
@@ -288,9 +296,9 @@ export function GameViewer({
     }, []);
 
     const analysisEvalScore = useMemo(() => {
-        const line = multiPv?.lines?.[selectedLine] ?? multiPv?.lines?.[0];
+        const line = live.lines?.[selectedLine] ?? live.lines?.[0];
         return line?.score ?? null;
-    }, [multiPv, selectedLine]);
+    }, [live.lines, selectedLine]);
 
     const analysisEvalText = useMemo(() => {
         return formatEval(analysisEvalScore, fen);
@@ -313,7 +321,7 @@ export function GameViewer({
             'rgba(16,185,129,0.75)',
             'rgba(245,158,11,0.75)',
         ];
-        const lines = multiPv?.lines ?? [];
+        const lines = live.lines ?? [];
         for (let i = 0; i < Math.min(3, lines.length); i++) {
             if (i === selectedLine) continue;
             const first = lines[i]?.pvUci?.[0];
@@ -327,7 +335,7 @@ export function GameViewer({
                     .replace('0.75', '0.35'),
             });
         }
-        const first = (multiPv?.lines ?? [])[selectedLine]?.pvUci?.[0];
+        const first = (live.lines ?? [])[selectedLine]?.pvUci?.[0];
         const u = first ? parseUci(first) : null;
         if (u) {
             put({
@@ -337,7 +345,7 @@ export function GameViewer({
             });
         }
         return Array.from(byKey.values());
-    }, [multiPv, selectedLine]);
+    }, [live.lines, selectedLine]);
 
     const squareStyles = useMemo(() => {
         const s: Record<string, React.CSSProperties> = {};
@@ -440,13 +448,46 @@ export function GameViewer({
                             <CardTitle className="text-base">
                                 Analysis (local Stockfish)
                             </CardTitle>
-                            <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => setShowPvArrows((v) => !v)}
-                            >
-                                {showPvArrows ? 'Hide arrows' : 'Show arrows'}
-                            </Button>
+                            <div className="flex items-center gap-2">
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => setAnalysisEnabled((v) => !v)}
+                                >
+                                    {analysisEnabled ? 'Stop' : 'Start'}
+                                </Button>
+                                <div className="w-[120px]">
+                                    <Select
+                                        value={String(analysisMultiPv)}
+                                        onValueChange={(v) =>
+                                            setAnalysisMultiPv(
+                                                Math.max(
+                                                    1,
+                                                    Math.min(5, Math.trunc(Number(v) || 1))
+                                                )
+                                            )
+                                        }
+                                    >
+                                        <SelectTrigger className="h-8">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {[1, 2, 3, 4, 5].map((n) => (
+                                                <SelectItem key={n} value={String(n)}>
+                                                    MultiPV {n}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => setShowPvArrows((v) => !v)}
+                                >
+                                    {showPvArrows ? 'Hide arrows' : 'Show arrows'}
+                                </Button>
+                            </div>
                         </div>
                     </CardHeader>
                     <CardContent className="space-y-3">
@@ -469,29 +510,39 @@ export function GameViewer({
                             <div
                                 className={cn(
                                     'h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground/70',
-                                    engineBusy ? 'opacity-100' : 'opacity-0'
+                                    live.running ? 'opacity-100' : 'opacity-0'
                                 )}
-                                aria-hidden={!engineBusy}
+                                aria-hidden={!live.running}
                             />
                             <div
                                 className={cn(
                                     'text-xs text-muted-foreground',
-                                    engineBusy ? 'opacity-100' : 'opacity-0'
+                                    live.running ? 'opacity-100' : 'opacity-0'
                                 )}
                             >
-                                Engine…
+                                Thinking…
+                                {typeof live.depth === 'number' ? ` d${live.depth}` : ''}
+                                {typeof live.timeMs === 'number'
+                                    ? ` ${(live.timeMs / 1000).toFixed(1)}s`
+                                    : ''}
                             </div>
                             <div className="ml-auto text-xs text-red-600">
-                                {engineErr ? engineErr : null}
+                                {live.error ? live.error : null}
                             </div>
                         </div>
 
                         <div className="space-y-2">
-                            {(multiPv?.lines ?? []).slice(0, 3).map((l, i) => (
+                            {(live.lines ?? []).slice(0, 5).map((l, i) => (
                                 <button
                                     key={i}
                                     type="button"
-                                    onClick={() => setSelectedLine(i)}
+                                    onClick={() => {
+                                        setSelection({
+                                            fen,
+                                            idx: i,
+                                            key: (l.pvUci ?? []).join(' '),
+                                        });
+                                    }}
                                     className={
                                         'w-full rounded-md border px-2 py-1.5 text-left text-sm transition-colors ' +
                                         (i === selectedLine
@@ -503,8 +554,8 @@ export function GameViewer({
                                         <div className="font-medium">#{i + 1}</div>
                                         <div className="font-mono text-xs text-muted-foreground">
                                             {formatEval(l.score, fen)}
-                                            {typeof l.depth === 'number'
-                                                ? ` d${l.depth}`
+                                            {typeof live.depth === 'number'
+                                                ? ` d${live.depth}`
                                                 : ''}
                                         </div>
                                     </div>
@@ -519,8 +570,8 @@ export function GameViewer({
 
                         <div className="font-mono text-[11px] text-muted-foreground">
                             PV:{' '}
-                            {(multiPv?.lines?.[selectedLine]?.pvUci ??
-                                multiPv?.lines?.[0]?.pvUci ??
+                            {(live.lines?.[selectedLine]?.pvUci ??
+                                live.lines?.[0]?.pvUci ??
                                 [])
                                 .slice(0, 12)
                                 .join(' ')}

@@ -281,3 +281,4 @@ export function isMaterialSacrifice(args: {
     // - This is very simplified; real detection needs more context
     return evalAfterCp >= evalBeforeCp - 50;
 }
+

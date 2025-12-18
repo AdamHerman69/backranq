@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GameAnalysis, MoveClassification } from "@/lib/analysis/classification";
 import { getClassificationSymbol } from "@/lib/analysis/classification";
 import { usePuzzleAttempt } from "@/lib/hooks/usePuzzleAttempt";
+import { useStockfishLiveMultiPvAnalysis } from "@/lib/hooks/useStockfishLiveMultiPvAnalysis";
 
 type VerboseMove = Move;
 
@@ -83,7 +84,7 @@ export function PuzzlePanel(props: {
     allPuzzles,
   } = props;
 
-  const [tab, setTab] = useState<"puzzle" | "game">("puzzle");
+  const [tab, setTab] = useState<"puzzle" | "game" | "analyze">("puzzle");
   const [attemptFen, setAttemptFen] = useState<string>(new Chess().fen());
   const [attemptLastMove, setAttemptLastMove] = useState<{ from: string; to: string } | null>(null);
   const [attemptUci, setAttemptUci] = useState<string | null>(null);
@@ -101,6 +102,14 @@ export function PuzzlePanel(props: {
   const [lineKind, setLineKind] = useState<LineKind>("best");
   const [lineStep, setLineStep] = useState(0);
   const [evalPerStep, setEvalPerStep] = useState(false);
+
+  // Analyze tab (live Stockfish)
+  const [analyzeRootFen, setAnalyzeRootFen] = useState<string>(new Chess().fen());
+  const [analyzePvStep, setAnalyzePvStep] = useState(0);
+  const [analyzeEnabled, setAnalyzeEnabled] = useState(true);
+  const [analyzeMultiPv, setAnalyzeMultiPv] = useState(3);
+  const [analyzeSelectedIdx, setAnalyzeSelectedIdx] = useState(0);
+  const [analyzeSelectedKey, setAnalyzeSelectedKey] = useState<string | null>(null);
 
   const [afterUserEval, setAfterUserEval] = useState<EvalResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -125,13 +134,25 @@ export function PuzzlePanel(props: {
     setLegalTargets(new Set());
     setLineKind("best");
     setLineStep(0);
+    setAnalyzeRootFen(currentPuzzle.fen);
+    setAnalyzePvStep(0);
+    setAnalyzeEnabled(true);
+    setAnalyzeMultiPv(3);
+    setAnalyzeSelectedIdx(0);
+    setAnalyzeSelectedKey(null);
     setAfterUserEval(null);
     setEngineErr(null);
     recordedAttemptRef.current = false;
     startAttempt(currentPuzzle.id);
-  }, [currentPuzzle]);
+  }, [currentPuzzle, startAttempt]);
 
   const movetimeMs = useMemo(() => Math.max(1, Math.trunc(Number(engineMoveTimeMs) || 200)), [engineMoveTimeMs]);
+
+  // Ensure engine is available for analyze tab.
+  useEffect(() => {
+    if (tab !== "analyze") return;
+    if (!engineClient) setEngineClient(new StockfishClient());
+  }, [tab, engineClient, setEngineClient]);
 
   const puzzleGameFen = useMemo(() => {
     if (!puzzleSourceParsed) return null;
@@ -210,18 +231,55 @@ export function PuzzlePanel(props: {
   const activeLineApplied = lineKind === "best" ? lineBestApplied : lineAfterUserApplied;
 
   const exploring = attemptResult != null && tab === "puzzle";
+
+  const liveAnalyze = useStockfishLiveMultiPvAnalysis({
+    client: engineClient,
+    fen: tab === "analyze" ? analyzeRootFen : null,
+    multiPv: analyzeMultiPv,
+    enabled: tab === "analyze" && analyzeEnabled,
+    emitIntervalMs: 150,
+  });
+
+  useEffect(() => {
+    if (tab !== "analyze") return;
+    setAnalyzeSelectedIdx(0);
+    setAnalyzeSelectedKey(null);
+    setAnalyzePvStep(0);
+  }, [tab, analyzeRootFen, analyzeMultiPv]);
+
+  const analyzeSelectedLine = useMemo(() => {
+    const lines = liveAnalyze.lines ?? [];
+    if (analyzeSelectedKey) {
+      const idx = lines.findIndex((l) => (l.pvUci ?? []).join(" ") === analyzeSelectedKey);
+      if (idx >= 0) return idx;
+    }
+    return Math.max(0, Math.min(analyzeSelectedIdx, lines.length - 1));
+  }, [liveAnalyze.lines, analyzeSelectedIdx, analyzeSelectedKey]);
+
+  const analyzeLineUci = useMemo(() => {
+    const lines = liveAnalyze.lines ?? [];
+    const selected = lines[analyzeSelectedLine] ?? lines[0];
+    return selected?.pvUci ?? [];
+  }, [liveAnalyze.lines, analyzeSelectedLine]);
+
+  const analyzeApplied = useMemo(() => {
+    return applyUciLine(analyzeRootFen, analyzeLineUci, 18);
+  }, [analyzeRootFen, analyzeLineUci]);
+
   const displayFen = useMemo(() => {
     if (!currentPuzzle) return new Chess().fen();
+    if (tab === "analyze") return analyzeApplied[clamp(analyzePvStep, 0, analyzeApplied.length - 1)]?.fen ?? analyzeRootFen;
     if (tab === "game") return puzzleGameFen ?? currentPuzzle.fen;
     if (exploring) return activeLineApplied[clamp(lineStep, 0, activeLineApplied.length - 1)]?.fen ?? currentPuzzle.fen;
     return attemptFen;
-  }, [currentPuzzle, tab, puzzleGameFen, exploring, activeLineApplied, lineStep, attemptFen]);
+  }, [currentPuzzle, tab, analyzeApplied, analyzePvStep, analyzeRootFen, puzzleGameFen, exploring, activeLineApplied, lineStep, attemptFen]);
 
   const displayLastMove = useMemo(() => {
+    if (tab === "analyze") return analyzeApplied[clamp(analyzePvStep, 0, analyzeApplied.length - 1)]?.lastMove ?? null;
     if (tab === "game") return puzzleGameLastMove;
     if (!exploring) return attemptLastMove;
     return activeLineApplied[clamp(lineStep, 0, activeLineApplied.length - 1)]?.lastMove ?? null;
-  }, [tab, puzzleGameLastMove, exploring, attemptLastMove, activeLineApplied, lineStep]);
+  }, [tab, analyzeApplied, analyzePvStep, puzzleGameLastMove, exploring, attemptLastMove, activeLineApplied, lineStep]);
 
   const allLegalTargets = useMemo(() => {
     if (!showAllLegal || !allowAttemptMove) return new Set<string>();
@@ -236,6 +294,12 @@ export function PuzzlePanel(props: {
       // react-chessboard keys arrows by `${from}-${to}`; dedupe to avoid React key collisions.
       byKey.set(`${a.startSquare}-${a.endSquare}`, a);
     };
+    if (tab === "analyze") {
+      const first = (liveAnalyze.lines ?? [])[analyzeSelectedLine]?.pvUci?.[0];
+      const u = first ? parseUci(first) : null;
+      if (u) put({ startSquare: u.from, endSquare: u.to, color: "rgba(64, 132, 255, 0.85)" });
+      return Array.from(byKey.values());
+    }
     if (tab !== "puzzle") return [];
     if (showBestArrow && attemptResult === "incorrect" && bestMoveParsed) {
       put({ startSquare: bestMoveParsed.from, endSquare: bestMoveParsed.to, color: "rgba(255,70,70,0.9)" });
@@ -245,7 +309,7 @@ export function PuzzlePanel(props: {
       put({ startSquare: attemptLastMove.from, endSquare: attemptLastMove.to, color: "rgba(255,215,0,0.9)" });
     }
     return Array.from(byKey.values());
-  }, [tab, showUserArrow, attemptLastMove, showBestArrow, attemptResult, bestMoveParsed]);
+  }, [tab, liveAnalyze.lines, analyzeSelectedLine, showUserArrow, attemptLastMove, showBestArrow, attemptResult, bestMoveParsed]);
 
   const squareStyles = useMemo(() => {
     const s: Record<string, React.CSSProperties> = {};
@@ -477,6 +541,17 @@ export function PuzzlePanel(props: {
               disabled={!puzzleSourceParsed}
             >
               Game
+            </button>
+            <button
+              className={tab === "analyze" ? styles.primaryButton : styles.secondaryButton}
+              onClick={() => {
+                setAnalyzeRootFen(displayFen);
+                setAnalyzePvStep(0);
+                setAnalyzeEnabled(true);
+                setTab("analyze");
+              }}
+            >
+              Analyze
             </button>
             <div className={styles.muted}>
               {puzzleSourceGame ? (
@@ -722,7 +797,7 @@ export function PuzzlePanel(props: {
                 </div>
               )}
             </>
-          ) : (
+          ) : tab === "game" ? (
             <>
               <div className={styles.actions}>
                 <button className={styles.secondaryButton} onClick={() => setGamePly(0)} disabled={!puzzleSourceParsed || gamePly === 0}>
@@ -803,6 +878,120 @@ export function PuzzlePanel(props: {
                   );
                 })}
               </ol>
+            </>
+          ) : (
+            <>
+              <div className={styles.actions}>
+                <button
+                  className={styles.secondaryButton}
+                  onClick={() => {
+                    setAnalyzeEnabled((v) => {
+                      const next = !v;
+                      if (next) liveAnalyze.start();
+                      else liveAnalyze.stop();
+                      return next;
+                    });
+                  }}
+                >
+                  {analyzeEnabled ? "Stop" : "Start"}
+                </button>
+
+                <label className={styles.toggle}>
+                  <span>MultiPV</span>
+                  <select
+                    className={styles.secondaryButton}
+                    value={String(analyzeMultiPv)}
+                    onChange={(e) => setAnalyzeMultiPv(Math.max(1, Math.min(5, Number(e.target.value) || 1)))}
+                  >
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <option key={n} value={String(n)}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <button
+                  className={styles.secondaryButton}
+                  onClick={() => {
+                    setAnalyzeRootFen(displayFen);
+                    setAnalyzePvStep(0);
+                    setAnalyzeSelectedIdx(0);
+                    setAnalyzeSelectedKey(null);
+                    setAnalyzeEnabled(true);
+                    liveAnalyze.start();
+                  }}
+                >
+                  Analyze this position
+                </button>
+
+                <div className={styles.muted}>
+                  {liveAnalyze.error
+                    ? liveAnalyze.error
+                    : liveAnalyze.running
+                      ? `Thinking…${typeof liveAnalyze.depth === "number" ? ` d${liveAnalyze.depth}` : ""}${
+                          typeof liveAnalyze.timeMs === "number" ? ` ${(liveAnalyze.timeMs / 1000).toFixed(1)}s` : ""
+                        }`
+                      : "Idle"}
+                </div>
+              </div>
+
+              <div className={styles.lineExplorer}>
+                <div className={styles.actions}>
+                  <button
+                    className={styles.secondaryButton}
+                    onClick={() => setAnalyzePvStep(0)}
+                    disabled={analyzePvStep === 0}
+                  >
+                    Start
+                  </button>
+                  <button
+                    className={styles.secondaryButton}
+                    onClick={() => setAnalyzePvStep((s) => Math.max(0, s - 1))}
+                    disabled={analyzePvStep === 0}
+                  >
+                    Back
+                  </button>
+                  <div className={styles.muted}>
+                    Step {analyzePvStep}/{Math.max(0, analyzeApplied.length - 1)}
+                  </div>
+                  <button
+                    className={styles.secondaryButton}
+                    onClick={() => setAnalyzePvStep((s) => Math.min(analyzeApplied.length - 1, s + 1))}
+                    disabled={analyzePvStep >= analyzeApplied.length - 1}
+                  >
+                    Next
+                  </button>
+                  <button
+                    className={styles.secondaryButton}
+                    onClick={() => setAnalyzePvStep(Math.max(0, analyzeApplied.length - 1))}
+                    disabled={analyzePvStep >= analyzeApplied.length - 1}
+                  >
+                    End
+                  </button>
+                </div>
+
+                <div className={styles.muted}>
+                  PV: <span className={styles.mono}>{analyzeLineUci.slice(0, 12).join(" ")}</span>
+                </div>
+              </div>
+
+              <div className={styles.lineExplorer}>
+                {(liveAnalyze.lines ?? []).slice(0, analyzeMultiPv).map((l, i) => (
+                  <button
+                    key={i}
+                    className={i === analyzeSelectedLine ? styles.primaryButton : styles.secondaryButton}
+                    onClick={() => {
+                      setAnalyzeSelectedIdx(i);
+                      setAnalyzeSelectedKey((l.pvUci ?? []).join(" "));
+                      setAnalyzePvStep(0);
+                    }}
+                    title={(l.pvUci ?? []).slice(0, 16).join(" ")}
+                  >
+                    #{i + 1} {formatEval(l.score, analyzeRootFen)} {(l.pvUci ?? []).slice(0, 5).join(" ")}
+                  </button>
+                ))}
+              </div>
             </>
           )}
         </div>

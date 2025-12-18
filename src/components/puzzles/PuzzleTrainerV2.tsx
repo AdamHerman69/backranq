@@ -11,9 +11,9 @@ import type { NormalizedGame } from '@/lib/types/game';
 import type { Puzzle } from '@/lib/analysis/puzzles';
 import {
     StockfishClient,
-    type MultiPvResult,
     type Score,
 } from '@/lib/analysis/stockfishClient';
+import { useStockfishLiveMultiPvAnalysis } from '@/lib/hooks/useStockfishLiveMultiPvAnalysis';
 import { useRandomPuzzles } from '@/lib/api/usePuzzles';
 import { usePuzzleAttempt } from '@/lib/hooks/usePuzzleAttempt';
 import {
@@ -32,6 +32,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
 
 type TrainerQueueMode = 'quick' | 'reviewFailed';
 type TrainerViewMode = 'solve' | 'analyze';
@@ -250,10 +257,10 @@ export function PuzzleTrainerV2({
     const [analysisHistory, setAnalysisHistory] = useState<string[]>([]);
     const [analysisHistoryIdx, setAnalysisHistoryIdx] = useState(0);
     const [analysisRootFen, setAnalysisRootFen] = useState<string | null>(null);
-    const [analysis, setAnalysis] = useState<MultiPvResult | null>(null);
-    const [analysisBusy, setAnalysisBusy] = useState(false);
-    const [analysisErr, setAnalysisErr] = useState<string | null>(null);
-    const [selectedLine, setSelectedLine] = useState(0);
+    const [analysisEnabled, setAnalysisEnabled] = useState(true);
+    const [analysisMultiPv, setAnalysisMultiPv] = useState(3);
+    const [analysisSelectedIdx, setAnalysisSelectedIdx] = useState(0);
+    const [analysisSelectedKey, setAnalysisSelectedKey] = useState<string | null>(null);
 
     // Eval reveal (solve mode)
     const [evalRevealed, setEvalRevealed] = useState(false);
@@ -266,7 +273,6 @@ export function PuzzleTrainerV2({
     const [legalTargets, setLegalTargets] = useState<Set<Square>>(new Set());
 
     const engineMoveTimeMsSolve = 200;
-    const engineMoveTimeMsAnalyze = 600;
 
     useEffect(() => {
         return () => {
@@ -377,10 +383,9 @@ export function PuzzleTrainerV2({
         setRefutationStep(0);
         setShowWrongOverlay(false);
         setPvStep(0);
-        setSelectedLine(0);
-        setAnalysis(null);
-        setAnalysisErr(null);
-        setAnalysisBusy(false);
+        setAnalysisSelectedIdx(0);
+        setAnalysisSelectedKey(null);
+        setAnalysisEnabled(true);
         setSelectedSquare(null);
         setLegalTargets(new Set());
         setShowContext(false);
@@ -455,6 +460,27 @@ export function PuzzleTrainerV2({
         return ecoName(currentPuzzle.opening);
     }, [currentPuzzle?.opening]);
 
+    const acceptedMoves = useMemo(() => {
+        if (!currentPuzzle) return [] as string[];
+        const best = (currentPuzzle.bestMoveUci ?? '').trim().toLowerCase();
+        const rest = (currentPuzzle.acceptedMovesUci ?? []).map((s) =>
+            (s ?? '').trim().toLowerCase()
+        );
+        return Array.from(new Set([best, ...rest].filter(Boolean)));
+    }, [currentPuzzle]);
+
+    const isMultiSolutionPuzzle = useMemo(() => {
+        return acceptedMoves.length > 1;
+    }, [acceptedMoves.length]);
+
+    const acceptedMovesText = useMemo(() => {
+        return acceptedMoves.slice(0, 8).join(' ');
+    }, [acceptedMoves]);
+
+    const multiSolutionTagPresent = useMemo(() => {
+        return (currentPuzzle?.tags ?? []).includes('multiSolution');
+    }, [currentPuzzle?.tags]);
+
     const orientation = useMemo(() => {
         if (!currentPuzzle) return 'white' as const;
         const stm = sideToMoveFromFen(currentPuzzle.fen);
@@ -477,6 +503,48 @@ export function PuzzleTrainerV2({
         if (!currentPuzzle) return [];
         return applyUciLine(currentPuzzle.fen, solveExplorerLine, 16);
     }, [currentPuzzle, solveExplorerLine]);
+
+    // Live analysis (Analyze mode)
+    useEffect(() => {
+        if (viewMode !== 'analyze') return;
+        if (!analysisEnabled) return;
+        if (!analysisRootFen) return;
+        if (engineClient) return;
+        const client = new StockfishClient();
+        engineRef.current = client;
+        setEngineClient(client);
+    }, [viewMode, analysisEnabled, analysisRootFen, engineClient]);
+
+    const analyzeStreamingEnabled =
+        viewMode === 'analyze' && analysisEnabled && !!analysisRootFen;
+    const liveAnalyze = useStockfishLiveMultiPvAnalysis({
+        client: engineClient,
+        fen: analyzeStreamingEnabled ? analysisRootFen : null,
+        multiPv: analysisMultiPv,
+        enabled: analyzeStreamingEnabled,
+        emitIntervalMs: 150,
+    });
+
+    const analysis = liveAnalyze.update;
+    const analysisBusy = liveAnalyze.running;
+    const analysisErr = liveAnalyze.error;
+
+    useEffect(() => {
+        if (viewMode !== 'analyze') return;
+        setAnalysisSelectedIdx(0);
+        setAnalysisSelectedKey(null);
+    }, [viewMode, analysisRootFen]);
+
+    const selectedLine = useMemo(() => {
+        const lines = analysis?.lines ?? [];
+        if (analysisSelectedKey) {
+            const idx = lines.findIndex(
+                (l) => (l.pvUci ?? []).join(' ') === analysisSelectedKey
+            );
+            if (idx >= 0) return idx;
+        }
+        return Math.max(0, Math.min(analysisSelectedIdx, lines.length - 1));
+    }, [analysis?.lines, analysisSelectedIdx, analysisSelectedKey]);
 
     const analyzeLineUci = useMemo(() => {
         const lines = analysis?.lines ?? [];
@@ -676,14 +744,39 @@ export function PuzzleTrainerV2({
                     color: 'rgba(124,58,237,0.65)',
                 });
             }
-            if ((showSolution || attemptResult === 'correct') && currentPuzzle) {
-                const a = uciToArrow(currentPuzzle.bestMoveUci);
-                if (a) {
-                    put({
-                        startSquare: a.from,
-                        endSquare: a.to,
-                        color: 'rgba(16,185,129,0.75)',
-                    });
+            const atStartFen = !!currentPuzzle && displayFen === currentPuzzle.fen;
+            if (
+                atPuzzlePosition &&
+                atStartFen &&
+                (showSolution || attemptResult === 'correct') &&
+                currentPuzzle
+            ) {
+                // If multi-solution, show all accepted moves as green arrows.
+                if (isMultiSolutionPuzzle && acceptedMoves.length > 1) {
+                    const best = (currentPuzzle.bestMoveUci ?? '')
+                        .trim()
+                        .toLowerCase();
+                    for (const uci of acceptedMoves) {
+                        const a = uciToArrow(uci);
+                        if (!a) continue;
+                        const isBest = uci === best;
+                        put({
+                            startSquare: a.from,
+                            endSquare: a.to,
+                            color: isBest
+                                ? 'rgba(16,185,129,0.80)'
+                                : 'rgba(16,185,129,0.40)',
+                        });
+                    }
+                } else {
+                    const a = uciToArrow(currentPuzzle.bestMoveUci);
+                    if (a) {
+                        put({
+                            startSquare: a.from,
+                            endSquare: a.to,
+                            color: 'rgba(16,185,129,0.75)',
+                        });
+                    }
                 }
             }
             // Attempt arrow last so it wins if it matches bestMove/lastMove
@@ -739,10 +832,13 @@ export function PuzzleTrainerV2({
         contextPly,
         puzzlePly,
         puzzleLastMove,
+        displayFen,
         attemptLastMove,
         attemptResult,
         showSolution,
         currentPuzzle,
+        isMultiSolutionPuzzle,
+        acceptedMoves,
         analysis,
         selectedLine,
     ]);
@@ -797,16 +893,9 @@ export function PuzzleTrainerV2({
             setAttemptFen(res.fen);
             setAttemptLastMove(res.lastMove);
             setAttemptUci(res.uci);
-            const best = (currentPuzzle?.bestMoveUci ?? '').trim().toLowerCase();
             const u = res.uci.trim().toLowerCase();
-            const accepted = new Set(
-                [
-                    best,
-                    ...((currentPuzzle?.acceptedMovesUci ?? []) as string[]),
-                ]
-                    .map((s) => (s ?? '').trim().toLowerCase())
-                    .filter(Boolean)
-            );
+            const best = (currentPuzzle?.bestMoveUci ?? '').trim().toLowerCase();
+            const accepted = new Set(acceptedMoves);
             const correct = accepted.has(u);
             setAttemptResult(correct ? 'correct' : 'incorrect');
             setSolvedKind(correct ? (u === best ? 'best' : 'safe') : null);
@@ -832,7 +921,6 @@ export function PuzzleTrainerV2({
         setAnalysisHistoryIdx((i) => i + 1);
         setAnalysisRootFen(res.fen);
         setPvStep(0);
-        void runAnalyze(res.fen);
     }
 
     function getMoveControllerFen() {
@@ -887,36 +975,6 @@ export function PuzzleTrainerV2({
         clearHints();
         startAttempt(currentPuzzle.id);
     }
-
-    async function runAnalyze(fen: string) {
-        setAnalysisBusy(true);
-        setAnalysisErr(null);
-        try {
-            const client = engineClient ?? new StockfishClient();
-            if (!engineClient) {
-                engineRef.current = client;
-                setEngineClient(client);
-            }
-            const res = await client.analyzeMultiPv({
-                fen,
-                movetimeMs: engineMoveTimeMsAnalyze,
-                multiPv: 3,
-            });
-            setAnalysis(res);
-        } catch (e) {
-            setAnalysisErr(e instanceof Error ? e.message : 'Engine error');
-        } finally {
-            setAnalysisBusy(false);
-        }
-    }
-
-    // auto-run analysis when switching to analyze or when root changes
-    useEffect(() => {
-        if (viewMode !== 'analyze') return;
-        if (!analysisRootFen) return;
-        void runAnalyze(analysisRootFen);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [viewMode, analysisRootFen]);
 
     // record attempt after a solve move
     useEffect(() => {
@@ -986,6 +1044,18 @@ export function PuzzleTrainerV2({
     useEffect(() => {
         function onKeyDown(e: KeyboardEvent) {
             if (isEditableTarget(e.target)) return;
+            // Prevent Radix Tabs (and other focused UI) from stealing navigation keys.
+            // We intentionally intercept in capture phase (see addEventListener below).
+            if (
+                e.key === 'ArrowLeft' ||
+                e.key === 'ArrowRight' ||
+                e.key === 'Home' ||
+                e.key === 'End'
+            ) {
+                e.stopPropagation();
+                e.stopImmediatePropagation?.();
+            }
+
             if (!currentPuzzle) return;
 
             if (e.key === 'n') {
@@ -1003,7 +1073,13 @@ export function PuzzleTrainerV2({
                 if (viewMode === 'solve') resetSolve();
                 if (viewMode === 'analyze') {
                     setPvStep(0);
-                    if (analysisRootFen) void runAnalyze(analysisRootFen);
+                    setAnalysisEnabled(true);
+                    if (!engineClient) {
+                        const client = new StockfishClient();
+                        engineRef.current = client;
+                        setEngineClient(client);
+                    }
+                    liveAnalyze.start();
                 }
                 return;
             }
@@ -1083,8 +1159,8 @@ export function PuzzleTrainerV2({
             }
         }
 
-        window.addEventListener('keydown', onKeyDown);
-        return () => window.removeEventListener('keydown', onKeyDown);
+        window.addEventListener('keydown', onKeyDown, { capture: true });
+        return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
     }, [
         currentPuzzle,
         viewMode,
@@ -1106,7 +1182,7 @@ export function PuzzleTrainerV2({
         if (fen === analysisRootFen) return;
         setAnalysisRootFen(fen);
         setPvStep(0);
-        // runAnalyze is triggered by the existing analysisRootFen effect
+        // live analysis restarts automatically when root changes
     }, [viewMode, analysisHistory, analysisHistoryIdx, analysisRootFen]);
 
     const topMeta = useMemo(() => {
@@ -1151,12 +1227,65 @@ export function PuzzleTrainerV2({
                                 variant="outline"
                                 onClick={() => {
                                     setPvStep(0);
-                                    if (analysisRootFen) void runAnalyze(analysisRootFen);
+                                    if (!engineClient) {
+                                        const client = new StockfishClient();
+                                        engineRef.current = client;
+                                        setEngineClient(client);
+                                    }
+                                    setAnalysisEnabled(true);
+                                    liveAnalyze.start();
                                 }}
-                                disabled={analysisBusy || !analysisRootFen}
+                                disabled={!analysisRootFen}
                             >
                                 Re-evaluate
                             </Button>
+                            <Button
+                                variant="outline"
+                                onClick={() => {
+                                    if (!analysisRootFen) return;
+                                    setAnalysisEnabled((v) => {
+                                        const next = !v;
+                                        if (next) {
+                                            if (!engineClient) {
+                                                const client = new StockfishClient();
+                                                engineRef.current = client;
+                                                setEngineClient(client);
+                                            }
+                                            liveAnalyze.start();
+                                        } else {
+                                            liveAnalyze.stop();
+                                        }
+                                        return next;
+                                    });
+                                }}
+                                disabled={!analysisRootFen}
+                            >
+                                {analysisEnabled ? 'Stop' : 'Start'}
+                            </Button>
+                            <div className="w-[120px]">
+                                <Select
+                                    value={String(analysisMultiPv)}
+                                    onValueChange={(v) =>
+                                        setAnalysisMultiPv(
+                                            Math.max(
+                                                1,
+                                                Math.min(5, Math.trunc(Number(v) || 1))
+                                            )
+                                        )
+                                    }
+                                >
+                                    <SelectTrigger>
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {[1, 2, 3, 4, 5].map((n) => (
+                                            <SelectItem key={n} value={String(n)}>
+                                                MultiPV {n}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
                             <Button
                                 variant="outline"
                                 onClick={() => {
@@ -1192,7 +1321,15 @@ export function PuzzleTrainerV2({
                                     'Solve the best move'
                                 )
                             ) : analysisBusy ? (
-                                'Engine…'
+                                `Thinking…${
+                                    typeof liveAnalyze.depth === 'number'
+                                        ? ` d${liveAnalyze.depth}`
+                                        : ''
+                                }${
+                                    typeof liveAnalyze.timeMs === 'number'
+                                        ? ` ${(liveAnalyze.timeMs / 1000).toFixed(1)}s`
+                                        : ''
+                                }`
                             ) : analysisErr ? (
                                 analysisErr
                             ) : (
@@ -1292,12 +1429,13 @@ export function PuzzleTrainerV2({
                         <CardTitle className="text-base">Lines</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3">
-                        {(analysis?.lines ?? []).slice(0, 3).map((l, i) => (
+                        {(analysis?.lines ?? []).slice(0, analysisMultiPv).map((l, i) => (
                             <button
                                 key={i}
                                 type="button"
                                 onClick={() => {
-                                    setSelectedLine(i);
+                                    setAnalysisSelectedIdx(i);
+                                    setAnalysisSelectedKey((l.pvUci ?? []).join(' '));
                                     setPvStep(0);
                                 }}
                                 className={
@@ -1311,7 +1449,9 @@ export function PuzzleTrainerV2({
                                     <div className="font-medium">#{i + 1}</div>
                                     <div className="font-mono text-xs text-muted-foreground">
                                         {formatEval(l.score, analysis?.fen ?? displayFen)}
-                                        {typeof l.depth === 'number' ? ` d${l.depth}` : ''}
+                                        {typeof liveAnalyze.depth === 'number'
+                                            ? ` d${liveAnalyze.depth}`
+                                            : ''}
                                     </div>
                                 </div>
                                 <div className="mt-1 font-mono text-xs text-muted-foreground">
@@ -1375,6 +1515,26 @@ export function PuzzleTrainerV2({
                     <div className="text-sm text-muted-foreground">
                         {currentPuzzle ? topMeta : 'Loading…'}
                     </div>
+                    {currentPuzzle && isMultiSolutionPuzzle ? (
+                        <div className="text-xs">
+                            <Badge variant="secondary">Multiple correct moves</Badge>
+                            <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                                Accepted: {acceptedMovesText || '—'}
+                            </div>
+                        </div>
+                    ) : null}
+                    {currentPuzzle && !isMultiSolutionPuzzle && multiSolutionTagPresent ? (
+                        <div className="text-xs">
+                            <Badge variant="secondary">Multiple correct moves</Badge>
+                            <div className="mt-1 text-[11px] text-red-600">
+                                Tagged multiSolution but accepted moves are missing.
+                                Re-generate/re-save this puzzle to populate accepted moves.
+                            </div>
+                            <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                                bestMoveUci={currentPuzzle.bestMoveUci}
+                            </div>
+                        </div>
+                    ) : null}
                     {sourceGame ? (
                         <div className="text-xs text-muted-foreground">
                             {sourceGame.provider} • {sourceGame.white.name} vs {sourceGame.black.name}
@@ -1422,11 +1582,17 @@ export function PuzzleTrainerV2({
                             {queueMode === 'reviewFailed' ? 'Review Failed' : 'Quick'}
                         </Badge>
                         {currentPuzzle ? <Badge variant="outline">{currentPuzzle.type}</Badge> : null}
-                    {currentPuzzle && (currentPuzzle.acceptedMovesUci ?? []).length > 1 ? (
-                        <Badge variant="secondary">Multiple correct</Badge>
-                    ) : null}
+                        {currentPuzzle && isMultiSolutionPuzzle ? (
+                            <Badge variant="secondary">Multiple correct</Badge>
+                        ) : null}
                         {openingText ? <Badge variant="outline">{openingText}</Badge> : null}
                     </div>
+                    {/* Show multi-solution indicator on small screens too */}
+                    {currentPuzzle && isMultiSolutionPuzzle ? (
+                        <Badge variant="secondary" className="sm:hidden">
+                            Multiple correct
+                        </Badge>
+                    ) : null}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -1526,23 +1692,6 @@ export function PuzzleTrainerV2({
             <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
                 <div className="flex justify-center">
                     <div className="w-full max-w-[560px]">
-                        {isOffPuzzlePosition ? (
-                            <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-zinc-400 bg-muted/40 px-3 py-2">
-                                <div className="text-sm text-muted-foreground">
-                                    Reviewing context (not at puzzle position)
-                                </div>
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => {
-                                        setContextPly(puzzlePly);
-                                        setShowContext(false);
-                                    }}
-                                >
-                                    Back to puzzle position
-                                </Button>
-                            </div>
-                        ) : null}
                         <div
                             className={
                                 'relative rounded-xl border bg-card p-3 ' +
@@ -1648,6 +1797,23 @@ export function PuzzleTrainerV2({
                                 }}
                             />
                         </div>
+                        {isOffPuzzlePosition ? (
+                            <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-zinc-400 bg-muted/40 px-3 py-2">
+                                <div className="text-sm text-muted-foreground">
+                                    Reviewing context (not at puzzle position)
+                                </div>
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => {
+                                        setContextPly(puzzlePly);
+                                        setShowContext(false);
+                                    }}
+                                >
+                                    Back to puzzle position
+                                </Button>
+                            </div>
+                        ) : null}
 
                         {viewMode === 'solve' ? (
                             <div className="mt-3 text-sm text-muted-foreground">

@@ -1087,6 +1087,19 @@ function normalizeUci(uci: string): string {
     return (uci ?? '').trim().toLowerCase();
 }
 
+function normalizeUciList(
+    bestMoveUci: string,
+    accepted: string[] | undefined,
+    maxAcceptedMoves: number
+): string[] {
+    const best = normalizeUci(bestMoveUci);
+    const list = Array.isArray(accepted) ? accepted : [];
+    const uniq = Array.from(
+        new Set([best, ...list].map(normalizeUci).filter(Boolean))
+    );
+    return uniq.slice(0, Math.max(1, Math.trunc(maxAcceptedMoves)));
+}
+
 async function computeAcceptedMovesForPosition(args: {
     engine: StockfishClient;
     fen: string;
@@ -1120,7 +1133,7 @@ async function computeAcceptedMovesForPosition(args: {
     const bestCp = typeof bestLine?.cp === 'number' ? bestLine.cp : null;
     if (bestCp == null) {
         // Fallback: only accept best move.
-        return [normalizeUci(args.bestMoveUci)].filter(Boolean).slice(0, 1);
+        return normalizeUciList(args.bestMoveUci, [], 1);
     }
 
     // Accept moves within acceptableLossCp of best (side-to-move POV).
@@ -1128,10 +1141,8 @@ async function computeAcceptedMovesForPosition(args: {
         .filter((l) => bestCp - (l.cp as number) <= args.acceptableLossCp)
         .map((l) => l.uci);
 
-    // Always include best move, even if MultiPV omitted it.
-    const best = normalizeUci(args.bestMoveUci);
-    const uniq = Array.from(new Set([best, ...accepted].filter(Boolean)));
-    return uniq.slice(0, args.maxAcceptedMoves);
+    // Always include best move, normalize/dedupe/limit.
+    return normalizeUciList(args.bestMoveUci, accepted, args.maxAcceptedMoves);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1501,6 +1512,7 @@ export async function extractPuzzlesFromGames(args: {
                                 const puzzleId = uid(`puz-avoid-${type}`);
                                 let acceptedMovesUci: string[] | undefined =
                                     undefined;
+                                let acceptedMovesError = false;
                                 try {
                                     acceptedMovesUci =
                                         await computeAcceptedMovesForPosition({
@@ -1516,11 +1528,25 @@ export async function extractPuzzlesFromGames(args: {
                                         });
                                 } catch {
                                     // Ignore MultiPV failures; fall back to single-solution.
+                                    acceptedMovesError = true;
                                 }
 
-                                const isMulti =
-                                    (acceptedMovesUci ?? []).length > 1;
+                                const acceptedNormalized = acceptedMovesError
+                                    ? normalizeUciList(
+                                          finalEval.bestMoveUci,
+                                          [],
+                                          1
+                                      )
+                                    : normalizeUciList(
+                                          finalEval.bestMoveUci,
+                                          acceptedMovesUci,
+                                          opts.avoidBlunderMaxAcceptedMoves
+                                      );
+                                const isMulti = acceptedNormalized.length > 1;
                                 if (isMulti) tags.add('multiSolution');
+                                else tags.delete('multiSolution');
+                                if (acceptedMovesError)
+                                    tags.add('acceptedMovesMissing');
 
                                 const puzzle: Puzzle = {
                                     id: puzzleId,
@@ -1534,7 +1560,7 @@ export async function extractPuzzlesFromGames(args: {
                                     bestLineUci: finalEval.pvUci,
                                     bestMoveUci: finalEval.bestMoveUci,
                                     acceptedMovesUci: isMulti
-                                        ? acceptedMovesUci
+                                        ? acceptedNormalized
                                         : undefined,
                                     score: finalEval.score,
                                     label: isMulti
@@ -1681,6 +1707,7 @@ export async function extractPuzzlesFromGames(args: {
                                         let acceptedMovesUci:
                                             | string[]
                                             | undefined = undefined;
+                                        let acceptedMovesError = false;
                                         try {
                                             acceptedMovesUci =
                                                 await computeAcceptedMovesForPosition(
@@ -1701,11 +1728,27 @@ export async function extractPuzzlesFromGames(args: {
                                                 );
                                         } catch {
                                             // Ignore MultiPV failures; fall back to single-solution.
+                                            acceptedMovesError = true;
                                         }
 
+                                        const acceptedNormalized =
+                                            acceptedMovesError
+                                                ? normalizeUciList(
+                                                      finalEval.bestMoveUci,
+                                                      [],
+                                                      1
+                                                  )
+                                                : normalizeUciList(
+                                                      finalEval.bestMoveUci,
+                                                      acceptedMovesUci,
+                                                      opts.multiSolutionMaxAcceptedMoves
+                                                  );
                                         const isMulti =
-                                            (acceptedMovesUci ?? []).length > 1;
+                                            acceptedNormalized.length > 1;
                                         if (isMulti) tags.add('multiSolution');
+                                        else tags.delete('multiSolution');
+                                        if (acceptedMovesError)
+                                            tags.add('acceptedMovesMissing');
 
                                         const puzzle: Puzzle = {
                                             id: puzzleId,
@@ -1719,7 +1762,7 @@ export async function extractPuzzlesFromGames(args: {
                                             bestLineUci: finalEval.pvUci,
                                             bestMoveUci: finalEval.bestMoveUci,
                                             acceptedMovesUci: isMulti
-                                                ? acceptedMovesUci
+                                                ? acceptedNormalized
                                                 : undefined,
                                             score: finalEval.score,
                                             label: isMulti
