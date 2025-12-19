@@ -14,6 +14,62 @@ function parseCsv(v: string, max: number): string[] {
         .slice(0, max);
 }
 
+function describeFilters(f: PuzzlesFilters): string {
+    const parts: string[] = [];
+
+    const labelType: Record<PuzzlesFilters['type'], string> = {
+        '': '',
+        avoidBlunder: 'Avoid blunder',
+        punishBlunder: 'Punish blunder',
+    };
+    const labelKind: Record<PuzzlesFilters['kind'], string> = {
+        '': '',
+        blunder: 'Blunder',
+        missedWin: 'Missed win',
+        missedTactic: 'Missed tactic',
+    };
+    const labelPhase: Record<PuzzlesFilters['phase'], string> = {
+        '': '',
+        opening: 'Opening',
+        middlegame: 'Middlegame',
+        endgame: 'Endgame',
+    };
+    const labelMulti: Record<PuzzlesFilters['multiSolution'], string> = {
+        '': '',
+        any: 'Any',
+        single: 'Single-solution',
+        multi: 'Multi-solution',
+    };
+    const labelStatus: Record<PuzzlesFilters['status'], string> = {
+        '': '',
+        solved: 'Solved',
+        failed: 'Failed',
+        attempted: 'Attempted',
+    };
+
+    if (f.type) parts.push(`Type: ${labelType[f.type]}`);
+    if (f.kind) parts.push(`Kind: ${labelKind[f.kind]}`);
+    if (f.phase) parts.push(`Phase: ${labelPhase[f.phase]}`);
+    if (f.multiSolution && f.multiSolution !== 'any')
+        parts.push(`Solutions: ${labelMulti[f.multiSolution]}`);
+    if (f.status) parts.push(`Status: ${labelStatus[f.status]}`);
+
+    if (f.openingEco?.length) {
+        const codes = f.openingEco.map((s) => s.toUpperCase());
+        const first = codes.slice(0, 2).join(', ');
+        parts.push(
+            `Openings: ${first}${codes.length > 2 ? ` +${codes.length - 2}` : ''}`
+        );
+    }
+    if (f.tags?.length) {
+        const first = f.tags.slice(0, 2).join(', ');
+        parts.push(`Tags: ${first}${f.tags.length > 2 ? ` +${f.tags.length - 2}` : ''}`);
+    }
+    if (f.gameId) parts.push(`Game: ${f.gameId}`);
+
+    return parts.length ? parts.join(' · ') : 'All';
+}
+
 export default async function PuzzlesPage({
     searchParams,
 }: {
@@ -67,15 +123,15 @@ export default async function PuzzlesPage({
     };
 
     return (
-        <div className="space-y-6">
-            <PageHeader
-                title="Train"
-                subtitle="Quick puzzles or review the ones you missed."
-            />
+        <div className="space-y-4">
+            <PageHeader title="Train" />
 
-            <details className="rounded-md border">
-                <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium">
-                    Filters
+            <details className="rounded-lg border bg-card">
+                <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium">
+                    <span>Filters</span>
+                    <span className="truncate text-xs font-normal text-muted-foreground">
+                        {describeFilters(initialFilters)}
+                    </span>
                 </summary>
                 <div className="px-4 pb-4">
                     <PuzzlesFilter

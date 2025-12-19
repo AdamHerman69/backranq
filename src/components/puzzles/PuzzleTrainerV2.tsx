@@ -30,8 +30,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
     Select,
     SelectContent,
@@ -332,6 +331,8 @@ export function PuzzleTrainerV2({
     const [analysisMultiPv, setAnalysisMultiPv] = useState(3);
     const [analysisSelectedIdx, setAnalysisSelectedIdx] = useState(0);
     const [analysisSelectedKey, setAnalysisSelectedKey] = useState<string | null>(null);
+
+    const [panelTab, setPanelTab] = useState<'puzzle' | 'context' | 'lines'>('puzzle');
 
     // Eval reveal (solve mode)
     const [evalRevealed, setEvalRevealed] = useState(false);
@@ -1471,197 +1472,231 @@ export function PuzzleTrainerV2({
         return parts.join(' • ');
     }, [currentPuzzle, openingText]);
 
-    const rightPanel = (
-        <div className="space-y-4">
-            <Card>
-                <CardHeader className="pb-3">
-                    <CardTitle className="text-base">Controls</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <Button onClick={() => void nextPuzzle()} disabled={loadingNext}>
-                            Next (n)
-                        </Button>
-                        <Button variant="outline" onClick={() => void nextPuzzle()} disabled={loadingNext}>
-                            Skip
-                        </Button>
-                    </div>
+    const statusText = useMemo(() => {
+        if (viewMode === 'solve') {
+            if (!attemptResult) return 'Solve the best move';
+            if (attemptResult === 'incorrect') return 'Not best — try again';
+            if (solvedKind === 'safe') {
+                return currentPuzzle?.mode === 'avoidBlunder'
+                    ? 'Good save — review the best line (←/→)'
+                    : 'Correct (alternative) — review the best line (←/→)';
+            }
+            return 'Correct — review the line (←/→)';
+        }
+        if (analysisBusy) {
+            return `Thinking…${
+                typeof liveAnalyze.depth === 'number' ? ` d${liveAnalyze.depth}` : ''
+            }${
+                typeof liveAnalyze.timeMs === 'number'
+                    ? ` ${(liveAnalyze.timeMs / 1000).toFixed(1)}s`
+                    : ''
+            }`;
+        }
+        if (analysisErr) return analysisErr;
+        return 'Analyze with Stockfish';
+    }, [
+        viewMode,
+        attemptResult,
+        solvedKind,
+        currentPuzzle?.mode,
+        analysisBusy,
+        analysisErr,
+        liveAnalyze.depth,
+        liveAnalyze.timeMs,
+    ]);
 
-                    {viewMode === 'solve' ? (
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Button variant="outline" onClick={resetSolve}>
-                                Reset (r)
-                            </Button>
-                            <Button variant="outline" onClick={() => setShowSolution(true)}>
-                                Show solution (s)
-                            </Button>
-                            {attemptResult === 'incorrect' ? (
-                                <Button onClick={resetSolve}>Try again</Button>
-                            ) : null}
-                        </div>
-                    ) : (
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                                variant="outline"
-                                onClick={() => {
-                                    setPvStep(0);
+    const actionBar = (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button onClick={() => void nextPuzzle()} disabled={loadingNext} className="flex-1 sm:flex-none">
+                Next (n)
+            </Button>
+            {viewMode === 'solve' ? (
+                <>
+                    <Button
+                        variant="outline"
+                        onClick={() => {
+                            setShowContext((v) => {
+                                const next = !v;
+                                if (next) setContextPly(puzzlePly);
+                                return next;
+                            });
+                        }}
+                        disabled={!sourceParsed}
+                    >
+                        {showContext ? 'Hide context' : 'Context'}
+                    </Button>
+                    <Button variant="outline" onClick={resetSolve} disabled={!currentPuzzle}>
+                        Reset (r)
+                    </Button>
+                    <Button
+                        variant="outline"
+                        onClick={() => setShowSolution(true)}
+                        disabled={!currentPuzzle}
+                    >
+                        Solution (s)
+                    </Button>
+                    {attemptResult === 'incorrect' ? (
+                        <Button onClick={resetSolve} disabled={!currentPuzzle}>
+                            Try again
+                        </Button>
+                    ) : null}
+                </>
+            ) : (
+                <>
+                    <Button
+                        variant="outline"
+                        onClick={() => {
+                            setPvStep(0);
+                            if (!engineClient) {
+                                const client = new StockfishClient();
+                                engineRef.current = client;
+                                setEngineClient(client);
+                            }
+                            setAnalysisEnabled(true);
+                            liveAnalyze.start();
+                        }}
+                        disabled={!analysisRootFen}
+                    >
+                        Re-evaluate
+                    </Button>
+                    <Button
+                        variant="outline"
+                        onClick={() => {
+                            if (!analysisRootFen) return;
+                            setAnalysisEnabled((v) => {
+                                const next = !v;
+                                if (next) {
                                     if (!engineClient) {
                                         const client = new StockfishClient();
                                         engineRef.current = client;
                                         setEngineClient(client);
                                     }
-                                    setAnalysisEnabled(true);
                                     liveAnalyze.start();
-                                }}
-                                disabled={!analysisRootFen}
-                            >
-                                Re-evaluate
-                            </Button>
-                            <Button
-                                variant="outline"
-                                onClick={() => {
-                                    if (!analysisRootFen) return;
-                                    setAnalysisEnabled((v) => {
-                                        const next = !v;
-                                        if (next) {
-                                            if (!engineClient) {
-                                                const client = new StockfishClient();
-                                                engineRef.current = client;
-                                                setEngineClient(client);
-                                            }
-                                            liveAnalyze.start();
-                                        } else {
-                                            liveAnalyze.stop();
-                                        }
-                                        return next;
-                                    });
-                                }}
-                                disabled={!analysisRootFen}
-                            >
-                                {analysisEnabled ? 'Stop' : 'Start'}
-                            </Button>
-                            <div className="w-[120px]">
-                                <Select
-                                    value={String(analysisMultiPv)}
-                                    onValueChange={(v) =>
-                                        setAnalysisMultiPv(
-                                            Math.max(
-                                                1,
-                                                Math.min(5, Math.trunc(Number(v) || 1))
-                                            )
-                                        )
-                                    }
-                                >
-                                    <SelectTrigger>
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {[1, 2, 3, 4, 5].map((n) => (
-                                            <SelectItem key={n} value={String(n)}>
-                                                MultiPV {n}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <Button
-                                variant="outline"
-                                onClick={() => {
-                                    if (!analysisRootFen) return;
-                                    setAnalysisRootFen(displayFen);
-                                    setAnalysisHistory([displayFen]);
-                                    setAnalysisHistoryIdx(0);
-                                    setPvStep(0);
-                                }}
-                            >
-                                Set as root
-                            </Button>
-                        </div>
-                    )}
-
-                    <Separator />
-
-                    <div className="space-y-1">
-                        <div className="text-sm font-medium">Status</div>
-                        <div className="text-sm text-muted-foreground">
-                            {viewMode === 'solve' ? (
-                                attemptResult ? (
-                                    attemptResult === 'correct' ? (
-                                        solvedKind === 'safe'
-                                            ? currentPuzzle?.mode === 'avoidBlunder'
-                                                ? 'Good save — review the best line (←/→)'
-                                                : 'Correct (alternative) — review the best line (←/→)'
-                                            : 'Correct — review the line (←/→)'
-                                    ) : (
-                                        'Not best — try again'
-                                    )
-                                ) : (
-                                    'Solve the best move'
+                                } else {
+                                    liveAnalyze.stop();
+                                }
+                                return next;
+                            });
+                        }}
+                        disabled={!analysisRootFen}
+                    >
+                        {analysisEnabled ? 'Stop' : 'Start'}
+                    </Button>
+                    <div className="w-[120px]">
+                        <Select
+                            value={String(analysisMultiPv)}
+                            onValueChange={(v) =>
+                                setAnalysisMultiPv(
+                                    Math.max(1, Math.min(5, Math.trunc(Number(v) || 1)))
                                 )
-                            ) : analysisBusy ? (
-                                `Thinking…${
-                                    typeof liveAnalyze.depth === 'number'
-                                        ? ` d${liveAnalyze.depth}`
-                                        : ''
-                                }${
-                                    typeof liveAnalyze.timeMs === 'number'
-                                        ? ` ${(liveAnalyze.timeMs / 1000).toFixed(1)}s`
-                                        : ''
-                                }`
-                            ) : analysisErr ? (
-                                analysisErr
-                            ) : (
-                                'Analyze with Stockfish'
-                            )}
-                        </div>
-                        {attemptSaving || attemptQueued > 0 ? (
-                            <div className="text-xs text-muted-foreground">
-                                {attemptSaving ? 'Saving attempt…' : null}
-                                {!attemptSaving && attemptQueued > 0
-                                    ? `Attempts queued: ${attemptQueued}`
-                                    : null}
-                            </div>
-                        ) : null}
+                            }
+                        >
+                            <SelectTrigger className="h-9">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {[1, 2, 3, 4, 5].map((n) => (
+                                    <SelectItem key={n} value={String(n)}>
+                                        MultiPV {n}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
                     </div>
-                </CardContent>
-            </Card>
+                    <Button
+                        variant="outline"
+                        onClick={() => {
+                            if (!analysisRootFen) return;
+                            setAnalysisRootFen(displayFen);
+                            setAnalysisHistory([displayFen]);
+                            setAnalysisHistoryIdx(0);
+                            setPvStep(0);
+                        }}
+                        disabled={!analysisRootFen}
+                    >
+                        Set as root
+                    </Button>
+                </>
+            )}
 
-            {viewMode === 'solve' ? (
-                <Card>
-                    <CardHeader className="pb-3">
-                        <CardTitle className="text-base">Context</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                                variant={showContext ? 'default' : 'outline'}
-                                onClick={() => {
-                                    setShowContext((v) => {
-                                        const next = !v;
-                                        if (next) setContextPly(puzzlePly);
-                                        return next;
-                                    });
-                                }}
-                                disabled={!sourceParsed}
-                            >
-                                {showContext ? 'Hide context' : 'Review context'}
-                            </Button>
-                            <Button asChild variant="outline">
-                                <Link href="/puzzles/library">Library</Link>
-                            </Button>
+            <Button asChild variant="outline" className="ml-auto">
+                <Link href="/puzzles/library">Library</Link>
+            </Button>
+        </div>
+    );
+
+    const panel = (
+        <Card className="rounded-xl">
+            <CardHeader className="p-4 pb-2">
+                <CardTitle className="text-base">Details</CardTitle>
+            </CardHeader>
+            <CardContent className="p-4 pt-0">
+                <Tabs
+                    value={panelTab}
+                    onValueChange={(v) => {
+                        if (v === 'puzzle' || v === 'context' || v === 'lines') setPanelTab(v);
+                    }}
+                >
+                    <TabsList className="w-full justify-start overflow-x-auto">
+                        <TabsTrigger value="puzzle">Puzzle</TabsTrigger>
+                        <TabsTrigger value="context" disabled={viewMode !== 'solve'}>
+                            Context
+                        </TabsTrigger>
+                        <TabsTrigger value="lines" disabled={viewMode !== 'analyze'}>
+                            Lines
+                        </TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="puzzle" className="mt-3">
+                        <div className="space-y-2">
+                            <div className="text-sm text-muted-foreground">
+                                {currentPuzzle ? topMeta : 'Loading…'}
+                            </div>
+                            {currentPuzzle && isMultiSolutionPuzzle ? (
+                                <div className="text-xs">
+                                    <Badge variant="secondary">Multiple correct moves</Badge>
+                                    <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                                        Accepted: {acceptedMovesText || '—'}
+                                    </div>
+                                </div>
+                            ) : null}
+                            {currentPuzzle && !isMultiSolutionPuzzle && multiSolutionTagPresent ? (
+                                <div className="text-xs">
+                                    <Badge variant="secondary">Multiple correct moves</Badge>
+                                    <div className="mt-1 text-[11px] text-red-600">
+                                        Tagged multiSolution but accepted moves are missing.
+                                    </div>
+                                    <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                                        bestMoveUci={currentPuzzle.bestMoveUci}
+                                    </div>
+                                </div>
+                            ) : null}
+                            {sourceGame ? (
+                                <div className="text-xs text-muted-foreground">
+                                    {sourceGame.provider} • {sourceGame.white.name} vs{' '}
+                                    {sourceGame.black.name}
+                                </div>
+                            ) : null}
                         </div>
+                    </TabsContent>
 
-                        {showContext && sourceParsed ? (
+                    <TabsContent value="context" className="mt-3">
+                        {viewMode !== 'solve' ? (
+                            <div className="text-sm text-muted-foreground">
+                                Context is available in Solve mode.
+                            </div>
+                        ) : (
                             <div className="space-y-3">
                                 <div className="text-sm text-muted-foreground">
-                                    Use ←/→ (or the buttons) to step back through the game.
+                                    Use ←/→ to step through context and review lines.
                                 </div>
+
                                 <div className="flex flex-wrap items-center gap-2">
                                     <Button
                                         size="sm"
                                         variant="outline"
                                         onClick={() => setContextPly(0)}
-                                        disabled={contextPly === 0}
+                                        disabled={!showContext || contextPly === 0}
                                     >
                                         Start
                                     </Button>
@@ -1669,7 +1704,7 @@ export function PuzzleTrainerV2({
                                         size="sm"
                                         variant="outline"
                                         onClick={() => setContextPly((p) => Math.max(0, p - 1))}
-                                        disabled={contextPly === 0}
+                                        disabled={!showContext || contextPly === 0}
                                     >
                                         Back
                                     </Button>
@@ -1679,12 +1714,8 @@ export function PuzzleTrainerV2({
                                     <Button
                                         size="sm"
                                         variant="outline"
-                                        onClick={() =>
-                                            setContextPly((p) =>
-                                                Math.min(puzzlePly, p + 1)
-                                            )
-                                        }
-                                        disabled={contextPly >= puzzlePly}
+                                        onClick={() => setContextPly((p) => Math.min(puzzlePly, p + 1))}
+                                        disabled={!showContext || contextPly >= puzzlePly}
                                     >
                                         Next
                                     </Button>
@@ -1692,205 +1723,174 @@ export function PuzzleTrainerV2({
                                         size="sm"
                                         variant="outline"
                                         onClick={() => setContextPly(puzzlePly)}
-                                        disabled={contextPly >= puzzlePly}
+                                        disabled={!showContext || contextPly >= puzzlePly}
                                     >
                                         Puzzle
                                     </Button>
                                 </div>
-                            </div>
-                        ) : null}
 
-                        {isReviewState && sourceParsed ? (
-                            <>
-                                <Separator />
-                                <div className="space-y-2">
-                                    <div className="text-sm font-medium">Source game</div>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                        <Button
-                                            size="sm"
-                                            variant={showRealMove ? 'default' : 'outline'}
-                                            onClick={() => setShowRealMove((v) => !v)}
-                                        >
-                                            {showRealMove ? 'Hide real move' : 'Show real move'}
-                                        </Button>
-                                        <Button
-                                            size="sm"
-                                            variant={continuationMode !== 'off' ? 'default' : 'outline'}
-                                            onClick={() =>
-                                                setContinuationMode((m) =>
-                                                    m === 'off' ? 'short' : m === 'short' ? 'full' : 'off'
+                                {isReviewState && sourceParsed ? (
+                                    <>
+                                        <Separator />
+                                        <div className="space-y-2">
+                                            <div className="text-sm font-medium">Source game</div>
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Button
+                                                    size="sm"
+                                                    variant={showRealMove ? 'default' : 'outline'}
+                                                    onClick={() => setShowRealMove((v) => !v)}
+                                                >
+                                                    {showRealMove ? 'Hide real move' : 'Show real move'}
+                                                </Button>
+                                                <Button
+                                                    size="sm"
+                                                    variant={continuationMode !== 'off' ? 'default' : 'outline'}
+                                                    onClick={() =>
+                                                        setContinuationMode((m) =>
+                                                            m === 'off'
+                                                                ? 'short'
+                                                                : m === 'short'
+                                                                  ? 'full'
+                                                                  : 'off'
+                                                        )
+                                                    }
+                                                >
+                                                    {continuationMode === 'off'
+                                                        ? 'Show continuation'
+                                                        : continuationMode === 'short'
+                                                          ? 'Full continuation'
+                                                          : 'Hide continuation'}
+                                                </Button>
+                                                {currentPuzzle?.sourceGameId ? (
+                                                    <Button asChild size="sm" variant="outline">
+                                                        <Link href={`/games/${currentPuzzle.sourceGameId}`}>
+                                                            Open game
+                                                        </Link>
+                                                    </Button>
+                                                ) : null}
+                                            </div>
+
+                                            {showRealMove ? (
+                                                realSourceMove ? (
+                                                    <div className="text-sm">
+                                                        Real move:{' '}
+                                                        <span className="font-mono">
+                                                            {realSourceMove.san}
+                                                        </span>{' '}
+                                                        <span className="text-muted-foreground">
+                                                            ({realSourceMoveUci || '—'})
+                                                        </span>
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-sm text-muted-foreground">
+                                                        Real move unavailable
+                                                    </div>
                                                 )
-                                            }
-                                        >
-                                            {continuationMode === 'off'
-                                                ? 'Show continuation'
-                                                : continuationMode === 'short'
-                                                  ? 'Full continuation'
-                                                  : 'Hide continuation'}
-                                        </Button>
-                                        {currentPuzzle?.sourceGameId ? (
-                                            <Button asChild variant="outline">
-                                                <Link href={`/games/${currentPuzzle.sourceGameId}`}>
-                                                    Open game
-                                                </Link>
-                                            </Button>
-                                        ) : null}
-                                    </div>
+                                            ) : null}
 
-                                    {showRealMove ? (
-                                        realSourceMove ? (
-                                            <div className="text-sm">
-                                                Real move played:{' '}
-                                                <span className="font-mono">
-                                                    {realSourceMove.san}
-                                                </span>{' '}
-                                                <span className="text-muted-foreground">
-                                                    ({realSourceMoveUci || '—'})
-                                                </span>
-                                            </div>
-                                        ) : (
-                                            <div className="text-sm text-muted-foreground">
-                                                Real move unavailable
-                                            </div>
-                                        )
-                                    ) : null}
+                                            {continuationMode !== 'off' ? (
+                                                continuationText ? (
+                                                    <div className="font-mono text-xs leading-relaxed text-muted-foreground">
+                                                        {continuationText}
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-sm text-muted-foreground">
+                                                        Continuation unavailable
+                                                    </div>
+                                                )
+                                            ) : null}
+                                        </div>
+                                    </>
+                                ) : null}
+                            </div>
+                        )}
+                    </TabsContent>
 
-                                    {continuationMode !== 'off' ? (
-                                        continuationText ? (
-                                            <div className="font-mono text-xs leading-relaxed text-muted-foreground">
-                                                {continuationText}
-                                            </div>
-                                        ) : (
-                                            <div className="text-sm text-muted-foreground">
-                                                Continuation unavailable
-                                            </div>
-                                        )
-                                    ) : null}
-                                </div>
-                            </>
-                        ) : null}
-                    </CardContent>
-                </Card>
-            ) : (
-                <Card>
-                    <CardHeader className="pb-3">
-                        <CardTitle className="text-base">Lines</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                        {(analysis?.lines ?? []).slice(0, analysisMultiPv).map((l, i) => (
-                            <button
-                                key={i}
-                                type="button"
-                                onClick={() => {
-                                    setAnalysisSelectedIdx(i);
-                                    setAnalysisSelectedKey((l.pvUci ?? []).join(' '));
-                                    setPvStep(0);
-                                }}
-                                className={
-                                    'w-full rounded-md border px-3 py-2 text-left text-sm transition-colors ' +
-                                    (i === selectedLine
-                                        ? 'bg-muted'
-                                        : 'hover:bg-muted/50')
-                                }
-                            >
-                                <div className="flex items-center justify-between gap-2">
-                                    <div className="font-medium">#{i + 1}</div>
-                                    <div className="font-mono text-xs text-muted-foreground">
-                                        {formatEval(l.score, analysis?.fen ?? displayFen)}
-                                        {typeof liveAnalyze.depth === 'number'
-                                            ? ` d${liveAnalyze.depth}`
-                                            : ''}
-                                    </div>
-                                </div>
-                                <div className="mt-1 font-mono text-xs text-muted-foreground">
-                                    {(l.pvUci ?? []).slice(0, 6).join(' ')}
-                                </div>
-                            </button>
-                        ))}
-
-                        <Separator />
-
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => setPvStep(0)}
-                                disabled={pvStep === 0}
-                            >
-                                Start
-                            </Button>
-                            <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => setPvStep((s) => Math.max(0, s - 1))}
-                                disabled={pvStep === 0}
-                            >
-                                Back
-                            </Button>
+                    <TabsContent value="lines" className="mt-3">
+                        {viewMode !== 'analyze' ? (
                             <div className="text-sm text-muted-foreground">
-                                Step {pvStep}/{Math.max(0, analyzeApplied.length - 1)}
+                                Lines are available in Analyze mode.
                             </div>
-                            <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() =>
-                                    setPvStep((s) =>
-                                        Math.min(analyzeApplied.length - 1, s + 1)
-                                    )
-                                }
-                                disabled={pvStep >= analyzeApplied.length - 1}
-                            >
-                                Next
-                            </Button>
-                            <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => setPvStep(analyzeApplied.length - 1)}
-                                disabled={pvStep >= analyzeApplied.length - 1}
-                            >
-                                End
-                            </Button>
-                        </div>
-                    </CardContent>
-                </Card>
-            )}
+                        ) : (
+                            <div className="space-y-3">
+                                {(analysis?.lines ?? []).slice(0, analysisMultiPv).map((l, i) => (
+                                    <button
+                                        key={i}
+                                        type="button"
+                                        onClick={() => {
+                                            setAnalysisSelectedIdx(i);
+                                            setAnalysisSelectedKey((l.pvUci ?? []).join(' '));
+                                            setPvStep(0);
+                                        }}
+                                        className={
+                                            'w-full rounded-md border px-3 py-2 text-left text-sm transition-colors ' +
+                                            (i === selectedLine ? 'bg-muted' : 'hover:bg-muted/50')
+                                        }
+                                    >
+                                        <div className="flex items-center justify-between gap-2">
+                                            <div className="font-medium">#{i + 1}</div>
+                                            <div className="font-mono text-xs text-muted-foreground">
+                                                {formatEval(l.score, analysis?.fen ?? displayFen)}
+                                                {typeof liveAnalyze.depth === 'number'
+                                                    ? ` d${liveAnalyze.depth}`
+                                                    : ''}
+                                            </div>
+                                        </div>
+                                        <div className="mt-1 font-mono text-xs text-muted-foreground">
+                                            {(l.pvUci ?? []).slice(0, 6).join(' ')}
+                                        </div>
+                                    </button>
+                                ))}
 
-            <Card>
-                <CardHeader className="pb-3">
-                    <CardTitle className="text-base">Puzzle</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                    <div className="text-sm text-muted-foreground">
-                        {currentPuzzle ? topMeta : 'Loading…'}
-                    </div>
-                    {currentPuzzle && isMultiSolutionPuzzle ? (
-                        <div className="text-xs">
-                            <Badge variant="secondary">Multiple correct moves</Badge>
-                            <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                                Accepted: {acceptedMovesText || '—'}
+                                <Separator />
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => setPvStep(0)}
+                                        disabled={pvStep === 0}
+                                    >
+                                        Start
+                                    </Button>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => setPvStep((s) => Math.max(0, s - 1))}
+                                        disabled={pvStep === 0}
+                                    >
+                                        Back
+                                    </Button>
+                                    <div className="text-sm text-muted-foreground">
+                                        Step {pvStep}/{Math.max(0, analyzeApplied.length - 1)}
+                                    </div>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() =>
+                                            setPvStep((s) =>
+                                                Math.min(analyzeApplied.length - 1, s + 1)
+                                            )
+                                        }
+                                        disabled={pvStep >= analyzeApplied.length - 1}
+                                    >
+                                        Next
+                                    </Button>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => setPvStep(analyzeApplied.length - 1)}
+                                        disabled={pvStep >= analyzeApplied.length - 1}
+                                    >
+                                        End
+                                    </Button>
+                                </div>
                             </div>
-                        </div>
-                    ) : null}
-                    {currentPuzzle && !isMultiSolutionPuzzle && multiSolutionTagPresent ? (
-                        <div className="text-xs">
-                            <Badge variant="secondary">Multiple correct moves</Badge>
-                            <div className="mt-1 text-[11px] text-red-600">
-                                Tagged multiSolution but accepted moves are missing.
-                                Re-generate/re-save this puzzle to populate accepted moves.
-                            </div>
-                            <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                                bestMoveUci={currentPuzzle.bestMoveUci}
-                            </div>
-                        </div>
-                    ) : null}
-                    {sourceGame ? (
-                        <div className="text-xs text-muted-foreground">
-                            {sourceGame.provider} • {sourceGame.white.name} vs {sourceGame.black.name}
-                        </div>
-                    ) : null}
-                </CardContent>
-            </Card>
-        </div>
+                        )}
+                    </TabsContent>
+                </Tabs>
+            </CardContent>
+        </Card>
     );
 
     if (randomError) {
@@ -1942,12 +1942,6 @@ export function PuzzleTrainerV2({
                             Multiple correct
                         </Badge>
                     ) : null}
-                </div>
-
-                <div className="flex items-center gap-2">
-                    <div className="text-sm text-muted-foreground">
-                        {queue.length > 0 ? `Puzzle ${idx + 1}` : ''}
-                    </div>
                 </div>
             </div>
 
@@ -2029,15 +2023,15 @@ export function PuzzleTrainerV2({
     }
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-4">
             {header}
 
-            <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
                 <div className="flex justify-center">
                     <div className="w-full max-w-[560px]">
                         <div
                             className={
-                                'relative rounded-xl border bg-card p-3 ' +
+                                'relative rounded-xl border bg-card p-2 ' +
                                 (isOffPuzzlePosition ? 'border-zinc-400' : '')
                             }
                         >
@@ -2158,6 +2152,21 @@ export function PuzzleTrainerV2({
                             </div>
                         ) : null}
 
+                        {actionBar}
+
+                        <div className="mt-3 rounded-md border px-3 py-2">
+                            <div className="text-sm font-medium">Status</div>
+                            <div className="text-sm text-muted-foreground">{statusText}</div>
+                            {attemptSaving || attemptQueued > 0 ? (
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                    {attemptSaving ? 'Saving attempt…' : null}
+                                    {!attemptSaving && attemptQueued > 0
+                                        ? `Attempts queued: ${attemptQueued}`
+                                        : null}
+                                </div>
+                            ) : null}
+                        </div>
+
                         {viewMode === 'solve' ? (
                             <div className="mt-3 text-sm text-muted-foreground">
                                 {currentPuzzle.label}
@@ -2233,26 +2242,12 @@ export function PuzzleTrainerV2({
                                 </div>
                             </div>
                         ) : null}
+
+                        <div className="mt-3 lg:hidden">{panel}</div>
                     </div>
                 </div>
 
-                <div className="hidden lg:block">{rightPanel}</div>
-            </div>
-
-            <div className="lg:hidden">
-                <Sheet>
-                    <SheetTrigger asChild>
-                        <Button variant="outline" className="w-full">
-                            Open controls
-                        </Button>
-                    </SheetTrigger>
-                    <SheetContent side="right" className="w-full sm:max-w-md">
-                        <SheetHeader>
-                            <SheetTitle>Trainer</SheetTitle>
-                        </SheetHeader>
-                        <div className="mt-4">{rightPanel}</div>
-                    </SheetContent>
-                </Sheet>
+                <div className="hidden lg:block">{panel}</div>
             </div>
 
             {randomError ? (

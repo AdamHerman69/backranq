@@ -145,16 +145,16 @@ export function PuzzlesFilter({
     );
 
     return (
-        <section className="space-y-4">
+        <section className="space-y-3">
             {typeof total === 'number' ? (
                 <div className="text-sm text-muted-foreground">
                     {total.toLocaleString()} puzzles
                 </div>
             ) : null}
 
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-                <div className="space-y-2">
-                    <div className="text-sm font-medium">Type</div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+                <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">Type</div>
                     <Select
                         value={filters.type || 'all'}
                         onValueChange={(v) => {
@@ -179,8 +179,8 @@ export function PuzzlesFilter({
                     </Select>
                 </div>
 
-                <div className="space-y-2">
-                    <div className="text-sm font-medium">Kind</div>
+                <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">Kind</div>
                     <Select
                         value={filters.kind || 'all'}
                         onValueChange={(v) => {
@@ -206,8 +206,8 @@ export function PuzzlesFilter({
                     </Select>
                 </div>
 
-                <div className="space-y-2">
-                    <div className="text-sm font-medium">Phase</div>
+                <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">Phase</div>
                     <Select
                         value={filters.phase || 'all'}
                         onValueChange={(v) => {
@@ -233,8 +233,8 @@ export function PuzzlesFilter({
                     </Select>
                 </div>
 
-                <div className="space-y-2">
-                    <div className="text-sm font-medium">Multi-solution</div>
+                <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">Solutions</div>
                     <Select
                         value={filters.multiSolution || 'any'}
                         onValueChange={(v) => {
@@ -257,8 +257,8 @@ export function PuzzlesFilter({
                     </Select>
                 </div>
 
-                <div className="space-y-2">
-                    <div className="text-sm font-medium">Status</div>
+                <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">Status</div>
                     <Select
                         value={filters.status || 'all'}
                         onValueChange={(v) => {
@@ -284,8 +284,8 @@ export function PuzzlesFilter({
                     </Select>
                 </div>
 
-                <div className="space-y-2">
-                    <div className="text-sm font-medium">Game ID</div>
+                <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">Game</div>
                     <Input
                         value={filters.gameId}
                         onChange={(e) => {
@@ -298,8 +298,8 @@ export function PuzzlesFilter({
                     />
                 </div>
 
-                <div className="space-y-2 sm:col-span-2 lg:col-span-3">
-                    <div className="text-sm font-medium">Openings (ECO)</div>
+                <div className="space-y-1 sm:col-span-2 lg:col-span-3">
+                    <div className="text-xs font-medium text-muted-foreground">Openings (ECO)</div>
                     <MultiSelect
                         options={openingOptions}
                         value={filters.openingEco ?? []}
@@ -314,8 +314,8 @@ export function PuzzlesFilter({
                     />
                 </div>
 
-                <div className="space-y-2 sm:col-span-2 lg:col-span-3">
-                    <div className="text-sm font-medium">Tags</div>
+                <div className="space-y-1 sm:col-span-2 lg:col-span-3">
+                    <div className="text-xs font-medium text-muted-foreground">Tags</div>
                     <MultiSelect
                         options={tagOptions}
                         value={filters.tags ?? []}
