@@ -5,6 +5,23 @@ import type { Puzzle } from '@/lib/analysis/puzzles';
 import type { PuzzleAttemptStats } from '@/lib/api/puzzles';
 
 type ApiError = { error?: string };
+type PuzzlesListResponse = ApiError & {
+    puzzles?: PuzzleWithStats[];
+    total?: number;
+    page?: number;
+    totalPages?: number;
+};
+type PuzzleResponse = ApiError & {
+    puzzle?: PuzzleWithStats | null;
+    attempts?: {
+        id: string;
+        attemptedAt: string;
+        userMoveUci: string;
+        wasCorrect: boolean;
+        timeSpentMs: number | null;
+    }[];
+};
+type RandomPuzzlesResponse = ApiError & { puzzles?: PuzzleWithStats[] };
 
 export type PuzzlesListFilters = {
     page?: number;
@@ -52,14 +69,11 @@ export function usePuzzles(filters: PuzzlesListFilters) {
         setError(null);
         try {
             const res = await fetch(`/api/puzzles?${qs}`);
-            const json = (await res.json().catch(() => ({}))) as
-                | ({
-                      puzzles?: PuzzleWithStats[];
-                      total?: number;
-                      page?: number;
-                      totalPages?: number;
-                  } & ApiError)
-                | ApiError;
+            const raw = (await res.json().catch(() => ({}))) as unknown;
+            const json: PuzzlesListResponse =
+                raw && typeof raw === 'object'
+                    ? (raw as PuzzlesListResponse)
+                    : {};
             if (!res.ok)
                 throw new Error(json?.error ?? 'Failed to load puzzles');
             setPuzzles(Array.isArray(json?.puzzles) ? json.puzzles : []);
@@ -112,18 +126,9 @@ export function usePuzzle(id: string | null) {
         setError(null);
         try {
             const res = await fetch(`/api/puzzles/${id}`);
-            const json = (await res.json().catch(() => ({}))) as
-                | ({
-                      puzzle?: PuzzleWithStats | null;
-                      attempts?: {
-                          id: string;
-                          attemptedAt: string;
-                          userMoveUci: string;
-                          wasCorrect: boolean;
-                          timeSpentMs: number | null;
-                      }[];
-                  } & ApiError)
-                | ApiError;
+            const raw = (await res.json().catch(() => ({}))) as unknown;
+            const json: PuzzleResponse =
+                raw && typeof raw === 'object' ? (raw as PuzzleResponse) : {};
             if (!res.ok)
                 throw new Error(json?.error ?? 'Failed to load puzzle');
             setPuzzle(json?.puzzle ?? null);
@@ -184,9 +189,11 @@ export function useRandomPuzzles() {
                     p.set('excludeIds', args.excludeIds.join(','));
                 if (args.preferFailed) p.set('preferFailed', 'true');
                 const res = await fetch(`/api/puzzles/random?${p.toString()}`);
-                const json = (await res.json().catch(() => ({}))) as
-                    | ({ puzzles?: PuzzleWithStats[] } & ApiError)
-                    | ApiError;
+                const raw = (await res.json().catch(() => ({}))) as unknown;
+                const json: RandomPuzzlesResponse =
+                    raw && typeof raw === 'object'
+                        ? (raw as RandomPuzzlesResponse)
+                        : {};
                 if (!res.ok)
                     throw new Error(
                         json?.error ?? 'Failed to load random puzzles'

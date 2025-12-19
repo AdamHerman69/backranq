@@ -5,6 +5,9 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Recommended for serverless: use a pooled DATABASE_URL at runtime,
+  // and a non-pooled DIRECT_URL for migrations.
+  directUrl = env("DIRECT_URL")
 }
 
 enum Provider {

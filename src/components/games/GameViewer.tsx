@@ -270,7 +270,6 @@ export function GameViewer({
                 e.key === 'End'
             ) {
                 e.stopPropagation();
-                // @ts-expect-error - not in lib.dom typings for all TS targets
                 e.stopImmediatePropagation?.();
             }
 

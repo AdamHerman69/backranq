@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 import { Button, type ButtonProps } from '@/components/ui/button';
 
 type Props = {
-    provider?: 'google' | 'github';
+    provider?: string;
     callbackUrl?: string;
     children?: ReactNode;
     variant?: ButtonProps['variant'];

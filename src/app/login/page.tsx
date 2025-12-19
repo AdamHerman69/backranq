@@ -2,6 +2,7 @@ import { SignInButton } from '@/components/auth/SignInButton';
 import { auth } from '@/lib/auth';
 import { redirect } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { AUTH_PROVIDER_UI } from '@/lib/auth/config';
 
 export default async function LoginPage({
     searchParams,
@@ -22,25 +23,21 @@ export default async function LoginPage({
                 <CardHeader>
                     <CardTitle>Sign in</CardTitle>
                     <CardDescription>
-                        Use Google or GitHub to sign in to Backranq.
+                        Choose a sign-in method to continue.
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2">
-                    <SignInButton
-                        provider="google"
-                        callbackUrl={callbackUrl}
-                        className="w-full"
-                    >
-                        Sign in with Google
-                    </SignInButton>
-                    <SignInButton
-                        provider="github"
-                        callbackUrl={callbackUrl}
-                        className="w-full"
-                        variant="outline"
-                    >
-                        Sign in with GitHub
-                    </SignInButton>
+                    {AUTH_PROVIDER_UI.filter((p) => p.enabled).map((p, idx) => (
+                        <SignInButton
+                            key={p.id}
+                            provider={p.id}
+                            callbackUrl={callbackUrl}
+                            className="w-full"
+                            variant={idx === 0 ? 'default' : 'outline'}
+                        >
+                            Sign in with {p.label}
+                        </SignInButton>
+                    ))}
                 </CardContent>
             </Card>
         </main>

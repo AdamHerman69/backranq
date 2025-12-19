@@ -66,7 +66,7 @@ export async function GET(req: Request) {
             return {
                 value: eco,
                 label,
-                count: Number(o.count ?? 0n),
+                count: Number(o.count ?? 0),
             };
         })
         .filter(Boolean)
@@ -76,7 +76,7 @@ export async function GET(req: Request) {
         .map((t) => {
             const tag = String(t.tag ?? '').trim();
             if (!tag) return null;
-            return { value: tag, label: tag, count: Number(t.count ?? 0n) };
+            return { value: tag, label: tag, count: Number(t.count ?? 0) };
         })
         .filter(Boolean)
         .slice(0, limit);

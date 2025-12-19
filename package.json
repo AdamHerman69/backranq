@@ -4,10 +4,12 @@
     "private": true,
     "scripts": {
         "dev": "next dev",
+        "prebuild": "prisma generate",
         "build": "next build",
+        "vercel-build": "prisma generate && prisma migrate deploy && next build",
         "start": "next start",
         "lint": "eslint",
-        "postinstall": "node scripts/copy-stockfish-wasm.mjs"
+        "postinstall": "prisma generate && node scripts/copy-stockfish-wasm.mjs"
     },
     "dependencies": {
         "@auth/prisma-adapter": "^2.11.1",

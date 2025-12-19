@@ -119,10 +119,12 @@ class BackgroundAnalysisManager {
     private nextRunAnalysisDefaultsOverride: AnalysisDefaults | null = null;
     private activeExtractOptions: ExtractOptions | null = null;
 
-    subscribe(cb: Listener) {
+    subscribe(cb: Listener): () => void {
         this.listeners.add(cb);
         cb(this.snapshot());
-        return () => this.listeners.delete(cb);
+        return () => {
+            this.listeners.delete(cb);
+        };
     }
 
     snapshot(): BackgroundAnalysisSnapshot {
