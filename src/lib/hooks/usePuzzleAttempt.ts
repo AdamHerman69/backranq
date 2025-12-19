@@ -11,6 +11,15 @@ type QueuedAttempt = {
     createdAt: number;
 };
 
+class AttemptSendError extends Error {
+    status: number;
+    constructor(message: string, status: number) {
+        super(message);
+        this.name = 'AttemptSendError';
+        this.status = status;
+    }
+}
+
 const NEW_STORAGE_KEY = 'backranq.puzzleAttemptQueue.v1';
 const OLD_STORAGE_KEY = 'backrank.puzzleAttemptQueue.v1';
 
@@ -72,7 +81,11 @@ async function sendAttempt(a: QueuedAttempt) {
         }),
     });
     const json = (await res.json().catch(() => ({}))) as any;
-    if (!res.ok) throw new Error(json?.error ?? 'Failed to record attempt');
+    if (!res.ok)
+        throw new AttemptSendError(
+            json?.error ?? 'Failed to record attempt',
+            res.status
+        );
     return json;
 }
 
@@ -98,11 +111,43 @@ export function usePuzzleAttempt() {
         try {
             // FIFO
             const remaining: QueuedAttempt[] = [];
+            let stop = false;
             for (const item of q) {
+                if (stop) {
+                    remaining.push(item);
+                    continue;
+                }
                 try {
                     await sendAttempt(item);
-                } catch {
+                } catch (e) {
+                    const status =
+                        e instanceof AttemptSendError ? e.status : undefined;
+
+                    // Permanent failures: drop them so the queue can drain.
+                    // - 404: puzzle no longer exists for this user (deleted/migrated)
+                    // - 400: bad payload (old client data)
+                    if (status === 404 || status === 400) {
+                        continue;
+                    }
+
+                    // Auth failures: keep this and stop flushing to avoid spamming the server.
+                    if (status === 401 || status === 403) {
+                        remaining.push(item);
+                        stop = true;
+                        setLastError(
+                            'Not signed in (or session expired). Attempts will sync after you log in again.'
+                        );
+                        continue;
+                    }
+
+                    // Transient failures (offline/5xx/etc): keep this and stop early to avoid log spam.
                     remaining.push(item);
+                    stop = true;
+                    setLastError(
+                        e instanceof Error
+                            ? e.message
+                            : 'Failed to sync attempts'
+                    );
                 }
             }
             writeQueue(remaining);

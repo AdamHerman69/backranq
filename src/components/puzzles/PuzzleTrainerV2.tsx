@@ -218,8 +218,14 @@ export function PuzzleTrainerV2({
     const engineRef = useRef<StockfishClient | null>(null);
     const [engineClient, setEngineClient] = useState<StockfishClient | null>(null);
 
-    const { startAttempt, recordAttempt, saving: attemptSaving, queued: attemptQueued } =
-        usePuzzleAttempt();
+    const {
+        startAttempt,
+        recordAttempt,
+        flushQueue,
+        saving: attemptSaving,
+        queued: attemptQueued,
+        lastError: attemptLastError,
+    } = usePuzzleAttempt();
 
     const [viewMode, setViewMode] = useState<TrainerViewMode>(initialViewMode);
 
@@ -2154,15 +2160,32 @@ export function PuzzleTrainerV2({
 
                         {actionBar}
 
-                        <div className="mt-3 rounded-md border px-3 py-2">
-                            <div className="text-sm font-medium">Status</div>
-                            <div className="text-sm text-muted-foreground">{statusText}</div>
-                            {attemptSaving || attemptQueued > 0 ? (
-                                <div className="mt-1 text-xs text-muted-foreground">
-                                    {attemptSaving ? 'Saving attempt…' : null}
-                                    {!attemptSaving && attemptQueued > 0
-                                        ? `Attempts queued: ${attemptQueued}`
-                                        : null}
+                        <div className="mt-2 space-y-1">
+                            <div className="text-xs text-muted-foreground">{statusText}</div>
+                            {attemptSaving ? (
+                                <div className="text-xs text-muted-foreground">
+                                    Syncing attempt…
+                                </div>
+                            ) : attemptQueued > 0 ? (
+                                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                                    <div className="min-w-0">
+                                        <span className="font-medium">Pending sync:</span>{' '}
+                                        {attemptQueued} attempt{attemptQueued === 1 ? '' : 's'}
+                                        {attemptLastError ? (
+                                            <span className="ml-2 truncate">
+                                                ({attemptLastError})
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 px-2"
+                                        onClick={() => void flushQueue()}
+                                    >
+                                        Retry
+                                    </Button>
                                 </div>
                             ) : null}
                         </div>

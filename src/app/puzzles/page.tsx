@@ -1,6 +1,5 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
-import { PageHeader } from '@/components/app/PageHeader';
 import { PuzzleTrainerV2 } from '@/components/puzzles/PuzzleTrainerV2';
 import PuzzlesFilter, { type PuzzlesFilters } from '@/components/puzzles/PuzzlesFilter';
 
@@ -124,8 +123,6 @@ export default async function PuzzlesPage({
 
     return (
         <div className="space-y-4">
-            <PageHeader title="Train" />
-
             <details className="rounded-lg border bg-card">
                 <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium">
                     <span>Filters</span>
