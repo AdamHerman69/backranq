@@ -362,6 +362,15 @@ export function PuzzleTrainerV2({
     // Source-game reveal (the move that was actually played in the source game)
     const [showRealMove, setShowRealMove] = useState(false);
 
+    // Solve mode: wrong-move refutation playback + overlay
+    const [refutationLineUci, setRefutationLineUci] = useState<string[] | null>(null);
+    const [refutationStep, setRefutationStep] = useState(0);
+    const [showWrongOverlay, setShowWrongOverlay] = useState(false);
+
+    // Solve mode: context (pre-puzzle) navigation
+    const [showContext, setShowContext] = useState(false);
+    const [contextPly, setContextPly] = useState(0);
+
     const puzzlePly = useMemo(() => {
         if (!currentPuzzle) return 0;
         const raw = typeof currentPuzzle.sourcePly === 'number' ? currentPuzzle.sourcePly : 0;
@@ -620,6 +629,9 @@ export function PuzzleTrainerV2({
         setAttemptResult(null);
         setSolvedKind(null);
         setShowSolution(false);
+        setRefutationLineUci(null);
+        setRefutationStep(0);
+        setShowWrongOverlay(false);
         setPvStep(0);
         setAnalysisSelectedIdx(0);
         setAnalysisSelectedKey(null);
@@ -627,6 +639,8 @@ export function PuzzleTrainerV2({
         setSelectedSquare(null);
         setLegalTargets(new Set());
         setShowRealMove(false);
+        setShowContext(false);
+        setContextPly(typeof currentPuzzle.sourcePly === 'number' ? currentPuzzle.sourcePly : 0);
 
         startAttempt(currentPuzzle.id);
         setAnalyzeTrack('game');
@@ -752,6 +766,12 @@ export function PuzzleTrainerV2({
         if (!currentPuzzle) return [];
         return applyUciLine(currentPuzzle.fen, solveExplorerLine, 16);
     }, [currentPuzzle, solveExplorerLine]);
+
+    const refutationApplied = useMemo(() => {
+        if (viewMode !== 'solve') return [];
+        if (attemptResult !== 'incorrect') return [];
+        return applyUciLine(attemptFen, refutationLineUci ?? [], 12);
+    }, [viewMode, attemptResult, attemptFen, refutationLineUci]);
 
     // Live analysis (Analyze mode)
     useEffect(() => {
@@ -911,8 +931,22 @@ export function PuzzleTrainerV2({
         if (!currentPuzzle) return new Chess().fen();
 
         if (viewMode === 'solve') {
+            if (showContext && sourceParsed) {
+                const c = new Chess(sourceParsed.startFen);
+                const plies = clamp(contextPly, 0, puzzlePly);
+                for (let i = 0; i < plies; i++) {
+                    const m = sourceParsed.moves[i];
+                    try {
+                        c.move({ from: m.from, to: m.to, promotion: m.promotion });
+                    } catch {
+                        break;
+                    }
+                }
+                return c.fen();
+            }
             if (attemptResult === 'incorrect') {
-                return attemptFen;
+                const step = clamp(refutationStep, 0, Math.max(0, refutationApplied.length - 1));
+                return refutationApplied[step]?.fen ?? attemptFen;
             }
 
             if (isReviewState) {
@@ -937,11 +971,16 @@ export function PuzzleTrainerV2({
     }, [
         currentPuzzle,
         viewMode,
+        showContext,
+        sourceParsed,
+        contextPly,
         isReviewState,
         pvStep,
         solveLineApplied,
         attemptResult,
         attemptFen,
+        refutationApplied,
+        refutationStep,
         analysisRootFen,
         analyzeApplied,
         analyzeTrack,
@@ -952,9 +991,9 @@ export function PuzzleTrainerV2({
 
     const allowMove = useMemo(() => {
         if (!currentPuzzle) return false;
-        if (viewMode === 'solve') return !attemptResult && !showSolution;
+        if (viewMode === 'solve') return !showContext && !attemptResult && !showSolution;
         return true;
-    }, [currentPuzzle, viewMode, attemptResult, showSolution]);
+    }, [currentPuzzle, viewMode, showContext, attemptResult, showSolution]);
 
     const rootEvalFen = useMemo(() => {
         if (viewMode === 'solve') return currentPuzzle?.fen ?? null;
@@ -1104,6 +1143,9 @@ export function PuzzleTrainerV2({
         return Array.from(byKey.values());
     }, [
         viewMode,
+        showContext,
+        contextPly,
+        puzzlePly,
         puzzleLastMove,
         displayFen,
         attemptLastMove,
@@ -1163,6 +1205,10 @@ export function PuzzleTrainerV2({
         lastMove: { from: Square; to: Square };
     }) {
         clearHints();
+        if (viewMode === 'solve') {
+            // Any move exits context scrubbing.
+            setShowContext(false);
+        }
 
         if (viewMode === 'solve') {
             setAttemptFen(res.fen);
@@ -1177,6 +1223,12 @@ export function PuzzleTrainerV2({
             setPvStep(0);
             // If it's a safe-but-not-best move, reveal best line for learning.
             if (correct && u !== best) setShowSolution(true);
+            if (!correct) {
+                // Trigger refutation autoplay effect.
+                setRefutationLineUci(null);
+                setRefutationStep(0);
+                setShowWrongOverlay(false);
+            }
             return;
         }
 
@@ -1240,6 +1292,11 @@ export function PuzzleTrainerV2({
         setSolvedKind(null);
         setShowSolution(false);
         setShowRealMove(false);
+        setShowContext(false);
+        setContextPly(puzzlePly);
+        setRefutationLineUci(null);
+        setRefutationStep(0);
+        setShowWrongOverlay(false);
         setPvStep(0);
         clearHints();
         startAttempt(currentPuzzle.id);
@@ -1315,16 +1372,18 @@ export function PuzzleTrainerV2({
     const canStepPrev = useMemo(() => {
         if (!currentPuzzle) return false;
         if (viewMode === 'analyze') return canAnalyzePrev;
-        if (!isReviewState) return false;
-        return pvStep > 0;
-    }, [currentPuzzle, viewMode, canAnalyzePrev, isReviewState, pvStep]);
+        if (showContext) return contextPly > 0;
+        if (isReviewState) return pvStep > 0;
+        return !!sourceParsed && puzzlePly > 0;
+    }, [currentPuzzle, viewMode, canAnalyzePrev, showContext, contextPly, isReviewState, pvStep, sourceParsed, puzzlePly]);
 
     const canStepNext = useMemo(() => {
         if (!currentPuzzle) return false;
         if (viewMode === 'analyze') return canAnalyzeNext;
-        if (!isReviewState) return false;
-        return pvStep < Math.max(0, solveLineApplied.length - 1);
-    }, [currentPuzzle, viewMode, canAnalyzeNext, isReviewState, pvStep, solveLineApplied.length]);
+        if (showContext) return contextPly < puzzlePly;
+        if (isReviewState) return pvStep < Math.max(0, solveLineApplied.length - 1);
+        return false;
+    }, [currentPuzzle, viewMode, canAnalyzeNext, showContext, contextPly, puzzlePly, isReviewState, pvStep, solveLineApplied.length]);
 
     function resetAnalyzeToStart() {
         if (!currentPuzzle) return;
@@ -1337,6 +1396,170 @@ export function PuzzleTrainerV2({
         setAnalysisHistory([fen]);
         setAnalysisHistoryIdx(0);
     }
+
+    // Solve mode: on wrong move, auto-play Stockfish refutation then show overlay.
+    useEffect(() => {
+        let cancelled = false;
+        let interval: number | null = null;
+        async function run() {
+            if (viewMode !== 'solve') return;
+            if (!currentPuzzle) return;
+            if (attemptResult !== 'incorrect') return;
+
+            // Avoid a race where we create/set the engineClient and *also* start a refutation
+            // analysis in the same pass (which can get cancelled by the state update and leave
+            // a hung/queued engine job behind).
+            if (!engineClient) {
+                const client = new StockfishClient();
+                engineRef.current = client;
+                setEngineClient(client);
+                return;
+            }
+
+            try {
+                const res = await engineClient.analyzeMultiPv({
+                    fen: attemptFen,
+                    movetimeMs: 250,
+                    multiPv: 1,
+                });
+                const pv = res.lines?.[0]?.pvUci?.slice(0, 10) ?? [];
+                if (cancelled) return;
+                setRefutationLineUci(pv);
+                setRefutationStep(0);
+                setShowWrongOverlay(false);
+
+                const applied = applyUciLine(attemptFen, pv, 12);
+                const lastIdx = Math.max(0, applied.length - 1);
+                if (lastIdx === 0) {
+                    setShowWrongOverlay(true);
+                    return;
+                }
+                interval = window.setInterval(() => {
+                    setRefutationStep((s) => {
+                        if (s >= lastIdx) {
+                            if (interval) window.clearInterval(interval);
+                            interval = null;
+                            setShowWrongOverlay(true);
+                            return s;
+                        }
+                        return s + 1;
+                    });
+                }, 450);
+            } catch {
+                if (!cancelled) {
+                    setRefutationLineUci(null);
+                    setRefutationStep(0);
+                    setShowWrongOverlay(true);
+                }
+            }
+        }
+        void run();
+        return () => {
+            cancelled = true;
+            if (interval) window.clearInterval(interval);
+        };
+    }, [viewMode, currentPuzzle?.id, attemptResult, attemptFen, engineClient]);
+
+    // keyboard shortcuts / navigation
+    useEffect(() => {
+        function onKeyDown(e: KeyboardEvent) {
+            if (isEditableTarget(e.target)) return;
+            if (!currentPuzzle) return;
+
+            // Keep existing shortcuts
+            if (e.key === 'n') {
+                e.preventDefault();
+                void nextPuzzle();
+                return;
+            }
+            if (e.key === 's') {
+                e.preventDefault();
+                if (viewMode === 'solve') setShowSolution(true);
+                return;
+            }
+            if (e.key === 'r') {
+                e.preventDefault();
+                if (viewMode === 'solve') resetSolve();
+                if (viewMode === 'analyze') resetAnalyzeToStart();
+                return;
+            }
+
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                if (viewMode === 'analyze') return analyzePrev();
+
+                // solve
+                if (showContext && sourceParsed) {
+                    setContextPly((p) => Math.max(0, p - 1));
+                    return;
+                }
+                if (!attemptResult && !isReviewState && sourceParsed && puzzlePly > 0) {
+                    setShowContext(true);
+                    setContextPly(Math.max(0, puzzlePly - 1));
+                    return;
+                }
+                setPvStep((s) => Math.max(0, s - 1));
+                return;
+            }
+
+            if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                if (viewMode === 'analyze') return analyzeNext();
+
+                // solve
+                if (showContext && sourceParsed) {
+                    setContextPly((p) => {
+                        const next = Math.min(puzzlePly, p + 1);
+                        if (next >= puzzlePly) setShowContext(false);
+                        return next;
+                    });
+                    return;
+                }
+                const max = Math.max(0, solveLineApplied.length - 1);
+                setPvStep((s) => Math.min(max, s + 1));
+                return;
+            }
+
+            if (e.key === 'Home') {
+                if (viewMode !== 'analyze') return;
+                e.preventDefault();
+                setAnalyzeTrack('game');
+                setAnalyzeGamePly(0);
+                setPvStep(0);
+                return;
+            }
+
+            if (e.key === 'End') {
+                if (viewMode !== 'analyze') return;
+                e.preventDefault();
+                if (analyzeMaxStep > 0) {
+                    setAnalyzeTrack('pv');
+                    setAnalyzeGamePly(puzzlePly);
+                    setPvStep(analyzeMaxStep);
+                } else {
+                    setAnalyzeTrack('game');
+                    setAnalyzeGamePly(puzzlePly);
+                    setPvStep(0);
+                }
+                return;
+            }
+        }
+
+        window.addEventListener('keydown', onKeyDown, { capture: true });
+        return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
+    }, [
+        currentPuzzle,
+        viewMode,
+        showContext,
+        sourceParsed,
+        puzzlePly,
+        attemptResult,
+        isReviewState,
+        solveLineApplied.length,
+        analyzePrev,
+        analyzeNext,
+        analyzeMaxStep,
+    ]);
 
     const header = (
         <div className="space-y-2">
@@ -1586,7 +1809,7 @@ export function PuzzleTrainerV2({
                     <div className="w-full sm:max-w-[560px]">
                     <div
                         className={
-                            'rounded-xl border bg-card p-1 sm:p-2 ' +
+                            'relative isolate rounded-xl border bg-card p-1 sm:p-2 ' +
                             (canReset ? 'border-zinc-400' : '')
                         }
                     >
@@ -1654,6 +1877,42 @@ export function PuzzleTrainerV2({
                                     : undefined,
                             }}
                         />
+
+                        {viewMode === 'solve' && attemptResult === 'incorrect' && showWrongOverlay ? (
+                            <div className="absolute inset-0 z-[100] flex items-center justify-center rounded-xl bg-background/70 backdrop-blur-sm">
+                                <div className="mx-4 w-full max-w-sm rounded-lg border bg-card p-4 shadow-lg">
+                                    <div className="text-sm font-medium">Not best</div>
+                                    <div className="mt-1 text-sm text-muted-foreground">
+                                        Want to analyze this position or try again?
+                                    </div>
+                                    <div className="mt-4 flex flex-wrap gap-2">
+                                        <Button
+                                            onClick={() => {
+                                                setShowWrongOverlay(false);
+                                                setPvStep(0);
+                                                setAnalysisRootFen(attemptFen);
+                                                setAnalysisHistory([attemptFen]);
+                                                setAnalysisHistoryIdx(0);
+                                                setAnalyzeTrack('pv');
+                                                setAnalyzeGamePly(puzzlePly);
+                                                setViewMode('analyze');
+                                            }}
+                                        >
+                                            Analyze
+                                        </Button>
+                                        <Button
+                                            variant="outline"
+                                            onClick={() => {
+                                                setShowWrongOverlay(false);
+                                                resetSolve();
+                                            }}
+                                        >
+                                            Try again
+                                        </Button>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : null}
                     </div>
 
                     <div className="mt-2 grid w-full grid-cols-[44px_minmax(0,1fr)_44px] items-center gap-2">
@@ -1664,6 +1923,15 @@ export function PuzzleTrainerV2({
                             className="h-11 w-11"
                             onClick={() => {
                                 if (viewMode === 'analyze') return analyzePrev();
+                                if (showContext && sourceParsed) {
+                                    setContextPly((p) => Math.max(0, p - 1));
+                                    return;
+                                }
+                                if (!attemptResult && !isReviewState && sourceParsed && puzzlePly > 0) {
+                                    setShowContext(true);
+                                    setContextPly(Math.max(0, puzzlePly - 1));
+                                    return;
+                                }
                                 setPvStep((s) => Math.max(0, s - 1));
                             }}
                             disabled={!canStepPrev}
@@ -1720,6 +1988,14 @@ export function PuzzleTrainerV2({
                             className="h-11 w-11"
                             onClick={() => {
                                 if (viewMode === 'analyze') return analyzeNext();
+                                if (showContext && sourceParsed) {
+                                    setContextPly((p) => {
+                                        const next = Math.min(puzzlePly, p + 1);
+                                        if (next >= puzzlePly) setShowContext(false);
+                                        return next;
+                                    });
+                                    return;
+                                }
                                 const max = Math.max(0, solveLineApplied.length - 1);
                                 setPvStep((s) => Math.min(max, s + 1));
                             }}
