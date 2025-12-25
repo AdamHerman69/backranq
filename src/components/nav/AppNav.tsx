@@ -93,30 +93,6 @@ export function AppNav() {
   return (
     <>
       <div className="flex items-center gap-3">
-        <Button asChild variant="ghost" className="px-2 text-base font-semibold">
-          <Link href="/dashboard" aria-label="Backranq">
-            Backranq
-          </Link>
-        </Button>
-
-        <nav className="hidden items-center gap-1 md:flex">
-          {navItems.map((it) => {
-            const isActive = it.active ? it.active(pathname) : pathname === it.href;
-            return (
-              <Button
-                key={it.href}
-                asChild
-                variant={isActive ? "secondary" : "ghost"}
-                className={cn(!isActive && "text-muted-foreground")}
-              >
-                <Link href={it.href}>{it.label}</Link>
-              </Button>
-            );
-          })}
-        </nav>
-      </div>
-
-      <div className="flex items-center gap-2">
         <Sheet>
           <SheetTrigger asChild>
             <Button
@@ -168,6 +144,30 @@ export function AppNav() {
           </SheetContent>
         </Sheet>
 
+        <Button asChild variant="ghost" className="px-2 text-base font-semibold">
+          <Link href="/dashboard" aria-label="Backranq">
+            Backranq
+          </Link>
+        </Button>
+
+        <nav className="hidden items-center gap-1 md:flex">
+          {navItems.map((it) => {
+            const isActive = it.active ? it.active(pathname) : pathname === it.href;
+            return (
+              <Button
+                key={it.href}
+                asChild
+                variant={isActive ? "secondary" : "ghost"}
+                className={cn(!isActive && "text-muted-foreground")}
+              >
+                <Link href={it.href}>{it.label}</Link>
+              </Button>
+            );
+          })}
+        </nav>
+      </div>
+
+      <div className="flex items-center gap-2">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-9 px-2">

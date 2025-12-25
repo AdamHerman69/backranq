@@ -16,6 +16,27 @@ export async function GET(
     const { id } = await params;
     const game = await prisma.analyzedGame.findFirst({
         where: { id, userId },
+        // Avoid over-fetching large columns (notably `analysis`) for the trainer.
+        // The client only needs metadata + PGN to reconstruct moves.
+        select: {
+            id: true,
+            provider: true,
+            externalId: true,
+            url: true,
+            pgn: true,
+            playedAt: true,
+            timeClass: true,
+            rated: true,
+            result: true,
+            termination: true,
+            whiteName: true,
+            whiteRating: true,
+            blackName: true,
+            blackRating: true,
+            openingEco: true,
+            openingName: true,
+            openingVariation: true,
+        },
     });
     if (!game)
         return NextResponse.json({ error: 'Not found' }, { status: 404 });

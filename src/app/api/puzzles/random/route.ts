@@ -3,6 +3,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { aggregatePuzzleStats, dbToPuzzle } from '@/lib/api/puzzles';
 import type { Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 
 export const runtime = 'nodejs';
 
@@ -32,6 +33,29 @@ function shuffle<T>(arr: T[]) {
         [arr[i], arr[j]] = [arr[j]!, arr[i]!];
     }
     return arr;
+}
+
+async function fetchIdPool(args: {
+    where: Prisma.PuzzleWhereInput;
+    take: number;
+}): Promise<string[]> {
+    const pivot = randomUUID();
+
+    const slice = await prisma.puzzle.findMany({
+        where: { AND: [args.where, { id: { gte: pivot } }] },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+        take: args.take,
+    });
+    if (slice.length > 0) return slice.map((r) => r.id);
+
+    const wrap = await prisma.puzzle.findMany({
+        where: args.where,
+        select: { id: true },
+        orderBy: { id: 'asc' },
+        take: args.take,
+    });
+    return wrap.map((r) => r.id);
 }
 
 export async function GET(req: Request) {
@@ -131,38 +155,6 @@ export async function GET(req: Request) {
         AND: [baseWhere, { attempts: { some: { userId, wasCorrect: true } } }],
     };
 
-    // Pull a reasonably sized pool then sample in memory.
-    const poolSize = 500;
-    const [failed, unattempted, unsolved, solved] = await Promise.all([
-        prisma.puzzle.findMany({
-            where: failedWhere,
-            select: { id: true },
-            take: poolSize,
-        }),
-        prisma.puzzle.findMany({
-            where: unattemptedWhere,
-            select: { id: true },
-            take: poolSize,
-        }),
-        prisma.puzzle.findMany({
-            where: unsolvedWhere,
-            select: { id: true },
-            take: poolSize,
-        }),
-        prisma.puzzle.findMany({
-            where: solvedWhere,
-            select: { id: true },
-            take: poolSize,
-        }),
-    ]);
-
-    const failedIds = shuffle(failed.map((r) => r.id));
-    const unattemptedIds = shuffle(unattempted.map((r) => r.id));
-    const unsolvedIds = shuffle(
-        unsolved.map((r) => r.id).filter((id) => !unattemptedIds.includes(id))
-    );
-    const solvedIds = shuffle(solved.map((r) => r.id));
-
     const picked: string[] = [];
     const pushFrom = (list: string[]) => {
         for (const id of list) {
@@ -171,16 +163,28 @@ export async function GET(req: Request) {
         }
     };
 
-    if (preferFailed) {
-        pushFrom(failedIds);
-        pushFrom(unattemptedIds);
-        pushFrom(unsolvedIds);
-        pushFrom(solvedIds);
-    } else {
-        pushFrom(unattemptedIds);
-        pushFrom(failedIds);
-        pushFrom(unsolvedIds);
-        pushFrom(solvedIds);
+    // We only fetch as many buckets as needed to satisfy `count`. For the common case
+    // (count=1, plenty of unattempted puzzles), this turns 4 bucket queries into 1.
+    const poolSize = clampInt(count * 50, 50, 500);
+    const buckets: Array<{ where: Prisma.PuzzleWhereInput; label: string }> =
+        preferFailed
+            ? [
+                  { where: failedWhere, label: 'failed' },
+                  { where: unattemptedWhere, label: 'unattempted' },
+                  { where: unsolvedWhere, label: 'unsolved' },
+                  { where: solvedWhere, label: 'solved' },
+              ]
+            : [
+                  { where: unattemptedWhere, label: 'unattempted' },
+                  { where: failedWhere, label: 'failed' },
+                  { where: unsolvedWhere, label: 'unsolved' },
+                  { where: solvedWhere, label: 'solved' },
+              ];
+
+    for (const b of buckets) {
+        if (picked.length >= count) break;
+        const ids = await fetchIdPool({ where: b.where, take: poolSize });
+        pushFrom(shuffle(ids));
     }
 
     if (picked.length === 0) return NextResponse.json({ puzzles: [] });

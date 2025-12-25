@@ -137,6 +137,8 @@ model PuzzleAttempt {
 
   @@index([puzzleId])
   @@index([userId])
+  @@index([userId, puzzleId])
+  @@index([userId, puzzleId, wasCorrect])
 }
 
 // NextAuth (Auth.js) Prisma Adapter models
