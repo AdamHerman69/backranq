@@ -6,7 +6,7 @@ import type { Puzzle } from "@/lib/analysis/puzzles";
 import { StockfishClient, type EvalResult, type Score } from "@/lib/analysis/stockfishClient";
 import { Chess, type Move, type Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
-import { applyUciLine, moveToUci, parseUci, prettyTurnFromFen } from "@/lib/chess/utils";
+import { applyUciLine, moveToUci, parseUci, prettyTurnFromFen, uciLineToSan, uciToSan } from "@/lib/chess/utils";
 import { ecoName } from "@/lib/chess/eco";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GameAnalysis, MoveClassification } from "@/lib/analysis/classification";
@@ -682,7 +682,10 @@ export function PuzzlePanel(props: {
                   Solve
                 </button>
                 <div className={styles.muted}>
-                  Best move: <span className={styles.mono}>{currentPuzzle.bestMoveUci}</span>
+                  Best move:{" "}
+                  <span className={styles.mono}>
+                    {uciToSan(currentPuzzle.fen, currentPuzzle.bestMoveUci) ?? currentPuzzle.bestMoveUci}
+                  </span>
                 </div>
                 {busy ? <div className={styles.muted}>Engine…</div> : null}
                 {engineErr ? <div className={styles.error}>{engineErr}</div> : null}
@@ -693,8 +696,12 @@ export function PuzzlePanel(props: {
                   {attemptResult === "correct"
                     ? solvedKind === "safe"
                       ? currentPuzzle.mode === "avoidBlunder"
-                        ? `Good save! (${attemptUci}) Best was ${currentPuzzle.bestMoveUci}.`
-                        : `Correct! (${attemptUci}) Best was ${currentPuzzle.bestMoveUci}.`
+                      ? `Good save! (${attemptUci}) Best was ${
+                          uciToSan(currentPuzzle.fen, currentPuzzle.bestMoveUci) ?? currentPuzzle.bestMoveUci
+                        }.`
+                        : `Correct! (${attemptUci}) Best was ${
+                            uciToSan(currentPuzzle.fen, currentPuzzle.bestMoveUci) ?? currentPuzzle.bestMoveUci
+                          }.`
                       : `Correct! (${attemptUci})`
                     : `Not best. You played ${attemptUci}.`}
                 </div>
@@ -774,7 +781,10 @@ export function PuzzlePanel(props: {
                     In-game move: <span className={styles.mono}>{playedMoveInGame?.san ?? "?"} ({playedMoveInGame?.uci ?? "?"})</span>
                   </div>
                   <div className={styles.muted}>
-                    Best move: <span className={styles.mono}>{currentPuzzle.bestMoveUci}</span>
+                    Best move:{" "}
+                    <span className={styles.mono}>
+                      {uciToSan(currentPuzzle.fen, currentPuzzle.bestMoveUci) ?? currentPuzzle.bestMoveUci}
+                    </span>
                   </div>
                   {currentPuzzle.bestLineUci.length > 0 && (
                     <div className={styles.muted}>
@@ -964,7 +974,10 @@ export function PuzzlePanel(props: {
                 </div>
 
                 <div className={styles.muted}>
-                  PV: <span className={styles.mono}>{analyzeLineUci.slice(0, 12).join(" ")}</span>
+                  PV:{" "}
+                  <span className={styles.mono}>
+                    {analyzeRootFen ? uciLineToSan(analyzeRootFen, analyzeLineUci, 12).join(" ") : ""}
+                  </span>
                 </div>
               </div>
 
@@ -978,9 +991,12 @@ export function PuzzlePanel(props: {
                       setAnalyzeSelectedKey((l.pvUci ?? []).join(" "));
                       setAnalyzePvStep(0);
                     }}
-                    title={(l.pvUci ?? []).slice(0, 16).join(" ")}
+                    title={
+                      analyzeRootFen ? uciLineToSan(analyzeRootFen, l.pvUci ?? [], 16).join(" ") : undefined
+                    }
                   >
-                    #{i + 1} {formatEval(l.score, analyzeRootFen)} {(l.pvUci ?? []).slice(0, 5).join(" ")}
+                    #{i + 1} {formatEval(l.score, analyzeRootFen)}{" "}
+                    {analyzeRootFen ? uciLineToSan(analyzeRootFen, l.pvUci ?? [], 5).join(" ") : ""}
                   </button>
                 ))}
               </div>

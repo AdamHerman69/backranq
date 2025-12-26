@@ -8,3 +8,4 @@ CREATE INDEX "PuzzleAttempt_userId_puzzleId_wasCorrect_idx"
 ON "PuzzleAttempt" ("userId", "puzzleId", "wasCorrect");
 
 
+

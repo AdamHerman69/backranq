@@ -7,8 +7,10 @@ import GameDetailClient from '@/components/games/GameDetailClient';
 
 export default async function GameDetailPage({
     params,
+    searchParams,
 }: {
     params: Promise<{ id: string }>;
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
     const session = await auth();
     const userId = session?.user?.id;
@@ -42,6 +44,10 @@ export default async function GameDetailPage({
             ? (game.analysis as unknown as GameAnalysis)
             : null;
 
+    const sp = (await searchParams) ?? {};
+    const plyRaw = typeof sp.ply === 'string' ? sp.ply : '';
+    const initialPly = Number.isFinite(Number(plyRaw)) ? Math.max(0, Math.trunc(Number(plyRaw))) : undefined;
+
     return (
         <GameDetailClient
             dbGameId={game.id}
@@ -64,6 +70,7 @@ export default async function GameDetailPage({
             }}
             normalizedGame={normalized}
             initialAnalysis={initialAnalysis}
+            initialPly={initialPly}
             puzzles={puzzles.map((p) => ({
                 id: p.id,
                 sourcePly: p.sourcePly,

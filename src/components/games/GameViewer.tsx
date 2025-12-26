@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type Move as VerboseMove, type Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
-import { extractStartFenFromPgn, parseUci } from '@/lib/chess/utils';
+import { extractStartFenFromPgn, parseUci, uciLineToSan, uciToSan } from '@/lib/chess/utils';
 import {
     getClassificationSymbol,
     type MoveClassification,
@@ -136,16 +136,19 @@ export function GameViewer({
     analysis,
     puzzles,
     userBoardOrientation,
+    initialPly,
 }: {
     pgn: string;
     metaLabel?: string;
     analysis?: GameAnalysis | null;
     puzzles?: PuzzlePreview[];
     userBoardOrientation?: 'white' | 'black';
+    initialPly?: number;
 }) {
     const [ply, setPly] = useState(0);
     const [showPvArrows, setShowPvArrows] = useState(true);
     const movesScrollRef = useRef<HTMLDivElement | null>(null);
+    const initialPlyAppliedRef = useRef(false);
 
     const engineRef = useRef<StockfishClient | null>(null);
     const [engineClient, setEngineClient] = useState<StockfishClient | null>(null);
@@ -205,6 +208,16 @@ export function GameViewer({
         if (!parsed) return 0;
         return clamp(ply, 0, parsed.positions.length - 1);
     }, [ply, parsed]);
+
+    // Allow deep-linking to a specific ply (e.g. from the puzzle trainer).
+    useEffect(() => {
+        if (initialPlyAppliedRef.current) return;
+        if (!parsed) return;
+        if (typeof initialPly !== 'number' || !Number.isFinite(initialPly)) return;
+        const next = clamp(Math.trunc(initialPly), 0, parsed.positions.length - 1);
+        setPly(next);
+        initialPlyAppliedRef.current = true;
+    }, [parsed, initialPly]);
 
     // Keep the active move visible in the move list, without scrolling the page.
     // `scrollIntoView()` can scroll the *window* which feels like the page is jumping.
@@ -317,6 +330,17 @@ export function GameViewer({
         }
         return Math.max(0, Math.min(selection.idx, lines.length - 1));
     }, [live.lines, selection, fen]);
+
+    const pvSanByLine = useMemo(() => {
+        const lines = live.lines ?? [];
+        return lines.map((l) => {
+            const san = uciLineToSan(fen, l.pvUci ?? [], 12);
+            return {
+                preview: san.slice(0, 8).join(' '),
+                full: san.join(' '),
+            };
+        });
+    }, [live.lines, fen]);
 
     useEffect(() => {
         return () => {
@@ -599,7 +623,7 @@ export function GameViewer({
                                         </div>
                                     </div>
                                     <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                                        {(l.pvUci ?? []).slice(0, 8).join(' ')}
+                                        {pvSanByLine[i]?.preview ?? ''}
                                     </div>
                                 </button>
                             ))}
@@ -609,11 +633,9 @@ export function GameViewer({
 
                         <div className="font-mono text-[11px] text-muted-foreground">
                             PV:{' '}
-                            {(live.lines?.[selectedLine]?.pvUci ??
-                                live.lines?.[0]?.pvUci ??
-                                [])
-                                .slice(0, 12)
-                                .join(' ')}
+                            {pvSanByLine[selectedLine]?.full ??
+                                pvSanByLine[0]?.full ??
+                                ''}
                         </div>
                         <div className="text-xs text-muted-foreground">
                             Use ←/→ (and Home/End) to navigate the game.
@@ -686,6 +708,20 @@ export function GameViewer({
                                             tooltipParts.push(
                                                 `📋 Puzzle: ${puzzle.type}`
                                             );
+
+                                        if (puzzle?.bestMoveUci) {
+                                            const fenBefore = parsed.positions[idx]?.fen;
+                                            if (fenBefore) {
+                                                const bestSan =
+                                                    uciToSan(
+                                                        fenBefore,
+                                                        puzzle.bestMoveUci
+                                                    ) ?? puzzle.bestMoveUci;
+                                                tooltipParts.push(
+                                                    `Puzzle: ${bestSan}`
+                                                );
+                                            }
+                                        }
 
                                         const accent = analyzedMove
                                             ? classificationAccent(

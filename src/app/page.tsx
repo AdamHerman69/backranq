@@ -11,7 +11,7 @@ import type { Puzzle } from "@/lib/analysis/puzzles";
 import type { GameAnalysis, AnalyzedMove, MoveClassification } from "@/lib/analysis/classification";
 import { getClassificationSymbol } from "@/lib/analysis/classification";
 import { useEffect } from "react";
-import { extractStartFenFromPgn } from "@/lib/chess/utils";
+import { extractStartFenFromPgn, uciLineToSan, uciToSan } from "@/lib/chess/utils";
 import { ecoName } from "@/lib/chess/eco";
 import { PuzzlePanel } from "@/app/puzzle/PuzzlePanel";
 import { useSession } from "next-auth/react";
@@ -1189,10 +1189,18 @@ export default function Home() {
           {analysisProgress && <div className={styles.muted}>{analysisProgress}</div>}
           {engineResult && (
             <div className={styles.muted}>
-              Best: <span className={styles.mono}>{engineResult.bestMoveUci || "?"}</span>{" "}
+              Best:{' '}
+              <span className={styles.mono}>
+                {engineResult.bestMoveUci
+                  ? uciToSan(viewerFen, engineResult.bestMoveUci) ?? engineResult.bestMoveUci
+                  : "?"}
+              </span>{' '}
               {engineResult.pvUci.length > 0 ? (
                 <>
-                  • PV: <span className={styles.mono}>{engineResult.pvUci.slice(0, 8).join(" ")}</span>
+                  • PV:{' '}
+                  <span className={styles.mono}>
+                    {uciLineToSan(viewerFen, engineResult.pvUci, 8).join(' ')}
+                  </span>
                 </>
               ) : null}
             </div>
@@ -1304,7 +1312,7 @@ export default function Home() {
                         <td className={styles.mono}>{p.sourcePly + 1}</td>
                         <td className={styles.mono}>
                           <button className={styles.linkButton} onClick={() => setPuzzleIdx(idx)}>
-                            {p.bestMoveUci}
+                            {uciToSan(p.fen, p.bestMoveUci) ?? p.bestMoveUci}
                           </button>
                         </td>
                       </tr>

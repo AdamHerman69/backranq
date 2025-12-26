@@ -15,6 +15,60 @@ export function parseUci(
     return { from, to, promotion };
 }
 
+/**
+ * Convert a single UCI move (e.g. "e2e4", "a7a8q") into SAN (e.g. "e4", "a8=Q+")
+ * given the position *before* the move.
+ */
+export function uciToSan(fen: string, uci: string): string | null {
+    const parsed = parseUci(uci);
+    if (!parsed) return null;
+    try {
+        const c = new Chess(fen);
+        const mv = c.move({
+            from: parsed.from,
+            to: parsed.to,
+            promotion: parsed.promotion,
+        });
+        return mv?.san ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Convert an array of UCI moves (PV) into SAN, applying them sequentially from baseFen.
+ */
+export function uciLineToSan(
+    baseFen: string,
+    uciLine: string[],
+    maxPlies: number
+): string[] {
+    let c: Chess;
+    try {
+        c = new Chess(baseFen);
+    } catch {
+        return [];
+    }
+
+    const out: string[] = [];
+    for (let i = 0; i < Math.min(uciLine.length, maxPlies); i++) {
+        const parsed = parseUci(uciLine[i] ?? '');
+        if (!parsed) break;
+        try {
+            const mv = c.move({
+                from: parsed.from,
+                to: parsed.to,
+                promotion: parsed.promotion,
+            });
+            if (!mv) break;
+            out.push(mv.san);
+        } catch {
+            break;
+        }
+    }
+    return out;
+}
+
 export function extractStartFenFromPgn(pgn: string): string | null {
     const m = pgn.match(/^\[FEN\s+"([^"]+)"\]\s*$/m);
     return m?.[1] ?? null;

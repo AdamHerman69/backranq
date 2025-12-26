@@ -18,6 +18,7 @@ export default function GameDetailClient({
     initialAnalysis,
     puzzles,
     usernameByProvider,
+    initialPly,
 }: {
     dbGameId: string;
     header: GameHeaderData;
@@ -25,6 +26,7 @@ export default function GameDetailClient({
     initialAnalysis: GameAnalysis | null;
     puzzles: GamePuzzleRow[];
     usernameByProvider: { lichess?: string; chesscom?: string };
+    initialPly?: number;
 }) {
     const [analysis, setAnalysis] = useState<GameAnalysis | null>(initialAnalysis);
 
@@ -82,6 +84,7 @@ export default function GameDetailClient({
                     metaLabel={`${normalizedGame.provider} • ${normalizedGame.timeClass} • ${new Date(normalizedGame.playedAt).toLocaleString()}`}
                     analysis={analysis}
                     userBoardOrientation={userBoardOrientation}
+                    initialPly={initialPly}
                     puzzles={puzzles.map((p) => ({
                         sourcePly: p.sourcePly,
                         type: p.type,
@@ -93,7 +96,7 @@ export default function GameDetailClient({
 
             <Card>
                 <CardContent className="pt-6">
-                <GamePuzzlesPreview puzzles={puzzles} />
+                <GamePuzzlesPreview puzzles={puzzles} pgn={normalizedGame.pgn} />
                 </CardContent>
             </Card>
         </div>

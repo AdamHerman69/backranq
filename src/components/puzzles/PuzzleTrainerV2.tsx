@@ -10,6 +10,7 @@ import { Chessboard } from 'react-chessboard';
 
 import type { NormalizedGame } from '@/lib/types/game';
 import type { Puzzle } from '@/lib/analysis/puzzles';
+import type { PuzzleAttemptStats } from '@/lib/api/puzzles';
 import {
     StockfishClient,
     type Score,
@@ -23,11 +24,14 @@ import {
     moveToUci,
     parseUci,
     sideToMoveFromFen,
+    uciLineToSan,
+    uciToSan,
 } from '@/lib/chess/utils';
 import { ecoName } from '@/lib/chess/eco';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import PuzzlesFilter, { type PuzzlesFilters } from '@/components/puzzles/PuzzlesFilter';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -37,6 +41,14 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from '@/components/ui/table';
 
 type TrainerViewMode = 'solve' | 'analyze';
 
@@ -56,6 +68,14 @@ type TrainerFilters = {
 };
 
 type DbGameLoose = Record<string, unknown>;
+
+type PuzzleAttemptRow = {
+    id: string;
+    attemptedAt: string;
+    userMoveUci: string;
+    wasCorrect: boolean;
+    timeSpentMs: number | null;
+};
 
 function describeFilters(f: PuzzlesFilters): string {
     const parts: string[] = [];
@@ -284,6 +304,7 @@ export function PuzzleTrainerV2({
     const [viewMode, setViewMode] = useState<TrainerViewMode>(initialViewMode);
     const [filtersOpen, setFiltersOpen] = useState(false);
     const [tagsRevealed, setTagsRevealed] = useState(false);
+    const [showPuzzleStats, setShowPuzzleStats] = useState(false);
 
     const [queue, setQueue] = useState<Puzzle[]>([]);
     const [idx, setIdx] = useState(0);
@@ -361,6 +382,14 @@ export function PuzzleTrainerV2({
 
     // Source-game reveal (the move that was actually played in the source game)
     const [showRealMove, setShowRealMove] = useState(false);
+
+    const statsCacheRef = useRef<
+        Map<string, { stats: PuzzleAttemptStats; attempts: PuzzleAttemptRow[] }>
+    >(new Map());
+    const [puzzleStatsLoading, setPuzzleStatsLoading] = useState(false);
+    const [puzzleStatsError, setPuzzleStatsError] = useState<string | null>(null);
+    const [puzzleStats, setPuzzleStats] = useState<PuzzleAttemptStats | null>(null);
+    const [puzzleAttempts, setPuzzleAttempts] = useState<PuzzleAttemptRow[]>([]);
 
     // Solve mode: wrong-move refutation playback + overlay
     const [refutationLineUci, setRefutationLineUci] = useState<string[] | null>(null);
@@ -717,8 +746,17 @@ export function PuzzleTrainerV2({
     }, [acceptedMoves.length]);
 
     const acceptedMovesText = useMemo(() => {
-        return acceptedMoves.slice(0, 8).join(' ');
-    }, [acceptedMoves]);
+        if (!currentPuzzle) return '';
+        return acceptedMoves
+            .slice(0, 8)
+            .map((uci) => uciToSan(currentPuzzle.fen, uci) ?? uci)
+            .join(' ');
+    }, [acceptedMoves, currentPuzzle]);
+
+    const bestMoveSan = useMemo(() => {
+        if (!currentPuzzle) return '';
+        return uciToSan(currentPuzzle.fen, currentPuzzle.bestMoveUci) ?? currentPuzzle.bestMoveUci;
+    }, [currentPuzzle]);
 
     const multiSolutionTagPresent = useMemo(() => {
         return (currentPuzzle?.tags ?? []).includes('multiSolution');
@@ -1305,12 +1343,90 @@ export function PuzzleTrainerV2({
     // record attempt after a solve move
     useEffect(() => {
         if (!currentPuzzle || !attemptUci || !attemptResult) return;
-        void recordAttempt({
-            puzzleId: currentPuzzle.id,
-            move: attemptUci,
-            correct: attemptResult === 'correct',
-        });
+        const pid = currentPuzzle.id;
+        void (async () => {
+            await recordAttempt({
+                puzzleId: pid,
+                move: attemptUci,
+                correct: attemptResult === 'correct',
+            });
+            // Stats are derived from attempts; bust cache and refresh if visible.
+            statsCacheRef.current.delete(pid);
+            if (showPuzzleStats) {
+                try {
+                    setPuzzleStatsError(null);
+                    setPuzzleStatsLoading(true);
+                    const res = await fetch(`/api/puzzles/${encodeURIComponent(pid)}`);
+                    const json = (await res.json().catch(() => ({}))) as any;
+                    if (!res.ok)
+                        throw new Error(json?.error ?? 'Failed to load puzzle stats');
+                    const stats = json?.puzzle?.attemptStats ?? null;
+                    const attempts = Array.isArray(json?.attempts) ? (json.attempts as PuzzleAttemptRow[]) : [];
+                    if (stats) {
+                        statsCacheRef.current.set(pid, { stats, attempts });
+                        setPuzzleStats(stats);
+                        setPuzzleAttempts(attempts);
+                    }
+                } catch (e) {
+                    setPuzzleStatsError(
+                        e instanceof Error ? e.message : 'Failed to load puzzle stats'
+                    );
+                } finally {
+                    setPuzzleStatsLoading(false);
+                }
+            }
+        })();
     }, [currentPuzzle?.id, attemptUci, attemptResult, recordAttempt]);
+
+    // Load puzzle stats on demand (toggle).
+    useEffect(() => {
+        let cancelled = false;
+        async function run() {
+            if (!showPuzzleStats) return;
+            if (!currentPuzzle?.id) return;
+            const pid = currentPuzzle.id;
+
+            const cached = statsCacheRef.current.get(pid);
+            if (cached) {
+                setPuzzleStats(cached.stats);
+                setPuzzleAttempts(cached.attempts);
+                setPuzzleStatsError(null);
+                return;
+            }
+
+            setPuzzleStatsLoading(true);
+            setPuzzleStatsError(null);
+            try {
+                const res = await fetch(`/api/puzzles/${encodeURIComponent(pid)}`);
+                const json = (await res.json().catch(() => ({}))) as any;
+                if (!res.ok) throw new Error(json?.error ?? 'Failed to load puzzle stats');
+                const stats = json?.puzzle?.attemptStats ?? null;
+                const attempts = Array.isArray(json?.attempts)
+                    ? (json.attempts as PuzzleAttemptRow[])
+                    : [];
+                if (cancelled) return;
+                if (stats) {
+                    statsCacheRef.current.set(pid, { stats, attempts });
+                    setPuzzleStats(stats);
+                    setPuzzleAttempts(attempts);
+                } else {
+                    setPuzzleStats(null);
+                    setPuzzleAttempts([]);
+                }
+            } catch (e) {
+                if (cancelled) return;
+                setPuzzleStatsError(
+                    e instanceof Error ? e.message : 'Failed to load puzzle stats'
+                );
+            } finally {
+                if (!cancelled) setPuzzleStatsLoading(false);
+            }
+        }
+        void run();
+        return () => {
+            cancelled = true;
+        };
+    }, [showPuzzleStats, currentPuzzle?.id]);
 
     // (Refutation playback + keyboard shortcuts were intentionally removed to match the trainer wireframes.)
 
@@ -1653,7 +1769,7 @@ export function PuzzleTrainerV2({
                                 </div>
                             </div>
                             <div className="mt-1 font-mono text-xs text-muted-foreground">
-                                {(l.pvUci ?? []).slice(0, 6).join(' ')}
+                                {uciLineToSan(analysis?.fen ?? displayFen, l.pvUci ?? [], 6).join(' ')}
                             </div>
                         </button>
                     ))}
@@ -1714,7 +1830,7 @@ export function PuzzleTrainerV2({
     const details = currentPuzzle ? (
         <div className="mt-3 space-y-2">
             <Link
-                href={`/puzzles/${currentPuzzle.id}`}
+                href={`/games/${encodeURIComponent(currentPuzzle.sourceGameId)}?ply=${encodeURIComponent(String(puzzlePly))}`}
                 className="block rounded-lg border bg-card p-4"
             >
                 <div className="flex items-start gap-3">
@@ -1757,6 +1873,17 @@ export function PuzzleTrainerV2({
 
                 <Button
                     type="button"
+                    variant="ghost"
+                    className="h-9 px-2"
+                    onClick={() => setShowPuzzleStats((v) => !v)}
+                    aria-pressed={showPuzzleStats}
+                    title={showPuzzleStats ? 'Hide puzzle stats' : 'Show puzzle stats'}
+                >
+                    <span className="text-sm">puzzle stats</span>
+                </Button>
+
+                <Button
+                    type="button"
                     variant="outline"
                     className="h-9 px-4"
                     onClick={() => void nextPuzzle()}
@@ -1773,6 +1900,123 @@ export function PuzzleTrainerV2({
                             {t}
                         </Badge>
                     ))}
+                </div>
+            ) : null}
+
+            {showPuzzleStats ? (
+                <div className="space-y-3">
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="text-base">Your stats</CardTitle>
+                        </CardHeader>
+                        <CardContent className="text-sm text-muted-foreground">
+                            {puzzleStatsLoading ? (
+                                <div>Loading…</div>
+                            ) : puzzleStatsError ? (
+                                <div className="text-red-600">{puzzleStatsError}</div>
+                            ) : puzzleStats ? (
+                                <div className="space-y-1">
+                                    <div>Attempts: {puzzleStats.attempted}</div>
+                                    <div>Correct: {puzzleStats.correct}</div>
+                                    <div>
+                                        Success rate:{' '}
+                                        {puzzleStats.successRate == null
+                                            ? '—'
+                                            : `${Math.round(puzzleStats.successRate * 100)}%`}
+                                    </div>
+                                    <div>
+                                        Last attempted:{' '}
+                                        {puzzleStats.lastAttemptedAt
+                                            ? new Date(puzzleStats.lastAttemptedAt).toLocaleString()
+                                            : '—'}
+                                    </div>
+                                    <div>
+                                        Avg time:{' '}
+                                        {puzzleStats.averageTimeMs == null
+                                            ? '—'
+                                            : `${Math.round(puzzleStats.averageTimeMs / 1000)}s`}
+                                    </div>
+                                </div>
+                            ) : (
+                                <div>—</div>
+                            )}
+                        </CardContent>
+                    </Card>
+
+                    {isMultiSolutionPuzzle ? (
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="text-base">Solutions</CardTitle>
+                            </CardHeader>
+                            <CardContent className="text-sm text-muted-foreground space-y-2">
+                                <Badge variant="secondary">Multiple correct moves</Badge>
+                                <div>
+                                    Best move:{' '}
+                                    <span className="font-mono text-xs">
+                                        {bestMoveSan}
+                                    </span>
+                                </div>
+                                <div>
+                                    Accepted moves:{' '}
+                                    <span className="font-mono text-xs">{acceptedMovesText}</span>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    ) : null}
+
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="text-base">History</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            {puzzleStatsLoading ? (
+                                <div className="text-sm text-muted-foreground">Loading…</div>
+                            ) : puzzleAttempts.length === 0 ? (
+                                <div className="text-sm text-muted-foreground">
+                                    No attempts yet.
+                                </div>
+                            ) : (
+                                <div className="rounded-md border">
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead>Result</TableHead>
+                                                <TableHead>Move</TableHead>
+                                                <TableHead className="text-right">Time</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                            {puzzleAttempts.slice(0, 20).map((a) => (
+                                                <TableRow key={a.id}>
+                                                    <TableCell>
+                                                        <Badge
+                                                            className={
+                                                                a.wasCorrect
+                                                                    ? 'border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                                                    : 'border-transparent bg-red-500/15 text-red-700 dark:text-red-300'
+                                                            }
+                                                        >
+                                                            {a.wasCorrect ? 'Correct' : 'Miss'}
+                                                        </Badge>
+                                                    </TableCell>
+                                                    <TableCell className="font-mono text-xs">
+                                                        {currentPuzzle
+                                                            ? uciToSan(currentPuzzle.fen, a.userMoveUci) ?? a.userMoveUci
+                                                            : a.userMoveUci}
+                                                    </TableCell>
+                                                    <TableCell className="text-right text-sm text-muted-foreground">
+                                                        {a.timeSpentMs != null
+                                                            ? `${Math.round(a.timeSpentMs / 1000)}s`
+                                                            : '—'}
+                                                    </TableCell>
+                                                </TableRow>
+                                            ))}
+                                        </TableBody>
+                                    </Table>
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
                 </div>
             ) : null}
         </div>
