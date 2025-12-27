@@ -11,7 +11,7 @@ export default async function LoginPage({
     searchParams?: Promise<{ callbackUrl?: string }>;
 }) {
     const sp = (await searchParams) ?? {};
-    const callbackUrl = sp.callbackUrl ?? '/dashboard';
+    const callbackUrl = sp.callbackUrl ?? '/';
     const session = await auth();
 
     // If already signed in, don't show login page.

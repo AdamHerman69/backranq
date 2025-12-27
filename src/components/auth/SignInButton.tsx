@@ -16,7 +16,7 @@ type Props = {
 
 export function SignInButton({
     provider = 'google',
-    callbackUrl = '/dashboard',
+    callbackUrl = '/',
     children,
     variant = 'default',
     size = 'default',

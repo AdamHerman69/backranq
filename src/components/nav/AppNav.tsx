@@ -26,11 +26,6 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   {
-    href: "/dashboard",
-    label: "Dashboard",
-    active: (p) => p === "/dashboard" || p.startsWith("/dashboard/"),
-  },
-  {
     href: "/puzzles",
     label: "Train",
     active: (p) =>
@@ -46,6 +41,11 @@ const navItems: NavItem[] = [
     href: "/puzzles/library",
     label: "Puzzles",
     active: (p) => p === "/puzzles/library" || p.startsWith("/puzzles/library/"),
+  },
+  {
+    href: "/stats",
+    label: "Stats",
+    active: (p) => p === "/stats" || p.startsWith("/stats/"),
   },
   {
     href: "/settings",
@@ -145,7 +145,7 @@ export function AppNav() {
         </Sheet>
 
         <Button asChild variant="ghost" className="px-2 text-base font-semibold">
-          <Link href="/dashboard" aria-label="Backranq">
+          <Link href="/" aria-label="Backranq">
             Backranq
           </Link>
         </Button>

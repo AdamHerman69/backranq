@@ -10,3 +10,4 @@ ON "PuzzleAttempt" ("userId", "puzzleId", "wasCorrect");
 
 
 
+

@@ -3,13 +3,13 @@ import { SignOutButton } from '@/components/auth/SignOutButton';
 import { PageHeader } from '@/components/app/PageHeader';
 import { Card, CardContent } from '@/components/ui/card';
 
-export default async function DashboardPage() {
+export default async function StatsPage() {
     const user = await getCurrentUser();
 
     return (
         <div className="space-y-6">
             <PageHeader
-                title="Dashboard"
+                title="Stats"
                 subtitle={
                     <>
                         Signed in as{' '}
@@ -23,7 +23,7 @@ export default async function DashboardPage() {
 
             <Card>
                 <CardContent className="pt-6 text-sm text-muted-foreground">
-                    More dashboard widgets coming soon.
+                    Stats and analytics coming soon.
                 </CardContent>
             </Card>
         </div>
