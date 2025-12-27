@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import type { NormalizedGame } from '@/lib/types/game';
+import type { NormalizedGame, TimeClass } from '@/lib/types/game';
 import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
 import {
     fetchGamesFromProvider,
@@ -14,6 +14,7 @@ import {
     type SyncProvider,
 } from '@/lib/services/gameSync';
 import { parseExternalId } from '@/lib/api/games';
+import { MultiSelect, type MultiSelectOption } from '@/components/ui/multi-select';
 
 type Step = 'config' | 'review' | 'saving' | 'done';
 
@@ -62,12 +63,19 @@ export function SyncGamesModal({
         { lichess: true, chesscom: true }
     );
     const [filters, setFilters] = useState<SyncFilters>({
-        timeClass: 'any',
+        timeClasses: [],
         rated: 'any',
         max: 50,
         since: undefined,
         until: undefined,
     });
+
+    const timeClassOptions: MultiSelectOption[] = useMemo(() => [
+        { value: 'bullet', label: 'Bullet' },
+        { value: 'blitz', label: 'Blitz' },
+        { value: 'rapid', label: 'Rapid' },
+        { value: 'classical', label: 'Classical' },
+    ], []);
     const [analyzeAfter, setAnalyzeAfter] = useState(false);
     const [rows, setRows] = useState<FetchedRow[]>([]);
 
@@ -364,21 +372,18 @@ export function SyncGamesModal({
                                 />
                             </label>
 
-                            <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.8 }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.8 }}>
                                 <span>Time class</span>
-                                <select
-                                    value={filters.timeClass}
-                                    onChange={(e) => setFilters((f) => ({ ...f, timeClass: e.target.value as SyncFilters['timeClass'] }))}
-                                    style={{ height: 36, borderRadius: 10, border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', padding: '0 10px', background: 'transparent', color: 'inherit' }}
-                                >
-                                    <option value="any">Any</option>
-                                    <option value="bullet">Bullet</option>
-                                    <option value="blitz">Blitz</option>
-                                    <option value="rapid">Rapid</option>
-                                    <option value="classical">Classical</option>
-                                    <option value="unknown">Unknown</option>
-                                </select>
-                            </label>
+                                <MultiSelect
+                                    options={timeClassOptions}
+                                    value={filters.timeClasses}
+                                    onChange={(next) => setFilters((f) => ({ ...f, timeClasses: next as TimeClass[] }))}
+                                    placeholder="Any"
+                                    searchPlaceholder="Search…"
+                                    maxBadges={2}
+                                    triggerClassName="h-9 text-xs"
+                                />
+                            </div>
 
                             <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.8 }}>
                                 <span>Rated</span>

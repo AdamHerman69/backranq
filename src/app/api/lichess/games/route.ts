@@ -41,10 +41,15 @@ function toMs(iso: string | undefined): number | undefined {
     return ms;
 }
 
-function parseTimeClass(v: string | null): TimeClass | undefined {
+function parseTimeClasses(v: string | null): TimeClass[] | undefined {
     if (!v) return undefined;
-    const tc = normalizeTimeClass(v);
-    return tc === 'unknown' ? undefined : tc;
+    const parts = v.split(',').map((s) => s.trim()).filter(Boolean);
+    const classes: TimeClass[] = [];
+    for (const p of parts) {
+        const tc = normalizeTimeClass(p);
+        if (tc !== 'unknown') classes.push(tc);
+    }
+    return classes.length > 0 ? classes : undefined;
 }
 
 export async function GET(req: Request) {
@@ -59,7 +64,7 @@ export async function GET(req: Request) {
 
     const since = parseIsoDateOrDateTime(url.searchParams.get('since'));
     const until = parseIsoDateOrDateTime(url.searchParams.get('until'));
-    const timeClass = parseTimeClass(url.searchParams.get('timeClass'));
+    const timeClasses = parseTimeClasses(url.searchParams.get('timeClass'));
     const rated = parseBooleanParam(url.searchParams.get('rated'));
     const minElo = parseNumberParam(url.searchParams.get('minElo'));
     const maxElo = parseNumberParam(url.searchParams.get('maxElo'));
@@ -79,7 +84,10 @@ export async function GET(req: Request) {
     lichessUrl.searchParams.set('tags', 'true');
     lichessUrl.searchParams.set('moves', 'true');
     // perfType filters at source if provided (bullet/blitz/rapid/classical)
-    if (timeClass) lichessUrl.searchParams.set('perfType', timeClass);
+    // Lichess only supports single perfType, so if multiple, we fetch all and filter client-side
+    if (timeClasses && timeClasses.length === 1) {
+        lichessUrl.searchParams.set('perfType', timeClasses[0]);
+    }
     const sinceMs = toMs(since);
     const untilMs = toMs(until);
     if (sinceMs != null) lichessUrl.searchParams.set('since', String(sinceMs));
@@ -157,7 +165,7 @@ export async function GET(req: Request) {
             !passesFilters(g, {
                 since,
                 until,
-                timeClass,
+                timeClasses,
                 rated,
                 minElo,
                 maxElo,

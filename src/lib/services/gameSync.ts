@@ -4,7 +4,7 @@ import { parseExternalId } from '@/lib/api/games';
 export type SyncProvider = 'lichess' | 'chesscom';
 
 export type SyncFilters = {
-    timeClass: TimeClass | 'any';
+    timeClasses: TimeClass[]; // empty array = any
     rated: 'any' | 'rated' | 'casual';
     since?: string; // ISO
     until?: string; // ISO
@@ -32,7 +32,9 @@ export async function getSyncStatus(): Promise<SyncStatus> {
 function buildProviderQuery(filters: SyncFilters, username: string) {
     const p = new URLSearchParams();
     p.set('username', username);
-    if (filters.timeClass !== 'any') p.set('timeClass', filters.timeClass);
+    if (filters.timeClasses.length > 0) {
+        p.set('timeClass', filters.timeClasses.join(','));
+    }
     if (filters.rated === 'rated') p.set('rated', 'true');
     if (filters.rated === 'casual') p.set('rated', 'false');
     if (filters.since) p.set('since', filters.since);

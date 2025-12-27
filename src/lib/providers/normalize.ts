@@ -54,12 +54,11 @@ export function passesFilters(
     game: NormalizedGame,
     filters: GameFetchFilters
 ): boolean {
-    if (
-        filters.timeClass &&
-        filters.timeClass !== 'unknown' &&
-        game.timeClass !== filters.timeClass
-    ) {
-        return false;
+    // Time class filter: if array provided and non-empty, game must match one of them
+    if (filters.timeClasses && filters.timeClasses.length > 0) {
+        if (!filters.timeClasses.includes(game.timeClass)) {
+            return false;
+        }
     }
     if (
         filters.rated != null &&
@@ -82,7 +81,7 @@ export function passesFilters(
         )
             return false;
     }
-    // Elo filtering is applied to both players’ ratings (where present).
+    // Elo filtering is applied to both players' ratings (where present).
     if (!inRange(game.white.rating, filters.minElo, filters.maxElo))
         return false;
     if (!inRange(game.black.rating, filters.minElo, filters.maxElo))

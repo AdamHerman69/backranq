@@ -795,6 +795,17 @@ export function PuzzleTrainerV2({
         return `${realSourceMove.from}${realSourceMove.to}${promo}`;
     }, [realSourceMove]);
 
+    const fenAfterMistake = useMemo(() => {
+        if (!currentPuzzle?.fen || !realSourceMove) return null;
+        const c = new Chess(currentPuzzle.fen);
+        try {
+            c.move({ from: realSourceMove.from, to: realSourceMove.to, promotion: realSourceMove.promotion });
+            return c.fen();
+        } catch {
+            return null;
+        }
+    }, [currentPuzzle?.fen, realSourceMove]);
+
     const solveExplorerLine = useMemo(() => {
         if (!currentPuzzle) return [] as string[];
         return currentPuzzle.bestLineUci;
@@ -997,6 +1008,10 @@ export function PuzzleTrainerV2({
 
         // analyze
         if (analyzeTrack === 'game') {
+            // If showing the mistake move at the puzzle position, display the position after the mistake
+            if (showRealMove && analyzeGamePly === puzzlePly && fenAfterMistake) {
+                return fenAfterMistake;
+            }
             if (sourceFensToPuzzle && sourceFensToPuzzle.length > 0) {
                 const idx = clamp(analyzeGamePly, 0, sourceFensToPuzzle.length - 1);
                 return sourceFensToPuzzle[idx] ?? currentPuzzle.fen;
@@ -1012,6 +1027,7 @@ export function PuzzleTrainerV2({
         showContext,
         sourceParsed,
         contextPly,
+        puzzlePly,
         isReviewState,
         pvStep,
         solveLineApplied,
@@ -1025,6 +1041,8 @@ export function PuzzleTrainerV2({
         analyzeGamePly,
         sourceFensToPuzzle,
         puzzleFenFromSource,
+        showRealMove,
+        fenAfterMistake,
     ]);
 
     const allowMove = useMemo(() => {
@@ -1146,6 +1164,15 @@ export function PuzzleTrainerV2({
             return Array.from(byKey.values());
         }
 
+        // analyze: show mistake move arrow when toggled
+        if (showRealMove && realSourceMove && analyzeTrack === 'game' && analyzeGamePly === puzzlePly) {
+            put({
+                startSquare: realSourceMove.from as Square,
+                endSquare: realSourceMove.to as Square,
+                color: 'rgba(245,158,11,0.85)', // amber
+            });
+        }
+
         // analyze: one arrow per line's first move
         const lines = analysis?.lines ?? [];
         const colors = [
@@ -1197,6 +1224,8 @@ export function PuzzleTrainerV2({
         acceptedMoves,
         analysis,
         selectedLine,
+        analyzeTrack,
+        analyzeGamePly,
     ]);
 
     const squareStyles = useMemo(() => {
@@ -1879,7 +1908,12 @@ export function PuzzleTrainerV2({
                     aria-pressed={showPuzzleStats}
                     title={showPuzzleStats ? 'Hide puzzle stats' : 'Show puzzle stats'}
                 >
-                    <span className="text-sm">puzzle stats</span>
+                    {showPuzzleStats ? (
+                        <EyeOff className="h-4 w-4" />
+                    ) : (
+                        <Eye className="h-4 w-4" />
+                    )}
+                    <span className="text-sm">stats</span>
                 </Button>
 
                 <Button

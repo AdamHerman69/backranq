@@ -39,10 +39,15 @@ type ChessComArchiveGamesResponse = {
     games?: ChessComGame[];
 };
 
-function parseTimeClass(v: string | null): TimeClass | undefined {
+function parseTimeClasses(v: string | null): TimeClass[] | undefined {
     if (!v) return undefined;
-    const tc = normalizeTimeClass(v);
-    return tc === 'unknown' ? undefined : tc;
+    const parts = v.split(',').map((s) => s.trim()).filter(Boolean);
+    const classes: TimeClass[] = [];
+    for (const p of parts) {
+        const tc = normalizeTimeClass(p);
+        if (tc !== 'unknown') classes.push(tc);
+    }
+    return classes.length > 0 ? classes : undefined;
 }
 
 function monthKey(d: Date) {
@@ -87,7 +92,7 @@ export async function GET(req: Request) {
 
     const since = parseIsoDateOrDateTime(url.searchParams.get('since'));
     const until = parseIsoDateOrDateTime(url.searchParams.get('until'));
-    const timeClass = parseTimeClass(url.searchParams.get('timeClass'));
+    const timeClasses = parseTimeClasses(url.searchParams.get('timeClass'));
     const rated = parseBooleanParam(url.searchParams.get('rated'));
     const minElo = parseNumberParam(url.searchParams.get('minElo'));
     const maxElo = parseNumberParam(url.searchParams.get('maxElo'));
@@ -180,7 +185,7 @@ export async function GET(req: Request) {
                 !passesFilters(ng, {
                     since,
                     until,
-                    timeClass,
+                    timeClasses,
                     rated,
                     minElo,
                     maxElo,

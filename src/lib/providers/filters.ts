@@ -3,7 +3,7 @@ import type { TimeClass } from "@/lib/types/game";
 export type GameFetchFilters = {
   since?: string; // ISO date or datetime
   until?: string; // ISO date or datetime
-  timeClass?: TimeClass;
+  timeClasses?: TimeClass[]; // empty or undefined = any
   rated?: boolean;
   minElo?: number;
   maxElo?: number;
