@@ -1889,7 +1889,7 @@ export function PuzzleTrainerV2({
                     onClick={() => void nextPuzzle()}
                     disabled={loadingNext}
                 >
-                    skip
+                    next
                 </Button>
             </div>
 

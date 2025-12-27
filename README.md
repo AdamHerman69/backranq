@@ -2,6 +2,14 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+### Environment variables
+
+Copy `env.local.example` to `.env.local` and fill in at least `NEXTAUTH_SECRET` and whichever OAuth provider credentials you want enabled.
+
+The sign-in page (`/login`) only shows providers whose env vars are set (see `src/lib/auth/config.ts`).
+
+If you want to automatically link accounts across providers by matching email (avoids `OAuthAccountNotLinked`), set `AUTH_DANGEROUS_EMAIL_LINKING=true`.
+
 First, run the development server:
 
 ```bash
