@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { ArrowRight, Zap, Target, TrendingUp } from 'lucide-react';
+import { SlidersHorizontal, Laptop, LineChart, Shuffle } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -129,48 +129,57 @@ export default function Home() {
                     <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-200/50 via-transparent to-transparent dark:from-zinc-800/30" />
                     
                     <div className="mx-auto max-w-3xl px-4 pt-16 pb-12 text-center sm:pt-24">
-                        <Badge variant="secondary" className="mb-6 text-xs font-medium tracking-wide uppercase">
+                        {/* <Badge variant="secondary" className="mb-6 text-xs font-medium tracking-wide uppercase">
                             Chess Improvement Tool
-                        </Badge>
+                        </Badge> */}
                         
                         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-                            Turn your mistakes into
+                            Puzzles from your 
                             <span className="block text-transparent bg-clip-text bg-gradient-to-r from-zinc-600 to-zinc-900 dark:from-zinc-200 dark:to-zinc-400">
-                                training puzzles
+                              blunders and missed wins
                             </span>
                         </h1>
                         
                         <p className="mt-6 text-lg text-muted-foreground max-w-xl mx-auto">
-                            Import your games from Lichess and Chess.com, 
-                            analyze them with Stockfish, and practice the positions where you went wrong.
+                            Import your games, fine-tune extraction to focus on what matters, 
+                            and analyze everything locally in your browser—completely free.
                         </p>
 
-                        <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
+                        <div className="mt-10 flex flex-col items-center gap-3 sm:flex-row sm:flex-wrap sm:justify-center">
                             <SignInButton
                                 className="h-12 px-8 text-base font-semibold"
                             >
-                                Get Started
-                                <ArrowRight className="ml-2 h-4 w-4" />
+                                Sign in with Google
                             </SignInButton>
-                            
-                            <Button variant="outline" asChild className="h-12 px-8 text-base">
-                                <Link href="/login">Sign In</Link>
-                            </Button>
+                            <SignInButton
+                                provider="lichess"
+                                variant="outline"
+                                className="h-12 px-8 text-base font-semibold"
+                            >
+                                Sign in with Lichess
+                            </SignInButton>
+                            <SignInButton
+                                provider="github"
+                                variant="outline"
+                                className="h-12 px-8 text-base font-semibold"
+                            >
+                                Sign in with GitHub
+                            </SignInButton>
                         </div>
                     </div>
                 </section>
 
                 {/* Features */}
                 <section className="mx-auto max-w-5xl px-4">
-                    <div className="grid gap-6 md:grid-cols-3">
+                    <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
                         <Card className="border-0 bg-zinc-50 dark:bg-zinc-900/50">
                             <CardContent className="pt-6">
                                 <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
-                                    <Zap className="h-5 w-5" />
+                                    <SlidersHorizontal className="h-5 w-5" />
                                 </div>
-                                <h3 className="font-semibold">Instant Analysis</h3>
+                                <h3 className="font-semibold">Your Games, Your Rules</h3>
                                 <p className="mt-2 text-sm text-muted-foreground">
-                                    Stockfish runs in your browser. No servers, no waiting, no limits.
+                                    Fine-tune what positions to include by tweaking the extraction parameters.
                                 </p>
                             </CardContent>
                         </Card>
@@ -178,11 +187,11 @@ export default function Home() {
                         <Card className="border-0 bg-zinc-50 dark:bg-zinc-900/50">
                             <CardContent className="pt-6">
                                 <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
-                                    <Target className="h-5 w-5" />
+                                    <Laptop className="h-5 w-5" />
                                 </div>
-                                <h3 className="font-semibold">Your Weaknesses</h3>
+                                <h3 className="font-semibold">Run Locally</h3>
                                 <p className="mt-2 text-sm text-muted-foreground">
-                                    Practice the exact positions where you blundered or missed wins.
+                                    Analysis runs in your browser—no server costs means no subscription fees.
                                 </p>
                             </CardContent>
                         </Card>
@@ -190,11 +199,23 @@ export default function Home() {
                         <Card className="border-0 bg-zinc-50 dark:bg-zinc-900/50">
                             <CardContent className="pt-6">
                                 <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
-                                    <TrendingUp className="h-5 w-5" />
+                                    <LineChart className="h-5 w-5" />
                                 </div>
-                                <h3 className="font-semibold">Track Progress</h3>
+                                <h3 className="font-semibold">Analyze</h3>
                                 <p className="mt-2 text-sm text-muted-foreground">
-                                    See your improvement over time with detailed attempt statistics.
+                                    Explore positions with analysis tools on par with Chess.com or Lichess.
+                                </p>
+                            </CardContent>
+                        </Card>
+
+                        <Card className="border-0 bg-zinc-50 dark:bg-zinc-900/50">
+                            <CardContent className="pt-6">
+                                <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
+                                    <Shuffle className="h-5 w-5" />
+                                </div>
+                                <h3 className="font-semibold">Multi solution puzzles</h3>
+                                <p className="mt-2 text-sm text-muted-foreground">
+                                    Not all puzzles have to be super tactical. Mix in positions where you blundered even though there were multiple correct moves. No more puzzle vision.
                                 </p>
                             </CardContent>
                         </Card>
@@ -220,7 +241,7 @@ export default function Home() {
                             </div>
                             <h3 className="font-medium">Analyze</h3>
                             <p className="mt-1 text-sm text-muted-foreground">
-                                Run Stockfish analysis to find blunders, missed wins, and tactical opportunities.
+                                Run local stockfish analysis to extract puzzles from blunders and missed wins.
                             </p>
                         </div>
                         <div>
@@ -229,7 +250,7 @@ export default function Home() {
                             </div>
                             <h3 className="font-medium">Train</h3>
                             <p className="mt-1 text-sm text-muted-foreground">
-                                Practice those positions as puzzles until you master them.
+                                Practice as you would with any puzzle set, analyze, improve.
                             </p>
                         </div>
                     </div>
@@ -243,11 +264,17 @@ export default function Home() {
                             <p className="mt-2 text-muted-foreground">
                                 Sign in to start analyzing your games and generating personalized puzzles.
                             </p>
-                            <SignInButton
-                                className="mt-6 h-11 px-8"
-                            >
-                                Sign In with Google
-                            </SignInButton>
+                            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-center">
+                                <SignInButton className="h-11 px-6">
+                                    Sign in with Google
+                                </SignInButton>
+                                <SignInButton provider="lichess" variant="outline" className="h-11 px-6">
+                                    Sign in with Lichess
+                                </SignInButton>
+                                <SignInButton provider="github" variant="outline" className="h-11 px-6">
+                                    Sign in with GitHub
+                                </SignInButton>
+                            </div>
                         </CardContent>
                     </Card>
                 </section>
