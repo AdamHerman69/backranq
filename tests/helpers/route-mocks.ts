@@ -13,6 +13,9 @@ type DelegateMethod = ReturnType<
     typeof vi.fn<(...args: unknown[]) => Promise<unknown>>
 >;
 type DelegateMock = Record<string, DelegateMethod>;
+type PrismaMockValue = DelegateMock | DelegateMethod;
+type PrismaMock = Record<string, DelegateMock> &
+    Record<`$${string}`, DelegateMethod>;
 
 function createDelegateMock() {
     const methods: DelegateMock = {};
@@ -26,16 +29,18 @@ function createDelegateMock() {
     });
 }
 
-function createPrismaMock() {
-    const delegates: Record<string, DelegateMock> = {};
+function createPrismaMock(): PrismaMock {
+    const delegates: Record<string, PrismaMockValue> = {};
 
     return new Proxy(delegates, {
         get(target, property) {
             if (typeof property !== 'string') return undefined;
-            target[property] ??= createDelegateMock();
+            target[property] ??= property.startsWith('$')
+                ? vi.fn()
+                : createDelegateMock();
             return target[property];
         },
-    });
+    }) as PrismaMock;
 }
 
 export const authMock = vi.fn<() => Promise<MockSession>>(async () => null);

@@ -4,7 +4,9 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ### Environment variables
 
-Copy `env.local.example` to `.env.local` and fill in at least `NEXTAUTH_SECRET` and whichever OAuth provider credentials you want enabled.
+Copy `env.local.example` to `.env.local` and fill in at least `DATABASE_URL`, `DIRECT_URL`, `NEXTAUTH_SECRET`, and whichever OAuth provider credentials you want enabled.
+
+For Supabase-backed local development, also set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. The health endpoint reports Prisma/database health separately from Supabase REST configuration, but still fails overall when required env is missing.
 
 The sign-in page (`/login`) only shows providers whose env vars are set (see `src/lib/auth/config.ts`).
 
