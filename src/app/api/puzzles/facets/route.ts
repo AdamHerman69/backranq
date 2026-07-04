@@ -39,6 +39,7 @@ export async function GET(req: Request) {
               COUNT(*) AS "count"
             FROM "Puzzle"
             WHERE "userId" = ${Prisma.sql`${userId}::uuid`}
+              AND "archivedAt" IS NULL
               AND "openingEco" IS NOT NULL
             GROUP BY "openingEco"
             ORDER BY COUNT(*) DESC
@@ -48,6 +49,7 @@ export async function GET(req: Request) {
             SELECT t.tag AS tag, COUNT(*) AS count
             FROM "Puzzle" p, UNNEST(p."tags") AS t(tag)
             WHERE p."userId" = ${Prisma.sql`${userId}::uuid`}
+              AND p."archivedAt" IS NULL
             GROUP BY t.tag
             ORDER BY COUNT(*) DESC
             LIMIT ${limit};

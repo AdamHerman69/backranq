@@ -85,13 +85,19 @@ export default async function GamesPage({
     if (since) {
         const d = new Date(since);
         if (!Number.isNaN(d.getTime())) {
-            where.playedAt = { ...(where.playedAt as any), gte: d };
+            where.playedAt = {
+                ...(where.playedAt as Prisma.DateTimeFilter),
+                gte: d,
+            };
         }
     }
     if (until) {
         const d = new Date(until);
         if (!Number.isNaN(d.getTime())) {
-            where.playedAt = { ...(where.playedAt as any), lte: d };
+            where.playedAt = {
+                ...(where.playedAt as Prisma.DateTimeFilter),
+                lte: d,
+            };
         }
     }
 
@@ -150,7 +156,7 @@ export default async function GamesPage({
     if (rows.length > 0) {
         const gameIds = rows.map((g) => g.id);
         const puzzleRows = await prisma.puzzle.findMany({
-            where: { userId, gameId: { in: gameIds } },
+            where: { userId, archivedAt: null, gameId: { in: gameIds } },
             orderBy: { sourcePly: 'asc' },
             select: { id: true, gameId: true, sourcePly: true, type: true },
         });
@@ -256,5 +262,3 @@ export default async function GamesPage({
         </div>
     );
 }
-
-

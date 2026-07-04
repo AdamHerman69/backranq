@@ -13,12 +13,18 @@ type PrismaMockWithTransaction = typeof prismaMock & {
     $transaction: ReturnType<typeof vi.fn>;
 };
 
+const ownedGame = {
+    id: 'game-1',
+    provider: 'LICHESS',
+    externalId: 'source-game-1',
+};
+
 const validPuzzle: Puzzle = {
     id: 'puzzle-1',
     type: 'blunder',
     mode: 'avoidBlunder',
     provider: 'lichess',
-    sourceGameId: 'game-1',
+    sourceGameId: 'lichess:source-game-1',
     sourcePly: 12,
     playedAt: '2026-07-04T12:00:00.000Z',
     fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
@@ -46,6 +52,7 @@ function createPutRequest(body: Parameters<typeof createJsonRequest>[1]) {
 
 describe('PUT /api/games/[id]/puzzles', () => {
     beforeEach(() => {
+        vi.clearAllMocks();
         setMockUserId('user-1');
         (prismaMock as PrismaMockWithTransaction).$transaction = vi.fn();
     });
@@ -104,16 +111,16 @@ describe('PUT /api/games/[id]/puzzles', () => {
         ).not.toHaveBeenCalled();
     });
 
-    it('allows explicit empty puzzle arrays to replace existing puzzles', async () => {
+    it('allows explicit empty puzzle arrays to archive existing puzzles', async () => {
         const route = await importRoute();
         const tx = {
             puzzle: {
-                deleteMany: vi.fn(),
-                createMany: vi.fn(),
+                updateMany: vi.fn().mockResolvedValue({ count: 2 }),
+                upsert: vi.fn(),
             },
         };
 
-        prismaMock.analyzedGame.findFirst.mockResolvedValue({ id: 'game-1' });
+        prismaMock.analyzedGame.findFirst.mockResolvedValue(ownedGame);
         (prismaMock as PrismaMockWithTransaction).$transaction = vi.fn(
             async (callback) => callback(tx)
         );
@@ -126,11 +133,43 @@ describe('PUT /api/games/[id]/puzzles', () => {
             ok: true,
             deleted: true,
             created: 0,
+            upserted: 0,
+            staleArchived: 2,
         });
         expect(response.status).toBe(200);
-        expect(tx.puzzle.deleteMany).toHaveBeenCalledWith({
-            where: { userId: 'user-1', gameId: 'game-1' },
+        expect(tx.puzzle.updateMany).toHaveBeenCalledWith({
+            where: {
+                userId: 'user-1',
+                gameId: 'game-1',
+                archivedAt: null,
+            },
+            data: { archivedAt: expect.any(Date) },
         });
-        expect(tx.puzzle.createMany).not.toHaveBeenCalled();
+        expect(tx.puzzle.upsert).not.toHaveBeenCalled();
+        expect(prismaMock.puzzle.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects puzzles for a different source game before replacement', async () => {
+        const route = await importRoute();
+        prismaMock.analyzedGame.findFirst.mockResolvedValue(ownedGame);
+
+        const response = await route.PUT(
+            createPutRequest({
+                puzzles: [
+                    { ...validPuzzle, sourceGameId: 'lichess:other-game' },
+                ],
+            }),
+            { params: Promise.resolve({ id: 'game-1' }) }
+        );
+
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Puzzle game mismatch',
+        });
+        expect(response.status).toBe(400);
+        expect(
+            (prismaMock as PrismaMockWithTransaction).$transaction
+        ).not.toHaveBeenCalled();
+        expect(prismaMock.puzzle.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.puzzle.deleteMany).not.toHaveBeenCalled();
     });
 });

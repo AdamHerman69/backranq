@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 export type UserProfile = {
     id: string;
-    email: string;
+    email: string | null;
     name: string | null;
     image: string | null;
     lichessUsername: string | null;
@@ -69,7 +69,7 @@ export function ProfileForm({ initialUser }: Props) {
                 <CardHeader>
                     <CardTitle className="text-base">Profile</CardTitle>
                     <CardDescription>
-                        {user.email}
+                        {user.email ?? '—'}
                         {user.name ? ` • ${user.name}` : ''}
                     </CardDescription>
                 </CardHeader>
@@ -98,5 +98,4 @@ export function ProfileForm({ initialUser }: Props) {
         </div>
     );
 }
-
 

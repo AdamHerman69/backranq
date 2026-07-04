@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { puzzleToDb } from '@/lib/api/puzzles';
 import { validatePuzzleReplacementBody } from './validation';
+import { replaceGamePuzzlesInTransaction } from '@/lib/api/puzzlePersistence';
+import { providerToUi } from '@/lib/api/games';
 
 export const runtime = 'nodejs';
 
@@ -27,24 +28,38 @@ export async function PUT(
 
     const game = await prisma.analyzedGame.findFirst({
         where: { id, userId },
-        select: { id: true },
+        select: { id: true, provider: true, externalId: true },
     });
     if (!game)
         return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-    const cleaned = validation.puzzles.map((p) =>
-        puzzleToDb({ puzzle: p, userId, gameId: id })
-    );
+    const normalizedGameId = `${providerToUi(game.provider)}:${game.externalId}`;
+    if (
+        validation.puzzles.some(
+            (puzzle) => puzzle.sourceGameId !== normalizedGameId
+        )
+    ) {
+        return NextResponse.json(
+            { error: 'Puzzle game mismatch' },
+            { status: 400 }
+        );
+    }
 
-    // Idempotent: replace puzzles for this game.
+    // Idempotent: preserve stable puzzle rows by @@unique([gameId, sourcePly, fen])
+    // so existing PuzzleAttempt history survives regeneration.
     const result = await prisma.$transaction(async (tx) => {
-        await tx.puzzle.deleteMany({ where: { userId, gameId: id } });
-        if (cleaned.length === 0) return { deleted: true, created: 0 };
-        const created = await tx.puzzle.createMany({
-            data: cleaned,
-            skipDuplicates: true,
+        const replacement = await replaceGamePuzzlesInTransaction({
+            tx,
+            userId,
+            gameId: id,
+            puzzles: validation.puzzles,
         });
-        return { deleted: true, created: created.count };
+        return {
+            deleted: true,
+            created: replacement.upserted,
+            upserted: replacement.upserted,
+            staleArchived: replacement.staleArchived,
+        };
     });
 
     return NextResponse.json({ ok: true, ...result });

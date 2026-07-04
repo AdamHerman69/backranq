@@ -42,7 +42,7 @@ enum GamePhase {
 
 model User {
   id               String   @id @default(uuid()) @db.Uuid
-  email            String   @unique
+  email            String?  @unique
   emailVerified    DateTime?
   name             String?
   image            String?
@@ -113,6 +113,7 @@ model Puzzle {
   openingVariation String?
   label            String?
   createdAt        DateTime   @default(now())
+  archivedAt       DateTime?
 
   user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   game     AnalyzedGame    @relation(fields: [gameId], references: [id], onDelete: Cascade)
@@ -121,6 +122,8 @@ model Puzzle {
   @@unique([gameId, sourcePly, fen])
   @@index([userId])
   @@index([gameId])
+  @@index([userId, archivedAt])
+  @@index([gameId, archivedAt])
 }
 
 model PuzzleAttempt {

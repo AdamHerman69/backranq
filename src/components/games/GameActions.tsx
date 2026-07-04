@@ -93,27 +93,17 @@ export function GameActions({
             const saveRes = await fetch(`/api/games/${dbGameId}/analysis`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(analysis),
+                body: JSON.stringify({
+                    analysis,
+                    puzzles: (res.puzzles ?? []).filter(
+                        (p) => p.sourceGameId === normalizedGame.id
+                    ),
+                }),
             });
             const saveJson = (await saveRes.json().catch(() => ({}))) as {
                 error?: string;
             };
             if (!saveRes.ok) throw new Error(saveJson.error ?? 'Failed to save');
-
-            const puzzlesForGame = (res.puzzles ?? []).filter(
-                (p) => p.sourceGameId === normalizedGame.id
-            );
-            const puzzlesRes = await fetch(`/api/games/${dbGameId}/puzzles`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ puzzles: puzzlesForGame }),
-            });
-            const puzzlesJson = (await puzzlesRes.json().catch(() => ({}))) as {
-                error?: string;
-                created?: number;
-            };
-            if (!puzzlesRes.ok)
-                throw new Error(puzzlesJson.error ?? 'Failed to save puzzles');
 
             toast.success('Analysis saved', { id });
             onAnalysisSaved?.(analysis);
@@ -202,5 +192,4 @@ export function GameActions({
         </div>
     );
 }
-
 

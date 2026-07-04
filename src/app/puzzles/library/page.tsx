@@ -69,7 +69,7 @@ export default async function PuzzleLibraryPage({
     const tags = parseCsv(tagsParam, 16);
     const openingEco = parseCsv(openingEcoParam, 32).map((s) => s.toUpperCase());
 
-    const where: Prisma.PuzzleWhereInput = { userId };
+    const where: Prisma.PuzzleWhereInput = { userId, archivedAt: null };
     const and: Prisma.PuzzleWhereInput[] = [];
     if (type === 'avoidBlunder') where.type = 'AVOID_BLUNDER';
     if (type === 'punishBlunder') where.type = 'PUNISH_BLUNDER';
@@ -256,4 +256,3 @@ export default async function PuzzleLibraryPage({
         </div>
     );
 }
-
