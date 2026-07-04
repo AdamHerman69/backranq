@@ -1830,7 +1830,7 @@ export async function extractPuzzlesFromGames(args: {
                                         const tagsAndSeverity =
                                             tagsForCandidate({
                                                 fenBefore: fenAfter, // puzzle starts here
-                                                fenAfter: fenAfter, // same for now
+                                                fenAfter, // candidate is evaluated from the puzzle start position
                                                 moverColor: userColor,
                                                 bestAtBefore: finalEval,
                                                 bestAtAfter: finalEval,

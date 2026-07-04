@@ -3,7 +3,7 @@ import type { MetadataRoute } from 'next';
 export default function manifest(): MetadataRoute.Manifest {
     return {
         name: 'Backranq - Chess Puzzle Trainer',
-        short_name: 'backranq',
+        short_name: 'Backranq',
         description: 'Train chess puzzles from your own games',
         start_url: '/',
         display: 'standalone',
