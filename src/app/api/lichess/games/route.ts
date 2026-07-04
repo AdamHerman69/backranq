@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
 import type { NormalizedGame, TimeClass } from '@/lib/types/game';
 import {
     clampInt,
@@ -53,6 +54,11 @@ function parseTimeClasses(v: string | null): TimeClass[] | undefined {
 }
 
 export async function GET(req: Request) {
+    const session = await auth();
+    const userId = session?.user?.id;
+    if (!userId)
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
     const url = new URL(req.url);
     const username = url.searchParams.get('username')?.trim();
     if (!username) {
