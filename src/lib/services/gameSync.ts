@@ -22,10 +22,27 @@ export type SyncStatus = {
     };
 };
 
+type SaveGamesResult = {
+    saved: number;
+    skipped: number;
+    ids: Record<string, string>;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object';
+}
+
+function errorMessageFromJson(json: unknown, fallback: string) {
+    return isRecord(json) && typeof json.error === 'string'
+        ? json.error
+        : fallback;
+}
+
 export async function getSyncStatus(): Promise<SyncStatus> {
     const res = await fetch('/api/sync/status', { cache: 'no-store' });
-    const json = (await res.json().catch(() => ({}))) as any;
-    if (!res.ok) throw new Error(json?.error ?? 'Failed to load sync status');
+    const json = (await res.json().catch(() => ({}))) as unknown;
+    if (!res.ok)
+        throw new Error(errorMessageFromJson(json, 'Failed to load sync status'));
     return json as SyncStatus;
 }
 
@@ -52,12 +69,16 @@ export async function fetchGamesFromProvider(args: {
     const res = await fetch(`/api/${args.provider}/games?${qs}`, {
         cache: 'no-store',
     });
-    const json = (await res.json().catch(() => ({}))) as any;
+    const json = (await res.json().catch(() => ({}))) as unknown;
     if (!res.ok)
         throw new Error(
-            json?.error ?? `Failed to fetch ${args.provider} games`
+            errorMessageFromJson(
+                json,
+                `Failed to fetch ${args.provider} games`
+            )
         );
-    return Array.isArray(json?.games) ? (json.games as NormalizedGame[]) : [];
+    const games = isRecord(json) ? json.games : undefined;
+    return Array.isArray(games) ? (games as NormalizedGame[]) : [];
 }
 
 export async function getExistingExternalIds(args: {
@@ -69,11 +90,16 @@ export async function getExistingExternalIds(args: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(args),
     });
-    const json = (await res.json().catch(() => ({}))) as any;
+    const json = (await res.json().catch(() => ({}))) as unknown;
     if (!res.ok)
-        throw new Error(json?.error ?? 'Failed to check existing games');
-    const list = Array.isArray(json?.existingExternalIds)
+        throw new Error(
+            errorMessageFromJson(json, 'Failed to check existing games')
+        );
+    const existingExternalIds = isRecord(json)
         ? json.existingExternalIds
+        : undefined;
+    const list = Array.isArray(existingExternalIds)
+        ? existingExternalIds.filter((id): id is string => typeof id === 'string')
         : [];
     return new Set<string>(list);
 }
@@ -84,13 +110,10 @@ export async function saveGamesToLibrary(args: { games: NormalizedGame[] }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ games: args.games }),
     });
-    const json = (await res.json().catch(() => ({}))) as any;
-    if (!res.ok) throw new Error(json?.error ?? 'Failed to save games');
-    return json as {
-        saved: number;
-        skipped: number;
-        ids: Record<string, string>;
-    };
+    const json = (await res.json().catch(() => ({}))) as unknown;
+    if (!res.ok)
+        throw new Error(errorMessageFromJson(json, 'Failed to save games'));
+    return json as SaveGamesResult;
 }
 
 export function splitNewVsExisting(
@@ -108,4 +131,3 @@ export function splitNewVsExisting(
     }
     return { newGames, existingGames };
 }
-

@@ -70,6 +70,18 @@ function uid() {
     return `att-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function errorMessageFromJson(json: unknown, fallback: string) {
+    if (
+        json &&
+        typeof json === 'object' &&
+        'error' in json &&
+        typeof json.error === 'string'
+    ) {
+        return json.error;
+    }
+    return fallback;
+}
+
 async function sendAttempt(a: QueuedAttempt) {
     const res = await fetch(`/api/puzzles/${a.puzzleId}/attempt`, {
         method: 'POST',
@@ -80,10 +92,10 @@ async function sendAttempt(a: QueuedAttempt) {
             timeSpentMs: a.timeSpentMs,
         }),
     });
-    const json = (await res.json().catch(() => ({}))) as any;
+    const json = (await res.json().catch(() => ({}))) as unknown;
     if (!res.ok)
         throw new AttemptSendError(
-            json?.error ?? 'Failed to record attempt',
+            errorMessageFromJson(json, 'Failed to record attempt'),
             res.status
         );
     return json;

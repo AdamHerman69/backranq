@@ -6,9 +6,9 @@ function textFromArgs(args: unknown[]): string {
     return args
         .map((a) => {
             if (typeof a === 'string') return a;
-            if (a && typeof a === 'object' && 'message' in (a as any)) {
-                const m = (a as any).message;
-                return typeof m === 'string' ? m : '';
+            if (a && typeof a === 'object' && 'message' in a) {
+                const message = (a as { message?: unknown }).message;
+                return typeof message === 'string' ? message : '';
             }
             try {
                 return JSON.stringify(a);
@@ -56,6 +56,5 @@ export function ConsoleNoiseFilter() {
 
     return null;
 }
-
 
 

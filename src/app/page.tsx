@@ -365,7 +365,7 @@ export default function Home() {
                         <div className="mx-auto max-w-md">
                             <h2 className="text-xl font-semibold">Analyze your games</h2>
                             <p className="mt-2 text-muted-foreground">
-                                You have {gameCount} games imported. Click "Analyze games" above to generate puzzles from your mistakes.
+                                You have {gameCount} games imported. Click &quot;Analyze games&quot; above to generate puzzles from your mistakes.
                             </p>
                             <Button className="mt-6" asChild>
                                 <Link href="/games">Go to Games</Link>

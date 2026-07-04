@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Chess, type Move as VerboseMove, type Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { extractStartFenFromPgn, parseUci, uciLineToSan, uciToSan } from '@/lib/chess/utils';
@@ -37,6 +37,61 @@ const START_FEN = new Chess().fen();
 
 function clamp(n: number, min: number, max: number) {
     return Math.max(min, Math.min(max, n));
+}
+
+function hasInitialPly(initialPly: number | undefined): initialPly is number {
+    return typeof initialPly === 'number' && Number.isFinite(initialPly);
+}
+
+function initialPlyValue(initialPly: number | undefined, maxPly?: number) {
+    if (!hasInitialPly(initialPly)) return 0;
+    const next = Math.max(0, Math.trunc(initialPly));
+    return typeof maxPly === 'number' ? clamp(next, 0, maxPly) : next;
+}
+
+type PlyState = {
+    value: number;
+    initialPlyApplied: boolean;
+};
+
+type PvSelection = {
+    fen: string;
+    idx: number;
+    key: string | null;
+};
+
+function defaultPvSelection(fen: string): PvSelection {
+    return { fen, idx: 0, key: null };
+}
+
+function createStockfishClientStore() {
+    let client: StockfishClient | null = null;
+    const listeners = new Set<() => void>();
+
+    const notify = () => {
+        for (const listener of listeners) listener();
+    };
+
+    return {
+        getSnapshot: () => client,
+        getServerSnapshot: () => null,
+        subscribe: (listener: () => void) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+        },
+        ensureClient: () => {
+            if (client) return client;
+            client = new StockfishClient();
+            notify();
+            return client;
+        },
+        terminate: () => {
+            if (!client) return;
+            client.terminate();
+            client = null;
+            notify();
+        },
+    };
 }
 
 function formatEval(score: Score | null, fen: string): string {
@@ -145,21 +200,6 @@ export function GameViewer({
     userBoardOrientation?: 'white' | 'black';
     initialPly?: number;
 }) {
-    const [ply, setPly] = useState(0);
-    const [showPvArrows, setShowPvArrows] = useState(true);
-    const movesScrollRef = useRef<HTMLDivElement | null>(null);
-    const initialPlyAppliedRef = useRef(false);
-
-    const engineRef = useRef<StockfishClient | null>(null);
-    const [engineClient, setEngineClient] = useState<StockfishClient | null>(null);
-    const [analysisEnabled, setAnalysisEnabled] = useState(true);
-    const [analysisMultiPv, setAnalysisMultiPv] = useState(3);
-    const [selection, setSelection] = useState<{
-        fen: string;
-        idx: number;
-        key: string | null;
-    }>({ fen: START_FEN, idx: 0, key: null });
-
     const parsed = useMemo(() => {
         const chess = new Chess();
         try {
@@ -204,20 +244,48 @@ export function GameViewer({
         return { movesSan, verboseMoves, startFen, positions };
     }, [pgn]);
 
+    const initialPlyForState = initialPlyValue(
+        initialPly,
+        parsed ? parsed.positions.length - 1 : undefined
+    );
+    const initialSelectionFen =
+        parsed?.positions[initialPlyForState]?.fen ?? parsed?.startFen ?? START_FEN;
+
+    const [plyState, setPlyState] = useState<PlyState>({
+        value: initialPlyForState,
+        initialPlyApplied: !!parsed && hasInitialPly(initialPly),
+    });
+    const [showPvArrows, setShowPvArrows] = useState(true);
+    const movesScrollRef = useRef<HTMLDivElement | null>(null);
+
+    const engineStore = useMemo(() => createStockfishClientStore(), []);
+    const engineClient = useSyncExternalStore(
+        engineStore.subscribe,
+        engineStore.getSnapshot,
+        engineStore.getServerSnapshot
+    );
+    const [analysisEnabled, setAnalysisEnabled] = useState(true);
+    const [analysisMultiPv, setAnalysisMultiPv] = useState(3);
+    const [selection, setSelection] = useState<PvSelection>(
+        defaultPvSelection(initialSelectionFen)
+    );
+
+    const pendingInitialPly =
+        !plyState.initialPlyApplied && parsed && hasInitialPly(initialPly)
+            ? initialPlyValue(initialPly, parsed.positions.length - 1)
+            : null;
+    if (pendingInitialPly !== null) {
+        setPlyState({
+            value: pendingInitialPly,
+            initialPlyApplied: true,
+        });
+    }
+    const ply = pendingInitialPly ?? plyState.value;
+
     const clampedPly = useMemo(() => {
         if (!parsed) return 0;
         return clamp(ply, 0, parsed.positions.length - 1);
     }, [ply, parsed]);
-
-    // Allow deep-linking to a specific ply (e.g. from the puzzle trainer).
-    useEffect(() => {
-        if (initialPlyAppliedRef.current) return;
-        if (!parsed) return;
-        if (typeof initialPly !== 'number' || !Number.isFinite(initialPly)) return;
-        const next = clamp(Math.trunc(initialPly), 0, parsed.positions.length - 1);
-        setPly(next);
-        initialPlyAppliedRef.current = true;
-    }, [parsed, initialPly]);
 
     // Keep the active move visible in the move list, without scrolling the page.
     // `scrollIntoView()` can scroll the *window* which feels like the page is jumping.
@@ -249,15 +317,35 @@ export function GameViewer({
         return parsed.positions[clampedPly]?.fen ?? parsed.startFen;
     }, [parsed, clampedPly]);
 
+    if (selection.fen !== fen) {
+        setSelection(defaultPvSelection(fen));
+    }
+
+    const setActivePly = useCallback(
+        (nextPly: number) => {
+            if (!parsed) {
+                setPlyState((prev) => ({
+                    ...prev,
+                    value: Math.max(0, Math.trunc(nextPly)),
+                }));
+                return;
+            }
+
+            const next = clamp(Math.trunc(nextPly), 0, parsed.positions.length - 1);
+            const nextFen = parsed.positions[next]?.fen ?? parsed.startFen;
+
+            setPlyState((prev) => ({ ...prev, value: next }));
+            if (nextFen !== fen) setSelection(defaultPvSelection(nextFen));
+        },
+        [fen, parsed]
+    );
+
     // Mirror PuzzleTrainerV2: only construct the engine when analysis is needed.
     useEffect(() => {
         if (!analysisEnabled) return;
         if (!fen) return;
-        if (engineClient) return;
-        const client = new StockfishClient();
-        engineRef.current = client;
-        setEngineClient(client);
-    }, [analysisEnabled, fen, engineClient]);
+        engineStore.ensureClient();
+    }, [analysisEnabled, engineStore, fen]);
 
     const lastMove = useMemo(() => {
         if (!parsed) return null;
@@ -288,21 +376,21 @@ export function GameViewer({
 
             if (e.key === 'ArrowLeft') {
                 e.preventDefault();
-                setPly((p) => Math.max(0, p - 1));
+                setActivePly(clampedPly - 1);
             } else if (e.key === 'ArrowRight') {
                 e.preventDefault();
-                setPly((p) => Math.min(parsed.positions.length - 1, p + 1));
+                setActivePly(clampedPly + 1);
             } else if (e.key === 'Home') {
                 e.preventDefault();
-                setPly(0);
+                setActivePly(0);
             } else if (e.key === 'End') {
                 e.preventDefault();
-                setPly(parsed.positions.length - 1);
+                setActivePly(parsed.positions.length - 1);
             }
         }
         window.addEventListener('keydown', onKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
-    }, [parsed]);
+    }, [clampedPly, parsed, setActivePly]);
 
     const analyzeStreamingEnabled = analysisEnabled && !!fen && !!engineClient;
     const live = useStockfishLiveMultiPvAnalysis({
@@ -321,14 +409,15 @@ export function GameViewer({
 
     const selectedLine = useMemo(() => {
         const lines = live.lines;
-        if (selection.fen !== fen) return 0;
-        if (selection.key) {
+        const activeSelection =
+            selection.fen === fen ? selection : defaultPvSelection(fen);
+        if (activeSelection.key) {
             const idx = lines.findIndex(
-                (l) => (l.pvUci ?? []).join(' ') === selection.key
+                (l) => (l.pvUci ?? []).join(' ') === activeSelection.key
             );
             if (idx >= 0) return idx;
         }
-        return Math.max(0, Math.min(selection.idx, lines.length - 1));
+        return Math.max(0, Math.min(activeSelection.idx, lines.length - 1));
     }, [live.lines, selection, fen]);
 
     const pvSanByLine = useMemo(() => {
@@ -344,18 +433,9 @@ export function GameViewer({
 
     useEffect(() => {
         return () => {
-            engineRef.current?.terminate();
-            engineRef.current = null;
+            engineStore.terminate();
         };
-    }, []);
-
-    useEffect(() => {
-        // Reset PV selection when the position changes (matches trainer behavior).
-        setSelection((prev) => {
-            if (prev.fen === fen) return prev;
-            return { fen, idx: 0, key: null };
-        });
-    }, [fen]);
+    }, [engineStore]);
 
     const analysisEvalScore = useMemo(() => {
         const line = live.lines?.[selectedLine] ?? live.lines?.[0];
@@ -445,7 +525,7 @@ export function GameViewer({
                             <Button
                                 variant="outline"
                                 size="sm"
-                                onClick={() => setPly(0)}
+                                onClick={() => setActivePly(0)}
                                 disabled={clampedPly === 0}
                             >
                                 Start
@@ -453,7 +533,7 @@ export function GameViewer({
                             <Button
                                 variant="outline"
                                 size="sm"
-                                onClick={() => setPly((p) => Math.max(0, p - 1))}
+                                onClick={() => setActivePly(clampedPly - 1)}
                                 disabled={clampedPly === 0}
                             >
                                 Back
@@ -465,9 +545,7 @@ export function GameViewer({
                                 variant="outline"
                                 size="sm"
                                 onClick={() =>
-                                    setPly((p) =>
-                                        Math.min(parsed.positions.length - 1, p + 1)
-                                    )
+                                    setActivePly(clampedPly + 1)
                                 }
                                 disabled={clampedPly >= parsed.positions.length - 1}
                             >
@@ -476,7 +554,7 @@ export function GameViewer({
                             <Button
                                 variant="outline"
                                 size="sm"
-                                onClick={() => setPly(parsed.positions.length - 1)}
+                                onClick={() => setActivePly(parsed.positions.length - 1)}
                                 disabled={clampedPly >= parsed.positions.length - 1}
                             >
                                 End
@@ -750,7 +828,7 @@ export function GameViewer({
                                                         ? tooltipParts.join(' • ')
                                                         : undefined
                                                 }
-                                                onClick={() => setPly(idx + 1)}
+                                                onClick={() => setActivePly(idx + 1)}
                                             >
                                                 <span className="w-9 shrink-0 text-muted-foreground">
                                                     {side === 'w'
@@ -796,5 +874,3 @@ export function GameViewer({
         </div>
     );
 }
-
-
