@@ -361,24 +361,19 @@ export function PuzzleTrainerV2({
     const engineRef = useRef<StockfishClient | null>(null);
     const [engineClient, setEngineClient] = useState<StockfishClient | null>(null);
 
-    const {
-        startAttempt,
-        recordAttempt,
-        flushQueue,
-        saving: attemptSaving,
-        queued: attemptQueued,
-        lastError: attemptLastError,
-    } = usePuzzleAttempt();
+    const { startAttempt, recordAttempt } = usePuzzleAttempt();
 
     const [viewMode, setViewMode] = useState<TrainerViewMode>(initialViewMode);
     const [filtersOpen, setFiltersOpen] = useState(false);
     const [tagsRevealed, setTagsRevealed] = useState(false);
     const [showPuzzleStats, setShowPuzzleStats] = useState(false);
+    const showPuzzleStatsRef = useRef(showPuzzleStats);
 
     const [queue, setQueue] = useState<Puzzle[]>([]);
     const [idx, setIdx] = useState(0);
 
     const currentPuzzle = queue[idx] ?? null;
+    const currentPuzzleId = currentPuzzle?.id ?? null;
     const [directLoadError, setDirectLoadError] = useState<string | null>(null);
 
     // Keep refs to avoid URL<->state feedback loops.
@@ -394,6 +389,9 @@ export function PuzzleTrainerV2({
     useEffect(() => {
         idxRef.current = idx;
     }, [idx]);
+    useEffect(() => {
+        showPuzzleStatsRef.current = showPuzzleStats;
+    }, [showPuzzleStats]);
 
     const trainerFilters = useMemo<TrainerFilters>(() => {
         const type = (sp?.get('type') ?? '').trim();
@@ -436,6 +434,10 @@ export function PuzzleTrainerV2({
         const raw = sp?.get('puzzleId');
         return typeof raw === 'string' ? raw.trim() : '';
     }, [sp]);
+    const trainerOpeningEcoKey = trainerFilters.openingEco.join(',');
+    const trainerTagsKey = trainerFilters.tags.join(',');
+    const trainerSolvedKey = String(trainerFilters.solved);
+    const trainerFailedKey = String(trainerFilters.failed);
 
     const [sourceGame, setSourceGame] = useState<NormalizedGame | null>(null);
     const [sourceParsed, setSourceParsed] = useState<SourceParsed | null>(null);
@@ -446,7 +448,6 @@ export function PuzzleTrainerV2({
     const [attemptLastMove, setAttemptLastMove] = useState<{ from: Square; to: Square } | null>(null);
     const [attemptUci, setAttemptUci] = useState<string | null>(null);
     const [attemptResult, setAttemptResult] = useState<'correct' | 'incorrect' | null>(null);
-    const [solvedKind, setSolvedKind] = useState<'best' | 'safe' | null>(null);
     const [showSolution, setShowSolution] = useState(false);
 
     // Source-game reveal (the move that was actually played in the source game)
@@ -459,6 +460,7 @@ export function PuzzleTrainerV2({
     const [puzzleStatsError, setPuzzleStatsError] = useState<string | null>(null);
     const [puzzleStats, setPuzzleStats] = useState<PuzzleAttemptStats | null>(null);
     const [puzzleAttempts, setPuzzleAttempts] = useState<PuzzleAttemptRow[]>([]);
+    const [statsRefreshNonce, setStatsRefreshNonce] = useState(0);
 
     // Solve mode: wrong-move refutation playback + overlay
     const [refutationLineUci, setRefutationLineUci] = useState<string[] | null>(null);
@@ -529,8 +531,6 @@ export function PuzzleTrainerV2({
     const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
     const [legalTargets, setLegalTargets] = useState<Set<Square>>(new Set());
 
-    const engineMoveTimeMsSolve = 200;
-
     const replaceUrlSearch = useCallback(
         (next: URLSearchParams) => {
             if (typeof window === 'undefined') return;
@@ -597,7 +597,7 @@ export function PuzzleTrainerV2({
         }
     }
 
-    async function fetchNextPuzzle() {
+    const fetchNextPuzzle = useCallback(async () => {
         const excludeIds = queue.slice(-25).map((p) => p.id);
         const res = await getRandom({
             count: 1,
@@ -614,7 +614,19 @@ export function PuzzleTrainerV2({
         });
         const p = res[0] as Puzzle | undefined;
         return p ?? null;
-    }
+    }, [
+        getRandom,
+        queue,
+        trainerFilters.type,
+        trainerFilters.kind,
+        trainerFilters.phase,
+        trainerFilters.multiSolution,
+        trainerFilters.openingEco,
+        trainerFilters.tags,
+        trainerFilters.solved,
+        trainerFilters.failed,
+        trainerFilters.gameId,
+    ]);
 
     function cancelEnsureOneInFlight() {
         // Bump the request id so any in-flight completion becomes a no-op.
@@ -711,10 +723,10 @@ export function PuzzleTrainerV2({
         trainerFilters.kind,
         trainerFilters.phase,
         trainerFilters.multiSolution,
-        trainerFilters.openingEco.join(','),
-        trainerFilters.tags.join(','),
-        String(trainerFilters.solved),
-        String(trainerFilters.failed),
+        trainerOpeningEcoKey,
+        trainerTagsKey,
+        trainerSolvedKey,
+        trainerFailedKey,
         trainerFilters.gameId,
     ]);
 
@@ -725,7 +737,6 @@ export function PuzzleTrainerV2({
         setAttemptLastMove(null);
         setAttemptUci(null);
         setAttemptResult(null);
-        setSolvedKind(null);
         setShowSolution(false);
         setRefutationLineUci(null);
         setRefutationStep(0);
@@ -746,7 +757,7 @@ export function PuzzleTrainerV2({
         setAnalysisRootFen(currentPuzzle.fen);
         setAnalysisHistory([currentPuzzle.fen]);
         setAnalysisHistoryIdx(0);
-    }, [currentPuzzle?.id, startAttempt]);
+    }, [currentPuzzle, startAttempt]);
 
     // Always load source game
     useEffect(() => {
@@ -827,10 +838,6 @@ export function PuzzleTrainerV2({
         return uciToSan(currentPuzzle.fen, currentPuzzle.bestMoveUci) ?? currentPuzzle.bestMoveUci;
     }, [currentPuzzle]);
 
-    const multiSolutionTagPresent = useMemo(() => {
-        return (currentPuzzle?.tags ?? []).includes('multiSolution');
-    }, [currentPuzzle?.tags]);
-
     const orientation = useMemo(() => {
         if (!currentPuzzle) return 'white' as const;
         const stm = sideToMoveFromFen(currentPuzzle.fen);
@@ -849,7 +856,7 @@ export function PuzzleTrainerV2({
         if (typeof v !== 'number') return null;
         if (!Number.isFinite(v)) return null;
         return Math.trunc(v);
-    }, [currentPuzzle?.id, currentPuzzle?.sourcePly]);
+    }, [currentPuzzle?.sourcePly]);
 
     const realSourceMove = useMemo(() => {
         if (!sourceParsed) return null;
@@ -913,11 +920,6 @@ export function PuzzleTrainerV2({
     });
 
     const analysis = liveAnalyze.update;
-    const analysisErr = liveAnalyze.error;
-    const analysisBusy =
-        liveAnalyze.running ||
-        (analyzeStreamingEnabled && !analysis && !analysisErr);
-
     useEffect(() => {
         if (viewMode !== 'analyze') return;
         setAnalysisSelectedIdx(0);
@@ -1277,8 +1279,6 @@ export function PuzzleTrainerV2({
         return Array.from(byKey.values());
     }, [
         viewMode,
-        showContext,
-        contextPly,
         puzzlePly,
         puzzleLastMove,
         displayFen,
@@ -1355,7 +1355,6 @@ export function PuzzleTrainerV2({
             const accepted = new Set(acceptedMoves);
             const correct = accepted.has(u);
             setAttemptResult(correct ? 'correct' : 'incorrect');
-            setSolvedKind(correct ? (u === best ? 'best' : 'safe') : null);
             setPvStep(0);
             // If it's a safe-but-not-best move, reveal best line for learning.
             if (correct && u !== best) setShowSolution(true);
@@ -1381,15 +1380,10 @@ export function PuzzleTrainerV2({
         setPvStep(0);
     }
 
-    function getMoveControllerFen() {
-        if (viewMode === 'solve') return currentPuzzle?.fen ?? new Chess().fen();
-        return analysisRootFen ?? currentPuzzle?.fen ?? new Chess().fen();
-    }
-
-    function clearHints() {
+    const clearHints = useCallback(() => {
         setSelectedSquare(null);
         setLegalTargets(new Set());
-    }
+    }, []);
 
     function computeHints(square: Square) {
         if (!allowMove) return;
@@ -1412,20 +1406,19 @@ export function PuzzleTrainerV2({
         return { fen: c.fen(), uci: moveToUci(args), lastMove: { from: args.from, to: args.to } };
     }
 
-    async function nextPuzzle() {
+    const nextPuzzle = useCallback(async () => {
         const next = await fetchNextPuzzle();
         if (!next) return;
         setQueue((prev) => [...prev, next]);
         setIdx((prev) => prev + 1);
-    }
+    }, [fetchNextPuzzle]);
 
-    function resetSolve() {
+    const resetSolve = useCallback(() => {
         if (!currentPuzzle) return;
         setAttemptFen(currentPuzzle.fen);
         setAttemptLastMove(null);
         setAttemptUci(null);
         setAttemptResult(null);
-        setSolvedKind(null);
         setShowSolution(false);
         setShowRealMove(false);
         setShowContext(false);
@@ -1436,12 +1429,12 @@ export function PuzzleTrainerV2({
         setPvStep(0);
         clearHints();
         startAttempt(currentPuzzle.id);
-    }
+    }, [clearHints, currentPuzzle, puzzlePly, startAttempt]);
 
     // record attempt after a solve move
     useEffect(() => {
-        if (!currentPuzzle || !attemptUci || !attemptResult) return;
-        const pid = currentPuzzle.id;
+        if (!currentPuzzleId || !attemptUci || !attemptResult) return;
+        const pid = currentPuzzleId;
         void (async () => {
             await recordAttempt({
                 puzzleId: pid,
@@ -1450,37 +1443,11 @@ export function PuzzleTrainerV2({
             });
             // Stats are derived from attempts; bust cache and refresh if visible.
             statsCacheRef.current.delete(pid);
-            if (showPuzzleStats) {
-                try {
-                    setPuzzleStatsError(null);
-                    setPuzzleStatsLoading(true);
-                    const res = await fetch(`/api/puzzles/${encodeURIComponent(pid)}`);
-                    const json = toRecord(await res.json().catch(() => ({})));
-                    if (!res.ok)
-                        throw new Error(
-                            typeof json.error === 'string'
-                                ? json.error
-                                : 'Failed to load puzzle stats'
-                        );
-                    const stats = parsePuzzleAttemptStats(
-                        toRecord(json.puzzle).attemptStats
-                    );
-                    const attempts = parsePuzzleAttempts(json.attempts);
-                    if (stats) {
-                        statsCacheRef.current.set(pid, { stats, attempts });
-                        setPuzzleStats(stats);
-                        setPuzzleAttempts(attempts);
-                    }
-                } catch (e) {
-                    setPuzzleStatsError(
-                        e instanceof Error ? e.message : 'Failed to load puzzle stats'
-                    );
-                } finally {
-                    setPuzzleStatsLoading(false);
-                }
+            if (showPuzzleStatsRef.current) {
+                setStatsRefreshNonce((nonce) => nonce + 1);
             }
         })();
-    }, [currentPuzzle?.id, attemptUci, attemptResult, recordAttempt]);
+    }, [currentPuzzleId, attemptUci, attemptResult, recordAttempt]);
 
     // Load puzzle stats on demand (toggle).
     useEffect(() => {
@@ -1535,7 +1502,7 @@ export function PuzzleTrainerV2({
         return () => {
             cancelled = true;
         };
-    }, [showPuzzleStats, currentPuzzle?.id]);
+    }, [showPuzzleStats, currentPuzzle?.id, statsRefreshNonce]);
 
     // (Refutation playback + keyboard shortcuts were intentionally removed to match the trainer wireframes.)
 
@@ -1549,13 +1516,6 @@ export function PuzzleTrainerV2({
         setPvStep(0);
         // live analysis restarts automatically when root changes
     }, [viewMode, analysisHistory, analysisHistoryIdx, analysisRootFen]);
-
-    const topMeta = useMemo(() => {
-        if (!currentPuzzle) return null;
-        const parts: string[] = [];
-        if (openingText) parts.push(openingText);
-        return parts.join(' • ');
-    }, [currentPuzzle, openingText]);
 
     const uiFilters = useMemo<PuzzlesFilters>(() => {
         const status: PuzzlesFilters['status'] =
@@ -1610,7 +1570,7 @@ export function PuzzleTrainerV2({
         return false;
     }, [currentPuzzle, viewMode, canAnalyzeNext, showContext, contextPly, puzzlePly, isReviewState, pvStep, solveLineApplied.length]);
 
-    function resetAnalyzeToStart() {
+    const resetAnalyzeToStart = useCallback(() => {
         if (!currentPuzzle) return;
         const fen = puzzleFenFromSource ?? currentPuzzle.fen;
         setAnalyzeTrack('game');
@@ -1620,7 +1580,7 @@ export function PuzzleTrainerV2({
         setAnalysisRootFen(fen);
         setAnalysisHistory([fen]);
         setAnalysisHistoryIdx(0);
-    }
+    }, [currentPuzzle, puzzleFenFromSource, puzzlePly]);
 
     // Solve mode: on wrong move, auto-play Stockfish refutation then show overlay.
     useEffect(() => {
@@ -1683,7 +1643,7 @@ export function PuzzleTrainerV2({
             cancelled = true;
             if (interval) window.clearInterval(interval);
         };
-    }, [viewMode, currentPuzzle?.id, attemptResult, attemptFen, engineClient]);
+    }, [viewMode, currentPuzzle, attemptResult, attemptFen, engineClient]);
 
     // keyboard shortcuts / navigation
     useEffect(() => {
@@ -1784,6 +1744,9 @@ export function PuzzleTrainerV2({
         analyzePrev,
         analyzeNext,
         analyzeMaxStep,
+        nextPuzzle,
+        resetAnalyzeToStart,
+        resetSolve,
     ]);
 
     const header = (

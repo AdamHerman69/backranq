@@ -1,23 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { SlidersHorizontal, Laptop, LineChart, Shuffle } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { SignInButton } from '@/components/auth/SignInButton';
-import { SyncGamesModal } from '@/components/sync/SyncGamesModal';
 import { SyncGamesWidget } from '@/components/sync/SyncGamesWidget';
 import { PuzzleTrainerV2 } from '@/components/puzzles/PuzzleTrainerV2';
 import { PuzzlesList, type PuzzleListItem } from '@/components/puzzles/PuzzlesList';
-import PuzzlesFilter, { type PuzzlesFilters } from '@/components/puzzles/PuzzlesFilter';
 import { usePuzzles } from '@/lib/api/usePuzzles';
-import { aggregatePuzzleStats } from '@/lib/api/puzzles';
 
 function stripLegacyPseudoTags(tags: string[]): string[] {
     return tags.filter((t) => {
@@ -33,14 +27,8 @@ function stripLegacyPseudoTags(tags: string[]): string[] {
 
 export default function Home() {
     const { data: session, status: sessionStatus } = useSession();
-    const router = useRouter();
     const isLoggedIn = !!session?.user?.id;
     const isLoading = sessionStatus === 'loading';
-
-    // Guest mode username inputs
-    const [lichessUsername, setLichessUsername] = useState('');
-    const [chesscomUsername, setChesscomUsername] = useState('');
-    const [showSyncModal, setShowSyncModal] = useState(false);
 
     // Stats for logged-in users
     const [puzzleCount, setPuzzleCount] = useState<number | null>(null);
@@ -103,13 +91,6 @@ export default function Home() {
             };
         });
     }, [puzzles]);
-
-    const handleTryNow = () => {
-        if (!lichessUsername.trim() && !chesscomUsername.trim()) return;
-        // For now, redirect to login with a message that they need to sign in
-        // In the future, we could implement guest syncing
-        router.push('/login?callbackUrl=/games');
-    };
 
     // Loading state
     if (isLoading) {

@@ -15,7 +15,6 @@ if (
     (dbUrl.includes('pooler.supabase.com') || dbUrl.includes(':6543')) &&
     !dbUrl.includes('pgbouncer=true')
 ) {
-    // eslint-disable-next-line no-console
     console.warn(
         '[prisma] DATABASE_URL looks like a Supabase pooler URL but is missing `pgbouncer=true`. ' +
             'This can cause errors like: prepared statement "s1" already exists.'
