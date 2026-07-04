@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { SignInButton } from '@/components/auth/SignInButton';
 import { SyncGamesWidget } from '@/components/sync/SyncGamesWidget';
-import { PuzzleTrainerV2 } from '@/components/puzzles/PuzzleTrainerV2';
+import { PuzzleTrainer } from '@/components/puzzles/PuzzleTrainer';
 import { PuzzlesList, type PuzzleListItem } from '@/components/puzzles/PuzzlesList';
 import { usePuzzles } from '@/lib/api/usePuzzles';
 
@@ -311,7 +311,7 @@ export default function Home() {
                                     <Link href="/puzzles">Open Trainer</Link>
                                 </Button>
                             </div>
-                            <PuzzleTrainerV2 initialViewMode="solve" />
+                            <PuzzleTrainer initialViewMode="solve" />
                         </CardContent>
                     </Card>
 

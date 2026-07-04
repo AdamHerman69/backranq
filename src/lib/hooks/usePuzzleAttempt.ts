@@ -21,7 +21,6 @@ class AttemptSendError extends Error {
 }
 
 const NEW_STORAGE_KEY = 'backranq.puzzleAttemptQueue.v1';
-const OLD_STORAGE_KEY = 'backrank.puzzleAttemptQueue.v1';
 
 function readQueueFromKey(key: string): QueuedAttempt[] {
     try {
@@ -37,30 +36,12 @@ function readQueueFromKey(key: string): QueuedAttempt[] {
 }
 
 function readQueue(): QueuedAttempt[] {
-    const next = readQueueFromKey(NEW_STORAGE_KEY);
-    if (next.length > 0) return next;
-
-    const old = readQueueFromKey(OLD_STORAGE_KEY);
-    if (old.length > 0) {
-        // Back-compat: migrate old queue to new key.
-        try {
-            localStorage.setItem(
-                NEW_STORAGE_KEY,
-                JSON.stringify(old.slice(-200))
-            );
-            localStorage.removeItem(OLD_STORAGE_KEY);
-        } catch {
-            // ignore
-        }
-    }
-    return old;
+    return readQueueFromKey(NEW_STORAGE_KEY);
 }
 
 function writeQueue(next: QueuedAttempt[]) {
     try {
         localStorage.setItem(NEW_STORAGE_KEY, JSON.stringify(next.slice(-200)));
-        // Best-effort cleanup.
-        localStorage.removeItem(OLD_STORAGE_KEY);
     } catch {
         // ignore
     }

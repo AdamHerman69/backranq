@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
-import { PuzzleTrainerV2 } from '@/components/puzzles/PuzzleTrainerV2';
+import { PuzzleTrainer } from '@/components/puzzles/PuzzleTrainer';
 
 export default async function PuzzlesPage({
     searchParams,
@@ -16,7 +16,7 @@ export default async function PuzzlesPage({
     const initialViewMode = view === 'analyze' ? 'analyze' : 'solve';
 
     return (
-        <PuzzleTrainerV2 initialViewMode={initialViewMode} />
+        <PuzzleTrainer initialViewMode={initialViewMode} />
     );
 }
 

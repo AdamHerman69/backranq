@@ -340,7 +340,7 @@ export function GameViewer({
         [fen, parsed]
     );
 
-    // Mirror PuzzleTrainerV2: only construct the engine when analysis is needed.
+    // Mirror PuzzleTrainer: only construct the engine when analysis is needed.
     useEffect(() => {
         if (!analysisEnabled) return;
         if (!fen) return;

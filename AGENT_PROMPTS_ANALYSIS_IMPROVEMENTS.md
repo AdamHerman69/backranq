@@ -15,7 +15,7 @@ This file contains **separate, well-scoped prompts** for agents to implement ana
 -   **Background analysis job**: `src/lib/analysis/backgroundAnalysisManager.ts`
 -   **Analyze games modal (missing settings UI)**: `src/components/analysis/AnalyzeGamesModal.tsx`
 -   **Defaults & persistence**: `src/lib/preferences.ts`, `src/app/api/user/preferences/route.ts`
--   **Puzzle trainer correctness logic** (currently single-best-move): `src/components/puzzles/PuzzleTrainerV2.tsx`
+-   **Puzzle trainer correctness logic** (currently single-best-move): `src/components/puzzles/PuzzleTrainer.tsx`
 -   **Puzzle attempt API** (currently trusts client `wasCorrect`): `src/app/api/puzzles/[id]/attempt/route.ts`
 -   **DB schema**: `prisma/schema.prisma`
 
@@ -114,7 +114,7 @@ For user blunders, there are often multiple “don’t blunder” moves that are
         -   Alternatively accept moves that keep expected points above X (e.g. >= 0.45) even if not best.
     -   Add settings:
         -   `avoidBlunderAcceptableLossEp` (or `acceptableMarginCp`) and `maxAcceptedMoves`.
--   **Trainer UX** (`PuzzleTrainerV2.tsx` and `PuzzlePanel.tsx` if still used):
+-   **Trainer UX** (`PuzzleTrainer.tsx`):
     -   Correctness should be `acceptedMovesUci.includes(userMove)`.
     -   If user plays a “safe but not best” move:
         -   Show “Good save” and optionally reveal the best continuation.

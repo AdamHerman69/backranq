@@ -469,9 +469,9 @@ I need to migrate from localStorage persistence to database storage in my chess 
     - On preference change: Save to API if logged in, localStorage if not
     - Add a "Sync to Account" prompt if user has localStorage data but is now logged in
 
-4. Create migration helper:
+4. Historical migration helper proposal:
 
-    `src/lib/migration/localStorageToDb.ts`:
+    Historical localStorage-to-database migration utility:
 
     - Function to detect localStorage data
     - Function to migrate puzzles to database
@@ -479,9 +479,9 @@ I need to migrate from localStorage persistence to database storage in my chess 
     - Clear localStorage after successful migration
     - Handle conflicts (puzzles that already exist in DB)
 
-5. Add migration UI component:
+5. Historical migration UI component proposal:
 
-    `src/components/migration/LocalStorageMigration.tsx`:
+    Historical localStorage migration UI:
 
     - Shows when user logs in and has localStorage data
     - "Import X puzzles from this browser" button
@@ -753,7 +753,7 @@ I'm building a Game Detail page to view a single analyzed game with its puzzles.
     -   Move navigation (Start, Back, Next, End)
     -   Move list with classification symbols
     -   Accuracy badges
--   PuzzlePanel component shows game context in "Game" tab
+-   The current puzzle trainer shows game context in its "Game" tab
 
 ## Requirements
 
@@ -1064,9 +1064,9 @@ I'm adding puzzle attempt tracking to measure user progress and enable spaced re
 
 -   Puzzles API endpoints exist
 -   PuzzleAttempt model in Prisma
--   PuzzlePanel component handles solving but doesn't persist attempts
+-   Historical note: the removed legacy puzzle UI handled solving but did not persist attempts
 
-## Current PuzzlePanel behavior (src/app/puzzle/PuzzlePanel.tsx)
+## Historical legacy puzzle UI behavior (removed)
 
 -   User makes a move on the board
 -   Compared against bestMoveUci
@@ -1076,7 +1076,7 @@ I'm adding puzzle attempt tracking to measure user progress and enable spaced re
 
 ## Requirements
 
-1. Update PuzzlePanel to record attempts:
+1. Update the active puzzle trainer to record attempts:
 
     - On first attempt (not reset), call attempt API
     - Track time from puzzle load to first move
@@ -1149,11 +1149,11 @@ I'm building a dedicated puzzle training page for focused practice.
 
 ## Current State
 
--   PuzzlePanel component exists and handles puzzle solving
+-   The active puzzle trainer exists and handles puzzle solving
 -   Puzzles API with random puzzle endpoint
 -   Attempt tracking implemented
 
-## Current PuzzlePanel (src/app/puzzle/PuzzlePanel.tsx)
+## Current puzzle trainer
 
 -   Shows puzzle board with move interaction
 -   Has "Puzzle" and "Game" tabs
