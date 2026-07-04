@@ -1,22 +1,10 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import type { Puzzle as ExtractedPuzzle } from '@/lib/analysis/puzzles';
 import { puzzleToDb } from '@/lib/api/puzzles';
+import { validatePuzzleReplacementBody } from './validation';
 
 export const runtime = 'nodejs';
-
-function isExtractedPuzzle(x: any): x is ExtractedPuzzle {
-    return (
-        x &&
-        typeof x === 'object' &&
-        typeof x.sourcePly === 'number' &&
-        typeof x.fen === 'string' &&
-        typeof x.bestMoveUci === 'string' &&
-        Array.isArray(x.bestLineUci) &&
-        Array.isArray(x.tags)
-    );
-}
 
 export async function PUT(
     req: Request,
@@ -32,9 +20,9 @@ export async function PUT(
         puzzles?: unknown;
     } | null;
 
-    const puzzles = Array.isArray(body?.puzzles) ? body?.puzzles : [];
-    if (!Array.isArray(puzzles)) {
-        return NextResponse.json({ error: 'Invalid puzzles' }, { status: 400 });
+    const validation = validatePuzzleReplacementBody(body);
+    if (!validation.ok) {
+        return NextResponse.json({ error: validation.error }, { status: 400 });
     }
 
     const game = await prisma.analyzedGame.findFirst({
@@ -44,9 +32,9 @@ export async function PUT(
     if (!game)
         return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-    const cleaned = puzzles
-        .filter(isExtractedPuzzle)
-        .map((p) => puzzleToDb({ puzzle: p, userId, gameId: id }));
+    const cleaned = validation.puzzles.map((p) =>
+        puzzleToDb({ puzzle: p, userId, gameId: id })
+    );
 
     // Idempotent: replace puzzles for this game.
     const result = await prisma.$transaction(async (tx) => {
