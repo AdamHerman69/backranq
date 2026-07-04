@@ -1,14 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
+import {
+    mockAuthModule,
+    mockPrismaModule,
+    prismaMock,
+    setMockUserId,
+} from '../helpers/route-mocks';
 import { readJson } from '../helpers/route';
 
 type PrismaMockWithRaw = typeof prismaMock & {
     $queryRaw: ReturnType<typeof vi.fn>;
 };
 
+function createGetRequest(path = '/api/health') {
+    return new Request(`http://localhost${path}`);
+}
+
+async function importRoute() {
+    vi.resetModules();
+    mockAuthModule();
+    mockPrismaModule();
+    return import('@/app/api/health/route');
+}
+
 describe('/api/health', () => {
     beforeEach(() => {
-        vi.resetModules();
         vi.unstubAllEnvs();
         vi.stubEnv('DATABASE_URL', '');
         vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', '');
@@ -16,18 +31,48 @@ describe('/api/health', () => {
         vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', '');
         vi.stubEnv('SUPABASE_ANON_KEY', '');
         vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', '');
-        mockPrismaModule();
         vi.stubGlobal('fetch', vi.fn());
+        setMockUserId('user-1');
     });
 
-    it('reports database status but fails when Supabase REST env is absent', async () => {
+    it('returns public liveness without exposing diagnostic details', async () => {
+        const { GET } = await importRoute();
+        setMockUserId(null);
+
+        const response = await GET(createGetRequest());
+
+        expect(response.status).toBe(200);
+        await expect(readJson(response)).resolves.toEqual({ ok: true });
+        expect(
+            (prismaMock as PrismaMockWithRaw).$queryRaw
+        ).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('requires auth for diagnostic details', async () => {
+        const { GET } = await importRoute();
+        setMockUserId(null);
+
+        const response = await GET(createGetRequest('/api/health?details=1'));
+
+        expect(response.status).toBe(401);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Unauthorized',
+        });
+        expect(
+            (prismaMock as PrismaMockWithRaw).$queryRaw
+        ).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('reports database status but fails when Supabase REST env is absent in diagnostics', async () => {
         vi.stubEnv('DATABASE_URL', 'postgresql://example');
         (prismaMock as PrismaMockWithRaw).$queryRaw.mockResolvedValue([
             { '?column?': 1 },
         ]);
 
-        const { GET } = await import('@/app/api/health/route');
-        const response = await GET();
+        const { GET } = await importRoute();
+        const response = await GET(createGetRequest('/api/health?details=1'));
         const body = await readJson<{
             ok: boolean;
             configComplete: boolean;
@@ -48,9 +93,9 @@ describe('/api/health', () => {
         );
     });
 
-    it('fails when neither database nor Supabase REST is configured', async () => {
-        const { GET } = await import('@/app/api/health/route');
-        const response = await GET();
+    it('fails when neither database nor Supabase REST is configured in diagnostics', async () => {
+        const { GET } = await importRoute();
+        const response = await GET(createGetRequest('/api/health?details=1'));
         const body = await readJson<{ ok: boolean; error: string }>(response);
 
         expect(response.status).toBe(500);
@@ -63,7 +108,7 @@ describe('/api/health', () => {
         ).not.toHaveBeenCalled();
     });
 
-    it('fails when the configured database is unreachable', async () => {
+    it('fails when the configured database is unreachable in diagnostics', async () => {
         vi.stubEnv('DATABASE_URL', 'postgresql://example');
         vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://example.supabase.co');
         vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'anon-key');
@@ -74,8 +119,8 @@ describe('/api/health', () => {
             new Response(null, { status: 200 })
         );
 
-        const { GET } = await import('@/app/api/health/route');
-        const response = await GET();
+        const { GET } = await importRoute();
+        const response = await GET(createGetRequest('/api/health?details=1'));
         const body = await readJson<{
             ok: boolean;
             database: { ok: boolean; error: string };
@@ -89,7 +134,7 @@ describe('/api/health', () => {
         });
     });
 
-    it('passes when database and Supabase auth health are reachable', async () => {
+    it('passes when database and Supabase auth health are reachable in diagnostics', async () => {
         vi.stubEnv('DATABASE_URL', 'postgresql://example');
         vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://example.supabase.co/');
         vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'anon-key');
@@ -103,8 +148,8 @@ describe('/api/health', () => {
             })
         );
 
-        const { GET } = await import('@/app/api/health/route');
-        const response = await GET();
+        const { GET } = await importRoute();
+        const response = await GET(createGetRequest('/api/health?details=1'));
         const body = await readJson<{
             ok: boolean;
             configComplete: boolean;

@@ -1,11 +1,25 @@
 import { NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 
 export const runtime = 'nodejs';
 
-export async function GET() {
+export async function GET(req: Request) {
+    const requestUrl = new URL(req.url);
+    const wantsDetails =
+        requestUrl.searchParams.get('details') === '1' ||
+        requestUrl.searchParams.get('details') === 'true';
+    if (!wantsDetails) {
+        return NextResponse.json({ ok: true });
+    }
+
+    const session = await auth();
+    if (!session?.user?.id) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const databaseUrl = readEnv('DATABASE_URL');
-    const url =
+    const supabaseUrl =
         readEnv('NEXT_PUBLIC_SUPABASE_URL') ?? readEnv('SUPABASE_URL');
     const anonKey =
         readEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY') ??
@@ -13,7 +27,7 @@ export async function GET() {
     const serviceKey = readEnv('SUPABASE_SERVICE_ROLE_KEY');
 
     const missingSupabase = [
-        ...(url ? [] : ['NEXT_PUBLIC_SUPABASE_URL or SUPABASE_URL']),
+        ...(supabaseUrl ? [] : ['NEXT_PUBLIC_SUPABASE_URL or SUPABASE_URL']),
         ...(anonKey
             ? []
             : ['NEXT_PUBLIC_SUPABASE_ANON_KEY or SUPABASE_ANON_KEY']),
@@ -38,9 +52,9 @@ export async function GET() {
         ? await checkDatabase()
         : { configured: false as const };
     const supabase =
-        url && anonKey
+        supabaseUrl && anonKey
             ? await checkSupabaseRest(
-                  url,
+                  supabaseUrl,
                   serviceKey ?? anonKey,
                   serviceKey ? 'service_role' : 'anon'
               )

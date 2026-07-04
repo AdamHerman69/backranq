@@ -16,14 +16,14 @@ export async function GET(
     const { id } = await params;
     const game = await prisma.analyzedGame.findFirst({
         where: { id, userId },
-        // Avoid over-fetching large columns (notably `analysis`) for the trainer.
-        // The client only needs metadata + PGN to reconstruct moves.
         select: {
             id: true,
             provider: true,
             externalId: true,
             url: true,
             pgn: true,
+            analysis: true,
+            analyzedAt: true,
             playedAt: true,
             timeClass: true,
             rated: true,
@@ -113,4 +113,3 @@ export async function DELETE(
     await prisma.analyzedGame.delete({ where: { id } });
     return NextResponse.json({ ok: true });
 }
-

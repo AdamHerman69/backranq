@@ -10,12 +10,108 @@ import {
     timeClassToDb,
     gameAnalysisToJson,
 } from '@/lib/api/games';
+import { isRecord } from '@/lib/api/validation';
 import { Prisma } from '@prisma/client';
 
 export const runtime = 'nodejs';
+const MAX_IMPORT_GAMES = 200;
+const MAX_TEXT_LENGTH = 20_000;
+
+type ImportError = {
+    index: number;
+    id?: string;
+    kind: 'validation' | 'save';
+    error: string;
+};
 
 function clampInt(v: number, min: number, max: number) {
     return Math.max(min, Math.min(max, v));
+}
+
+function isProvider(value: unknown): value is NormalizedGame['provider'] {
+    return value === 'lichess' || value === 'chesscom';
+}
+
+function isTimeClass(value: unknown): value is NormalizedGame['timeClass'] {
+    return (
+        value === 'bullet' ||
+        value === 'blitz' ||
+        value === 'rapid' ||
+        value === 'classical' ||
+        value === 'unknown'
+    );
+}
+
+function nonEmptyString(value: unknown, maxLength = MAX_TEXT_LENGTH): value is string {
+    return typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength;
+}
+
+function optionalString(value: unknown, maxLength = MAX_TEXT_LENGTH): value is string | null | undefined {
+    return value == null || (typeof value === 'string' && value.length <= maxLength);
+}
+
+function optionalNumber(value: unknown): value is number | null | undefined {
+    return value == null || (typeof value === 'number' && Number.isFinite(value));
+}
+
+function validateGame(value: unknown, index: number): { game: NormalizedGame } | { error: ImportError } {
+    if (!isRecord(value)) {
+        return { error: { index, kind: 'validation', error: 'Invalid game' } };
+    }
+    if (!nonEmptyString(value.id, 500)) {
+        return { error: { index, kind: 'validation', error: 'Invalid game id' } };
+    }
+    const id = value.id;
+    if (!isProvider(value.provider)) {
+        return { error: { index, id, kind: 'validation', error: 'Invalid provider' } };
+    }
+    if (!nonEmptyString(value.playedAt, 100) || Number.isNaN(new Date(value.playedAt).getTime())) {
+        return { error: { index, id, kind: 'validation', error: 'Invalid playedAt' } };
+    }
+    if (!isTimeClass(value.timeClass)) {
+        return { error: { index, id, kind: 'validation', error: 'Invalid timeClass' } };
+    }
+    if (!optionalString(value.url, 2_048) || !optionalString(value.result, 200) || !optionalString(value.termination, 500)) {
+        return { error: { index, id, kind: 'validation', error: 'Invalid game metadata' } };
+    }
+    if (!nonEmptyString(value.pgn)) {
+        return { error: { index, id, kind: 'validation', error: 'Invalid pgn' } };
+    }
+
+    const white = isRecord(value.white) ? value.white : null;
+    const black = isRecord(value.black) ? value.black : null;
+    if (!white || !black || !nonEmptyString(white.name, 200) || !nonEmptyString(black.name, 200)) {
+        return { error: { index, id, kind: 'validation', error: 'Invalid players' } };
+    }
+    if (!optionalNumber(white.rating) || !optionalNumber(black.rating)) {
+        return { error: { index, id, kind: 'validation', error: 'Invalid ratings' } };
+    }
+    if (value.rated != null && typeof value.rated !== 'boolean') {
+        return { error: { index, id, kind: 'validation', error: 'Invalid rated flag' } };
+    }
+
+    return {
+        game: {
+            id,
+            provider: value.provider,
+            url: typeof value.url === 'string' ? value.url : undefined,
+            playedAt: value.playedAt,
+            timeClass: value.timeClass,
+            rated: typeof value.rated === 'boolean' ? value.rated : undefined,
+            white: {
+                name: white.name,
+                rating: typeof white.rating === 'number' ? white.rating : undefined,
+            },
+            black: {
+                name: black.name,
+                rating: typeof black.rating === 'number' ? black.rating : undefined,
+            },
+            result: typeof value.result === 'string' ? value.result : undefined,
+            termination:
+                typeof value.termination === 'string' ? value.termination : undefined,
+            pgn: value.pgn,
+        },
+    };
 }
 
 export async function GET(req: Request) {
@@ -133,22 +229,38 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const body = (await req.json().catch(() => ({}))) as {
-        games?: NormalizedGame[];
-        analyses?: Record<string, GameAnalysis>;
-    };
-
-    const games = Array.isArray(body.games) ? body.games : [];
-    const analyses = body.analyses ?? {};
-    if (games.length === 0) {
-        return NextResponse.json({ saved: 0, skipped: 0 });
+    const body = (await req.json().catch(() => null)) as unknown;
+    if (!isRecord(body)) {
+        return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
+    }
+    if (!Array.isArray(body.games)) {
+        return NextResponse.json({ error: 'Invalid games' }, { status: 400 });
+    }
+    if (body.games.length === 0) {
+        return NextResponse.json({ error: 'No games provided' }, { status: 400 });
+    }
+    if (body.games.length > MAX_IMPORT_GAMES) {
+        return NextResponse.json(
+            { error: `games exceeds limit of ${MAX_IMPORT_GAMES}` },
+            { status: 413 }
+        );
+    }
+    if (body.analyses != null && !isRecord(body.analyses)) {
+        return NextResponse.json({ error: 'Invalid analyses' }, { status: 400 });
     }
 
+    const analyses = (body.analyses ?? {}) as Record<string, GameAnalysis>;
     let saved = 0;
-    let skipped = 0;
+    const errors: ImportError[] = [];
     const ids: Record<string, string> = {};
 
-    for (const g of games) {
+    for (let index = 0; index < body.games.length; index += 1) {
+        const parsed = validateGame(body.games[index], index);
+        if ('error' in parsed) {
+            errors.push(parsed.error);
+            continue;
+        }
+        const g = parsed.game;
         try {
             const provider = providerToDb(g.provider);
             const externalId = parseExternalId(g);
@@ -199,10 +311,25 @@ export async function POST(req: Request) {
             ids[g.id] = row.id;
             saved += 1;
         } catch {
-            skipped += 1;
+            errors.push({
+                index,
+                id: g.id,
+                kind: 'save',
+                error: 'Failed to save game',
+            });
         }
     }
 
-    return NextResponse.json({ saved, skipped, ids });
+    const skipped = errors.length;
+    const status = saved > 0 ? 200 : errors.some((e) => e.kind === 'save') ? 500 : 400;
+    return NextResponse.json(
+        {
+            saved,
+            skipped,
+            errors,
+            ids,
+            ...(saved === 0 ? { error: 'No games saved' } : {}),
+        },
+        { status }
+    );
 }
-
