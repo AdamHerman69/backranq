@@ -84,16 +84,13 @@ async function checkDatabase() {
             reachable: true,
             latencyMs: Date.now() - startedAt,
         };
-    } catch (err) {
+    } catch {
         return {
             configured: true as const,
             ok: false,
             reachable: false,
             latencyMs: Date.now() - startedAt,
-            error:
-                err instanceof Error
-                    ? err.message
-                    : 'Unknown error contacting database',
+            error: 'Database health check failed',
         };
     }
 }
@@ -122,7 +119,7 @@ async function checkSupabaseRest(
             configured: true as const,
             ok: res.ok,
             reachable: true,
-            authorized: res.ok,
+            authHealthy: res.ok,
             status: res.status,
             latencyMs,
             used: keyKind,

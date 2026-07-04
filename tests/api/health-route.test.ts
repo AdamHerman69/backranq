@@ -85,7 +85,7 @@ describe('/api/health', () => {
         expect(body.ok).toBe(false);
         expect(body.database).toMatchObject({
             ok: false,
-            error: 'connection failed',
+            error: 'Database health check failed',
         });
     });
 
