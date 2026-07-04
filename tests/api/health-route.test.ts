@@ -88,4 +88,43 @@ describe('/api/health', () => {
             error: 'connection failed',
         });
     });
+
+    it('passes when database and Supabase auth health are reachable', async () => {
+        vi.stubEnv('DATABASE_URL', 'postgresql://example');
+        vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://example.supabase.co/');
+        vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'anon-key');
+        (prismaMock as PrismaMockWithRaw).$queryRaw.mockResolvedValue([
+            { '?column?': 1 },
+        ]);
+        vi.mocked(fetch).mockResolvedValue(
+            new Response(JSON.stringify({ name: 'GoTrue' }), {
+                headers: { 'content-type': 'application/json' },
+                status: 200,
+            })
+        );
+
+        const { GET } = await import('@/app/api/health/route');
+        const response = await GET();
+        const body = await readJson<{
+            ok: boolean;
+            configComplete: boolean;
+            supabase: { ok: boolean; used: string };
+        }>(response);
+
+        expect(response.status).toBe(200);
+        expect(body).toMatchObject({
+            ok: true,
+            configComplete: true,
+            supabase: { ok: true, used: 'anon' },
+        });
+        expect(fetch).toHaveBeenCalledWith(
+            'https://example.supabase.co/auth/v1/health',
+            expect.objectContaining({
+                headers: expect.objectContaining({
+                    apikey: 'anon-key',
+                    Authorization: 'Bearer anon-key',
+                }),
+            })
+        );
+    });
 });

@@ -4,13 +4,13 @@ import { prisma } from '@/lib/prisma';
 export const runtime = 'nodejs';
 
 export async function GET() {
-    const databaseUrl = process.env.DATABASE_URL;
+    const databaseUrl = readEnv('DATABASE_URL');
     const url =
-        process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL;
+        readEnv('NEXT_PUBLIC_SUPABASE_URL') ?? readEnv('SUPABASE_URL');
     const anonKey =
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-        process.env.SUPABASE_ANON_KEY;
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        readEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY') ??
+        readEnv('SUPABASE_ANON_KEY');
+    const serviceKey = readEnv('SUPABASE_SERVICE_ROLE_KEY');
 
     const missingSupabase = [
         ...(url ? [] : ['NEXT_PUBLIC_SUPABASE_URL or SUPABASE_URL']),
@@ -68,6 +68,11 @@ export async function GET() {
     );
 }
 
+function readEnv(name: string) {
+    const value = process.env[name];
+    return value && value.trim() ? value : undefined;
+}
+
 async function checkDatabase() {
     const startedAt = Date.now();
     try {
@@ -101,8 +106,8 @@ async function checkSupabaseRest(
     const baseUrl = url.replace(/\/+$/, '');
     const startedAt = Date.now();
     try {
-        // This hits PostgREST (the DB API). We don't assume any tables exist yet.
-        const res = await fetch(`${baseUrl}/rest/v1/`, {
+        // This checks Supabase Auth/API reachability using the public anon key.
+        const res = await fetch(`${baseUrl}/auth/v1/health`, {
             method: 'GET',
             headers: {
                 apikey: key,
