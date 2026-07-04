@@ -17,18 +17,27 @@ export async function GET() {
         totalAttempts,
         correctAttempts,
     ] = await Promise.all([
-        prisma.puzzle.count({ where: { userId } }),
+        prisma.puzzle.count({ where: { userId, archivedAt: null } }),
         prisma.puzzle.count({
             where: {
                 userId,
+                archivedAt: null,
                 attempts: { some: { userId, wasCorrect: true } },
             },
         }),
         prisma.puzzle.count({
-            where: { userId, attempts: { some: { userId } } },
+            where: {
+                userId,
+                archivedAt: null,
+                attempts: { some: { userId } },
+            },
         }),
-        prisma.puzzleAttempt.count({ where: { userId } }),
-        prisma.puzzleAttempt.count({ where: { userId, wasCorrect: true } }),
+        prisma.puzzleAttempt.count({
+            where: { userId, puzzle: { archivedAt: null } },
+        }),
+        prisma.puzzleAttempt.count({
+            where: { userId, wasCorrect: true, puzzle: { archivedAt: null } },
+        }),
     ]);
 
     const failedPuzzles = Math.max(0, attemptedPuzzles - solvedPuzzles);
@@ -37,13 +46,13 @@ export async function GET() {
 
     const byType = await prisma.puzzle.groupBy({
         by: ['type'],
-        where: { userId },
+        where: { userId, archivedAt: null },
         _count: { _all: true },
     });
 
     const openingGroups = await prisma.puzzle.groupBy({
         by: ['openingEco'],
-        where: { userId, openingEco: { not: null } },
+        where: { userId, archivedAt: null, openingEco: { not: null } },
         _count: { _all: true },
     });
     const topOpenings = openingGroups
@@ -52,7 +61,7 @@ export async function GET() {
         .slice(0, 10);
 
     const recentAttempts = await prisma.puzzleAttempt.findMany({
-        where: { userId },
+        where: { userId, puzzle: { archivedAt: null } },
         orderBy: { attemptedAt: 'desc' },
         take: 20,
         select: {

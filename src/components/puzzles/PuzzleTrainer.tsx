@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { StockfishClient } from '@/lib/analysis/stockfishClient';
@@ -12,6 +12,12 @@ import { Chess, type Move } from 'chess.js';
 import { extractStartFenFromPgn, sideToMoveFromFen } from '@/lib/chess/utils';
 
 export type TrainingMode = 'quick' | 'reviewFailed';
+
+type DbGameLoose = Record<string, unknown>;
+
+function toRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
 
 function timeClassToUi(tc: string): NormalizedGame['timeClass'] {
     const t = (tc ?? '').toUpperCase();
@@ -26,13 +32,16 @@ function providerToUi(p: string): NormalizedGame['provider'] {
     return (p ?? '').toUpperCase() === 'CHESSCOM' ? 'chesscom' : 'lichess';
 }
 
-function dbGameToNormalizedLoose(game: any): NormalizedGame {
+function dbGameToNormalizedLoose(game: DbGameLoose): NormalizedGame {
     return {
         id: String(game.id),
-        provider: providerToUi(game.provider),
-        url: game.url ?? undefined,
-        playedAt: typeof game.playedAt === 'string' ? game.playedAt : new Date(game.playedAt).toISOString(),
-        timeClass: timeClassToUi(game.timeClass),
+        provider: providerToUi(String(game.provider ?? '')),
+        url: typeof game.url === 'string' ? game.url : undefined,
+        playedAt:
+            typeof game.playedAt === 'string'
+                ? game.playedAt
+                : new Date(String(game.playedAt ?? Date.now())).toISOString(),
+        timeClass: timeClassToUi(String(game.timeClass ?? '')),
         rated: typeof game.rated === 'boolean' ? game.rated : undefined,
         white: { name: String(game.whiteName ?? ''), rating: typeof game.whiteRating === 'number' ? game.whiteRating : undefined },
         black: { name: String(game.blackName ?? ''), rating: typeof game.blackRating === 'number' ? game.blackRating : undefined },
@@ -123,9 +132,13 @@ export function PuzzleTrainer({ mode }: { mode: TrainingMode }) {
             setSourceError(null);
             try {
                 const res = await fetch(`/api/games/${currentPuzzle.sourceGameId}`);
-                const json = (await res.json().catch(() => ({}))) as any;
-                if (!res.ok) throw new Error(json?.error ?? 'Failed to load source game');
-                const ng = dbGameToNormalizedLoose(json?.game);
+                const json = toRecord(await res.json().catch(() => ({})));
+                const error =
+                    typeof json.error === 'string'
+                        ? json.error
+                        : 'Failed to load source game';
+                if (!res.ok) throw new Error(error);
+                const ng = dbGameToNormalizedLoose(toRecord(json.game));
                 const parsed = parseSourceGame(ng.pgn);
                 if (!parsed) throw new Error('Failed to parse source game PGN');
                 if (cancelled) return;
@@ -151,6 +164,12 @@ export function PuzzleTrainer({ mode }: { mode: TrainingMode }) {
     const header = useMemo(() => {
         return mode === 'reviewFailed' ? 'Review Failed' : 'Quick Play';
     }, [mode]);
+
+    function handleSetEngineClient(next: SetStateAction<StockfishClient | null>) {
+        const value = typeof next === 'function' ? next(engineRef.current) : next;
+        engineRef.current = value;
+        setEngineClient(value);
+    }
 
     const orientation = useMemo(() => {
         if (!currentPuzzle) return 'white' as const;
@@ -220,14 +239,7 @@ export function PuzzleTrainer({ mode }: { mode: TrainingMode }) {
                     puzzleSourceParsed={sourceParsed}
                     userBoardOrientation={orientation}
                     engineClient={engineClient}
-                    setEngineClient={(next) => {
-                        const value =
-                            typeof next === 'function'
-                                ? (next as any)(engineRef.current)
-                                : next;
-                        engineRef.current = value;
-                        setEngineClient(value);
-                    }}
+                    setEngineClient={handleSetEngineClient}
                     engineMoveTimeMs={engineMoveTimeMs}
                     gameAnalysis={null}
                     allPuzzles={queue}
@@ -236,4 +248,3 @@ export function PuzzleTrainer({ mode }: { mode: TrainingMode }) {
         </div>
     );
 }
-

@@ -91,7 +91,7 @@ export async function GET(req: Request) {
               .slice(0, 200)
         : [];
 
-    const baseWhere: Prisma.PuzzleWhereInput = { userId };
+    const baseWhere: Prisma.PuzzleWhereInput = { userId, archivedAt: null };
     const and: Prisma.PuzzleWhereInput[] = [];
     if (type === 'avoidBlunder') baseWhere.type = 'AVOID_BLUNDER';
     if (type === 'punishBlunder') baseWhere.type = 'PUNISH_BLUNDER';
@@ -190,7 +190,7 @@ export async function GET(req: Request) {
     if (picked.length === 0) return NextResponse.json({ puzzles: [] });
 
     const rows = await prisma.puzzle.findMany({
-        where: { userId, id: { in: picked } },
+        where: { userId, archivedAt: null, id: { in: picked } },
         include: {
             game: { select: { provider: true, playedAt: true } },
             attempts: {

@@ -28,7 +28,7 @@ export default async function GameDetailPage({
     });
 
     const puzzles = await prisma.puzzle.findMany({
-        where: { userId, gameId: id },
+        where: { userId, gameId: id, archivedAt: null },
         orderBy: { sourcePly: 'asc' },
         select: {
             id: true,
@@ -84,5 +84,4 @@ export default async function GameDetailPage({
         />
     );
 }
-
 

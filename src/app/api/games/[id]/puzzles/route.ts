@@ -1,22 +1,11 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import type { Puzzle as ExtractedPuzzle } from '@/lib/analysis/puzzles';
-import { puzzleToDb } from '@/lib/api/puzzles';
+import { validatePuzzleReplacementBody } from './validation';
+import { replaceGamePuzzlesInTransaction } from '@/lib/api/puzzlePersistence';
+import { providerToUi } from '@/lib/api/games';
 
 export const runtime = 'nodejs';
-
-function isExtractedPuzzle(x: any): x is ExtractedPuzzle {
-    return (
-        x &&
-        typeof x === 'object' &&
-        typeof x.sourcePly === 'number' &&
-        typeof x.fen === 'string' &&
-        typeof x.bestMoveUci === 'string' &&
-        Array.isArray(x.bestLineUci) &&
-        Array.isArray(x.tags)
-    );
-}
 
 export async function PUT(
     req: Request,
@@ -32,31 +21,45 @@ export async function PUT(
         puzzles?: unknown;
     } | null;
 
-    const puzzles = Array.isArray(body?.puzzles) ? body?.puzzles : [];
-    if (!Array.isArray(puzzles)) {
-        return NextResponse.json({ error: 'Invalid puzzles' }, { status: 400 });
+    const validation = validatePuzzleReplacementBody(body);
+    if (!validation.ok) {
+        return NextResponse.json({ error: validation.error }, { status: 400 });
     }
 
     const game = await prisma.analyzedGame.findFirst({
         where: { id, userId },
-        select: { id: true },
+        select: { id: true, provider: true, externalId: true },
     });
     if (!game)
         return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-    const cleaned = puzzles
-        .filter(isExtractedPuzzle)
-        .map((p) => puzzleToDb({ puzzle: p, userId, gameId: id }));
+    const normalizedGameId = `${providerToUi(game.provider)}:${game.externalId}`;
+    if (
+        validation.puzzles.some(
+            (puzzle) => puzzle.sourceGameId !== normalizedGameId
+        )
+    ) {
+        return NextResponse.json(
+            { error: 'Puzzle game mismatch' },
+            { status: 400 }
+        );
+    }
 
-    // Idempotent: replace puzzles for this game.
+    // Idempotent: preserve stable puzzle rows by @@unique([gameId, sourcePly, fen])
+    // so existing PuzzleAttempt history survives regeneration.
     const result = await prisma.$transaction(async (tx) => {
-        await tx.puzzle.deleteMany({ where: { userId, gameId: id } });
-        if (cleaned.length === 0) return { deleted: true, created: 0 };
-        const created = await tx.puzzle.createMany({
-            data: cleaned,
-            skipDuplicates: true,
+        const replacement = await replaceGamePuzzlesInTransaction({
+            tx,
+            userId,
+            gameId: id,
+            puzzles: validation.puzzles,
         });
-        return { deleted: true, created: created.count };
+        return {
+            deleted: true,
+            created: replacement.upserted,
+            upserted: replacement.upserted,
+            staleArchived: replacement.staleArchived,
+        };
     });
 
     return NextResponse.json({ ok: true, ...result });

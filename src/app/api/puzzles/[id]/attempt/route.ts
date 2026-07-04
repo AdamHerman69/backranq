@@ -41,7 +41,7 @@ export async function POST(
     }
 
     const puzzle = await prisma.puzzle.findFirst({
-        where: { id, userId },
+        where: { id, userId, archivedAt: null },
         select: { id: true, bestMoveUci: true, acceptedMovesUci: true },
     });
     if (!puzzle)
@@ -51,8 +51,8 @@ export async function POST(
     const move = normalizeUci(userMoveUci);
     const best = normalizeUci(puzzle.bestMoveUci);
     const accepted = new Set(
-        [best, ...((puzzle.acceptedMovesUci ?? []) as any)]
-            .map((s: any) => (typeof s === 'string' ? normalizeUci(s) : ''))
+        [best, ...(puzzle.acceptedMovesUci ?? [])]
+            .map((s) => normalizeUci(s))
             .filter(Boolean)
     );
     const wasCorrect = accepted.has(move);

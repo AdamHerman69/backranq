@@ -2,6 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AnalyzedGame } from '@prisma/client';
 import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
+import type { Puzzle } from '@/lib/analysis/puzzles';
+
+type ApiError = { error?: string };
+type GamesResponse = ApiError & {
+    games?: Partial<AnalyzedGame>[];
+    total?: number;
+    page?: number;
+    totalPages?: number;
+};
+type SaveGamesResponse = ApiError & { saved?: number; skipped?: number };
+type GameResponse = ApiError & {
+    game?: { analysis?: unknown };
+};
 
 export type GamesQuery = {
     page?: number;
@@ -45,11 +58,17 @@ export function useGames(query: GamesQuery) {
             const res = await fetch(`/api/games${qs ? `?${qs}` : ''}`, {
                 cache: 'no-store',
             });
-            const json = (await res.json().catch(() => ({}))) as any;
+            const json = (await res.json().catch(() => ({}))) as GamesResponse;
             if (!res.ok) {
                 throw new Error(json?.error ?? 'Failed to load games');
             }
-            setData(json);
+            setData({
+                games: Array.isArray(json.games) ? json.games : [],
+                total: typeof json.total === 'number' ? json.total : 0,
+                page: typeof json.page === 'number' ? json.page : 1,
+                totalPages:
+                    typeof json.totalPages === 'number' ? json.totalPages : 1,
+            });
         } catch (e) {
             setError(e instanceof Error ? e.message : 'Failed to load games');
         } finally {
@@ -81,10 +100,16 @@ export function useSaveGames() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(args),
                 });
-                const json = (await res.json().catch(() => ({}))) as any;
+                const json = (await res.json().catch(
+                    () => ({})
+                )) as SaveGamesResponse;
                 if (!res.ok)
                     throw new Error(json?.error ?? 'Failed to save games');
-                return json as { saved: number; skipped: number };
+                return {
+                    saved: typeof json.saved === 'number' ? json.saved : 0,
+                    skipped:
+                        typeof json.skipped === 'number' ? json.skipped : 0,
+                };
             } catch (e) {
                 const msg =
                     e instanceof Error ? e.message : 'Failed to save games';
@@ -116,7 +141,7 @@ export function useGameAnalysis(gameId: string | null) {
                     cache: 'no-store',
                 }
             );
-            const json = (await res.json().catch(() => ({}))) as any;
+            const json = (await res.json().catch(() => ({}))) as GameResponse;
             if (!res.ok) throw new Error(json?.error ?? 'Failed to load game');
             setAnalysis((json?.game?.analysis ?? null) as GameAnalysis | null);
         } catch (e) {
@@ -129,7 +154,7 @@ export function useGameAnalysis(gameId: string | null) {
     }, [gameId]);
 
     const save = useCallback(
-        async (next: GameAnalysis) => {
+        async (next: { analysis: GameAnalysis; puzzles: Puzzle[] }) => {
             if (!gameId) throw new Error('Missing gameId');
             setLoading(true);
             setError(null);
@@ -142,10 +167,10 @@ export function useGameAnalysis(gameId: string | null) {
                         body: JSON.stringify(next),
                     }
                 );
-                const json = (await res.json().catch(() => ({}))) as any;
+                const json = (await res.json().catch(() => ({}))) as ApiError;
                 if (!res.ok)
                     throw new Error(json?.error ?? 'Failed to save analysis');
-                setAnalysis(next);
+                setAnalysis(next.analysis);
                 return json as { ok: true };
             } catch (e) {
                 const msg =
@@ -165,4 +190,3 @@ export function useGameAnalysis(gameId: string | null) {
 
     return { analysis, loading, error, refetch: fetchGame, save };
 }
-

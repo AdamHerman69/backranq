@@ -77,6 +77,75 @@ type PuzzleAttemptRow = {
     timeSpentMs: number | null;
 };
 
+function toRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
+function parsePuzzleAttemptStats(value: unknown): PuzzleAttemptStats | null {
+    const stats = toRecord(value);
+    const {
+        attempted,
+        correct,
+        successRate,
+        solved,
+        failed,
+        lastAttemptedAt,
+        averageTimeMs,
+    } = stats;
+
+    if (
+        typeof attempted !== 'number' ||
+        typeof correct !== 'number' ||
+        !(typeof successRate === 'number' || successRate === null) ||
+        typeof solved !== 'boolean' ||
+        typeof failed !== 'boolean' ||
+        !(typeof lastAttemptedAt === 'string' || lastAttemptedAt === null) ||
+        !(typeof averageTimeMs === 'number' || averageTimeMs === null)
+    ) {
+        return null;
+    }
+
+    return {
+        attempted,
+        correct,
+        successRate,
+        solved,
+        failed,
+        lastAttemptedAt,
+        averageTimeMs,
+    };
+}
+
+function parsePuzzleAttemptRow(value: unknown): PuzzleAttemptRow | null {
+    const row = toRecord(value);
+    const { id, attemptedAt, userMoveUci, wasCorrect, timeSpentMs } = row;
+
+    if (
+        typeof id !== 'string' ||
+        typeof attemptedAt !== 'string' ||
+        typeof userMoveUci !== 'string' ||
+        typeof wasCorrect !== 'boolean' ||
+        !(typeof timeSpentMs === 'number' || timeSpentMs == null)
+    ) {
+        return null;
+    }
+
+    return {
+        id,
+        attemptedAt,
+        userMoveUci,
+        wasCorrect,
+        timeSpentMs: timeSpentMs ?? null,
+    };
+}
+
+function parsePuzzleAttempts(value: unknown): PuzzleAttemptRow[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map((attempt) => parsePuzzleAttemptRow(attempt))
+        .filter((attempt): attempt is PuzzleAttemptRow => attempt !== null);
+}
+
 function describeFilters(f: PuzzlesFilters): string {
     const parts: string[] = [];
 
@@ -1386,11 +1455,17 @@ export function PuzzleTrainerV2({
                     setPuzzleStatsError(null);
                     setPuzzleStatsLoading(true);
                     const res = await fetch(`/api/puzzles/${encodeURIComponent(pid)}`);
-                    const json = (await res.json().catch(() => ({}))) as any;
+                    const json = toRecord(await res.json().catch(() => ({})));
                     if (!res.ok)
-                        throw new Error(json?.error ?? 'Failed to load puzzle stats');
-                    const stats = json?.puzzle?.attemptStats ?? null;
-                    const attempts = Array.isArray(json?.attempts) ? (json.attempts as PuzzleAttemptRow[]) : [];
+                        throw new Error(
+                            typeof json.error === 'string'
+                                ? json.error
+                                : 'Failed to load puzzle stats'
+                        );
+                    const stats = parsePuzzleAttemptStats(
+                        toRecord(json.puzzle).attemptStats
+                    );
+                    const attempts = parsePuzzleAttempts(json.attempts);
                     if (stats) {
                         statsCacheRef.current.set(pid, { stats, attempts });
                         setPuzzleStats(stats);
@@ -1427,12 +1502,17 @@ export function PuzzleTrainerV2({
             setPuzzleStatsError(null);
             try {
                 const res = await fetch(`/api/puzzles/${encodeURIComponent(pid)}`);
-                const json = (await res.json().catch(() => ({}))) as any;
-                if (!res.ok) throw new Error(json?.error ?? 'Failed to load puzzle stats');
-                const stats = json?.puzzle?.attemptStats ?? null;
-                const attempts = Array.isArray(json?.attempts)
-                    ? (json.attempts as PuzzleAttemptRow[])
-                    : [];
+                const json = toRecord(await res.json().catch(() => ({})));
+                if (!res.ok)
+                    throw new Error(
+                        typeof json.error === 'string'
+                            ? json.error
+                            : 'Failed to load puzzle stats'
+                    );
+                const stats = parsePuzzleAttemptStats(
+                    toRecord(json.puzzle).attemptStats
+                );
+                const attempts = parsePuzzleAttempts(json.attempts);
                 if (cancelled) return;
                 if (stats) {
                     statsCacheRef.current.set(pid, { stats, attempts });

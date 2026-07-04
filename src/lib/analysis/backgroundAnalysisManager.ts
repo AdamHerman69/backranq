@@ -353,12 +353,18 @@ class BackgroundAnalysisManager {
 
         const analysis = out.analysis?.get(g.id) as GameAnalysis | undefined;
         if (analysis) {
+            const puzzlesForGame = (out.puzzles ?? []).filter(
+                (p) => p.sourceGameId === g.id
+            );
             const saveRes = await fetch(
                 `/api/games/${opts.gameDbId}/analysis`,
                 {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(analysis),
+                    body: JSON.stringify({
+                        analysis,
+                        puzzles: puzzlesForGame,
+                    }),
                 }
             );
             if (!saveRes.ok) {
@@ -370,24 +376,8 @@ class BackgroundAnalysisManager {
                     )}`
                 );
             }
-        }
-
-        const puzzlesForGame = (out.puzzles ?? []).filter(
-            (p) => p.sourceGameId === g.id
-        );
-        const puzzlesRes = await fetch(`/api/games/${opts.gameDbId}/puzzles`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ puzzles: puzzlesForGame }),
-        });
-        if (!puzzlesRes.ok) {
-            const txt = await puzzlesRes.text().catch(() => '');
-            throw new Error(
-                `Failed to save puzzles (${puzzlesRes.status}): ${txt.slice(
-                    0,
-                    200
-                )}`
-            );
+        } else {
+            throw new Error('Analysis produced no result');
         }
     }
 

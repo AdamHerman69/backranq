@@ -16,7 +16,7 @@ export async function GET(
 
     const { id } = await params;
     const row = await prisma.puzzle.findFirst({
-        where: { id, userId },
+        where: { id, userId, archivedAt: null },
         include: {
             game: { select: { provider: true, playedAt: true } },
             attempts: {
@@ -34,7 +34,7 @@ export async function GET(
     });
     if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-    const puzzle = dbToPuzzle(row as any);
+    const puzzle = dbToPuzzle(row as Parameters<typeof dbToPuzzle>[0]);
     const stats = aggregatePuzzleStats(
         row.attempts.map((a) => ({
             wasCorrect: a.wasCorrect,
@@ -66,12 +66,15 @@ export async function DELETE(
 
     const { id } = await params;
     const exists = await prisma.puzzle.findFirst({
-        where: { id, userId },
+        where: { id, userId, archivedAt: null },
         select: { id: true },
     });
     if (!exists)
         return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-    await prisma.puzzle.delete({ where: { id } });
+    await prisma.puzzle.update({
+        where: { id },
+        data: { archivedAt: new Date() },
+    });
     return NextResponse.json({ ok: true });
 }
