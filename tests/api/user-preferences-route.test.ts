@@ -89,4 +89,39 @@ describe('PUT /api/user/preferences', () => {
             })
         );
     });
+
+    it('validates and saves auto-sync preferences', async () => {
+        const route = await importRoute();
+
+        const response = await route.PUT(
+            createPutRequest({
+                autoSyncEnabled: false,
+                autoAnalyzeEnabled: true,
+                autoSyncProviders: { lichess: true, chesscom: false },
+            })
+        );
+        const body = await readJson<{ preferences: Record<string, unknown> }>(
+            response
+        );
+
+        expect(response.status).toBe(200);
+        expect(body.preferences).toMatchObject({
+            autoSyncEnabled: false,
+            autoAnalyzeEnabled: true,
+            autoSyncProviders: { lichess: true, chesscom: false },
+        });
+        expect(prismaMock.user.update).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: {
+                    preferences: expect.objectContaining({
+                        autoSyncEnabled: false,
+                        autoAnalyzeEnabled: true,
+                        autoSyncProviders: expect.objectContaining({
+                            chesscom: false,
+                        }),
+                    }),
+                },
+            })
+        );
+    });
 });

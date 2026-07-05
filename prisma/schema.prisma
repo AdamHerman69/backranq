@@ -40,6 +40,14 @@ enum GamePhase {
   ENDGAME
 }
 
+enum AnalysisJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
 model User {
   id               String   @id @default(uuid()) @db.Uuid
   email            String?  @unique
@@ -55,6 +63,8 @@ model User {
   games          AnalyzedGame[]
   puzzles        Puzzle[]
   puzzleAttempts PuzzleAttempt[]
+  providerSyncStates ProviderSyncState[]
+  analysisJobs   AnalysisJob[]
 
   // NextAuth (Auth.js) relations
   accounts Account[]
@@ -87,10 +97,56 @@ model AnalyzedGame {
 
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   puzzles Puzzle[]
+  analysisJobs AnalysisJob[]
 
   @@unique([userId, provider, externalId])
   @@index([userId])
   @@index([provider, externalId])
+}
+
+model ProviderSyncState {
+  id                 String    @id @default(uuid()) @db.Uuid
+  userId             String    @db.Uuid
+  provider           Provider
+  enabled            Boolean   @default(true)
+  lastSyncedPlayedAt DateTime?
+  lastAttemptAt      DateTime?
+  lastSuccessAt      DateTime?
+  lastError          String?   @db.Text
+  etag               String?   @db.Text
+  lastModified       String?   @db.Text
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([provider, enabled])
+  @@index([lastAttemptAt])
+}
+
+model AnalysisJob {
+  id           String            @id @default(uuid()) @db.Uuid
+  userId       String            @db.Uuid
+  gameId       String            @db.Uuid
+  status       AnalysisJobStatus @default(QUEUED)
+  priority     Int               @default(0)
+  attempts     Int               @default(0)
+  lockedAt     DateTime?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  lastError    String?           @db.Text
+  queuedReason String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game AnalyzedGame @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId])
+  @@index([userId, status])
+  @@index([status, priority, createdAt])
+  @@index([lockedAt])
 }
 
 model Puzzle {

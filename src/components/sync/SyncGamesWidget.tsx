@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { SyncGamesModal } from '@/components/sync/SyncGamesModal';
 import { AnalyzeGamesModal } from '@/components/analysis/AnalyzeGamesModal';
-import { getSyncStatus } from '@/lib/services/gameSync';
+import { getSyncStatus, type SyncStatus } from '@/lib/services/gameSync';
 import { Button } from '@/components/ui/button';
 
 export function SyncGamesWidget({
@@ -20,10 +20,7 @@ export function SyncGamesWidget({
     const [open, setOpen] = useState(false);
     const [openAnalyze, setOpenAnalyze] = useState(false);
     const router = useRouter();
-    const [status, setStatus] = useState<{
-        linked: { lichessUsername: string | null; chesscomUsername: string | null };
-        lastSync: { lichess: string | null; chesscom: string | null };
-    } | null>(null);
+    const [status, setStatus] = useState<SyncStatus | null>(null);
     const [pendingUnanalyzed, setPendingUnanalyzed] = useState<number | null>(null);
 
     useEffect(() => {
@@ -81,6 +78,12 @@ export function SyncGamesWidget({
                                 You have <span className="font-semibold">{pendingUnanalyzed}</span> games not analyzed yet.
                             </div>
                         ) : null}
+                        {context === 'games' && status?.analysisJobs ? (
+                            <div className="mt-1">
+                                Server analysis: {status.analysisJobs.running} running • {status.analysisJobs.queued} queued
+                                {status.analysisJobs.failed ? ` • ${status.analysisJobs.failed} failed` : ''}
+                            </div>
+                        ) : null}
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                         {context === 'games' &&
@@ -120,5 +123,4 @@ export function SyncGamesWidget({
         </>
     );
 }
-
 

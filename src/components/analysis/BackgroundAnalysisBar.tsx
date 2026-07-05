@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { backgroundAnalysis, type BackgroundAnalysisSnapshot } from "@/lib/analysis/backgroundAnalysisManager";
+import { enqueueServerAnalysisJobs, getSyncStatus, type SyncStatus } from "@/lib/services/gameSync";
 
 const NEW_DISMISS_KEY = "backranq.analysisBar.dismiss.v1";
 
@@ -29,6 +30,7 @@ function writeDismissedCount(n: number) {
 
 export function BackgroundAnalysisBar() {
   const [snap, setSnap] = React.useState<BackgroundAnalysisSnapshot>(() => backgroundAnalysis.snapshot());
+  const [syncStatus, setSyncStatus] = React.useState<SyncStatus | null>(null);
   const [collapsed, setCollapsed] = React.useState(false);
   const [dismissedForPending, setDismissedForPending] = React.useState(0);
 
@@ -38,8 +40,12 @@ export function BackgroundAnalysisBar() {
   }, []);
 
   React.useEffect(() => {
-    void backgroundAnalysis.refreshPendingUnanalyzedCount();
-    const t = setInterval(() => void backgroundAnalysis.refreshPendingUnanalyzedCount(), 30_000);
+    async function refreshAll() {
+      await backgroundAnalysis.refreshPendingUnanalyzedCount();
+      await getSyncStatus().then(setSyncStatus).catch(() => {});
+    }
+    void refreshAll();
+    const t = setInterval(() => void refreshAll(), 30_000);
     return () => clearInterval(t);
   }, []);
 
@@ -47,19 +53,33 @@ export function BackgroundAnalysisBar() {
   const hasPendingSuggestion = pending > 0 && pending > dismissedForPending;
   const isRunning = snap.state === "running";
   const isError = snap.state === "error";
+  const serverQueued = syncStatus?.analysisJobs?.queued ?? 0;
+  const serverRunning = syncStatus?.analysisJobs?.running ?? 0;
+  const serverFailed = syncStatus?.analysisJobs?.failed ?? 0;
+  const hasServerWork = serverQueued > 0 || serverRunning > 0 || serverFailed > 0;
 
-  const shouldShow = isRunning || isError || hasPendingSuggestion;
+  const shouldShow = isRunning || isError || hasPendingSuggestion || hasServerWork;
   if (!shouldShow) return null;
 
   const percent = Math.max(0, Math.min(100, snap.percent));
 
   async function onAnalyzePending() {
     try {
-      await backgroundAnalysis.enqueuePendingUnanalyzed({ limit: 25 });
-      toast.message("Analysis started in the background.");
+      const res = await fetch("/api/games?hasAnalysis=false&page=1&limit=25", {
+        cache: "no-store",
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        games?: { id: string }[];
+        error?: string;
+      };
+      if (!res.ok) throw new Error(json.error ?? "Failed to load games");
+      const gameIds = (json.games ?? []).map((game) => game.id).filter(Boolean);
+      const result = await enqueueServerAnalysisJobs({ gameIds });
+      toast.message(`Queued ${result.queued} game${result.queued === 1 ? "" : "s"} for server analysis.`);
+      void getSyncStatus().then(setSyncStatus).catch(() => {});
       setCollapsed(false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to start analysis");
+      toast.error(e instanceof Error ? e.message : "Failed to queue analysis");
     }
   }
 
@@ -96,6 +116,14 @@ export function BackgroundAnalysisBar() {
               <div className="text-sm font-medium">
                 {snap.label || "Analyzing games…"}{" "}
                 <span className="text-muted-foreground">({Math.round(percent)}%)</span>
+              </div>
+            ) : hasServerWork ? (
+              <div className="text-sm font-medium">
+                Server analysis{" "}
+                <span className="text-muted-foreground">
+                  {serverRunning} running • {serverQueued} queued
+                  {serverFailed ? ` • ${serverFailed} failed` : ""}
+                </span>
               </div>
             ) : hasPendingSuggestion ? (
               <div className="text-sm font-medium">
@@ -143,5 +171,3 @@ export function BackgroundAnalysisBar() {
     </div>
   );
 }
-
-

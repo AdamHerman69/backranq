@@ -6,7 +6,13 @@ import { usePathname } from "next/navigation";
 import { AppNav } from "@/components/nav/AppNav";
 import { BackgroundAnalysisBar } from "@/components/analysis/BackgroundAnalysisBar";
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({
+  children,
+  disableBackgroundAnalysisBar = false,
+}: {
+  children: React.ReactNode;
+  disableBackgroundAnalysisBar?: boolean;
+}) {
   const pathname = usePathname();
   const hideChrome = pathname === "/login";
 
@@ -15,7 +21,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-dvh">
       <header className="sticky top-0 z-40 w-full border-b bg-background/80 backdrop-blur">
-        <BackgroundAnalysisBar />
+        {disableBackgroundAnalysisBar ? null : <BackgroundAnalysisBar />}
         <div className="container flex h-14 items-center justify-between gap-3">
           <AppNav />
         </div>
@@ -24,5 +30,4 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
-
 

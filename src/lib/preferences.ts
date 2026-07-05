@@ -19,6 +19,14 @@ export type Filters = {
 export type PreferencesSchema = {
     filters: Filters;
 
+    // server-side automation
+    autoSyncEnabled: boolean;
+    autoAnalyzeEnabled: boolean;
+    autoSyncProviders: {
+        lichess: boolean;
+        chesscom: boolean;
+    };
+
     // puzzle library state
     puzzles: Puzzle[];
     puzzleIdx: number;
@@ -43,8 +51,12 @@ export type PreferencesSchema = {
     uniquenessMarginCp: string;
 };
 
-export type PartialPreferences = Partial<PreferencesSchema> & {
+export type PartialPreferences = Omit<
+    Partial<PreferencesSchema>,
+    'filters' | 'autoSyncProviders'
+> & {
     filters?: Partial<Filters>;
+    autoSyncProviders?: Partial<PreferencesSchema['autoSyncProviders']>;
 };
 
 export type AnalysisDefaults = Pick<
@@ -78,6 +90,12 @@ export function defaultPreferences(): PreferencesSchema {
             minElo: '',
             maxElo: '',
             max: '100',
+        },
+        autoSyncEnabled: true,
+        autoAnalyzeEnabled: true,
+        autoSyncProviders: {
+            lichess: true,
+            chesscom: true,
         },
         puzzles: [],
         puzzleIdx: 0,
@@ -217,6 +235,10 @@ export function mergePreferences(
         ...base,
         ...patch,
         filters: { ...base.filters, ...(patch.filters ?? {}) },
+        autoSyncProviders: {
+            ...base.autoSyncProviders,
+            ...(patch.autoSyncProviders ?? {}),
+        },
     };
 
     if (patch.puzzles) {

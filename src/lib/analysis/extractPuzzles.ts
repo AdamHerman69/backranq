@@ -5,7 +5,7 @@ import type {
     EvalResult,
     MultiPvResult,
     Score,
-    StockfishClient,
+    StockfishEngine,
 } from '@/lib/analysis/stockfishClient';
 import type {
     Puzzle,
@@ -1097,7 +1097,7 @@ function isWithinEvalBand(
  * Confirm a candidate puzzle at higher depth. Returns true if it still qualifies.
  */
 async function confirmCandidate(args: {
-    engine: StockfishClient;
+    engine: StockfishEngine;
     fen: string;
     originalBestMoveUci: string;
     confirmMovetimeMs: number;
@@ -1185,7 +1185,7 @@ if (process.env.NODE_ENV === 'test') {
 }
 
 async function computeAcceptedMovesForPosition(args: {
-    engine: StockfishClient;
+    engine: StockfishEngine;
     fen: string;
     movetimeMs: number;
     multiPv: number;
@@ -1260,7 +1260,7 @@ async function computeAcceptedMovesForPosition(args: {
 export async function extractPuzzlesFromGames(args: {
     games: NormalizedGame[];
     selectedGameIds: Set<string>;
-    engine: StockfishClient;
+    engine: StockfishEngine;
     /**
      * Usernames used to determine "user color" per game. Case-insensitive match
      * against game.white.name / game.black.name.

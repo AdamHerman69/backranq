@@ -46,7 +46,11 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`}
       >
         <SessionProvider>
-          <AppShell>{children}</AppShell>
+          <AppShell
+            disableBackgroundAnalysisBar={process.env.BACKRANQ_E2E_AUTH === "true"}
+          >
+            {children}
+          </AppShell>
           <SonnerToaster />
         </SessionProvider>
       </body>

@@ -4,12 +4,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 
-import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
 import type { GameCardData } from '@/components/games/GameCard';
 import { GamesFilter, type GamesFilters } from '@/components/games/GamesFilter';
 import { GamesList } from '@/components/games/GamesList';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { enqueueServerAnalysisJobs } from '@/lib/services/gameSync';
 
 export function GamesIndexClient({
     games,
@@ -61,10 +61,23 @@ export function GamesIndexClient({
         setSelected(next);
     }
 
-    function reevaluateSelected() {
+    async function reevaluateSelected() {
         if (selectedIds.length === 0) return;
-        backgroundAnalysis.enqueueGameDbIds(selectedIds);
-        toast.message(`Queued ${selectedIds.length} game${selectedIds.length === 1 ? '' : 's'} for re-analysis.`);
+        setBusy(true);
+        try {
+            const result = await enqueueServerAnalysisJobs({
+                gameIds: selectedIds,
+                force: true,
+            });
+            toast.message(
+                `Queued ${result.queued} game${result.queued === 1 ? '' : 's'} for server re-analysis.`
+            );
+            router.refresh();
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : 'Failed to queue analysis');
+        } finally {
+            setBusy(false);
+        }
     }
 
     async function deleteSelected() {
@@ -175,4 +188,3 @@ export function GamesIndexClient({
         </div>
     );
 }
-

@@ -40,11 +40,27 @@ export type MultiPvResult = {
     lines: MultiPvLine[];
 };
 
+export interface StockfishEngine {
+    evalPosition(opts: {
+        fen: string;
+        movetimeMs?: number;
+        cacheKey?: string;
+    }): Promise<EvalResult>;
+    analyzeMultiPv(opts: {
+        fen: string;
+        movetimeMs?: number;
+        multiPv?: number;
+        cacheKey?: string;
+    }): Promise<MultiPvResult>;
+    cancelAll?(): void;
+    terminate?(): void;
+}
+
 function uid() {
     return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export class StockfishClient {
+export class StockfishClient implements StockfishEngine {
     private worker: Worker | null = null;
 
     private cacheEval = new Map<string, EvalResult>();

@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import type { NormalizedGame, TimeClass } from '@/lib/types/game';
-import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
 import {
+    enqueueServerAnalysisJobs,
     fetchGamesFromProvider,
     getExistingExternalIds,
     getSyncStatus,
@@ -249,12 +249,12 @@ export function SyncGamesModal({
             if (enableAnalyze && analyzeAfter) {
                 const dbIds = Object.values(res.ids ?? {}).filter(Boolean);
                 if (dbIds.length > 0) {
-                    backgroundAnalysis.enqueueGameDbIds(dbIds);
-                    toast.message('Analysis started in the background.');
+                    const queued = await enqueueServerAnalysisJobs({ gameIds: dbIds });
+                    toast.message(
+                        `Queued ${queued.queued} game${queued.queued === 1 ? '' : 's'} for server analysis.`
+                    );
                 }
             }
-            // Update the global bar prompt quickly.
-            void backgroundAnalysis.refreshPendingUnanalyzedCount();
 
             setStep('done');
 

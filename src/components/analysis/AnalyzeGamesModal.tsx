@@ -3,8 +3,8 @@
 import * as React from "react";
 import { toast } from "sonner";
 
-import { backgroundAnalysis } from "@/lib/analysis/backgroundAnalysisManager";
 import { providerToUi, timeClassToUi } from "@/lib/api/games";
+import { enqueueServerAnalysisJobs } from "@/lib/services/gameSync";
 import type { Provider, TimeClass } from "@prisma/client";
 import {
   defaultPreferences,
@@ -136,11 +136,11 @@ export function AnalyzeGamesModal({
     }
     setBusy(true);
     try {
-      backgroundAnalysis.enqueueGameDbIdsWithOptions(ids, {
-        analysisDefaults,
-      });
-      void backgroundAnalysis.refreshPendingUnanalyzedCount();
-      toast.message("Analysis started in the background.");
+      void analysisDefaults;
+      const result = await enqueueServerAnalysisJobs({ gameIds: ids });
+      toast.message(
+        `Queued ${result.queued} game${result.queued === 1 ? "" : "s"} for server analysis.`
+      );
       onClose();
     } finally {
       setBusy(false);
@@ -304,4 +304,3 @@ export function AnalyzeGamesModal({
     </div>
   );
 }
-

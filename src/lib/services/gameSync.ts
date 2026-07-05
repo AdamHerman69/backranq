@@ -20,6 +20,29 @@ export type SyncStatus = {
         lichess: string | null; // ISO
         chesscom: string | null; // ISO
     };
+    autoSync?: {
+        enabled: boolean;
+        autoAnalyzeEnabled: boolean;
+        providers: { lichess: boolean; chesscom: boolean };
+        schedule: string;
+        states: {
+            lichess: SyncProviderState | null;
+            chesscom: SyncProviderState | null;
+        };
+    };
+    analysisJobs?: {
+        queued: number;
+        running: number;
+        failed: number;
+    };
+};
+
+export type SyncProviderState = {
+    enabled: boolean;
+    lastSyncedPlayedAt: string | null;
+    lastAttemptAt: string | null;
+    lastSuccessAt: string | null;
+    lastError: string | null;
 };
 
 type SaveGamesResult = {
@@ -148,6 +171,22 @@ export async function saveGamesToLibrary(args: { games: NormalizedGame[] }) {
     }
 
     return aggregate;
+}
+
+export async function enqueueServerAnalysisJobs(args: {
+    gameIds: string[];
+    force?: boolean;
+}) {
+    const res = await fetch('/api/analysis/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(args),
+    });
+    const json = (await res.json().catch(() => ({}))) as unknown;
+    if (!res.ok) {
+        throw new Error(errorMessageFromJson(json, 'Failed to queue analysis'));
+    }
+    return json as { queued: number; skipped: number };
 }
 
 async function saveGamesChunk(games: NormalizedGame[]): Promise<SaveGamesResult> {

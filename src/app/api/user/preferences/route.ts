@@ -29,6 +29,8 @@ const STRING_PREF_KEYS = new Set<keyof PartialPreferences>([
 const BOOLEAN_PREF_KEYS = new Set<keyof PartialPreferences>([
     'requireTactical',
     'skipTrivialEndgames',
+    'autoSyncEnabled',
+    'autoAnalyzeEnabled',
 ]);
 const FILTER_STRING_KEYS = new Set([
     'lichessUsername',
@@ -82,6 +84,23 @@ function validatePreferencesPatch(value: unknown): { patch: PartialPreferences }
             });
             if (!parsed.ok) return parsed;
             patch.puzzleTagFilter = parsed.value;
+            continue;
+        }
+
+        if (key === 'autoSyncProviders') {
+            if (!isRecord(raw)) return { error: 'Invalid autoSyncProviders' };
+            const providers: NonNullable<PartialPreferences['autoSyncProviders']> =
+                {};
+            for (const [providerKey, providerRaw] of Object.entries(raw)) {
+                if (providerKey !== 'lichess' && providerKey !== 'chesscom') {
+                    return { error: `Unknown autoSyncProviders.${providerKey}` };
+                }
+                if (typeof providerRaw !== 'boolean') {
+                    return { error: `Invalid autoSyncProviders.${providerKey}` };
+                }
+                providers[providerKey] = providerRaw;
+            }
+            patch.autoSyncProviders = providers;
             continue;
         }
 
