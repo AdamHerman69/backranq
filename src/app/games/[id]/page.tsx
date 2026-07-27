@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { dbGameToNormalized } from '@/lib/api/games';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import GameDetailClient from '@/components/games/GameDetailClient';
+import { getManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 
 export default async function GameDetailPage({
     params,
@@ -27,20 +28,23 @@ export default async function GameDetailPage({
         select: { lichessUsername: true, chesscomUsername: true },
     });
 
-    const puzzles = await prisma.puzzle.findMany({
-        where: { userId, gameId: id, archivedAt: null },
-        orderBy: { sourcePly: 'asc' },
-        select: {
-            id: true,
-            sourcePly: true,
-            type: true,
-            bestMoveUci: true,
-        },
-    });
+    const [puzzles, serverAnalysisCapacity] = await Promise.all([
+        prisma.puzzle.findMany({
+            where: { userId, gameId: id, archivedAt: null },
+            orderBy: { sourcePly: 'asc' },
+            select: {
+                id: true,
+                sourcePly: true,
+                type: true,
+                bestMoveUci: true,
+            },
+        }),
+        getManualServerAnalysisCapacity(userId),
+    ]);
 
     const normalized = dbGameToNormalized(game);
     const initialAnalysis =
-        game.analysis && typeof game.analysis === 'object'
+        game.analyzedAt && game.analysis && typeof game.analysis === 'object'
             ? (game.analysis as unknown as GameAnalysis)
             : null;
 
@@ -50,6 +54,8 @@ export default async function GameDetailPage({
 
     return (
         <GameDetailClient
+            key={game.analyzedAt?.toISOString() ?? 'not-analyzed'}
+            ownerId={userId}
             dbGameId={game.id}
             header={{
                 provider: game.provider,
@@ -70,6 +76,7 @@ export default async function GameDetailPage({
             }}
             normalizedGame={normalized}
             initialAnalysis={initialAnalysis}
+            initialHasAnalysis={game.analyzedAt !== null}
             initialPly={initialPly}
             puzzles={puzzles.map((p) => ({
                 id: p.id,
@@ -81,7 +88,7 @@ export default async function GameDetailPage({
                 lichess: user?.lichessUsername ?? undefined,
                 chesscom: user?.chesscomUsername ?? undefined,
             }}
+            serverAnalysisCapacity={serverAnalysisCapacity}
         />
     );
 }
-

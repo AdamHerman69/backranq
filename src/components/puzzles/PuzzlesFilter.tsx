@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { MultiSelect, type MultiSelectOption } from '@/components/ui/multi-select';
 import {
     Select,
@@ -41,8 +40,11 @@ export function PuzzlesFilter({
     const [filters, setFilters] = useState<PuzzlesFilters>(initial);
     const [openingOptions, setOpeningOptions] = useState<MultiSelectOption[]>([]);
     const [tagOptions, setTagOptions] = useState<MultiSelectOption[]>([]);
+    const [gameOptions, setGameOptions] = useState<MultiSelectOption[]>([]);
+    const [facetsLoading, setFacetsLoading] = useState(true);
+    const [facetsError, setFacetsError] = useState<string | null>(null);
 
-    const isAutoApply = autoApply ?? true;
+    const isAutoApply = autoApply ?? false;
 
     useEffect(() => {
         setFilters(initial);
@@ -51,25 +53,64 @@ export function PuzzlesFilter({
     useEffect(() => {
         let cancelled = false;
         async function run() {
+            setFacetsLoading(true);
+            setFacetsError(null);
             try {
-                const res = await fetch('/api/puzzles/facets?limit=500');
-                const json = (await res.json().catch(() => ({}))) as {
+                const [facetsResponse, gamesResponse] = await Promise.all([
+                    fetch('/api/puzzles/facets?limit=500'),
+                    fetch('/api/games?limit=100'),
+                ]);
+                const json = (await facetsResponse.json().catch(() => ({}))) as {
                     openings?: MultiSelectOption[];
                     tags?: MultiSelectOption[];
                     error?: string;
                 };
-                if (!res.ok)
+                const gamesJson = (await gamesResponse.json().catch(() => ({}))) as {
+                    games?: Array<{
+                        id?: string;
+                        whiteName?: string;
+                        blackName?: string;
+                        playedAt?: string;
+                    }>;
+                    error?: string;
+                };
+                if (!facetsResponse.ok)
                     throw new Error(json?.error ?? 'Failed to load facets');
+                if (!gamesResponse.ok)
+                    throw new Error(gamesJson?.error ?? 'Failed to load games');
                 if (cancelled) return;
                 setOpeningOptions(
                     Array.isArray(json?.openings) ? json.openings : []
                 );
                 setTagOptions(Array.isArray(json?.tags) ? json.tags : []);
-            } catch {
+                setGameOptions(
+                    (Array.isArray(gamesJson.games) ? gamesJson.games : [])
+                        .filter(
+                            (game): game is Required<Pick<typeof game, 'id'>> &
+                                typeof game => typeof game.id === 'string'
+                        )
+                        .map((game) => ({
+                            value: game.id,
+                            label: `${game.whiteName ?? 'White'} vs ${game.blackName ?? 'Black'}${
+                                game.playedAt
+                                    ? ` · ${new Date(game.playedAt).toLocaleDateString()}`
+                                    : ''
+                            }`,
+                        }))
+                );
+            } catch (error) {
                 if (!cancelled) {
                     setOpeningOptions([]);
                     setTagOptions([]);
+                    setGameOptions([]);
+                    setFacetsError(
+                        error instanceof Error
+                            ? error.message
+                            : 'Filter options are unavailable'
+                    );
                 }
+            } finally {
+                if (!cancelled) setFacetsLoading(false);
             }
         }
         void run();
@@ -150,6 +191,15 @@ export function PuzzlesFilter({
                 <div className="text-sm text-muted-foreground">
                     {total.toLocaleString()} puzzles
                 </div>
+            ) : null}
+            {facetsLoading ? (
+                <p className="text-xs text-muted-foreground" role="status">
+                    Loading filter options…
+                </p>
+            ) : facetsError ? (
+                <p className="text-xs text-amber-700 dark:text-amber-300" role="alert">
+                    {facetsError}. Basic filters still work.
+                </p>
             ) : null}
 
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
@@ -286,16 +336,37 @@ export function PuzzlesFilter({
 
                 <div className="space-y-1">
                     <div className="text-xs font-medium text-muted-foreground">Game</div>
-                    <Input
-                        value={filters.gameId}
-                        onChange={(e) => {
-                            const next = { ...filters, gameId: e.target.value };
+                    <Select
+                        value={filters.gameId || 'all'}
+                        onValueChange={(value) => {
+                            const next = {
+                                ...filters,
+                                gameId: value === 'all' ? '' : value,
+                            };
                             setFilters(next);
                             if (isAutoApply) push(next);
                         }}
-                        placeholder="(optional)"
-                        className="h-8 text-xs"
-                    />
+                    >
+                        <SelectTrigger className="h-8 text-xs">
+                            <SelectValue placeholder="Any game" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="all">Any game</SelectItem>
+                            {filters.gameId &&
+                            !gameOptions.some(
+                                (option) => option.value === filters.gameId
+                            ) ? (
+                                <SelectItem value={filters.gameId}>
+                                    Selected game
+                                </SelectItem>
+                            ) : null}
+                            {gameOptions.map((option) => (
+                                <SelectItem key={option.value} value={option.value}>
+                                    {option.label}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
                 </div>
 
                 <div className="space-y-1 sm:col-span-2 lg:col-span-3">
@@ -371,4 +442,3 @@ export function PuzzlesFilter({
 }
 
 export default PuzzlesFilter;
-

@@ -4,6 +4,8 @@ export const BACKRANQ_QUEUE_TOPIC = 'backranq-jobs';
 
 export type BackranqQueueMessage =
     | { type: 'sync-all'; requestedAt: string }
+    | { type: 'sync-job'; jobId: string }
+    | { type: 'dispatch-analysis'; requestedAt: string }
     | { type: 'analysis-job'; jobId: string };
 
 const queue = new QueueClient({ region: process.env.VERCEL_REGION ?? 'iad1' });

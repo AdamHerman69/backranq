@@ -7,6 +7,7 @@ import {
     type PartialPreferences,
 } from '@/lib/preferences';
 import { getAnalysisJobCounts } from '@/lib/services/analysisJobs';
+import { getManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 
 export const runtime = 'nodejs';
 
@@ -47,6 +48,7 @@ export async function GET() {
         },
     });
     const jobCounts = await getAnalysisJobCounts(userId);
+    const billing = await getManualServerAnalysisCapacity(userId);
 
     const prefs = mergePreferences(
         defaultPreferences(),
@@ -90,5 +92,6 @@ export async function GET() {
             running: jobCounts.running,
             failed: jobCounts.failed,
         },
+        billing,
     });
 }

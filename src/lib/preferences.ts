@@ -19,12 +19,34 @@ export type Filters = {
 export type PreferencesSchema = {
     filters: Filters;
 
+    // trainer UX
+    trainerContextHintsEnabled: boolean;
+
     // server-side automation
     autoSyncEnabled: boolean;
     autoAnalyzeEnabled: boolean;
     autoSyncProviders: {
         lichess: boolean;
         chesscom: boolean;
+    };
+    autoAnalysis?: {
+        enabled?: boolean;
+        providers?: {
+            lichess?: boolean;
+            chesscom?: boolean;
+        };
+        resultScope?: 'losses' | 'draws' | 'all';
+        timeControls?: {
+            bullet?: boolean;
+            blitz?: boolean;
+            rapid?: boolean;
+            classical?: boolean;
+            unknown?: boolean;
+        };
+        ratedOnly?: boolean;
+        minPlies?: number | string;
+        dailyCap?: number | string | null;
+        monthlyCap?: number | string | null;
     };
 
     // puzzle library state
@@ -57,6 +79,7 @@ export type PartialPreferences = Omit<
 > & {
     filters?: Partial<Filters>;
     autoSyncProviders?: Partial<PreferencesSchema['autoSyncProviders']>;
+    autoAnalysis?: Partial<NonNullable<PreferencesSchema['autoAnalysis']>>;
 };
 
 export type AnalysisDefaults = Pick<
@@ -91,11 +114,31 @@ export function defaultPreferences(): PreferencesSchema {
             maxElo: '',
             max: '100',
         },
+        trainerContextHintsEnabled: false,
         autoSyncEnabled: true,
-        autoAnalyzeEnabled: true,
+        autoAnalyzeEnabled: false,
         autoSyncProviders: {
             lichess: true,
             chesscom: true,
+        },
+        autoAnalysis: {
+            enabled: false,
+            providers: {
+                lichess: true,
+                chesscom: true,
+            },
+            resultScope: 'draws',
+            timeControls: {
+                bullet: false,
+                blitz: false,
+                rapid: true,
+                classical: true,
+                unknown: false,
+            },
+            ratedOnly: true,
+            minPlies: 20,
+            dailyCap: 10,
+            monthlyCap: 50,
         },
         puzzles: [],
         puzzleIdx: 0,
@@ -238,6 +281,18 @@ export function mergePreferences(
         autoSyncProviders: {
             ...base.autoSyncProviders,
             ...(patch.autoSyncProviders ?? {}),
+        },
+        autoAnalysis: {
+            ...(base.autoAnalysis ?? {}),
+            ...(patch.autoAnalysis ?? {}),
+            providers: {
+                ...(base.autoAnalysis?.providers ?? {}),
+                ...(patch.autoAnalysis?.providers ?? {}),
+            },
+            timeControls: {
+                ...(base.autoAnalysis?.timeControls ?? {}),
+                ...(patch.autoAnalysis?.timeControls ?? {}),
+            },
         },
     };
 

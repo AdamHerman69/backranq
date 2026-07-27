@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
-import { syncLinkedAccounts } from '@/lib/services/autoSync';
+import { dispatchQueuedAnalysisJobs } from '@/lib/services/analysisScheduler';
+import { planAndProcessDueSyncJobsInline } from '@/lib/services/syncJobs';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -29,6 +30,7 @@ export async function GET(req: Request) {
         });
     }
 
-    const result = await syncLinkedAccounts();
-    return NextResponse.json({ ok: true, queued: false, result });
+    const result = await planAndProcessDueSyncJobsInline();
+    const dispatch = await dispatchQueuedAnalysisJobs();
+    return NextResponse.json({ ok: true, queued: false, result, dispatch });
 }

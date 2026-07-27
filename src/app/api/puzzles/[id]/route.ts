@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { aggregatePuzzleStats, dbToPuzzle } from '@/lib/api/puzzles';
+import { puzzleOutcomeFromMove } from '@/lib/puzzles/attemptOutcomes';
 
 export const runtime = 'nodejs';
 
@@ -40,6 +41,7 @@ export async function GET(
             wasCorrect: a.wasCorrect,
             attemptedAt: a.attemptedAt,
             timeSpentMs: a.timeSpentMs,
+            userMoveUci: a.userMoveUci,
         }))
     );
 
@@ -51,6 +53,7 @@ export async function GET(
             userMoveUci: a.userMoveUci,
             wasCorrect: a.wasCorrect,
             timeSpentMs: a.timeSpentMs,
+            outcome: puzzleOutcomeFromMove(a.userMoveUci),
         })),
     });
 }

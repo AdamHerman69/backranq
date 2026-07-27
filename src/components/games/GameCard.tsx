@@ -5,6 +5,10 @@ import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import {
+    getUserGameOutcome,
+    normalizeChessUsername,
+} from '@/lib/games/outcome';
 import { cn } from '@/lib/utils';
 
 export type GameCardData = {
@@ -26,21 +30,6 @@ export type GameCardData = {
     analysis: { whiteAccuracy?: number; blackAccuracy?: number } | null;
     puzzles?: { id: string; sourcePly: number; type: 'AVOID_BLUNDER' | 'PUNISH_BLUNDER' }[];
 };
-
-function normalizeName(s: string) {
-    return (s ?? '')
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, ' ')
-        .replace(/^@/, '');
-}
-
-function outcomeLetter(result: string | null): 'W' | 'L' | 'D' | '?' {
-    if (result === '1-0') return 'W';
-    if (result === '0-1') return 'L';
-    if (result === '1/2-1/2') return 'D';
-    return '?';
-}
 
 function outcomeBadgeClass(letter: 'W' | 'L' | 'D' | '?') {
     if (letter === 'W') return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300';
@@ -76,9 +65,9 @@ export function GameCard({
     selectionDisabled?: boolean;
     onSelectedChange?: (selected: boolean) => void;
 }) {
-    const user = normalizeName(userNameForProvider);
-    const w = normalizeName(game.whiteName);
-    const b = normalizeName(game.blackName);
+    const user = normalizeChessUsername(userNameForProvider);
+    const w = normalizeChessUsername(game.whiteName);
+    const b = normalizeChessUsername(game.blackName);
     const userIsWhite = user && user === w;
     const userIsBlack = user && user === b;
 
@@ -93,7 +82,12 @@ export function GameCard({
           ? game.whiteRating
           : null;
 
-    const badge = outcomeLetter(game.result);
+    const badge = getUserGameOutcome({
+        result: game.result,
+        whiteName: game.whiteName,
+        blackName: game.blackName,
+        userName: userNameForProvider,
+    });
     const played = new Date(game.playedAt).toLocaleDateString();
     const providerLabel = game.provider === 'LICHESS' ? 'Lichess' : 'Chess.com';
 
@@ -159,10 +153,10 @@ export function GameCard({
                                     <Link
                                         key={p.id}
                                         href={`/puzzles?puzzleId=${encodeURIComponent(p.id)}`}
-                                        title={`${p.type} • ply ${p.sourcePly + 1}`}
+                                        title={`Personal puzzle at move ${Math.floor(p.sourcePly / 2) + 1}`}
                                     >
                                         <Badge variant="outline" className="cursor-pointer">
-                                            Ply {p.sourcePly + 1}
+                                            Move {Math.floor(p.sourcePly / 2) + 1}
                                         </Badge>
                                     </Link>
                                 ))}
@@ -190,5 +184,3 @@ export function GameCard({
         </Card>
     );
 }
-
-

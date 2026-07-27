@@ -9,6 +9,12 @@ import { PuzzlesList, type PuzzleListItem } from '@/components/puzzles/PuzzlesLi
 import { PageHeader } from '@/components/app/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import {
+    defaultPreferences,
+    mergePreferences,
+    type PartialPreferences,
+} from '@/lib/preferences';
+import { mayShowPuzzleContext } from '@/lib/puzzles/trainerUx';
 
 function stripLegacyPseudoTags(tags: string[]): string[] {
     return tags.filter((t) => {
@@ -112,7 +118,7 @@ export default async function PuzzleLibraryPage({
 
     if (and.length > 0) where.AND = and;
 
-    const [total, rows] = await Promise.all([
+    const [total, rows, userPreferenceRow] = await Promise.all([
         prisma.puzzle.count({ where }),
         prisma.puzzle.findMany({
             where,
@@ -121,6 +127,7 @@ export default async function PuzzleLibraryPage({
             take: limit,
             select: {
                 id: true,
+                fen: true,
                 sourcePly: true,
                 openingEco: true,
                 openingName: true,
@@ -132,19 +139,50 @@ export default async function PuzzleLibraryPage({
                 tags: true,
                 attempts: {
                     where: { userId },
-                    select: { wasCorrect: true, attemptedAt: true, timeSpentMs: true },
+                    select: {
+                        wasCorrect: true,
+                        attemptedAt: true,
+                        timeSpentMs: true,
+                        userMoveUci: true,
+                    },
                     orderBy: { attemptedAt: 'desc' },
                 },
             },
         }),
+        prisma.user.findUnique({
+            where: { id: userId },
+            select: { preferences: true },
+        }),
     ]);
+    const preferences = mergePreferences(
+        defaultPreferences(),
+        (userPreferenceRow?.preferences ?? {}) as PartialPreferences
+    );
 
     const totalPages = Math.max(1, Math.ceil(total / limit));
 
     const listItems: PuzzleListItem[] = rows.map((p) => {
         const stats = aggregatePuzzleStats(p.attempts);
-        const status: PuzzleListItem['status'] = stats.attempted === 0 ? 'new' : stats.solved ? 'solved' : stats.failed ? 'failed' : 'attempted';
-        const title = `${p.openingEco ? `${p.openingEco} ` : ''}${p.openingName ?? 'Puzzle'}`.trim();
+        const status: PuzzleListItem['status'] =
+            stats.outcome === 'revealed' || stats.outcome === 'skipped'
+                ? stats.outcome
+                : stats.attempted === 0
+                  ? 'new'
+                  : stats.solved
+                    ? 'solved'
+                    : stats.failed
+                      ? 'failed'
+                      : 'attempted';
+        const sideToMove = p.fen.split(' ')[1] === 'b' ? 'Black' : 'White';
+        const contextWasRequested = Boolean(type || kind);
+        const mayShowContext = mayShowPuzzleContext({
+            preferenceEnabled: preferences.trainerContextHintsEnabled,
+            attempted: status !== 'new',
+            explicitContextFilter: contextWasRequested,
+        });
+        const title = mayShowContext
+            ? `${p.openingEco ? `${p.openingEco} ` : ''}${p.openingName ?? 'Puzzle'}`.trim()
+            : `Puzzle · ${sideToMove} to move`;
         const modeText =
             p.type === 'PUNISH_BLUNDER'
                 ? 'Punish blunder'
@@ -165,13 +203,15 @@ export default async function PuzzleLibraryPage({
                   : p.phase === 'ENDGAME'
                     ? 'Endgame'
                     : '';
-        const subtitle = `${modeText} • ${kindText}${phaseText ? ` • ${phaseText}` : ''} • ply ${p.sourcePly + 1} • ${p.createdAt.toLocaleDateString()}`;
+        const subtitle = mayShowContext
+            ? `${modeText} • ${kindText}${phaseText ? ` • ${phaseText}` : ''} • ply ${p.sourcePly + 1} • ${p.createdAt.toLocaleDateString()}`
+            : `Find the best move • added ${p.createdAt.toLocaleDateString()}`;
         return {
             id: p.id,
             title,
             subtitle,
             status,
-            tags: Array.isArray(p.tags)
+            tags: mayShowContext && Array.isArray(p.tags)
                 ? stripLegacyPseudoTags(p.tags).slice(0, 12)
                 : [],
         };

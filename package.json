@@ -12,6 +12,11 @@
         "lint": "eslint",
         "typecheck": "tsc --noEmit",
         "test": "vitest run",
+        "check:runtime": "node scripts/check-runtime-readiness.mjs",
+        "check:stripe": "node scripts/smoke-stripe-billing.mjs",
+        "check:ledger": "node scripts/reconcile-credit-ledger.mjs",
+        "smoke:auth-session": "node scripts/seed-local-auth-session.mjs",
+        "load:analysis-queue": "node scripts/simulate-analysis-queue-load.mjs",
         "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
         "postinstall": "prisma generate && node scripts/copy-stockfish-wasm.mjs"
     },
@@ -40,6 +45,7 @@
         "react-dom": "19.2.1",
         "sonner": "^2.0.7",
         "stockfish.wasm": "^0.10.0",
+        "stripe": "^22.3.0",
         "tailwind-merge": "^3.4.0"
     },
     "devDependencies": {

@@ -1,9 +1,25 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
+} from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
-import { SlidersHorizontal, Laptop, LineChart, Shuffle } from 'lucide-react';
+import {
+    AlertCircle,
+    CheckCircle2,
+    Clock3,
+    Laptop,
+    LineChart,
+    RefreshCw,
+    Shuffle,
+    SlidersHorizontal,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -12,62 +28,198 @@ import { SyncGamesWidget } from '@/components/sync/SyncGamesWidget';
 import { PuzzleTrainer } from '@/components/puzzles/PuzzleTrainer';
 import { PuzzlesList, type PuzzleListItem } from '@/components/puzzles/PuzzlesList';
 import { usePuzzles } from '@/lib/api/usePuzzles';
-
-function stripLegacyPseudoTags(tags: string[]): string[] {
-    return tags.filter((t) => {
-        if (!t) return false;
-        if (t === 'avoidBlunder' || t === 'punishBlunder') return false;
-        if (t.startsWith('kind:')) return false;
-        if (t.startsWith('eco:')) return false;
-        if (t.startsWith('opening:')) return false;
-        if (t.startsWith('openingVar:')) return false;
-        return true;
-    });
-}
+import {
+    ANALYSIS_COMPLETION_EVENT,
+    LIBRARY_CHANGED_EVENT,
+    readLastAnalysisCompletion,
+    type AnalysisCompletionSummary,
+} from '@/lib/analysis/analysisCompletion';
+import {
+    backgroundAnalysis,
+    type BackgroundAnalysisSnapshot,
+} from '@/lib/analysis/backgroundAnalysisManager';
+import { getSyncStatus, type SyncStatus } from '@/lib/services/gameSync';
+import {
+    deriveHomeProductState,
+    type HomeProductState,
+} from '@/lib/product/homeState';
 
 export default function Home() {
     const { data: session, status: sessionStatus } = useSession();
-    const isLoggedIn = !!session?.user?.id;
+    const ownerId = session?.user?.id ?? null;
+    const isLoggedIn = !!ownerId;
     const isLoading = sessionStatus === 'loading';
 
-    // Stats for logged-in users
-    const [puzzleCount, setPuzzleCount] = useState<number | null>(null);
-    const [gameCount, setGameCount] = useState<number | null>(null);
+    const [dashboard, setDashboard] = useState<{
+        ownerId: string | null;
+        status: 'idle' | 'loading' | 'ready' | 'error';
+        puzzleCount: number;
+        gameCount: number;
+        unanalyzedGameCount: number;
+        syncStatus: SyncStatus | null;
+        error: string | null;
+    }>({
+        ownerId: null,
+        status: 'idle',
+        puzzleCount: 0,
+        gameCount: 0,
+        unanalyzedGameCount: 0,
+        syncStatus: null,
+        error: null,
+    });
+    const [analysisSnapshot, setAnalysisSnapshot] =
+        useState<BackgroundAnalysisSnapshot>(() => backgroundAnalysis.snapshot());
+    const [lastCompletion, setLastCompletion] =
+        useState<AnalysisCompletionSummary | null>(null);
+    const dashboardRequestId = useRef(0);
 
-    // Fetch puzzle count for logged-in users
-    useEffect(() => {
-        if (!isLoggedIn) return;
-        let cancelled = false;
-
-        async function fetchCounts() {
-            try {
-                const [puzzleRes, gameRes] = await Promise.all([
-                    fetch('/api/puzzles?limit=1'),
-                    fetch('/api/games?limit=1'),
+    const fetchDashboard = useCallback(async () => {
+        if (!ownerId) return;
+        const requestId = ++dashboardRequestId.current;
+        setDashboard((current) => ({
+            ...current,
+            ownerId,
+            status: current.status === 'ready' ? 'ready' : 'loading',
+            error: null,
+        }));
+        try {
+            const [puzzleRes, gameRes, unanalyzedRes, syncStatus] =
+                await Promise.all([
+                    fetch('/api/puzzles?limit=1', { cache: 'no-store' }),
+                    fetch('/api/games?limit=1', { cache: 'no-store' }),
+                    fetch('/api/games?hasAnalysis=false&limit=1', {
+                        cache: 'no-store',
+                    }),
+                    getSyncStatus(),
                 ]);
-                const puzzleJson = await puzzleRes.json().catch(() => ({})) as { total?: number };
-                const gameJson = await gameRes.json().catch(() => ({})) as { total?: number };
-                if (cancelled) return;
-                setPuzzleCount(typeof puzzleJson.total === 'number' ? puzzleJson.total : 0);
-                setGameCount(typeof gameJson.total === 'number' ? gameJson.total : 0);
-            } catch {
-                if (!cancelled) {
-                    setPuzzleCount(0);
-                    setGameCount(0);
-                }
+            if (!puzzleRes.ok || !gameRes.ok || !unanalyzedRes.ok) {
+                throw new Error('Could not load your training overview.');
             }
+            const [puzzleJson, gameJson, unanalyzedJson] = (await Promise.all([
+                puzzleRes.json(),
+                gameRes.json(),
+                unanalyzedRes.json(),
+            ])) as Array<{ total?: number }>;
+            if (requestId !== dashboardRequestId.current) return;
+            setDashboard({
+                ownerId,
+                status: 'ready',
+                puzzleCount:
+                    typeof puzzleJson.total === 'number' ? puzzleJson.total : 0,
+                gameCount:
+                    typeof gameJson.total === 'number' ? gameJson.total : 0,
+                unanalyzedGameCount:
+                    typeof unanalyzedJson.total === 'number'
+                        ? unanalyzedJson.total
+                        : 0,
+                syncStatus,
+                error: null,
+            });
+        } catch (error) {
+            if (requestId !== dashboardRequestId.current) return;
+            setDashboard((current) => ({
+                ...current,
+                ownerId,
+                status: 'error',
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : 'Could not load your training overview.',
+            }));
         }
-        fetchCounts();
-        return () => { cancelled = true; };
-    }, [isLoggedIn]);
+    }, [ownerId]);
 
-    const hasPuzzles = puzzleCount !== null && puzzleCount > 0;
-    const hasGames = gameCount !== null && gameCount > 0;
+    useEffect(() => {
+        backgroundAnalysis.setOwner(ownerId);
+        dashboardRequestId.current += 1;
+        setDashboard({
+            ownerId,
+            status: 'idle',
+            puzzleCount: 0,
+            gameCount: 0,
+            unanalyzedGameCount: 0,
+            syncStatus: null,
+            error: null,
+        });
+        setLastCompletion(
+            ownerId ? readLastAnalysisCompletion(ownerId) : null
+        );
+        setAnalysisSnapshot(backgroundAnalysis.snapshot());
+        if (!ownerId) return;
+        const unsubscribe = backgroundAnalysis.subscribe((next) => {
+            if (next.ownerId === ownerId) setAnalysisSnapshot(next);
+        });
+        void fetchDashboard();
+        const onCompletion = (event: Event) => {
+            const summary = (
+                event as CustomEvent<AnalysisCompletionSummary>
+            ).detail;
+            if (summary?.ownerId === ownerId) setLastCompletion(summary);
+        };
+        const refresh = (event: Event) => {
+            const eventOwner = (
+                event as CustomEvent<{
+                    ownerId?: string;
+                    invalidateCompletion?: boolean;
+                }>
+            ).detail?.ownerId;
+            const invalidateCompletion = (
+                event as CustomEvent<{
+                    ownerId?: string;
+                    invalidateCompletion?: boolean;
+                }>
+            ).detail?.invalidateCompletion;
+            if (
+                invalidateCompletion &&
+                (!eventOwner || eventOwner === ownerId)
+            ) {
+                setLastCompletion(null);
+            }
+            if (!eventOwner || eventOwner === ownerId) void fetchDashboard();
+        };
+        window.addEventListener(ANALYSIS_COMPLETION_EVENT, onCompletion);
+        window.addEventListener(LIBRARY_CHANGED_EVENT, refresh);
+        window.addEventListener('focus', refresh);
+        return () => {
+            dashboardRequestId.current += 1;
+            unsubscribe();
+            window.removeEventListener(
+                ANALYSIS_COMPLETION_EVENT,
+                onCompletion
+            );
+            window.removeEventListener(LIBRARY_CHANGED_EVENT, refresh);
+            window.removeEventListener('focus', refresh);
+        };
+    }, [fetchDashboard, ownerId]);
+
+    const dashboardMatchesOwner = dashboard.ownerId === ownerId;
+    const dashboardStatus = dashboardMatchesOwner
+        ? dashboard.status
+        : 'idle';
+    const puzzleCount = dashboardMatchesOwner ? dashboard.puzzleCount : 0;
+    const gameCount = dashboardMatchesOwner ? dashboard.gameCount : 0;
+    const unanalyzedGameCount = dashboardMatchesOwner
+        ? dashboard.unanalyzedGameCount
+        : 0;
+    const dashboardSyncStatus = dashboardMatchesOwner
+        ? dashboard.syncStatus
+        : null;
+    const hasPuzzles = puzzleCount > 0;
 
     // Puzzles list for logged-in users
-    const { puzzles, total: puzzleTotal, page, totalPages, loading: puzzlesLoading } = usePuzzles({
+    const {
+        puzzles,
+        total: puzzleTotal,
+        page,
+        totalPages,
+        loading: puzzlesLoading,
+        error: puzzlesError,
+        refetch: refetchPuzzles,
+    } = usePuzzles({
         limit: 10,
         page: 1,
+        enabled: isLoggedIn,
+        scopeKey: ownerId ?? 'guest',
     });
 
     const puzzleListItems: PuzzleListItem[] = useMemo(() => {
@@ -77,20 +229,34 @@ export default function Home() {
                 stats.attempted === 0 ? 'new' : 
                 stats.solved ? 'solved' : 
                 stats.failed ? 'failed' : 'attempted';
-            const title = `${p.opening?.eco ? `${p.opening.eco} ` : ''}${p.opening?.name ?? 'Puzzle'}`.trim();
-            const modeText = p.mode === 'punishBlunder' ? 'Punish blunder' : 'Avoid blunder';
-            const kindText = p.type === 'missedWin' ? 'Missed win' : p.type === 'missedTactic' ? 'Missed tactic' : 'Blunder';
-            const phaseText = p.phase === 'opening' ? 'Opening' : p.phase === 'middlegame' ? 'Middlegame' : p.phase === 'endgame' ? 'Endgame' : '';
-            const subtitle = `${modeText} • ${kindText}${phaseText ? ` • ${phaseText}` : ''} • ply ${p.sourcePly + 1}`;
             return {
                 id: p.id,
-                title,
-                subtitle,
+                title: 'Personal puzzle',
+                subtitle: 'Find the best move',
                 status,
-                tags: stripLegacyPseudoTags(p.tags ?? []).slice(0, 12),
+                tags: [],
             };
         });
     }, [puzzles]);
+
+    const hasLinkedAccount =
+        !!dashboardSyncStatus?.linked.lichessUsername ||
+        !!dashboardSyncStatus?.linked.chesscomUsername;
+    const productState: HomeProductState = deriveHomeProductState({
+        loading:
+            dashboardStatus === 'idle' || dashboardStatus === 'loading',
+        error: dashboardMatchesOwner ? dashboard.error : null,
+        hasLinkedAccount,
+        gameCount,
+        unanalyzedGameCount,
+        puzzleCount,
+        browserAnalysisRunning:
+            analysisSnapshot.ownerId === ownerId &&
+            analysisSnapshot.state === 'running',
+        serverQueued: dashboardSyncStatus?.analysisJobs?.queued ?? 0,
+        serverRunning: dashboardSyncStatus?.analysisJobs?.running ?? 0,
+        lastCompletion,
+    });
 
     // Loading state
     if (isLoading) {
@@ -273,9 +439,13 @@ export default function Home() {
                         Welcome back{session?.user?.name ? `, ${session.user.name.split(' ')[0]}` : ''}
                     </h1>
                     <p className="text-sm text-muted-foreground">
-                        {hasPuzzles
+                        {dashboardStatus === 'loading' || dashboardStatus === 'idle'
+                            ? 'Loading your training overview…'
+                            : dashboardStatus === 'error'
+                              ? 'Your library is still here, but its latest status could not be loaded.'
+                              : hasPuzzles
                             ? `You have ${puzzleCount} puzzles from ${gameCount} games.`
-                            : hasGames
+                            : gameCount > 0
                                 ? `You have ${gameCount} games. Analyze them to generate puzzles.`
                                 : 'Sync your first games to get started.'}
                     </p>
@@ -295,11 +465,19 @@ export default function Home() {
             {/* Sync widget */}
             <Card>
                 <CardContent className="p-4">
-                    <SyncGamesWidget context="games" enableAnalyze variant="banner" />
+                    <SyncGamesWidget context="home" enableAnalyze variant="banner" />
                 </CardContent>
             </Card>
 
-            {/* Main content: Trainer or Empty State */}
+            <HomeStateCard
+                state={productState}
+                gameCount={gameCount}
+                unanalyzedGameCount={unanalyzedGameCount}
+                puzzleCount={puzzleCount}
+                error={dashboardMatchesOwner ? dashboard.error : null}
+                onRetry={() => void fetchDashboard()}
+            />
+
             {hasPuzzles ? (
                 <>
                     {/* Puzzle Trainer */}
@@ -326,6 +504,23 @@ export default function Home() {
                             </div>
                             {puzzlesLoading ? (
                                 <div className="text-sm text-muted-foreground">Loading puzzles…</div>
+                            ) : puzzlesError ? (
+                                <div
+                                    className="flex flex-wrap items-center justify-between gap-3 text-sm"
+                                    role="alert"
+                                >
+                                    <span className="text-muted-foreground">
+                                        Could not load recent puzzles: {puzzlesError}
+                                    </span>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => void refetchPuzzles()}
+                                    >
+                                        Try again
+                                    </Button>
+                                </div>
                             ) : puzzleListItems.length === 0 ? (
                                 <div className="text-sm text-muted-foreground">No puzzles yet.</div>
                             ) : (
@@ -340,37 +535,175 @@ export default function Home() {
                         </CardContent>
                     </Card>
                 </>
-            ) : hasGames ? (
-                <Card>
-                    <CardContent className="py-12 text-center">
-                        <div className="mx-auto max-w-md">
-                            <h2 className="text-xl font-semibold">Analyze your games</h2>
-                            <p className="mt-2 text-muted-foreground">
-                                You have {gameCount} games imported. Click &quot;Analyze games&quot; above to generate puzzles from your mistakes.
-                            </p>
-                            <Button className="mt-6" asChild>
-                                <Link href="/games">Go to Games</Link>
-                            </Button>
+            ) : null}
+        </div>
+    );
+}
+
+function HomeStateCard({
+    state,
+    gameCount,
+    unanalyzedGameCount,
+    puzzleCount,
+    error,
+    onRetry,
+}: {
+    state: HomeProductState;
+    gameCount: number;
+    unanalyzedGameCount: number;
+    puzzleCount: number;
+    error: string | null;
+    onRetry: () => void;
+}) {
+    if (state === 'loading') {
+        return (
+            <Card aria-live="polite">
+                <CardContent className="flex items-center gap-3 py-6">
+                    <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
+                    <div>
+                        <div className="font-medium">Loading your next step</div>
+                        <div className="text-sm text-muted-foreground">
+                            Checking games, analysis and puzzle progress…
                         </div>
-                    </CardContent>
-                </Card>
-            ) : (
-                <Card>
-                    <CardContent className="py-12 text-center">
-                        <div className="mx-auto max-w-md">
-                            <h2 className="text-xl font-semibold">Get started</h2>
-                            <p className="mt-2 text-muted-foreground">
-                                Sync your games from Lichess or Chess.com, then analyze them to create personalized training puzzles.
-                            </p>
-                            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-center">
-                                <Button asChild>
-                                    <Link href="/settings">Link Accounts</Link>
-                                </Button>
+                    </div>
+                </CardContent>
+            </Card>
+        );
+    }
+
+    if (state === 'error') {
+        return (
+            <Card aria-live="polite">
+                <CardContent className="flex flex-wrap items-center justify-between gap-4 py-6">
+                    <div className="flex items-start gap-3">
+                        <AlertCircle className="mt-0.5 h-5 w-5 text-destructive" aria-hidden="true" />
+                        <div>
+                            <div className="font-medium">Overview unavailable</div>
+                            <div className="text-sm text-muted-foreground">
+                                {error ?? 'We could not load the latest library status.'}
                             </div>
                         </div>
-                    </CardContent>
-                </Card>
-            )}
-        </div>
+                    </div>
+                    <Button type="button" variant="outline" onClick={onRetry}>
+                        Try again
+                    </Button>
+                </CardContent>
+            </Card>
+        );
+    }
+
+    if (state === 'no-linked-account') {
+        return (
+            <NextActionCard
+                icon={<AlertCircle className="h-5 w-5" aria-hidden="true" />}
+                title="Link a chess account"
+                description="Connect Lichess or Chess.com first. Then Backranq can import games without asking for files."
+                actionLabel="Open settings"
+                href="/settings"
+            />
+        );
+    }
+
+    if (state === 'no-games') {
+        return (
+            <NextActionCard
+                icon={<Shuffle className="h-5 w-5" aria-hidden="true" />}
+                title="Sync your first games"
+                description="Your account is linked. Use Sync games above to import recent games and start building your training set."
+                actionLabel="Review linked accounts"
+                href="/settings"
+            />
+        );
+    }
+
+    if (state === 'analysis-in-progress') {
+        return (
+            <NextActionCard
+                icon={<Clock3 className="h-5 w-5" aria-hidden="true" />}
+                title="Analysis is in progress"
+                description={`${Math.max(0, gameCount - unanalyzedGameCount)} of ${gameCount} games are analyzed. You can leave server analysis running or keep this tab open for browser analysis.`}
+                actionLabel={puzzleCount > 0 ? 'Train available puzzles' : 'View games'}
+                href={puzzleCount > 0 ? '/puzzles' : '/games'}
+            />
+        );
+    }
+
+    if (state === 'failed') {
+        return (
+            <NextActionCard
+                icon={<AlertCircle className="h-5 w-5 text-destructive" aria-hidden="true" />}
+                title="Some games still need analysis"
+                description={`${unanalyzedGameCount} game${unanalyzedGameCount === 1 ? '' : 's'} remain. Review the analysis bar for the error and retry only the unfinished games.`}
+                actionLabel="Review games"
+                href="/games"
+            />
+        );
+    }
+
+    if (state === 'unanalyzed') {
+        return (
+            <NextActionCard
+                icon={<LineChart className="h-5 w-5" aria-hidden="true" />}
+                title="Analyze your imported games"
+                description={`${unanalyzedGameCount} of ${gameCount} game${gameCount === 1 ? '' : 's'} still need analysis before they can produce puzzles.`}
+                actionLabel="Choose analysis"
+                href="/games"
+            />
+        );
+    }
+
+    if (state === 'analyzed-no-candidates') {
+        return (
+            <NextActionCard
+                icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
+                title="Analysis complete — no puzzle candidates"
+                description={`All ${gameCount} games were analyzed successfully. None matched your current extraction settings; this is different from an analysis error.`}
+                actionLabel="Review extraction settings"
+                href="/settings"
+            />
+        );
+    }
+
+    return (
+        <NextActionCard
+            icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
+            title="Your training set is ready"
+            description={`${puzzleCount} personal puzzle${puzzleCount === 1 ? '' : 's'} are ready. The next best step is a short focused session.`}
+            actionLabel="Start training"
+            href="/puzzles"
+        />
+    );
+}
+
+function NextActionCard({
+    icon,
+    title,
+    description,
+    actionLabel,
+    href,
+}: {
+    icon: ReactNode;
+    title: string;
+    description: string;
+    actionLabel: string;
+    href: string;
+}) {
+    return (
+        <Card>
+            <CardContent className="flex flex-wrap items-center justify-between gap-4 py-6">
+                <div className="flex max-w-2xl items-start gap-3">
+                    <div className="mt-0.5 text-muted-foreground">{icon}</div>
+                    <div>
+                        <div className="font-medium">{title}</div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                            {description}
+                        </div>
+                    </div>
+                </div>
+                <Button asChild>
+                    <Link href={href}>{actionLabel}</Link>
+                </Button>
+            </CardContent>
+        </Card>
     );
 }

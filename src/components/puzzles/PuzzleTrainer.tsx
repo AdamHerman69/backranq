@@ -5,7 +5,21 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Chess, type Move, type Square } from 'chess.js';
-import { ChevronLeft, ChevronRight, Eye, EyeOff, Filter, RotateCcw } from 'lucide-react';
+import {
+    ChevronLeft,
+    ChevronRight,
+    Eye,
+    EyeOff,
+    Filter,
+    FlipHorizontal2,
+    Lightbulb,
+    Loader2,
+    Play,
+    Redo2,
+    RotateCcw,
+    Undo2,
+    WifiOff,
+} from 'lucide-react';
 import { Chessboard } from 'react-chessboard';
 
 import type { NormalizedGame } from '@/lib/types/game';
@@ -49,6 +63,19 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
+import type { PreferencesSchema } from '@/lib/preferences';
+import {
+    classifyPuzzleMove,
+    isStateForPuzzle,
+    legalPromotionChoices,
+    appendAnalysisBranch,
+    analysisHistoryStepLabel,
+} from '@/lib/puzzles/trainerUx';
+import { ModalDialog } from '@/components/ui/ModalDialog';
+import {
+    puzzleOutcomeFromMove,
+    type PuzzleNonMoveOutcome,
+} from '@/lib/puzzles/attemptOutcomes';
 
 type TrainerViewMode = 'solve' | 'analyze';
 
@@ -75,6 +102,7 @@ type PuzzleAttemptRow = {
     userMoveUci: string;
     wasCorrect: boolean;
     timeSpentMs: number | null;
+    outcome: PuzzleNonMoveOutcome | null;
 };
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -91,6 +119,7 @@ function parsePuzzleAttemptStats(value: unknown): PuzzleAttemptStats | null {
         failed,
         lastAttemptedAt,
         averageTimeMs,
+        outcome,
     } = stats;
 
     if (
@@ -101,6 +130,13 @@ function parsePuzzleAttemptStats(value: unknown): PuzzleAttemptStats | null {
         typeof failed !== 'boolean' ||
         !(typeof lastAttemptedAt === 'string' || lastAttemptedAt === null) ||
         !(typeof averageTimeMs === 'number' || averageTimeMs === null)
+        || !(
+            outcome === 'new' ||
+            outcome === 'solved' ||
+            outcome === 'failed' ||
+            outcome === 'revealed' ||
+            outcome === 'skipped'
+        )
     ) {
         return null;
     }
@@ -113,12 +149,19 @@ function parsePuzzleAttemptStats(value: unknown): PuzzleAttemptStats | null {
         failed,
         lastAttemptedAt,
         averageTimeMs,
+        outcome,
     };
 }
 
 function parsePuzzleAttemptRow(value: unknown): PuzzleAttemptRow | null {
     const row = toRecord(value);
     const { id, attemptedAt, userMoveUci, wasCorrect, timeSpentMs } = row;
+    const outcome =
+        row.outcome === 'revealed' || row.outcome === 'skipped'
+            ? row.outcome
+            : puzzleOutcomeFromMove(
+                  typeof userMoveUci === 'string' ? userMoveUci : ''
+              );
 
     if (
         typeof id !== 'string' ||
@@ -136,6 +179,7 @@ function parsePuzzleAttemptRow(value: unknown): PuzzleAttemptRow | null {
         userMoveUci,
         wasCorrect,
         timeSpentMs: timeSpentMs ?? null,
+        outcome,
     };
 }
 
@@ -303,8 +347,11 @@ function scoreToUnit(score: Score | null, fen: string): number {
 
 function isEditableTarget(el: EventTarget | null) {
     if (!(el instanceof HTMLElement)) return false;
-    const tag = el.tagName.toLowerCase();
-    return tag === 'input' || tag === 'textarea' || el.isContentEditable;
+    return Boolean(
+        el.closest(
+            'input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="option"], [role="dialog"]'
+        )
+    );
 }
 
 function findPuzzleLastMove(args: {
@@ -355,26 +402,83 @@ export function PuzzleTrainer({
 }) {
     const pathname = usePathname();
     const sp = useSearchParams();
+    const trainerRootRef = useRef<HTMLDivElement | null>(null);
 
     const { getRandom, loading: loadingNext, error: randomError } = useRandomPuzzles();
 
     const engineRef = useRef<StockfishClient | null>(null);
     const [engineClient, setEngineClient] = useState<StockfishClient | null>(null);
 
-    const { startAttempt, recordAttempt } = usePuzzleAttempt();
+    const {
+        startAttempt,
+        recordAttempt,
+        recordOutcome,
+        flushQueue,
+        queued: queuedAttempts,
+        lastError: attemptSyncError,
+        online: attemptOnline,
+        syncState: attemptSyncState,
+    } = usePuzzleAttempt();
 
-    const [viewMode, setViewMode] = useState<TrainerViewMode>(initialViewMode);
+    const initialAnalyzeRequestedRef = useRef(initialViewMode === 'analyze');
+    const [viewState, setViewState] = useState<{
+        puzzleId: string | null;
+        mode: TrainerViewMode;
+    }>({ puzzleId: null, mode: 'solve' });
     const [filtersOpen, setFiltersOpen] = useState(false);
-    const [tagsRevealed, setTagsRevealed] = useState(false);
-    const [showPuzzleStats, setShowPuzzleStats] = useState(false);
-    const showPuzzleStatsRef = useRef(showPuzzleStats);
+    const [tagsRevealedForId, setTagsRevealedForId] = useState<string | null>(
+        null
+    );
+    const [statsVisibleForId, setStatsVisibleForId] = useState<string | null>(
+        null
+    );
+    const [contextHintsEnabled, setContextHintsEnabled] = useState(false);
+    const [preferencesLoading, setPreferencesLoading] = useState(true);
+    const [boardFlipped, setBoardFlipped] = useState(false);
+    const [reducedMotion, setReducedMotion] = useState(false);
+    const [disclosureState, setDisclosureState] = useState<{
+        puzzleId: string;
+        type: 'solution' | 'analyze';
+    } | null>(null);
+    const showPuzzleStatsRef = useRef(false);
 
     const [queue, setQueue] = useState<Puzzle[]>([]);
     const [idx, setIdx] = useState(0);
 
     const currentPuzzle = queue[idx] ?? null;
     const currentPuzzleId = currentPuzzle?.id ?? null;
+    const viewMode =
+        viewState.puzzleId === currentPuzzleId ? viewState.mode : 'solve';
+    const setViewMode = useCallback(
+        (mode: TrainerViewMode) => {
+            setViewState({ puzzleId: currentPuzzleId, mode });
+        },
+        [currentPuzzleId]
+    );
+    const disclosurePrompt =
+        disclosureState?.puzzleId === currentPuzzleId
+            ? disclosureState.type
+            : null;
+    const tagsRevealed = isStateForPuzzle(
+        tagsRevealedForId,
+        currentPuzzleId
+    );
+    const showPuzzleStats = isStateForPuzzle(
+        statsVisibleForId,
+        currentPuzzleId
+    );
     const [directLoadError, setDirectLoadError] = useState<string | null>(null);
+    const [sessionComplete, setSessionComplete] = useState(false);
+    const [sessionCounts, setSessionCounts] = useState({
+        solved: 0,
+        missed: 0,
+        revealed: 0,
+        skipped: 0,
+    });
+    const countedPuzzleRef = useRef<Set<string>>(new Set());
+    const persistentOutcomeByPuzzleRef = useRef<
+        Map<string, PuzzleNonMoveOutcome>
+    >(new Map());
 
     // Keep refs to avoid URL<->state feedback loops.
     // We intentionally do NOT want "URL puzzleId changed" logic to re-run just because queue/idx changed
@@ -439,19 +543,65 @@ export function PuzzleTrainer({
     const trainerSolvedKey = String(trainerFilters.solved);
     const trainerFailedKey = String(trainerFilters.failed);
 
-    const [sourceGame, setSourceGame] = useState<NormalizedGame | null>(null);
-    const [sourceParsed, setSourceParsed] = useState<SourceParsed | null>(null);
-    const [sourceLoading, setSourceLoading] = useState(false);
-    const [sourceError, setSourceError] = useState<string | null>(null);
+    const sourceRequestIdRef = useRef(0);
+    const [sourceStateForId, setSourceStateForId] = useState<string | null>(null);
+    const [sourceGameRaw, setSourceGame] = useState<NormalizedGame | null>(null);
+    const [sourceParsedRaw, setSourceParsed] = useState<SourceParsed | null>(null);
+    const [sourceLoadingRaw, setSourceLoading] = useState(false);
+    const [sourceErrorRaw, setSourceError] = useState<string | null>(null);
+    const [sourceRetryNonce, setSourceRetryNonce] = useState(0);
+    const currentSourceGameId = currentPuzzle?.sourceGameId ?? null;
+    const currentSourceGameIdRef = useRef<string | null>(currentSourceGameId);
+    currentSourceGameIdRef.current = currentSourceGameId;
+    const sourceStateIsCurrent = sourceStateForId === currentSourceGameId;
+    const sourceGame = sourceStateIsCurrent ? sourceGameRaw : null;
+    const sourceParsed = sourceStateIsCurrent ? sourceParsedRaw : null;
+    const sourceLoading = sourceStateIsCurrent ? sourceLoadingRaw : true;
+    const sourceError = sourceStateIsCurrent ? sourceErrorRaw : null;
 
-    const [attemptFen, setAttemptFen] = useState<string>(new Chess().fen());
-    const [attemptLastMove, setAttemptLastMove] = useState<{ from: Square; to: Square } | null>(null);
-    const [attemptUci, setAttemptUci] = useState<string | null>(null);
-    const [attemptResult, setAttemptResult] = useState<'correct' | 'incorrect' | null>(null);
-    const [showSolution, setShowSolution] = useState(false);
+    const [attemptStateForId, setAttemptStateForId] = useState<string | null>(
+        null
+    );
+    const [attemptFenRaw, setAttemptFen] = useState<string>(new Chess().fen());
+    const [attemptLastMoveRaw, setAttemptLastMove] = useState<{ from: Square; to: Square } | null>(null);
+    const [attemptUciRaw, setAttemptUci] = useState<string | null>(null);
+    const [attemptResultRaw, setAttemptResult] = useState<'correct' | 'incorrect' | null>(null);
+    const [attemptFeedbackRaw, setAttemptFeedback] = useState<
+        'best' | 'accepted' | 'wrong' | null
+    >(null);
+    const [localOutcomeRaw, setLocalOutcome] = useState<
+        'solved' | 'failed' | 'revealed' | 'skipped' | null
+    >(null);
+    const [hintForId, setHintForId] = useState<string | null>(null);
+    const [solutionVisibleForId, setSolutionVisibleForId] = useState<
+        string | null
+    >(null);
 
     // Source-game reveal (the move that was actually played in the source game)
-    const [showRealMove, setShowRealMove] = useState(false);
+    const [sourceMoveVisibleForId, setSourceMoveVisibleForId] = useState<
+        string | null
+    >(null);
+    const attemptStateIsCurrent = isStateForPuzzle(
+        attemptStateForId,
+        currentPuzzleId
+    );
+    const attemptFen = attemptStateIsCurrent
+        ? attemptFenRaw
+        : currentPuzzle?.fen ?? attemptFenRaw;
+    const attemptLastMove = attemptStateIsCurrent ? attemptLastMoveRaw : null;
+    const attemptUci = attemptStateIsCurrent ? attemptUciRaw : null;
+    const attemptResult = attemptStateIsCurrent ? attemptResultRaw : null;
+    const attemptFeedback = attemptStateIsCurrent ? attemptFeedbackRaw : null;
+    const localOutcome = attemptStateIsCurrent ? localOutcomeRaw : null;
+    const hintLevel = hintForId === currentPuzzleId ? 1 : 0;
+    const showSolution = isStateForPuzzle(
+        solutionVisibleForId,
+        currentPuzzleId
+    );
+    const showRealMove = isStateForPuzzle(
+        sourceMoveVisibleForId,
+        currentPuzzleId
+    );
 
     const statsCacheRef = useRef<
         Map<string, { stats: PuzzleAttemptStats; attempts: PuzzleAttemptRow[] }>
@@ -466,6 +616,8 @@ export function PuzzleTrainer({
     const [refutationLineUci, setRefutationLineUci] = useState<string[] | null>(null);
     const [refutationStep, setRefutationStep] = useState(0);
     const [showWrongOverlay, setShowWrongOverlay] = useState(false);
+    const [refutationLoading, setRefutationLoading] = useState(false);
+    const [refutationError, setRefutationError] = useState<string | null>(null);
 
     // Solve mode: context (pre-puzzle) navigation
     const [showContext, setShowContext] = useState(false);
@@ -530,6 +682,16 @@ export function PuzzleTrainer({
     // Click-to-move hints
     const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
     const [legalTargets, setLegalTargets] = useState<Set<Square>>(new Set());
+    const [pendingPromotionState, setPendingPromotion] = useState<{
+        puzzleId: string;
+        from: Square;
+        to: Square;
+        choices: Array<'q' | 'r' | 'b' | 'n'>;
+    } | null>(null);
+    const pendingPromotion =
+        pendingPromotionState?.puzzleId === currentPuzzleId
+            ? pendingPromotionState
+            : null;
 
     const replaceUrlSearch = useCallback(
         (next: URLSearchParams) => {
@@ -547,6 +709,43 @@ export function PuzzleTrainer({
         return () => {
             engineRef.current?.terminate();
             engineRef.current = null;
+        };
+    }, []);
+
+    useEffect(() => {
+        const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+        const update = () => setReducedMotion(media.matches);
+        update();
+        media.addEventListener('change', update);
+        return () => media.removeEventListener('change', update);
+    }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+        async function loadPreferences() {
+            setPreferencesLoading(true);
+            try {
+                const response = await fetch('/api/user/preferences', {
+                    cache: 'no-store',
+                });
+                const body = (await response.json().catch(() => ({}))) as {
+                    preferences?: PreferencesSchema;
+                };
+                if (!response.ok) throw new Error('Failed to load preferences');
+                if (!cancelled) {
+                    setContextHintsEnabled(
+                        body.preferences?.trainerContextHintsEnabled === true
+                    );
+                }
+            } catch {
+                if (!cancelled) setContextHintsEnabled(false);
+            } finally {
+                if (!cancelled) setPreferencesLoading(false);
+            }
+        }
+        void loadPreferences();
+        return () => {
+            cancelled = true;
         };
     }, []);
 
@@ -650,6 +849,7 @@ export function PuzzleTrainer({
         }
 
         ensureOneInFlightRef.current = true;
+        setSessionComplete(false);
         const requestId = ++ensureOneRequestIdRef.current;
 
         try {
@@ -669,8 +869,11 @@ export function PuzzleTrainer({
             const p = await fetchNextPuzzle();
             if (ensureOneRequestIdRef.current !== requestId) return;
             if (p) {
+                setDirectLoadError(null);
                 setQueue([p]);
                 setIdx(0);
+            } else if (ensureOneRequestIdRef.current === requestId) {
+                setSessionComplete(true);
             }
         } finally {
             if (ensureOneRequestIdRef.current === requestId) {
@@ -733,22 +936,61 @@ export function PuzzleTrainer({
     // reset per-puzzle state
     useEffect(() => {
         if (!currentPuzzle) return;
+        setViewMode('solve');
+        setAttemptStateForId(currentPuzzle.id);
         setAttemptFen(currentPuzzle.fen);
         setAttemptLastMove(null);
         setAttemptUci(null);
         setAttemptResult(null);
-        setShowSolution(false);
+        setAttemptFeedback(null);
+        const persistedOutcome =
+            persistentOutcomeByPuzzleRef.current.get(currentPuzzle.id) ??
+            (
+            currentPuzzle as Puzzle & {
+                attemptStats?: PuzzleAttemptStats;
+            }
+        ).attemptStats?.outcome;
+        if (
+            persistedOutcome === 'revealed' ||
+            persistedOutcome === 'skipped'
+        ) {
+            persistentOutcomeByPuzzleRef.current.set(
+                currentPuzzle.id,
+                persistedOutcome
+            );
+        }
+        setLocalOutcome(
+            persistedOutcome === 'revealed' || persistedOutcome === 'skipped'
+                ? persistedOutcome
+                : null
+        );
+        setHintForId(null);
+        setSolutionVisibleForId(null);
+        setTagsRevealedForId(null);
+        setStatsVisibleForId(null);
         setRefutationLineUci(null);
         setRefutationStep(0);
         setShowWrongOverlay(false);
+        setRefutationLoading(false);
+        setRefutationError(null);
+        setPendingPromotion(null);
+        setDisclosureState(null);
+        if (initialAnalyzeRequestedRef.current) {
+            initialAnalyzeRequestedRef.current = false;
+            setDisclosureState({
+                puzzleId: currentPuzzle.id,
+                type: 'analyze',
+            });
+        }
         setPvStep(0);
         setAnalysisSelectedIdx(0);
         setAnalysisSelectedKey(null);
         setAnalysisEnabled(true);
         setSelectedSquare(null);
         setLegalTargets(new Set());
-        setShowRealMove(false);
+        setSourceMoveVisibleForId(null);
         setShowContext(false);
+        setBoardFlipped(false);
         setContextPly(typeof currentPuzzle.sourcePly === 'number' ? currentPuzzle.sourcePly : 0);
 
         startAttempt(currentPuzzle.id);
@@ -757,13 +999,18 @@ export function PuzzleTrainer({
         setAnalysisRootFen(currentPuzzle.fen);
         setAnalysisHistory([currentPuzzle.fen]);
         setAnalysisHistoryIdx(0);
-    }, [currentPuzzle, startAttempt]);
+    }, [currentPuzzle, setViewMode, startAttempt]);
 
     // Always load source game
     useEffect(() => {
-        let cancelled = false;
+        const sourceGameId = currentPuzzle?.sourceGameId ?? null;
+        const requestId = ++sourceRequestIdRef.current;
         async function run() {
-            if (!currentPuzzle?.sourceGameId) {
+            setSourceStateForId(sourceGameId);
+            setSourceGame(null);
+            setSourceParsed(null);
+            setSourceError(null);
+            if (!sourceGameId) {
                 setSourceGame(null);
                 setSourceParsed(null);
                 setSourceError(null);
@@ -771,9 +1018,8 @@ export function PuzzleTrainer({
                 return;
             }
             setSourceLoading(true);
-            setSourceError(null);
             try {
-                const res = await fetch(`/api/games/${currentPuzzle.sourceGameId}`);
+                const res = await fetch(`/api/games/${sourceGameId}`);
                 const json = (await res.json().catch(() => ({}))) as {
                     game?: unknown;
                     error?: string;
@@ -787,25 +1033,40 @@ export function PuzzleTrainer({
                 );
                 const parsed = parseSourceGame(ng.pgn);
                 if (!parsed) throw new Error('Failed to parse source game PGN');
-                if (cancelled) return;
+                if (
+                    sourceRequestIdRef.current !== requestId ||
+                    currentSourceGameIdRef.current !== sourceGameId
+                )
+                    return;
                 setSourceGame(ng);
                 setSourceParsed(parsed);
             } catch (e) {
-                if (cancelled) return;
+                if (
+                    sourceRequestIdRef.current !== requestId ||
+                    currentSourceGameIdRef.current !== sourceGameId
+                )
+                    return;
                 setSourceGame(null);
                 setSourceParsed(null);
                 setSourceError(
                     e instanceof Error ? e.message : 'Failed to load source game'
                 );
             } finally {
-                if (!cancelled) setSourceLoading(false);
+                if (
+                    sourceRequestIdRef.current === requestId &&
+                    currentSourceGameIdRef.current === sourceGameId
+                ) {
+                    setSourceLoading(false);
+                }
             }
         }
         void run();
         return () => {
-            cancelled = true;
+            if (sourceRequestIdRef.current === requestId) {
+                sourceRequestIdRef.current += 1;
+            }
         };
-    }, [currentPuzzle?.sourceGameId]);
+    }, [currentPuzzle?.sourceGameId, sourceRetryNonce]);
 
     const openingText = useMemo(() => {
         if (!currentPuzzle?.opening) return '';
@@ -838,11 +1099,21 @@ export function PuzzleTrainer({
         return uciToSan(currentPuzzle.fen, currentPuzzle.bestMoveUci) ?? currentPuzzle.bestMoveUci;
     }, [currentPuzzle]);
 
-    const orientation = useMemo(() => {
+    const autoOrientation = useMemo(() => {
         if (!currentPuzzle) return 'white' as const;
         const stm = sideToMoveFromFen(currentPuzzle.fen);
         return stm === 'b' ? ('black' as const) : ('white' as const);
     }, [currentPuzzle]);
+    const orientation =
+        boardFlipped
+            ? autoOrientation === 'white'
+                ? ('black' as const)
+                : ('white' as const)
+            : autoOrientation;
+    const sideToMoveLabel =
+        currentPuzzle && sideToMoveFromFen(currentPuzzle.fen) === 'b'
+            ? 'Black'
+            : 'White';
 
     const puzzleLastMove = useMemo(() => {
         if (!currentPuzzle || !sourceParsed) return null;
@@ -850,6 +1121,11 @@ export function PuzzleTrainer({
     }, [currentPuzzle, sourceParsed]);
 
     const isReviewState = attemptResult === 'correct' || showSolution;
+    const reviewUnlocked =
+        attemptResult !== null ||
+        showSolution ||
+        localOutcome === 'revealed' ||
+        localOutcome === 'skipped';
 
     const sourcePlyRaw = useMemo(() => {
         const v = currentPuzzle?.sourcePly;
@@ -919,7 +1195,8 @@ export function PuzzleTrainer({
         emitIntervalMs: 150,
     });
 
-    const analysis = liveAnalyze.update;
+    const analysis =
+        liveAnalyze.update?.fen === analysisRootFen ? liveAnalyze.update : null;
     useEffect(() => {
         if (viewMode !== 'analyze') return;
         setAnalysisSelectedIdx(0);
@@ -1079,10 +1356,6 @@ export function PuzzleTrainer({
 
         // analyze
         if (analyzeTrack === 'game') {
-            // If showing the mistake move at the puzzle position, display the position after the mistake
-            if (showRealMove && analyzeGamePly === puzzlePly && fenAfterMistake) {
-                return fenAfterMistake;
-            }
             if (sourceFensToPuzzle && sourceFensToPuzzle.length > 0) {
                 const idx = clamp(analyzeGamePly, 0, sourceFensToPuzzle.length - 1);
                 return sourceFensToPuzzle[idx] ?? currentPuzzle.fen;
@@ -1112,9 +1385,11 @@ export function PuzzleTrainer({
         analyzeGamePly,
         sourceFensToPuzzle,
         puzzleFenFromSource,
-        showRealMove,
-        fenAfterMistake,
     ]);
+    const currentAnalysis =
+        analysisRootFen !== null && displayFen === analysisRootFen
+            ? analysis
+            : null;
 
     const allowMove = useMemo(() => {
         if (!currentPuzzle) return false;
@@ -1124,21 +1399,28 @@ export function PuzzleTrainer({
 
     const rootEvalFen = useMemo(() => {
         if (viewMode === 'solve') return currentPuzzle?.fen ?? null;
-        return analysis?.fen ?? analysisRootFen ?? null;
-    }, [viewMode, currentPuzzle?.fen, analysis?.fen, analysisRootFen]);
+        return currentAnalysis?.fen ?? analysisRootFen ?? null;
+    }, [viewMode, currentPuzzle?.fen, currentAnalysis?.fen, analysisRootFen]);
 
     const rootEvalScore = useMemo(() => {
         if (viewMode === 'solve') return currentPuzzle?.score ?? null;
-        const line = analysis?.lines[selectedLine] ?? analysis?.lines[0];
+        const line =
+            currentAnalysis?.lines[selectedLine] ?? currentAnalysis?.lines[0];
         return line?.score ?? null;
-    }, [viewMode, currentPuzzle?.score, analysis, selectedLine]);
+    }, [viewMode, currentPuzzle?.score, currentAnalysis, selectedLine]);
 
     const displayEval = useMemo(() => {
+        if (
+            viewMode === 'analyze' &&
+            (!rootEvalFen || rootEvalFen !== displayFen)
+        ) {
+            return { score: null as Score | null, fenForSign: displayFen };
+        }
         if (rootEvalFen && rootEvalScore) {
             return { score: rootEvalScore, fenForSign: rootEvalFen };
         }
         return { score: null as Score | null, fenForSign: displayFen };
-    }, [displayFen, rootEvalFen, rootEvalScore]);
+    }, [displayFen, rootEvalFen, rootEvalScore, viewMode]);
 
     const evalText = useMemo(() => {
         return formatEval(displayEval.score, displayEval.fenForSign);
@@ -1222,7 +1504,10 @@ export function PuzzleTrainer({
             }
 
             // Attempt arrow last so it wins if it matches bestMove/lastMove
-            if (attemptLastMove) {
+            if (
+                attemptLastMove &&
+                (attemptResult !== 'incorrect' || displayFen === attemptFen)
+            ) {
                 put({
                     startSquare: attemptLastMove.from,
                     endSquare: attemptLastMove.to,
@@ -1235,17 +1520,12 @@ export function PuzzleTrainer({
             return Array.from(byKey.values());
         }
 
-        // analyze: show mistake move arrow when toggled
-        if (showRealMove && realSourceMove && analyzeTrack === 'game' && analyzeGamePly === puzzlePly) {
-            put({
-                startSquare: realSourceMove.from as Square,
-                endSquare: realSourceMove.to as Square,
-                color: 'rgba(245,158,11,0.85)', // amber
-            });
-        }
+        const atAnalysisRoot =
+            Boolean(analysisRootFen) && displayFen === analysisRootFen;
+        if (!atAnalysisRoot) return [];
 
         // analyze: one arrow per line's first move
-        const lines = analysis?.lines ?? [];
+        const lines = currentAnalysis?.lines ?? [];
         const colors = [
             'rgba(59,130,246,0.80)',
             'rgba(16,185,129,0.75)',
@@ -1279,7 +1559,6 @@ export function PuzzleTrainer({
         return Array.from(byKey.values());
     }, [
         viewMode,
-        puzzlePly,
         puzzleLastMove,
         displayFen,
         attemptLastMove,
@@ -1291,10 +1570,10 @@ export function PuzzleTrainer({
         currentPuzzle,
         isMultiSolutionPuzzle,
         acceptedMoves,
-        analysis,
+        currentAnalysis,
         selectedLine,
-        analyzeTrack,
-        analyzeGamePly,
+        analysisRootFen,
+        attemptFen,
     ]);
 
     const squareStyles = useMemo(() => {
@@ -1316,12 +1595,25 @@ export function PuzzleTrainer({
         if (selectedSquare) {
             s[selectedSquare] = { outline: '2px solid hsl(var(--ring))' };
         }
+        if (hintLevel > 0 && currentPuzzle) {
+            const hintMove = parseUci(currentPuzzle.bestMoveUci);
+            if (hintMove) {
+                s[hintMove.from] = {
+                    ...(s[hintMove.from] ?? {}),
+                    boxShadow: 'inset 0 0 0 4px rgba(245,158,11,0.78)',
+                };
+            }
+        }
         const dot =
             'radial-gradient(circle at center, rgba(124,58,237,0.55) 0 18%, rgba(0,0,0,0) 20%)';
+        const captureRing =
+            'radial-gradient(circle at center, transparent 0 54%, rgba(124,58,237,0.72) 56% 68%, transparent 70%)';
+        const board = new Chess(displayFen);
         for (const t of legalTargets) {
             if (!s[t]) s[t] = {};
             const prev = s[t].backgroundImage as string | undefined;
-            s[t].backgroundImage = prev ? `${dot}, ${prev}` : dot;
+            const marker = board.get(t) ? captureRing : dot;
+            s[t].backgroundImage = prev ? `${marker}, ${prev}` : marker;
         }
         return s;
     }, [
@@ -1333,7 +1625,40 @@ export function PuzzleTrainer({
         attemptResult,
         selectedSquare,
         legalTargets,
+        hintLevel,
     ]);
+
+    const recordLocalOutcome = useCallback((outcome: 'solved' | 'failed' | 'revealed' | 'skipped') => {
+        if (currentPuzzle?.id) setAttemptStateForId(currentPuzzle.id);
+        if (
+            currentPuzzle?.id &&
+            (outcome === 'revealed' || outcome === 'skipped')
+        ) {
+            persistentOutcomeByPuzzleRef.current.set(
+                currentPuzzle.id,
+                outcome
+            );
+        }
+        setLocalOutcome(outcome);
+        const puzzleId = currentPuzzle?.id;
+        if (!puzzleId || countedPuzzleRef.current.has(puzzleId)) return;
+        countedPuzzleRef.current.add(puzzleId);
+        setSessionCounts((current) => ({
+            ...current,
+            [outcome === 'solved'
+                ? 'solved'
+                : outcome === 'failed'
+                  ? 'missed'
+                  : outcome]:
+                current[
+                    outcome === 'solved'
+                        ? 'solved'
+                        : outcome === 'failed'
+                          ? 'missed'
+                          : outcome
+                ] + 1,
+        }));
+    }, [currentPuzzle?.id]);
 
     function applyMoveResult(res: {
         fen: string;
@@ -1347,22 +1672,35 @@ export function PuzzleTrainer({
         }
 
         if (viewMode === 'solve') {
+            if (currentPuzzle?.id) setAttemptStateForId(currentPuzzle.id);
             setAttemptFen(res.fen);
             setAttemptLastMove(res.lastMove);
             setAttemptUci(res.uci);
             const u = res.uci.trim().toLowerCase();
             const best = (currentPuzzle?.bestMoveUci ?? '').trim().toLowerCase();
             const accepted = new Set(acceptedMoves);
-            const correct = accepted.has(u);
+            const feedback = classifyPuzzleMove({
+                move: u,
+                bestMove: best,
+                acceptedMoves: Array.from(accepted),
+            });
+            const correct = feedback !== 'wrong';
             setAttemptResult(correct ? 'correct' : 'incorrect');
+            setAttemptFeedback(feedback);
+            const isPersistentOutcome =
+                localOutcome === 'revealed' || localOutcome === 'skipped';
+            if (!isPersistentOutcome) {
+                recordLocalOutcome(correct ? 'solved' : 'failed');
+            }
             setPvStep(0);
-            // If it's a safe-but-not-best move, reveal best line for learning.
-            if (correct && u !== best) setShowSolution(true);
+            if (correct && currentPuzzle?.id) {
+                setSolutionVisibleForId(currentPuzzle.id);
+            }
             if (!correct) {
-                // Trigger refutation autoplay effect.
                 setRefutationLineUci(null);
                 setRefutationStep(0);
-                setShowWrongOverlay(false);
+                setShowWrongOverlay(true);
+                setRefutationError(null);
             }
             return;
         }
@@ -1372,8 +1710,12 @@ export function PuzzleTrainer({
         setAnalyzeGamePly(puzzlePly);
         const prev = analysisHistoryRef.current;
         const idx = analysisHistoryIdxRef.current;
-        const base = prev.slice(0, Math.max(0, Math.min(idx, prev.length - 1)) + 1);
-        const next = [...base, res.fen];
+        const next = appendAnalysisBranch({
+            history: prev,
+            historyIndex: idx,
+            displayedFen: displayFen,
+            nextFen: res.fen,
+        });
         setAnalysisHistory(next);
         setAnalysisHistoryIdx(next.length - 1);
         setAnalysisRootFen(res.fen);
@@ -1388,6 +1730,11 @@ export function PuzzleTrainer({
     function computeHints(square: Square) {
         if (!allowMove) return;
         const c = new Chess(displayFen);
+        const piece = c.get(square);
+        if (!piece || piece.color !== c.turn()) {
+            clearHints();
+            return;
+        }
         const moves = c.moves({ square, verbose: true }) as unknown as VerboseMove[];
         const targets = new Set<Square>();
         for (const m of moves) targets.add(m.to as Square);
@@ -1406,26 +1753,99 @@ export function PuzzleTrainer({
         return { fen: c.fen(), uci: moveToUci(args), lastMove: { from: args.from, to: args.to } };
     }
 
+    function getPromotionChoices(from: Square, to: Square) {
+        const chess = new Chess(displayFen);
+        const moves = chess.moves({
+            square: from,
+            verbose: true,
+        }) as unknown as VerboseMove[];
+        return legalPromotionChoices(
+            moves.map((move) => ({
+                from: move.from,
+                to: move.to,
+                promotion: move.promotion,
+            })),
+            from,
+            to
+        );
+    }
+
+    function playOrChoosePromotion(from: Square, to: Square) {
+        const choices = getPromotionChoices(from, to);
+        if (choices.length > 0 && currentPuzzleId) {
+            setPendingPromotion({ puzzleId: currentPuzzleId, from, to, choices });
+            return false;
+        }
+        const result = tryMakeMove({ from, to });
+        if (!result) return false;
+        applyMoveResult(result);
+        return true;
+    }
+
+    function choosePromotion(promotion: 'q' | 'r' | 'b' | 'n') {
+        if (!pendingPromotion) return;
+        if (!pendingPromotion.choices.includes(promotion)) return;
+        const result = tryMakeMove({
+            from: pendingPromotion.from,
+            to: pendingPromotion.to,
+            promotion,
+        });
+        setPendingPromotion(null);
+        if (result) applyMoveResult(result);
+    }
+
     const nextPuzzle = useCallback(async () => {
+        if (currentPuzzleId && !localOutcome && !attemptResult) {
+            recordLocalOutcome('skipped');
+            void recordOutcome({
+                puzzleId: currentPuzzleId,
+                outcome: 'skipped',
+            });
+        }
+        if (idx < queue.length - 1) {
+            setIdx((value) => Math.min(queue.length - 1, value + 1));
+            setSessionComplete(false);
+            return;
+        }
         const next = await fetchNextPuzzle();
-        if (!next) return;
+        if (!next) {
+            setSessionComplete(true);
+            return;
+        }
+        setSessionComplete(false);
         setQueue((prev) => [...prev, next]);
         setIdx((prev) => prev + 1);
-    }, [fetchNextPuzzle]);
+    }, [
+        attemptResult,
+        currentPuzzleId,
+        fetchNextPuzzle,
+        idx,
+        localOutcome,
+        queue.length,
+        recordLocalOutcome,
+        recordOutcome,
+    ]);
 
     const resetSolve = useCallback(() => {
         if (!currentPuzzle) return;
+        setAttemptStateForId(currentPuzzle.id);
         setAttemptFen(currentPuzzle.fen);
         setAttemptLastMove(null);
         setAttemptUci(null);
         setAttemptResult(null);
-        setShowSolution(false);
-        setShowRealMove(false);
+        setAttemptFeedback(null);
+        setLocalOutcome(null);
+        setHintForId(null);
+        setSolutionVisibleForId(null);
+        setSourceMoveVisibleForId(null);
         setShowContext(false);
         setContextPly(puzzlePly);
         setRefutationLineUci(null);
         setRefutationStep(0);
         setShowWrongOverlay(false);
+        setRefutationLoading(false);
+        setRefutationError(null);
+        setPendingPromotion(null);
         setPvStep(0);
         clearHints();
         startAttempt(currentPuzzle.id);
@@ -1582,73 +2002,112 @@ export function PuzzleTrainer({
         setAnalysisHistoryIdx(0);
     }, [currentPuzzle, puzzleFenFromSource, puzzlePly]);
 
-    // Solve mode: on wrong move, auto-play Stockfish refutation then show overlay.
-    useEffect(() => {
-        let cancelled = false;
-        let interval: number | null = null;
-        async function run() {
-            if (viewMode !== 'solve') return;
-            if (!currentPuzzle) return;
-            if (attemptResult !== 'incorrect') return;
+    const revealSolution = useCallback(() => {
+        if (currentPuzzleId) setSolutionVisibleForId(currentPuzzleId);
+        setDisclosureState(null);
+        if (!attemptResult && currentPuzzleId && localOutcome !== 'revealed') {
+            recordLocalOutcome('revealed');
+            void recordOutcome({
+                puzzleId: currentPuzzleId,
+                outcome: 'revealed',
+            });
+        }
+    }, [
+        attemptResult,
+        currentPuzzleId,
+        localOutcome,
+        recordLocalOutcome,
+        recordOutcome,
+    ]);
 
-            // Avoid a race where we create/set the engineClient and *also* start a refutation
-            // analysis in the same pass (which can get cancelled by the state update and leave
-            // a hung/queued engine job behind).
-            if (!engineClient) {
-                const client = new StockfishClient();
+    function enterAnalyzeMode() {
+        setDisclosureState(null);
+        if (!attemptResult && currentPuzzleId && localOutcome !== 'revealed') {
+            recordLocalOutcome('revealed');
+            void recordOutcome({
+                puzzleId: currentPuzzleId,
+                outcome: 'revealed',
+            });
+        }
+        setViewMode('analyze');
+        setPvStep(0);
+        setAnalysisEnabled(true);
+        resetAnalyzeToStart();
+    }
+
+    function requestAnalyzeMode() {
+        if (reviewUnlocked) {
+            enterAnalyzeMode();
+            return;
+        }
+        if (currentPuzzleId) {
+            setDisclosureState({
+                puzzleId: currentPuzzleId,
+                type: 'analyze',
+            });
+        }
+    }
+
+    function toggleSourceMove() {
+        if (viewMode === 'solve') {
+            setSourceMoveVisibleForId(showRealMove ? null : currentPuzzleId);
+            return;
+        }
+        if (showRealMove) {
+            setSourceMoveVisibleForId(null);
+            resetAnalyzeToStart();
+            return;
+        }
+        if (!fenAfterMistake) return;
+        setSourceMoveVisibleForId(currentPuzzleId);
+        setAnalyzeTrack('pv');
+        setAnalyzeGamePly(puzzlePly);
+        setAnalysisRootFen(fenAfterMistake);
+        setAnalysisHistory([fenAfterMistake]);
+        setAnalysisHistoryIdx(0);
+        setPvStep(0);
+    }
+
+    async function loadRefutation() {
+        if (attemptResult !== 'incorrect' || refutationLoading) return;
+        setRefutationLoading(true);
+        setRefutationError(null);
+        try {
+            let client = engineClient;
+            if (!client) {
+                client = new StockfishClient();
                 engineRef.current = client;
                 setEngineClient(client);
-                return;
             }
-
-            try {
-                const res = await engineClient.analyzeMultiPv({
-                    fen: attemptFen,
-                    movetimeMs: 250,
-                    multiPv: 1,
-                });
-                const pv = res.lines?.[0]?.pvUci?.slice(0, 10) ?? [];
-                if (cancelled) return;
-                setRefutationLineUci(pv);
-                setRefutationStep(0);
-                setShowWrongOverlay(false);
-
-                const applied = applyUciLine(attemptFen, pv, 12);
-                const lastIdx = Math.max(0, applied.length - 1);
-                if (lastIdx === 0) {
-                    setShowWrongOverlay(true);
-                    return;
-                }
-                interval = window.setInterval(() => {
-                    setRefutationStep((s) => {
-                        if (s >= lastIdx) {
-                            if (interval) window.clearInterval(interval);
-                            interval = null;
-                            setShowWrongOverlay(true);
-                            return s;
-                        }
-                        return s + 1;
-                    });
-                }, 450);
-            } catch {
-                if (!cancelled) {
-                    setRefutationLineUci(null);
-                    setRefutationStep(0);
-                    setShowWrongOverlay(true);
-                }
+            const result = await client.analyzeMultiPv({
+                fen: attemptFen,
+                movetimeMs: 300,
+                multiPv: 1,
+            });
+            const line = result.lines?.[0]?.pvUci?.slice(0, 10) ?? [];
+            setRefutationLineUci(line);
+            setRefutationStep(line.length > 0 ? 1 : 0);
+            setShowWrongOverlay(false);
+            if (line.length === 0) {
+                setRefutationError('No refutation line was returned.');
             }
+        } catch (error) {
+            setRefutationError(
+                error instanceof Error
+                    ? error.message
+                    : 'Could not calculate a refutation'
+            );
+        } finally {
+            setRefutationLoading(false);
         }
-        void run();
-        return () => {
-            cancelled = true;
-            if (interval) window.clearInterval(interval);
-        };
-    }, [viewMode, currentPuzzle, attemptResult, attemptFen, engineClient]);
+    }
 
     // keyboard shortcuts / navigation
     useEffect(() => {
         function onKeyDown(e: KeyboardEvent) {
             if (isEditableTarget(e.target)) return;
+            if (e.metaKey || e.ctrlKey || e.altKey) return;
+            if (pendingPromotion || disclosurePrompt || showWrongOverlay) return;
             if (!currentPuzzle) return;
 
             // Keep existing shortcuts
@@ -1659,7 +2118,15 @@ export function PuzzleTrainer({
             }
             if (e.key === 's') {
                 e.preventDefault();
-                if (viewMode === 'solve') setShowSolution(true);
+                if (viewMode === 'solve') {
+                    if (reviewUnlocked) revealSolution();
+                    else if (currentPuzzleId) {
+                        setDisclosureState({
+                            puzzleId: currentPuzzleId,
+                            type: 'solution',
+                        });
+                    }
+                }
                 return;
             }
             if (e.key === 'r') {
@@ -1730,8 +2197,9 @@ export function PuzzleTrainer({
             }
         }
 
-        window.addEventListener('keydown', onKeyDown, { capture: true });
-        return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
+        const root = trainerRootRef.current;
+        root?.addEventListener('keydown', onKeyDown);
+        return () => root?.removeEventListener('keydown', onKeyDown);
     }, [
         currentPuzzle,
         viewMode,
@@ -1747,6 +2215,12 @@ export function PuzzleTrainer({
         nextPuzzle,
         resetAnalyzeToStart,
         resetSolve,
+        reviewUnlocked,
+        revealSolution,
+        pendingPromotion,
+        disclosurePrompt,
+        showWrongOverlay,
+        currentPuzzleId,
     ]);
 
     const header = (
@@ -1757,20 +2231,20 @@ export function PuzzleTrainer({
                     className="flex-1"
                     onValueChange={(v) => {
                         if (v !== 'solve' && v !== 'analyze') return;
-                        setViewMode(v);
-                        setPvStep(0);
                         if (v === 'analyze') {
-                            setAnalysisEnabled(true);
-                            resetAnalyzeToStart();
+                            requestAnalyzeMode();
+                        } else {
+                            setViewMode('solve');
+                            setPvStep(0);
                         }
                     }}
                 >
                     <TabsList className="w-full">
                         <TabsTrigger className="flex-1" value="solve">
-                            solve
+                            Solve
                         </TabsTrigger>
                         <TabsTrigger className="flex-1" value="analyze">
-                            analyze
+                            Analyze
                         </TabsTrigger>
                     </TabsList>
                 </Tabs>
@@ -1793,20 +2267,95 @@ export function PuzzleTrainer({
 
             {filtersOpen ? (
                 <div className="w-full rounded-lg border bg-card p-3">
-                    <PuzzlesFilter initial={uiFilters} preserveKeys={['view']} autoApply />
+                    <PuzzlesFilter
+                        initial={uiFilters}
+                        preserveKeys={['view']}
+                        autoApply={false}
+                    />
+                </div>
+            ) : null}
+
+            {currentPuzzle ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2">
+                    <p className="text-sm font-medium">
+                        {sideToMoveLabel} to move — find the best move
+                    </p>
+                    {contextHintsEnabled || reviewUnlocked ? (
+                        <div className="flex flex-wrap gap-1.5">
+                            <Badge variant="secondary">
+                                {currentPuzzle.mode === 'punishBlunder'
+                                    ? 'Punish a mistake'
+                                    : 'Avoid a mistake'}
+                            </Badge>
+                            {currentPuzzle.type ? (
+                                <Badge variant="outline">{currentPuzzle.type}</Badge>
+                            ) : null}
+                        </div>
+                    ) : preferencesLoading ? (
+                        <span className="text-xs text-muted-foreground">
+                            Loading preferences…
+                        </span>
+                    ) : (
+                        <span className="text-xs text-muted-foreground">
+                            Spoiler-free
+                        </span>
+                    )}
+                    {localOutcome === 'revealed' || localOutcome === 'skipped' ? (
+                        <Badge
+                            variant="outline"
+                            className="border-amber-500/40 text-amber-700 dark:text-amber-300"
+                        >
+                            {localOutcome === 'revealed' ? 'Revealed' : 'Skipped'}
+                        </Badge>
+                    ) : null}
                 </div>
             ) : null}
 
             {viewMode === 'analyze' ? (
-                <div className="flex items-center gap-2">
-                    <div className="h-2 w-full flex-1 rounded-full bg-muted overflow-hidden">
-                        <div
-                            className="h-2 bg-foreground/70"
-                            style={{ width: `${Math.round(evalUnit * 100)}%` }}
-                        />
+                <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                        <span>
+                            Track:{' '}
+                            <strong className="font-medium text-foreground">
+                                {showRealMove && analyzeTrack === 'pv'
+                                    ? 'Source move position'
+                                    : analyzeTrack === 'game'
+                                    ? `Source game · ply ${analyzeGamePly}`
+                                    : analysisHistory.length > 1
+                                      ? analysisHistoryStepLabel({
+                                            historyLength:
+                                                analysisHistory.length,
+                                            historyIndex: analysisHistoryIdx,
+                                        })
+                                      : `Engine line · step ${pvStep}`}
+                            </strong>
+                        </span>
+                        <span role="status">
+                            {!analysisEnabled
+                                ? 'Engine paused'
+                                : liveAnalyze.error
+                                  ? `Engine error: ${liveAnalyze.error}`
+                                  : liveAnalyze.running
+                                    ? `Engine analyzing${
+                                          typeof liveAnalyze.depth === 'number'
+                                              ? ` · depth ${liveAnalyze.depth}`
+                                              : ''
+                                      }`
+                                    : engineClient
+                                      ? 'Engine ready'
+                                      : 'Engine loading…'}
+                        </span>
                     </div>
-                    <div className="min-w-[3.5rem] text-right font-mono text-sm text-muted-foreground">
-                        {evalText}
+                    <div className="flex items-center gap-2">
+                        <div className="h-2 w-full flex-1 overflow-hidden rounded-full bg-muted">
+                            <div
+                                className="h-2 bg-foreground/70"
+                                style={{ width: `${Math.round(evalUnit * 100)}%` }}
+                            />
+                        </div>
+                        <div className="min-w-[3.5rem] text-right font-mono text-sm text-muted-foreground">
+                            {evalText}
+                        </div>
                     </div>
                 </div>
             ) : null}
@@ -1816,15 +2365,38 @@ export function PuzzleTrainer({
     const analysisTools =
         viewMode === 'analyze' ? (
             <div className="mt-3 space-y-2">
+                <div
+                    className="flex flex-wrap items-center gap-3 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+                    aria-label="Board arrow legend"
+                >
+                    <span className="font-medium text-foreground">Arrows</span>
+                    <span><span aria-hidden="true" className="mr-1 text-blue-500">●</span>Line 1</span>
+                    <span><span aria-hidden="true" className="mr-1 text-emerald-500">●</span>Line 2</span>
+                    <span><span aria-hidden="true" className="mr-1 text-amber-500">●</span>Line 3</span>
+                    <span>Shown only at the analyzed root position.</span>
+                </div>
+                {liveAnalyze.error ? (
+                    <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-700 dark:text-red-300" role="alert">
+                        {liveAnalyze.error}
+                    </div>
+                ) : analysisEnabled &&
+                  engineClient &&
+                  (currentAnalysis?.lines?.length ?? 0) === 0 ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Engine is calculating candidate lines…
+                    </div>
+                ) : null}
                 <div className="space-y-2">
-                    {(analysis?.lines ?? []).slice(0, Math.max(1, Math.min(5, analysisMultiPv))).map((l, i) => (
+                    {(currentAnalysis?.lines ?? []).slice(0, Math.max(1, Math.min(5, analysisMultiPv))).map((l, i) => (
                         <button
                             key={i}
                             type="button"
                             onClick={() => {
                                 setAnalysisSelectedIdx(i);
                                 setAnalysisSelectedKey((l.pvUci ?? []).join(' '));
-                                goToAnalyzePvStep(0);
+                                setAnalyzeTrack('pv');
+                                setPvStep(0);
                             }}
                             className={
                                 'w-full rounded-md border bg-card px-3 py-3 text-left text-sm transition-colors ' +
@@ -1834,14 +2406,14 @@ export function PuzzleTrainer({
                             <div className="flex items-center justify-between gap-2">
                                 <div className="font-medium">#{i + 1}</div>
                                 <div className="font-mono text-xs text-muted-foreground">
-                                    {formatEval(l.score, analysis?.fen ?? displayFen)}
+                                    {formatEval(l.score, currentAnalysis?.fen ?? analysisRootFen ?? displayFen)}
                                     {typeof liveAnalyze.depth === 'number'
                                         ? ` d${liveAnalyze.depth}`
                                         : ''}
                                 </div>
                             </div>
                             <div className="mt-1 font-mono text-xs text-muted-foreground">
-                                {uciLineToSan(analysis?.fen ?? displayFen, l.pvUci ?? [], 6).join(' ')}
+                                {uciLineToSan(currentAnalysis?.fen ?? analysisRootFen ?? displayFen, l.pvUci ?? [], 6).join(' ')}
                             </div>
                         </button>
                     ))}
@@ -1893,7 +2465,7 @@ export function PuzzleTrainer({
                         }}
                         disabled={!analysisRootFen}
                     >
-                        {analysisEnabled ? 'pause' : 'resume'}
+                        {analysisEnabled ? 'Pause engine' : 'Resume engine'}
                     </Button>
                 </div>
             </div>
@@ -1901,6 +2473,33 @@ export function PuzzleTrainer({
 
     const details = currentPuzzle ? (
         <div className="mt-3 space-y-2">
+            <div
+                className="hidden grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-lg border bg-card p-2 lg:grid"
+                aria-label="Puzzle navigation"
+            >
+                <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="justify-self-start"
+                    onClick={() => setIdx((value) => Math.max(0, value - 1))}
+                    disabled={idx <= 0}
+                >
+                    Previous puzzle
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                    Puzzle {idx + 1}
+                </span>
+                <Button
+                    type="button"
+                    size="sm"
+                    className="justify-self-end"
+                    onClick={() => void nextPuzzle()}
+                    disabled={loadingNext}
+                >
+                    {loadingNext ? 'Loading…' : 'Next puzzle'}
+                </Button>
+            </div>
             <Link
                 href={`/games/${encodeURIComponent(currentPuzzle.sourceGameId)}?ply=${encodeURIComponent(String(puzzlePly))}`}
                 className="block rounded-lg border bg-card p-4"
@@ -1916,24 +2515,56 @@ export function PuzzleTrainer({
                                 : 'Source game'}
                         </div>
                         <div className="mt-0.5 text-xs text-muted-foreground">
-                            {openingText ? openingText : null}
-                            {openingText && sourceGame?.playedAt ? ' · ' : null}
+                            {(contextHintsEnabled || reviewUnlocked) && openingText
+                                ? openingText
+                                : null}
+                            {(contextHintsEnabled || reviewUnlocked) &&
+                            openingText &&
+                            sourceGame?.playedAt
+                                ? ' · '
+                                : null}
                             {sourceGame?.playedAt
                                 ? new Date(sourceGame.playedAt).toLocaleDateString()
-                                : null}
+                                : sourceLoading
+                                  ? 'Loading source…'
+                                  : null}
                         </div>
                     </div>
                 </div>
             </Link>
+            {sourceError ? (
+                <div className="flex items-center justify-between gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                    <span>Source details unavailable. The puzzle board still works.</span>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSourceRetryNonce((value) => value + 1)}
+                    >
+                        Retry
+                    </Button>
+                </div>
+            ) : null}
 
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
                 <Button
                     type="button"
                     variant="ghost"
                     className="h-9 px-2"
-                    onClick={() => setTagsRevealed((v) => !v)}
+                    onClick={() =>
+                        setTagsRevealedForId(
+                            tagsRevealed ? null : currentPuzzleId
+                        )
+                    }
                     aria-pressed={tagsRevealed}
-                    title={tagsRevealed ? 'Hide tags' : 'Show tags'}
+                    title={
+                        !contextHintsEnabled && !reviewUnlocked
+                            ? 'Available after your attempt'
+                            : tagsRevealed
+                              ? 'Hide tags'
+                              : 'Show tags'
+                    }
+                    disabled={!contextHintsEnabled && !reviewUnlocked}
                 >
                     {tagsRevealed ? (
                         <EyeOff className="h-4 w-4" />
@@ -1947,9 +2578,20 @@ export function PuzzleTrainer({
                     type="button"
                     variant="ghost"
                     className="h-9 px-2"
-                    onClick={() => setShowPuzzleStats((v) => !v)}
+                    onClick={() =>
+                        setStatsVisibleForId(
+                            showPuzzleStats ? null : currentPuzzleId
+                        )
+                    }
                     aria-pressed={showPuzzleStats}
-                    title={showPuzzleStats ? 'Hide puzzle stats' : 'Show puzzle stats'}
+                    title={
+                        !reviewUnlocked
+                            ? 'Available after your attempt'
+                            : showPuzzleStats
+                              ? 'Hide puzzle stats'
+                              : 'Show puzzle stats'
+                    }
+                    disabled={!reviewUnlocked}
                 >
                     {showPuzzleStats ? (
                         <EyeOff className="h-4 w-4" />
@@ -1959,15 +2601,24 @@ export function PuzzleTrainer({
                     <span className="text-sm">stats</span>
                 </Button>
 
-                <Button
-                    type="button"
-                    variant="outline"
-                    className="h-9 px-4"
-                    onClick={() => void nextPuzzle()}
-                    disabled={loadingNext}
-                >
-                    next
-                </Button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" role="status" aria-live="polite">
+                {attemptSyncState === 'saving' ? (
+                    <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving attempt…</>
+                ) : queuedAttempts > 0 ? (
+                    <>
+                        {!attemptOnline ? <WifiOff className="h-3.5 w-3.5" /> : null}
+                        {queuedAttempts} attempt{queuedAttempts === 1 ? '' : 's'} queued
+                        <Button type="button" variant="ghost" size="sm" className="h-7" onClick={() => void flushQueue()}>
+                            Retry sync
+                        </Button>
+                    </>
+                ) : attemptSyncError ? (
+                    <span className="text-amber-700 dark:text-amber-300">{attemptSyncError}</span>
+                ) : attemptResult && attemptSyncState === 'saved' ? (
+                    <span>Attempt saved</span>
+                ) : null}
             </div>
 
             {tagsRevealed ? (
@@ -2013,6 +2664,18 @@ export function PuzzleTrainer({
                                             ? '—'
                                             : `${Math.round(puzzleStats.averageTimeMs / 1000)}s`}
                                     </div>
+                                    <div>
+                                        Outcome:{' '}
+                                        {puzzleStats.outcome === 'revealed'
+                                            ? 'Revealed'
+                                            : puzzleStats.outcome === 'skipped'
+                                              ? 'Skipped'
+                                              : puzzleStats.outcome === 'solved'
+                                                ? 'Solved'
+                                                : puzzleStats.outcome === 'failed'
+                                                  ? 'Failed'
+                                                  : 'New'}
+                                    </div>
                                 </div>
                             ) : (
                                 <div>—</div>
@@ -2020,7 +2683,7 @@ export function PuzzleTrainer({
                         </CardContent>
                     </Card>
 
-                    {isMultiSolutionPuzzle ? (
+                    {isMultiSolutionPuzzle && reviewUnlocked ? (
                         <Card>
                             <CardHeader>
                                 <CardTitle className="text-base">Solutions</CardTitle>
@@ -2068,16 +2731,28 @@ export function PuzzleTrainer({
                                                     <TableCell>
                                                         <Badge
                                                             className={
-                                                                a.wasCorrect
+                                                                a.outcome === 'revealed'
+                                                                    ? 'border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                                                    : a.outcome === 'skipped'
+                                                                      ? 'border-transparent bg-slate-500/15 text-slate-700 dark:text-slate-300'
+                                                                      : a.wasCorrect
                                                                     ? 'border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
                                                                     : 'border-transparent bg-red-500/15 text-red-700 dark:text-red-300'
                                                             }
                                                         >
-                                                            {a.wasCorrect ? 'Correct' : 'Miss'}
+                                                            {a.outcome === 'revealed'
+                                                                ? 'Revealed'
+                                                                : a.outcome === 'skipped'
+                                                                  ? 'Skipped'
+                                                                  : a.wasCorrect
+                                                                    ? 'Correct'
+                                                                    : 'Miss'}
                                                         </Badge>
                                                     </TableCell>
                                                     <TableCell className="font-mono text-xs">
-                                                        {currentPuzzle
+                                                        {a.outcome
+                                                            ? '—'
+                                                            : currentPuzzle
                                                             ? uciToSan(currentPuzzle.fen, a.userMoveUci) ?? a.userMoveUci
                                                             : a.userMoveUci}
                                                     </TableCell>
@@ -2101,29 +2776,96 @@ export function PuzzleTrainer({
 
     if (!currentPuzzle) {
         return (
-            <div className="space-y-4">
+            <div
+                ref={trainerRootRef}
+                tabIndex={-1}
+                className="space-y-4"
+            >
                 {header}
-                <div className="text-sm text-muted-foreground">Loading a puzzle…</div>
-            </div>
-        );
-    }
-
-    if (sourceLoading || !sourceGame || !sourceParsed) {
-        return (
-            <div className="space-y-4">
-                {header}
-                {sourceError ? (
-                    <div className="text-sm text-red-600">{sourceError}</div>
+                {loadingNext ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Loading a puzzle…
+                    </div>
+                ) : randomError || directLoadError ? (
+                    <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-4">
+                        <p className="text-sm font-medium text-red-700 dark:text-red-300" role="alert">
+                            {directLoadError ?? randomError}
+                        </p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                            <Button type="button" size="sm" onClick={() => void ensureOne({ force: true })}>
+                                Retry
+                            </Button>
+                            <Button asChild type="button" variant="outline" size="sm">
+                                <Link href="/puzzles">Clear filters</Link>
+                            </Button>
+                        </div>
+                    </div>
+                ) : sessionComplete ? (
+                    <div className="rounded-lg border bg-card p-5">
+                        <h2 className="font-medium">Session complete</h2>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                            No more puzzles match these filters.
+                        </p>
+                        <div className="mt-3 flex flex-wrap gap-3 text-sm">
+                            <span>{sessionCounts.solved} solved</span>
+                            <span>{sessionCounts.missed} missed</span>
+                            <span>{sessionCounts.revealed} revealed</span>
+                            <span>{sessionCounts.skipped} skipped</span>
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                            <Button type="button" size="sm" onClick={() => void ensureOne({ force: true })}>
+                                Try again
+                            </Button>
+                            <Button asChild type="button" variant="outline" size="sm">
+                                <Link href="/puzzles">Clear filters</Link>
+                            </Button>
+                        </div>
+                    </div>
                 ) : (
-                    <div className="text-sm text-muted-foreground">Loading source game…</div>
+                    <div className="text-sm text-muted-foreground">Preparing session…</div>
                 )}
             </div>
         );
     }
 
     return (
-        <div className="space-y-4">
+        <div
+            ref={trainerRootRef}
+            tabIndex={0}
+            className="space-y-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Puzzle trainer. Keyboard shortcuts are active while this trainer is focused."
+        >
             {header}
+            {sessionComplete ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card p-4">
+                    <div>
+                        <div className="font-medium">Session complete</div>
+                        <div className="text-sm text-muted-foreground">
+                            {sessionCounts.solved} solved · {sessionCounts.missed} missed ·{' '}
+                            {sessionCounts.revealed} revealed
+                            {' · '}
+                            {sessionCounts.skipped} skipped
+                        </div>
+                    </div>
+                    <div className="flex gap-2">
+                        <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => {
+                                setQueue([]);
+                                setIdx(0);
+                                void ensureOne({ force: true });
+                            }}
+                        >
+                            Start another session
+                        </Button>
+                        <Button asChild type="button" variant="outline" size="sm">
+                            <Link href="/puzzles">Clear filters</Link>
+                        </Button>
+                    </div>
+                </div>
+            ) : null}
 
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
                 <div className="flex justify-center">
@@ -2139,9 +2881,17 @@ export function PuzzleTrainer({
                                 position: displayFen,
                                 boardOrientation: orientation,
                                 allowDragging: allowMove,
+                                showAnimations: !reducedMotion,
+                                animationDurationInMs: reducedMotion ? 0 : 180,
                                 allowDrawingArrows: false,
                                 arrows,
                                 squareStyles,
+                                canDragPiece: ({ square }) => {
+                                    if (!allowMove || !square) return false;
+                                    const chess = new Chess(displayFen);
+                                    const piece = chess.get(square as Square);
+                                    return Boolean(piece && piece.color === chess.turn());
+                                },
                                 onPieceClick: ({ square }) => {
                                     if (!square) return;
                                     computeHints(square as Square);
@@ -2158,13 +2908,7 @@ export function PuzzleTrainer({
                                     if (selectedSquare && legalTargets.has(sq)) {
                                         const from = selectedSquare;
                                         const to = sq;
-                                        const c = new Chess(displayFen);
-                                        const pc = c.get(from);
-                                        const isPawn = pc?.type === 'p';
-                                        const promotionRank = to[1] === '8' || to[1] === '1';
-                                        const promotion = isPawn && promotionRank ? 'q' : undefined;
-                                        const res = tryMakeMove({ from, to, promotion });
-                                        if (res) applyMoveResult(res);
+                                        playOrChoosePromotion(from, to);
                                         return;
                                     }
 
@@ -2179,35 +2923,47 @@ export function PuzzleTrainer({
                                     computeHints(sq);
                                 },
                                 onPieceDrop: allowMove
-                                    ? ({ sourceSquare, targetSquare, piece }) => {
+                                    ? ({ sourceSquare, targetSquare }) => {
                                           clearHints();
                                           if (!targetSquare) return false;
                                           const from = sourceSquare as Square;
                                           const to = targetSquare as Square;
-                                          const pt = (piece?.pieceType ?? '').toLowerCase();
-                                          const isPawn = pt.endsWith('p');
-                                          const promotionRank = to[1] === '8' || to[1] === '1';
-                                          const promotion =
-                                              isPawn && promotionRank ? 'q' : undefined;
-
-                                          const res = tryMakeMove({ from, to, promotion });
-                                          if (!res) return false;
-                                          applyMoveResult(res);
-                                          return true;
+                                          return playOrChoosePromotion(from, to);
                                       }
                                     : undefined,
                             }}
                         />
 
                         {viewMode === 'solve' && attemptResult === 'incorrect' && showWrongOverlay ? (
-                            <div className="absolute inset-0 z-[100] flex items-center justify-center rounded-xl bg-background/70 backdrop-blur-sm">
-                                <div className="mx-4 w-full max-w-sm rounded-lg border bg-card p-4 shadow-lg">
-                                    <div className="text-sm font-medium">Not best</div>
+                            <div className="absolute inset-x-3 bottom-3 z-[100] rounded-lg border bg-card/95 p-4 shadow-lg backdrop-blur-sm">
+                                    <div className="text-sm font-medium">Not the best move</div>
                                     <div className="mt-1 text-sm text-muted-foreground">
-                                        Want to analyze this position or try again?
+                                        Choose how you want to learn from it. Nothing will autoplay.
                                     </div>
                                     <div className="mt-4 flex flex-wrap gap-2">
                                         <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={() => setHintForId(currentPuzzleId)}
+                                        >
+                                            <Lightbulb className="mr-2 h-4 w-4" />
+                                            Hint
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={() => void loadRefutation()}
+                                            disabled={refutationLoading}
+                                        >
+                                            {refutationLoading ? (
+                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            ) : (
+                                                <Play className="mr-2 h-4 w-4" />
+                                            )}
+                                            Play refutation
+                                        </Button>
+                                        <Button
+                                            type="button"
                                             onClick={() => {
                                                 setShowWrongOverlay(false);
                                                 setPvStep(0);
@@ -2222,6 +2978,7 @@ export function PuzzleTrainer({
                                             Analyze
                                         </Button>
                                         <Button
+                                            type="button"
                                             variant="outline"
                                             onClick={() => {
                                                 setShowWrongOverlay(false);
@@ -2231,10 +2988,196 @@ export function PuzzleTrainer({
                                             Try again
                                         </Button>
                                     </div>
-                                </div>
                             </div>
                         ) : null}
                     </div>
+
+                    <ModalDialog
+                        open={pendingPromotion !== null}
+                        onOpenChange={(open) => {
+                            if (!open) setPendingPromotion(null);
+                        }}
+                        title="Promote pawn to"
+                        description="Choose the piece for this legal promotion."
+                    >
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                            {(
+                                [
+                                    ['q', 'Queen'],
+                                    ['r', 'Rook'],
+                                    ['b', 'Bishop'],
+                                    ['n', 'Knight'],
+                                ] as const
+                            )
+                                .filter(([piece]) =>
+                                    pendingPromotion?.choices.includes(piece)
+                                )
+                                .map(([piece, label]) => (
+                                    <Button
+                                        key={piece}
+                                        type="button"
+                                        variant="outline"
+                                        onClick={() => choosePromotion(piece)}
+                                        aria-label={`Promote to ${label}`}
+                                    >
+                                        {label}
+                                    </Button>
+                                ))}
+                        </div>
+                    </ModalDialog>
+
+                    <ModalDialog
+                        open={disclosurePrompt !== null}
+                        onOpenChange={(open) => {
+                            if (!open) setDisclosureState(null);
+                        }}
+                        title="Reveal this puzzle?"
+                        description={
+                            disclosurePrompt === 'analyze'
+                                ? 'Opening analysis can expose the answer. Counted as revealed in this session.'
+                                : 'Showing the solution is counted as revealed in this session.'
+                        }
+                    >
+                        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setDisclosureState(null)}
+                            >
+                                Keep solving
+                            </Button>
+                            <Button
+                                type="button"
+                                onClick={
+                                    disclosurePrompt === 'analyze'
+                                        ? enterAnalyzeMode
+                                        : revealSolution
+                                }
+                            >
+                                {disclosurePrompt === 'analyze'
+                                    ? 'Reveal and analyze'
+                                    : 'Reveal solution'}
+                            </Button>
+                        </div>
+                    </ModalDialog>
+
+                    <div
+                        className="mt-3 min-h-10 rounded-lg border bg-card px-3 py-2 text-sm"
+                        role="status"
+                        aria-live="polite"
+                        aria-atomic="true"
+                    >
+                        {(localOutcome === 'revealed' ||
+                            localOutcome === 'skipped') &&
+                        (attemptFeedback === 'best' ||
+                            attemptFeedback === 'accepted') ? (
+                            <span className="font-medium text-amber-700 dark:text-amber-300">
+                                Good practice move. This puzzle remains{' '}
+                                {localOutcome === 'revealed'
+                                    ? 'Revealed'
+                                    : 'Skipped'}.
+                            </span>
+                        ) : attemptFeedback === 'best' ? (
+                            <span className="font-medium text-emerald-700 dark:text-emerald-300">
+                                Best move — well found.
+                            </span>
+                        ) : attemptFeedback === 'accepted' ? (
+                            <span className="font-medium text-emerald-700 dark:text-emerald-300">
+                                Correct alternative. It works, though another accepted line is ranked best.
+                            </span>
+                        ) : attemptFeedback === 'wrong' ? (
+                            <span className="font-medium text-red-700 dark:text-red-300">
+                                Not the best move. Try again, ask for a hint, inspect the refutation, or analyze.
+                            </span>
+                        ) : hintLevel > 0 ? (
+                            <span className="text-amber-700 dark:text-amber-300">
+                                Hint: focus on the highlighted piece.
+                            </span>
+                        ) : (
+                            <span className="text-muted-foreground">
+                                Make a move when you are ready.
+                            </span>
+                        )}
+                    </div>
+                    {viewMode === 'solve' &&
+                    (attemptResult || showSolution || showRealMove) ? (
+                        <div
+                            className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground"
+                            aria-label="Board arrow legend"
+                        >
+                            <span>
+                                <span aria-hidden="true" className="mr-1 text-emerald-500">●</span>
+                                Accepted move
+                            </span>
+                            {attemptResult === 'incorrect' ? (
+                                <span>
+                                    <span aria-hidden="true" className="mr-1 text-red-500">●</span>
+                                    Your move
+                                </span>
+                            ) : null}
+                            {showRealMove ? (
+                                <span>
+                                    <span aria-hidden="true" className="mr-1 text-amber-500">●</span>
+                                    Source-game move
+                                </span>
+                            ) : null}
+                        </div>
+                    ) : null}
+
+                    {refutationLineUci && refutationApplied.length > 1 ? (
+                        <div className="mt-3 rounded-lg border bg-card p-3">
+                            <div className="flex items-center justify-between gap-3 text-xs">
+                                <span className="font-medium">Refutation line</span>
+                                <span className="text-muted-foreground">
+                                    Step {refutationStep} / {refutationApplied.length - 1}
+                                </span>
+                            </div>
+                            <input
+                                type="range"
+                                min={0}
+                                max={Math.max(0, refutationApplied.length - 1)}
+                                value={refutationStep}
+                                onChange={(event) =>
+                                    setRefutationStep(Number(event.target.value))
+                                }
+                                className="mt-2 w-full accent-primary"
+                                aria-label="Refutation line step"
+                            />
+                            <div className="mt-2 flex justify-between gap-2">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() =>
+                                        setRefutationStep((step) => Math.max(0, step - 1))
+                                    }
+                                    disabled={refutationStep <= 0}
+                                >
+                                    Previous move
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() =>
+                                        setRefutationStep((step) =>
+                                            Math.min(
+                                                refutationApplied.length - 1,
+                                                step + 1
+                                            )
+                                        )
+                                    }
+                                    disabled={refutationStep >= refutationApplied.length - 1}
+                                >
+                                    Next move
+                                </Button>
+                            </div>
+                        </div>
+                    ) : refutationError ? (
+                        <div className="mt-3 text-sm text-red-700 dark:text-red-300" role="alert">
+                            {refutationError}
+                        </div>
+                    ) : null}
 
                     <div className="mt-2 grid w-full grid-cols-[44px_minmax(0,1fr)_44px] items-center gap-2">
                         <Button
@@ -2256,8 +3199,8 @@ export function PuzzleTrainer({
                                 setPvStep((s) => Math.max(0, s - 1));
                             }}
                             disabled={!canStepPrev}
-                            aria-label="Previous"
-                            title="Previous"
+                            aria-label="Previous line move"
+                            title="Previous line move"
                         >
                             <ChevronLeft className="h-5 w-5" />
                         </Button>
@@ -2266,21 +3209,32 @@ export function PuzzleTrainer({
                             <Button
                                 type="button"
                                 variant="outline"
-                                className="h-10 px-2 text-xs sm:px-3 sm:text-sm"
-                                onClick={() => setShowRealMove((v) => !v)}
-                                disabled={!realSourceMove}
+                                className="hidden h-10 px-2 text-xs sm:inline-flex sm:px-3 sm:text-sm"
+                                onClick={toggleSourceMove}
+                                disabled={
+                                    !realSourceMove ||
+                                    (!reviewUnlocked && !contextHintsEnabled)
+                                }
                             >
-                                show mistake
+                                {showRealMove ? 'Hide source move' : 'Show source move'}
                             </Button>
                             {viewMode === 'solve' ? (
                                 <Button
                                     type="button"
                                     variant="outline"
                                     className="h-10 px-2 text-xs sm:px-3 sm:text-sm"
-                                    onClick={() => setShowSolution(true)}
+                                    onClick={() => {
+                                        if (reviewUnlocked) revealSolution();
+                                        else if (currentPuzzleId) {
+                                            setDisclosureState({
+                                                puzzleId: currentPuzzleId,
+                                                type: 'solution',
+                                            });
+                                        }
+                                    }}
                                     disabled={!currentPuzzle}
                                 >
-                                    solution
+                                    Solution
                                 </Button>
                             ) : null}
                             <Button
@@ -2288,8 +3242,8 @@ export function PuzzleTrainer({
                                 variant="outline"
                                 className="h-10 px-2 text-xs sm:px-3 sm:text-sm"
                                 onClick={() => {
-                                    setShowSolution(false);
-                                    setShowRealMove(false);
+                                    setSolutionVisibleForId(null);
+                                    setSourceMoveVisibleForId(null);
                                     if (viewMode === 'solve') return resetSolve();
                                     resetAnalyzeToStart();
                                 }}
@@ -2321,10 +3275,78 @@ export function PuzzleTrainer({
                                 setPvStep((s) => Math.min(max, s + 1));
                             }}
                             disabled={!canStepNext}
-                            aria-label="Next"
-                            title="Next"
+                            aria-label="Next line move"
+                            title="Next line move"
                         >
                             <ChevronRight className="h-5 w-5" />
+                        </Button>
+                    </div>
+
+                    {viewMode === 'analyze' ? (
+                        <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                    setAnalysisHistoryIdx((value) =>
+                                        Math.max(0, value - 1)
+                                    )
+                                }
+                                disabled={analysisHistoryIdx <= 0}
+                            >
+                                <Undo2 className="mr-2 h-4 w-4" />
+                                Undo
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                    setAnalysisHistoryIdx((value) =>
+                                        Math.min(
+                                            analysisHistory.length - 1,
+                                            value + 1
+                                        )
+                                    )
+                                }
+                                disabled={
+                                    analysisHistoryIdx >= analysisHistory.length - 1
+                                }
+                            >
+                                <Redo2 className="mr-2 h-4 w-4" />
+                                Redo
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setBoardFlipped((value) => !value)}
+                                aria-pressed={boardFlipped}
+                            >
+                                <FlipHorizontal2 className="mr-2 h-4 w-4" />
+                                Flip board
+                            </Button>
+                        </div>
+                    ) : null}
+
+                    <div className="sticky bottom-3 z-30 mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-2 rounded-xl border bg-background/95 p-2 shadow-lg backdrop-blur lg:hidden">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            className="h-11"
+                            onClick={() => setIdx((value) => Math.max(0, value - 1))}
+                            disabled={idx <= 0}
+                        >
+                            Previous
+                        </Button>
+                        <Button
+                            type="button"
+                            className="h-11 w-full"
+                            onClick={() => void nextPuzzle()}
+                            disabled={loadingNext}
+                        >
+                            {loadingNext ? 'Loading next puzzle…' : 'Next puzzle'}
                         </Button>
                     </div>
 

@@ -36,6 +36,11 @@ export function useStockfishLiveMultiPvAnalysis(opts: {
 
         stopExternal();
         const runId = ++runIdRef.current;
+        queueMicrotask(() => {
+            if (runIdRef.current !== runId) return;
+            setUpdate(null);
+            setError(null);
+        });
 
         handleRef.current = client.startAnalyzeMultiPvStreaming({
             fen,
@@ -109,4 +114,3 @@ export function useStockfishLiveMultiPvAnalysis(opts: {
         stop,
     };
 }
-

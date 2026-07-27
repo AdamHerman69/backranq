@@ -1,8 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Puzzle } from '@/lib/analysis/puzzles';
 import type { PuzzleAttemptStats } from '@/lib/api/puzzles';
+import {
+    isAbortError,
+    isScopedResultVisible,
+    LatestRequestLifecycle,
+} from '@/lib/api/requestLifecycle';
 
 type ApiError = { error?: string };
 type PuzzlesListResponse = ApiError & {
@@ -38,13 +43,21 @@ export type PuzzlesListFilters = {
 
 export type PuzzleWithStats = Puzzle & { attemptStats?: PuzzleAttemptStats };
 
-export function usePuzzles(filters: PuzzlesListFilters) {
+export function usePuzzles(
+    filters: PuzzlesListFilters & { enabled?: boolean; scopeKey?: string }
+) {
+    const enabled = filters.enabled ?? true;
     const [puzzles, setPuzzles] = useState<PuzzleWithStats[]>([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(filters.page ?? 1);
     const [totalPages, setTotalPages] = useState(1);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [resultScopeKey, setResultScopeKey] = useState(
+        filters.scopeKey ?? ''
+    );
+    const lifecycle = useRef(new LatestRequestLifecycle());
+    const activeScopeKey = useRef(filters.scopeKey ?? '');
 
     const qs = useMemo(() => {
         const p = new URLSearchParams();
@@ -65,10 +78,34 @@ export function usePuzzles(filters: PuzzlesListFilters) {
     }, [filters]);
 
     const fetchList = useCallback(async () => {
+        const requestScopeKey = filters.scopeKey ?? '';
+        const request = lifecycle.current.begin(requestScopeKey);
+        if (!enabled) {
+            setPuzzles([]);
+            setTotal(0);
+            setPage(filters.page ?? 1);
+            setTotalPages(1);
+            setLoading(false);
+            setError(null);
+            activeScopeKey.current = requestScopeKey;
+            setResultScopeKey(requestScopeKey);
+            return;
+        }
+
+        if (activeScopeKey.current !== requestScopeKey) {
+            activeScopeKey.current = requestScopeKey;
+            setPuzzles([]);
+            setTotal(0);
+            setPage(filters.page ?? 1);
+            setTotalPages(1);
+        }
+        setResultScopeKey(requestScopeKey);
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch(`/api/puzzles?${qs}`);
+            const res = await fetch(`/api/puzzles?${qs}`, {
+                signal: request.signal,
+            });
             const raw = (await res.json().catch(() => ({}))) as unknown;
             const json: PuzzlesListResponse =
                 raw && typeof raw === 'object'
@@ -76,6 +113,13 @@ export function usePuzzles(filters: PuzzlesListFilters) {
                     : {};
             if (!res.ok)
                 throw new Error(json?.error ?? 'Failed to load puzzles');
+            if (
+                !lifecycle.current?.isCurrent(
+                    request.sequence,
+                    requestScopeKey
+                )
+            )
+                return;
             setPuzzles(Array.isArray(json?.puzzles) ? json.puzzles : []);
             setTotal(typeof json?.total === 'number' ? json.total : 0);
             setPage(
@@ -85,23 +129,47 @@ export function usePuzzles(filters: PuzzlesListFilters) {
                 typeof json?.totalPages === 'number' ? json.totalPages : 1
             );
         } catch (e) {
+            if (
+                isAbortError(e) ||
+                !lifecycle.current?.isCurrent(
+                    request.sequence,
+                    requestScopeKey
+                )
+            ) {
+                return;
+            }
             setError(e instanceof Error ? e.message : 'Failed to load puzzles');
         } finally {
-            setLoading(false);
+            if (
+                lifecycle.current?.isCurrent(
+                    request.sequence,
+                    requestScopeKey
+                )
+            ) {
+                setLoading(false);
+            }
         }
-    }, [qs, filters.page]);
+    }, [enabled, filters.page, filters.scopeKey, qs]);
 
     useEffect(() => {
-        fetchList();
+        const activeLifecycle = lifecycle.current;
+        void fetchList();
+        return () => activeLifecycle.cancel();
     }, [fetchList]);
 
+    const resultMatchesScope = isScopedResultVisible(
+        enabled,
+        resultScopeKey,
+        filters.scopeKey ?? ''
+    );
+
     return {
-        puzzles,
-        total,
-        page,
-        totalPages,
+        puzzles: resultMatchesScope ? puzzles : [],
+        total: resultMatchesScope ? total : 0,
+        page: resultMatchesScope ? page : filters.page ?? 1,
+        totalPages: resultMatchesScope ? totalPages : 1,
         loading,
-        error,
+        error: resultMatchesScope ? error : null,
         refetch: fetchList,
     };
 }

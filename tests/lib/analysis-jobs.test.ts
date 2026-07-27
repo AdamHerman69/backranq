@@ -9,12 +9,70 @@ type AnalysisJobsModule = typeof import('@/lib/services/analysisJobs');
 async function importJobs(): Promise<AnalysisJobsModule> {
     vi.resetModules();
     mockPrismaModule();
+    prismaMock.$transaction.mockImplementation(
+        async (callback: unknown) =>
+            (callback as (tx: typeof prismaMock) => Promise<unknown>)(
+                prismaMock
+            )
+    );
     return import('@/lib/services/analysisJobs');
+}
+
+function billingAccount(overrides: Record<string, unknown> = {}) {
+    return {
+        id: 'billing-1',
+        userId: 'user-1',
+        plan: 'FREE',
+        serverCreditsBalance: 99,
+        monthlyServerCreditsUsed: 0,
+        serverCreditsRenewAt: new Date('2026-08-05T00:00:00Z'),
+        monthlyServerCreditsLimit: 100,
+        autoAnalysisMonthlyCap: 50,
+        autoAnalysisDailyCap: 10,
+        stopWhenCreditsBelow: 0,
+        createdAt: new Date('2026-07-05T00:00:00Z'),
+        updatedAt: new Date('2026-07-05T00:00:00Z'),
+        ...overrides,
+    };
+}
+
+function primeCreditReservationMocks() {
+    prismaMock.analysisRun.create.mockResolvedValue({
+        id: 'run-1',
+        userId: 'user-1',
+        gameId: 'game-1',
+        status: 'QUEUED',
+        executionMode: 'SERVER_QUEUE',
+        queuedReason: 'manual',
+        configHash: null,
+        startedAt: null,
+        completedAt: null,
+        durationMs: null,
+        consumedCredits: 0,
+        lastError: null,
+    });
+    prismaMock.billingAccount.upsert.mockResolvedValue(billingAccount());
+    prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);
+    prismaMock.creditLedgerEntry.findMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ type: 'RESERVED', credits: 1 }]);
+    prismaMock.billingAccount.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.billingAccount.findUniqueOrThrow.mockResolvedValue(
+        billingAccount({ serverCreditsBalance: 98 })
+    );
+    prismaMock.creditLedgerEntry.create.mockResolvedValue({
+        id: 'entry-1',
+        userId: 'user-1',
+        type: 'RESERVED',
+        credits: 1,
+        idempotencyKey: 'analysis-run:run-1:reserve',
+    });
 }
 
 describe('analysis job enqueue service', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        primeCreditReservationMocks();
     });
 
     it('does not requeue a succeeded job unless forced', async () => {
@@ -58,7 +116,15 @@ describe('analysis job enqueue service', () => {
         });
         prismaMock.analysisJob.update.mockResolvedValue({
             id: 'job-1',
+            userId: 'user-1',
+            gameId: 'game-1',
             status: 'QUEUED',
+            priority: 0,
+            estimatedCredits: 1,
+            weight: 0,
+            queuedReason: 'manual',
+            createdAt: new Date(),
+            startedAt: null,
         });
 
         const result = await service.enqueueAnalysisJob({
@@ -79,5 +145,53 @@ describe('analysis job enqueue service', () => {
                 queuedReason: 'manual',
             }),
         });
+    });
+});
+
+describe('analysis job state transitions', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('starts only a queued job with an active dispatch lease', async () => {
+        const service = await importJobs();
+        const running = {
+            id: 'job-1',
+            status: 'RUNNING',
+            lockedAt: new Date(),
+            lockedUntil: null,
+        };
+        prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.analysisJob.findUnique.mockResolvedValue(running);
+
+        const result = await service.markAnalysisJobRunning('job-1');
+
+        expect(result).toBe(running);
+        expect(prismaMock.analysisJob.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'job-1',
+                status: 'QUEUED',
+                lockedUntil: { gt: expect.any(Date) },
+                OR: [
+                    { scheduledFor: null },
+                    { scheduledFor: { lte: expect.any(Date) } },
+                ],
+            },
+            data: expect.objectContaining({
+                status: 'RUNNING',
+                attempts: { increment: 1 },
+                lastError: null,
+            }),
+        });
+    });
+
+    it('refuses stale or unclaimed analysis jobs', async () => {
+        const service = await importJobs();
+        prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 0 });
+
+        const result = await service.markAnalysisJobRunning('job-1');
+
+        expect(result).toBeNull();
+        expect(prismaMock.analysisJob.findUnique).not.toHaveBeenCalled();
     });
 });

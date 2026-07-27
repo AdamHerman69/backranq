@@ -5,10 +5,13 @@ import type {
     GameAnalysis,
     MoveClassification,
 } from '@/lib/analysis/classification';
-import { gameAnalysisToJson, providerToUi } from '@/lib/api/games';
-import { Prisma } from '@prisma/client';
+import { providerToUi } from '@/lib/api/games';
 import { validatePuzzleReplacementBody } from '../puzzles/validation';
-import { replaceGamePuzzlesInTransaction } from '@/lib/api/puzzlePersistence';
+import {
+    completeAnalysisRunWithGameAnalysis,
+    createAnalysisRun,
+    markAnalysisRunFailed,
+} from '@/lib/services/analysisRuns';
 
 export const runtime = 'nodejs';
 
@@ -34,6 +37,22 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isFiniteNumber(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value);
+}
+
+function optionalString(value: unknown): string | undefined {
+    return isNonEmptyString(value) ? value : undefined;
+}
+
+function optionalDate(value: unknown): Date | undefined {
+    if (!isNonEmptyString(value)) return undefined;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function optionalNonNegativeInt(value: unknown): number | undefined {
+    if (!isFiniteNumber(value)) return undefined;
+    const n = Math.trunc(value);
+    return n >= 0 ? n : undefined;
 }
 
 function isScore(value: unknown): boolean {
@@ -140,28 +159,65 @@ export async function PUT(
         );
     }
 
+    let analysisRunId: string | null = null;
     try {
-        const result = await prisma.$transaction(async (tx) => {
-            const updatedGame = await tx.analyzedGame.update({
-                where: { id },
-                data: {
-                    analysis: gameAnalysisToJson(analysis) as Prisma.InputJsonValue,
-                    analyzedAt: new Date(),
-                },
-                select: { id: true, analyzedAt: true },
-            });
-            const puzzles = await replaceGamePuzzlesInTransaction({
-                tx,
-                userId,
-                gameId: id,
-                puzzles: puzzleValidation.puzzles,
-            });
+        const bodyRecord = body as Record<string, unknown>;
+        const engine = isObject(bodyRecord.engine) ? bodyRecord.engine : {};
+        const run = await createAnalysisRun({
+            userId,
+            gameId: id,
+            executionMode: 'LOCAL_BROWSER',
+            status: 'RUNNING',
+            queuedReason: optionalString(bodyRecord.queuedReason),
+            engine: {
+                name:
+                    optionalString(engine.name) ??
+                    optionalString(bodyRecord.engineName),
+                version:
+                    optionalString(engine.version) ??
+                    optionalString(bodyRecord.engineVersion),
+                source:
+                    optionalString(engine.source) ??
+                    optionalString(bodyRecord.engineSource) ??
+                    'local-browser',
+            },
+            appVersion: optionalString(bodyRecord.appVersion),
+            configSnapshot:
+                bodyRecord.configSnapshot ??
+                bodyRecord.analysisConfigSnapshot ??
+                {},
+            configHash:
+                optionalString(bodyRecord.configHash) ??
+                optionalString(bodyRecord.analysisConfigHash),
+            startedAt: optionalDate(bodyRecord.startedAt) ?? new Date(),
+            consumedCredits: optionalNonNegativeInt(bodyRecord.consumedCredits) ?? 0,
+        });
+        analysisRunId = run.id;
 
-            return { game: updatedGame, puzzles };
+        const result = await completeAnalysisRunWithGameAnalysis({
+            runId: run.id,
+            userId,
+            gameId: id,
+            analysis,
+            puzzles: puzzleValidation.puzzles,
         });
 
-        return NextResponse.json({ ok: true, ...result });
-    } catch {
+        return NextResponse.json({
+            ok: true,
+            ...result,
+            analysisRun: {
+                id: result.run.id,
+                executionMode: result.run.executionMode,
+                status: result.run.status,
+                configHash: result.run.configHash,
+            },
+        });
+    } catch (error) {
+        if (analysisRunId) {
+            await markAnalysisRunFailed({ runId: analysisRunId, error }).catch(
+                () => undefined
+            );
+        }
         return NextResponse.json(
             { error: 'Failed to save analysis' },
             { status: 500 }

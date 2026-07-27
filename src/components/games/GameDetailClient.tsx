@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -10,25 +10,37 @@ import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import type { ManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 
 export default function GameDetailClient({
+    ownerId,
     dbGameId,
     header,
     normalizedGame,
     initialAnalysis,
+    initialHasAnalysis,
     puzzles,
     usernameByProvider,
     initialPly,
+    serverAnalysisCapacity,
 }: {
+    ownerId: string;
     dbGameId: string;
     header: GameHeaderData;
     normalizedGame: NormalizedGame;
     initialAnalysis: GameAnalysis | null;
+    initialHasAnalysis: boolean;
     puzzles: GamePuzzleRow[];
     usernameByProvider: { lichess?: string; chesscom?: string };
     initialPly?: number;
+    serverAnalysisCapacity: ManualServerAnalysisCapacity;
 }) {
-    const [analysis, setAnalysis] = useState<GameAnalysis | null>(initialAnalysis);
+    const [analysisState, setAnalysisState] = useState(() => ({
+        analysis: initialHasAnalysis ? initialAnalysis : null,
+        hasAnalysis: initialHasAnalysis,
+    }));
+
+    const { analysis, hasAnalysis } = analysisState;
 
     const userBoardOrientation = (() => {
         const providerKey = normalizedGame.provider;
@@ -68,11 +80,19 @@ export default function GameDetailClient({
             <Card>
                 <CardContent className="pt-6">
                 <GameActions
+                    ownerId={ownerId}
                     dbGameId={dbGameId}
                     normalizedGame={normalizedGame}
                     usernameByProvider={usernameByProvider}
-                    hasAnalysis={!!analysis}
-                    onAnalysisSaved={(a) => setAnalysis(a)}
+                    hasAnalysis={hasAnalysis}
+                    puzzleCount={puzzles.length}
+                    serverAnalysisCapacity={serverAnalysisCapacity}
+                    onAnalysisSaved={(nextAnalysis) =>
+                        setAnalysisState({
+                            analysis: nextAnalysis,
+                            hasAnalysis: true,
+                        })
+                    }
                 />
                 </CardContent>
             </Card>
@@ -96,7 +116,7 @@ export default function GameDetailClient({
 
             <Card>
                 <CardContent className="pt-6">
-                <GamePuzzlesPreview puzzles={puzzles} pgn={normalizedGame.pgn} />
+                <GamePuzzlesPreview puzzles={puzzles} />
                 </CardContent>
             </Card>
         </div>
@@ -105,5 +125,3 @@ export default function GameDetailClient({
 
 // Also provide a named export for convenience.
 export { GameDetailClient };
-
-

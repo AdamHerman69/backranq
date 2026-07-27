@@ -195,9 +195,50 @@ describe('PUT /api/games/[id]/analysis', () => {
     it('allows empty puzzle arrays and saves analysis atomically', async () => {
         const route = await importRoute();
         const analyzedAt = new Date('2026-07-04T12:30:00.000Z');
+        const completedRun = {
+            id: 'run-1',
+            userId: 'user-1',
+            gameId: 'game-1',
+            executionMode: 'LOCAL_BROWSER',
+            status: 'SUCCEEDED',
+            queuedReason: null,
+            engineName: null,
+            engineVersion: null,
+            engineSource: 'local-browser',
+            appVersion: null,
+            configSnapshot: {},
+            configHash: 'config-hash',
+            startedAt: new Date('2026-07-04T12:29:00.000Z'),
+            completedAt: analyzedAt,
+            durationMs: 60_000,
+            consumedCredits: 0,
+            lastError: null,
+            createdAt: new Date('2026-07-04T12:29:00.000Z'),
+            updatedAt: analyzedAt,
+        };
         const tx = {
+            analysisRun: {
+                create: vi.fn().mockResolvedValue({
+                    ...completedRun,
+                    status: 'RUNNING',
+                    completedAt: null,
+                    durationMs: null,
+                }),
+                findFirst: vi.fn().mockResolvedValue({
+                    id: 'run-1',
+                    userId: 'user-1',
+                    gameId: 'game-1',
+                    configHash: 'config-hash',
+                    startedAt: new Date('2026-07-04T12:29:00.000Z'),
+                }),
+                update: vi.fn().mockResolvedValue(completedRun),
+            },
             analyzedGame: {
-                update: vi.fn().mockResolvedValue({ id: 'game-1', analyzedAt }),
+                update: vi.fn().mockResolvedValue({
+                    id: 'game-1',
+                    analyzedAt,
+                    currentAnalysisRunId: 'run-1',
+                }),
             },
             puzzle: {
                 upsert: vi.fn(),
@@ -215,19 +256,47 @@ describe('PUT /api/games/[id]/analysis', () => {
             routeParams()
         );
 
-        await expect(readJson(response)).resolves.toEqual({
+        await expect(readJson(response)).resolves.toMatchObject({
             ok: true,
-            game: { id: 'game-1', analyzedAt: analyzedAt.toISOString() },
+            game: {
+                id: 'game-1',
+                analyzedAt: analyzedAt.toISOString(),
+                currentAnalysisRunId: 'run-1',
+            },
             puzzles: { upserted: 0, staleArchived: 3 },
+            analysisRun: {
+                id: 'run-1',
+                executionMode: 'LOCAL_BROWSER',
+                status: 'SUCCEEDED',
+                configHash: 'config-hash',
+            },
         });
         expect(response.status).toBe(200);
+        expect(tx.analysisRun.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                userId: 'user-1',
+                gameId: 'game-1',
+                executionMode: 'LOCAL_BROWSER',
+                status: 'RUNNING',
+                consumedCredits: 0,
+            }),
+        });
         expect(tx.analyzedGame.update).toHaveBeenCalledWith({
             where: { id: 'game-1' },
             data: {
-                analysis: validAnalysis,
+                analysis: expect.objectContaining({ gameId: validAnalysis.gameId }),
                 analyzedAt: expect.any(Date),
+                currentAnalysisRunId: 'run-1',
             },
-            select: { id: true, analyzedAt: true },
+            select: { id: true, analyzedAt: true, currentAnalysisRunId: true },
+        });
+        expect(tx.analysisRun.update).toHaveBeenCalledWith({
+            where: { id: 'run-1' },
+            data: expect.objectContaining({
+                status: 'SUCCEEDED',
+                completedAt: expect.any(Date),
+                lastError: null,
+            }),
         });
         expect(tx.puzzle.upsert).not.toHaveBeenCalled();
         expect(tx.puzzle.updateMany).toHaveBeenCalledWith({
@@ -244,11 +313,26 @@ describe('PUT /api/games/[id]/analysis', () => {
 
     it('returns failure when a transaction write fails without top-level writes', async () => {
         const route = await importRoute();
+        const runningRun = {
+            id: 'run-1',
+            userId: 'user-1',
+            gameId: 'game-1',
+            executionMode: 'LOCAL_BROWSER',
+            status: 'RUNNING',
+            configHash: 'config-hash',
+            startedAt: new Date('2026-07-04T12:29:00.000Z'),
+        };
         const tx = {
+            analysisRun: {
+                create: vi.fn().mockResolvedValue(runningRun),
+                findFirst: vi.fn().mockResolvedValue(runningRun),
+                update: vi.fn(),
+            },
             analyzedGame: {
                 update: vi.fn().mockResolvedValue({
                     id: 'game-1',
                     analyzedAt: new Date('2026-07-04T12:30:00.000Z'),
+                    currentAnalysisRunId: 'run-1',
                 }),
             },
             puzzle: {
@@ -274,6 +358,7 @@ describe('PUT /api/games/[id]/analysis', () => {
             error: 'Failed to save analysis',
         });
         expect(response.status).toBe(500);
+        expect(tx.analysisRun.create).toHaveBeenCalled();
         expect(tx.analyzedGame.update).toHaveBeenCalled();
         expect(tx.puzzle.upsert).toHaveBeenCalled();
         expect(tx.puzzle.updateMany).not.toHaveBeenCalled();

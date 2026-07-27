@@ -35,6 +35,18 @@ export type SyncStatus = {
         running: number;
         failed: number;
     };
+    billing?: {
+        currentBalance: number;
+        stopThreshold: number;
+        spendableBalance: number;
+        monthlyLimit: number;
+        monthlyUsed: number;
+        outstandingReservations: number;
+        monthlyRemaining: number;
+        reservableCredits: number;
+        limitingFactor: string | null;
+        limitingReason: string | null;
+    };
 };
 
 export type SyncProviderState = {
@@ -51,6 +63,48 @@ type SaveGamesResult = {
     ids: Record<string, string>;
     errors?: Array<{ index: number; id?: string; kind?: string; error: string }>;
     error?: string;
+};
+
+export type EnqueueServerAnalysisJobsResult = {
+    requested?: number;
+    accepted?: number;
+    queued: number;
+    skipped: number;
+    errors?: Array<{ gameId?: string; error: string }>;
+    jobs?: Array<{
+        id: string;
+        gameId: string;
+        status: string;
+        acceptedInBatch?: boolean;
+        queuedReason: string | null;
+        executionMode?: string;
+        configHash?: string | null;
+        durationMs?: number | null;
+        credits?: {
+            consumedCredits: number;
+            estimatedCredits: number;
+            reservedCredits?: number;
+            billable: boolean;
+            policy: string;
+        };
+        run?: {
+            id: string;
+            status: string | null;
+            executionMode: string | null;
+            queuedReason: string | null;
+            configHash: string | null;
+            durationMs: number | null;
+            consumedCredits: number | null;
+        } | null;
+    }>;
+};
+
+export type ServerAnalysisJob = {
+    id: string;
+    gameId: string;
+    status: string;
+    completedAt?: string | null;
+    lastError?: string | null;
 };
 
 const GAME_BULK_CHUNK_SIZE = 200;
@@ -176,7 +230,7 @@ export async function saveGamesToLibrary(args: { games: NormalizedGame[] }) {
 export async function enqueueServerAnalysisJobs(args: {
     gameIds: string[];
     force?: boolean;
-}) {
+}): Promise<EnqueueServerAnalysisJobsResult> {
     const res = await fetch('/api/analysis/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -186,7 +240,36 @@ export async function enqueueServerAnalysisJobs(args: {
     if (!res.ok) {
         throw new Error(errorMessageFromJson(json, 'Failed to queue analysis'));
     }
-    return json as { queued: number; skipped: number };
+    return json as EnqueueServerAnalysisJobsResult;
+}
+
+export async function fetchServerAnalysisJobs(
+    jobIds?: string[]
+): Promise<ServerAnalysisJob[]> {
+    const params = new URLSearchParams();
+    params.set('limit', '100');
+    if (jobIds && jobIds.length > 0) {
+        params.set('ids', Array.from(new Set(jobIds)).slice(0, 100).join(','));
+    }
+    const res = await fetch(`/api/analysis/jobs?${params.toString()}`, {
+        cache: 'no-store',
+    });
+    const json = (await res.json().catch(() => ({}))) as unknown;
+    if (!res.ok) {
+        throw new Error(
+            errorMessageFromJson(json, 'Failed to load analysis jobs')
+        );
+    }
+    const jobs = isRecord(json) ? json.jobs : null;
+    return Array.isArray(jobs)
+        ? jobs.filter(
+              (job): job is ServerAnalysisJob =>
+                  isRecord(job) &&
+                  typeof job.id === 'string' &&
+                  typeof job.gameId === 'string' &&
+                  typeof job.status === 'string'
+          )
+        : [];
 }
 
 async function saveGamesChunk(games: NormalizedGame[]): Promise<SaveGamesResult> {

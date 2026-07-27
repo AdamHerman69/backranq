@@ -9,15 +9,15 @@ import { PageHeader } from '@/components/app/PageHeader';
 import { Card, CardContent } from '@/components/ui/card';
 import { classifyOpeningFromPgn } from '@/lib/chess/opening';
 import { GamesIndexClient } from '@/components/games/GamesIndexClient';
+import { buildUserGameFiltersWhere } from '@/lib/games/outcome';
+import { getManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 
 function clampInt(v: number, min: number, max: number) {
     return Math.max(min, Math.min(max, v));
 }
 
 function normalizeResultFilter(v: string | undefined) {
-    if (v === 'wins') return '1-0';
-    if (v === 'losses') return '0-1';
-    if (v === 'draws') return '1/2-1/2';
+    if (v === 'wins' || v === 'losses' || v === 'draws') return v;
     return null;
 }
 
@@ -51,8 +51,19 @@ export default async function GamesPage({
             chesscomUsername: true,
         },
     });
+    const usernames = {
+        lichess: user?.lichessUsername ?? '',
+        chesscom: user?.chesscomUsername ?? '',
+    };
 
-    const where: Prisma.AnalyzedGameWhereInput = { userId };
+    const where: Prisma.AnalyzedGameWhereInput = {
+        userId,
+        ...buildUserGameFiltersWhere({
+            result: resultFilter,
+            opponentQuery: q,
+            usernames,
+        }),
+    };
     if (provider === 'lichess') where.provider = 'LICHESS';
     if (provider === 'chesscom') where.provider = 'CHESSCOM';
     if (
@@ -73,15 +84,8 @@ export default async function GamesPage({
                       ? 'CLASSICAL'
                       : 'UNKNOWN';
     }
-    if (resultFilter) where.result = resultFilter;
     if (hasAnalysis === 'true') where.analyzedAt = { not: null };
     if (hasAnalysis === 'false') where.analyzedAt = null;
-    if (q) {
-        where.OR = [
-            { whiteName: { contains: q, mode: 'insensitive' } },
-            { blackName: { contains: q, mode: 'insensitive' } },
-        ];
-    }
     if (since) {
         const d = new Date(since);
         if (!Number.isNaN(d.getTime())) {
@@ -101,7 +105,7 @@ export default async function GamesPage({
         }
     }
 
-    const [total, rows] = await Promise.all([
+    const [total, rows, serverAnalysisCapacity] = await Promise.all([
         prisma.analyzedGame.count({ where }),
         prisma.analyzedGame.findMany({
             where,
@@ -128,6 +132,7 @@ export default async function GamesPage({
                 analysis: true,
             },
         }),
+        getManualServerAnalysisCapacity(userId),
     ]);
 
     // Backfill opening fields if missing (older imported games)
@@ -213,6 +218,7 @@ export default async function GamesPage({
             </Card>
 
             <GamesIndexClient
+                ownerId={userId}
                 games={games}
                 total={total}
                 page={page}
@@ -230,8 +236,8 @@ export default async function GamesPage({
                     return p.toString();
                 })()}
                 userNameByProvider={{
-                    lichess: user?.lichessUsername ?? '',
-                    chesscom: user?.chesscomUsername ?? '',
+                    lichess: usernames.lichess,
+                    chesscom: usernames.chesscom,
                 }}
                 initialFilters={{
                     provider:
@@ -258,6 +264,7 @@ export default async function GamesPage({
                     until,
                     q,
                 }}
+                serverAnalysisCapacity={serverAnalysisCapacity}
             />
         </div>
     );

@@ -31,6 +31,7 @@ const BOOLEAN_PREF_KEYS = new Set<keyof PartialPreferences>([
     'skipTrivialEndgames',
     'autoSyncEnabled',
     'autoAnalyzeEnabled',
+    'trainerContextHintsEnabled',
 ]);
 const FILTER_STRING_KEYS = new Set([
     'lichessUsername',

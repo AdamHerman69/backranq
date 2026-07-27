@@ -4,6 +4,11 @@ import { puzzleToDb } from '@/lib/api/puzzles';
 
 type PuzzleTransactionClient = Pick<Prisma.TransactionClient, 'puzzle'>;
 
+type PuzzleAnalysisProvenance = {
+    analysisRunId?: string | null;
+    analysisConfigHash?: string | null;
+};
+
 type PuzzleKey = {
     gameId: string;
     sourcePly: number;
@@ -20,7 +25,8 @@ function puzzleKey(data: PuzzleKey): string {
 }
 
 function mutablePuzzleData(
-    p: Prisma.PuzzleCreateManyInput
+    p: Prisma.PuzzleCreateManyInput,
+    provenance: PuzzleAnalysisProvenance
 ): Prisma.PuzzleUncheckedUpdateInput {
     return {
         type: p.type,
@@ -38,6 +44,12 @@ function mutablePuzzleData(
         openingName: p.openingName,
         openingVariation: p.openingVariation,
         label: p.label,
+        ...(provenance.analysisRunId !== undefined
+            ? { analysisRunId: provenance.analysisRunId }
+            : {}),
+        ...(provenance.analysisConfigHash !== undefined
+            ? { analysisConfigHash: provenance.analysisConfigHash }
+            : {}),
         archivedAt: null,
     };
 }
@@ -47,14 +59,26 @@ export async function replaceGamePuzzlesInTransaction(args: {
     userId: string;
     gameId: string;
     puzzles: UiPuzzle[];
+    analysisRunId?: string | null;
+    analysisConfigHash?: string | null;
 }): Promise<ReplaceGamePuzzlesResult> {
     const deduped = new Map<string, Prisma.PuzzleCreateManyInput>();
+    const provenance = {
+        analysisRunId: args.analysisRunId,
+        analysisConfigHash: args.analysisConfigHash,
+    };
     for (const puzzle of args.puzzles) {
         const data = puzzleToDb({
             puzzle,
             userId: args.userId,
             gameId: args.gameId,
         });
+        if (args.analysisRunId !== undefined) {
+            data.analysisRunId = args.analysisRunId;
+        }
+        if (args.analysisConfigHash !== undefined) {
+            data.analysisConfigHash = args.analysisConfigHash;
+        }
         deduped.set(puzzleKey(data), data);
     }
 
@@ -69,7 +93,7 @@ export async function replaceGamePuzzlesInTransaction(args: {
                 },
             },
             create: p,
-            update: mutablePuzzleData(p),
+            update: mutablePuzzleData(p, provenance),
         });
     }
 

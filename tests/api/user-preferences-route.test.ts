@@ -97,6 +97,7 @@ describe('PUT /api/user/preferences', () => {
             createPutRequest({
                 autoSyncEnabled: false,
                 autoAnalyzeEnabled: true,
+                trainerContextHintsEnabled: true,
                 autoSyncProviders: { lichess: true, chesscom: false },
             })
         );
@@ -108,6 +109,7 @@ describe('PUT /api/user/preferences', () => {
         expect(body.preferences).toMatchObject({
             autoSyncEnabled: false,
             autoAnalyzeEnabled: true,
+            trainerContextHintsEnabled: true,
             autoSyncProviders: { lichess: true, chesscom: false },
         });
         expect(prismaMock.user.update).toHaveBeenCalledWith(

@@ -15,8 +15,16 @@ import {
     type AnalysisDefaults,
     type PreferencesSchema,
 } from '@/lib/preferences';
+import {
+    clearLastAnalysisCompletion,
+    createBrowserAnalysisCompletion,
+    publishAnalysisCompletion,
+    publishLibraryChanged,
+    type AnalysisCompletionSummary,
+} from '@/lib/analysis/analysisCompletion';
 
 export type BackgroundAnalysisSnapshot = {
+    ownerId: string | null;
     state: 'idle' | 'running' | 'error';
     percent: number; // 0..100
     label: string;
@@ -25,6 +33,7 @@ export type BackgroundAnalysisSnapshot = {
     queuedGames: number;
     pendingUnanalyzedCount: number | null;
     lastError: string | null;
+    lastCompletion: AnalysisCompletionSummary | null;
 };
 
 type Listener = (s: BackgroundAnalysisSnapshot) => void;
@@ -105,6 +114,8 @@ class BackgroundAnalysisManager {
     private listeners = new Set<Listener>();
     private engine: StockfishClient | null = null;
     private cancelled = false;
+    private ownerId: string | null = null;
+    private runGeneration = 0;
 
     private queue: string[] = []; // db game ids
     private running = false;
@@ -115,6 +126,7 @@ class BackgroundAnalysisManager {
     private percent = 0;
     private lastError: string | null = null;
     private pendingUnanalyzedCount: number | null = null;
+    private lastCompletion: AnalysisCompletionSummary | null = null;
 
     private nextRunAnalysisDefaultsOverride: AnalysisDefaults | null = null;
     private activeExtractOptions: ExtractOptions | null = null;
@@ -129,6 +141,7 @@ class BackgroundAnalysisManager {
 
     snapshot(): BackgroundAnalysisSnapshot {
         return {
+            ownerId: this.ownerId,
             state: this.lastError ? 'error' : this.running ? 'running' : 'idle',
             percent: Math.max(0, Math.min(100, this.percent)),
             label: this.label,
@@ -137,6 +150,7 @@ class BackgroundAnalysisManager {
             queuedGames: this.queue.length,
             pendingUnanalyzedCount: this.pendingUnanalyzedCount,
             lastError: this.lastError,
+            lastCompletion: this.lastCompletion,
         };
     }
 
@@ -150,26 +164,65 @@ class BackgroundAnalysisManager {
         return this.engine;
     }
 
-    cancel() {
+    setOwner(ownerId: string | null) {
+        if (this.ownerId === ownerId) return;
+        this.runGeneration += 1;
         this.cancelled = true;
         this.queue = [];
+        this.engine?.cancelAll?.();
+        this.engine = null;
+        this.ownerId = ownerId;
+        this.running = false;
         this.total = 0;
         this.completed = 0;
         this.percent = 0;
         this.label = '';
         this.lastError = null;
-        this.engine?.cancelAll?.();
+        this.lastCompletion = null;
+        this.pendingUnanalyzedCount = null;
+        this.nextRunAnalysisDefaultsOverride = null;
+        this.activeExtractOptions = null;
         this.emit();
     }
 
-    enqueueGameDbIds(ids: string[]) {
-        this.enqueueGameDbIdsWithOptions(ids);
+    private assertOwner(ownerId: string) {
+        if (!ownerId || this.ownerId !== ownerId) {
+            throw new Error('Analysis session changed. Please start again.');
+        }
+    }
+
+    cancel(ownerId: string) {
+        this.assertOwner(ownerId);
+        this.cancelled = true;
+        this.queue = [];
+        this.engine?.cancelAll?.();
+        if (!this.running) {
+            this.total = 0;
+            this.completed = 0;
+            this.percent = 0;
+            this.label = '';
+            this.lastError = null;
+        }
+        this.emit();
+    }
+
+    clearCompletion(ownerId: string) {
+        this.assertOwner(ownerId);
+        this.lastCompletion = null;
+        this.lastError = null;
+        this.emit();
+    }
+
+    enqueueGameDbIds(ownerId: string, ids: string[]) {
+        this.enqueueGameDbIdsWithOptions(ownerId, ids);
     }
 
     enqueueGameDbIdsWithOptions(
+        ownerId: string,
         ids: string[],
         opts?: { analysisDefaults?: AnalysisDefaults }
     ) {
+        this.assertOwner(ownerId);
         const unique = ids
             .filter(Boolean)
             .filter((id) => !this.queue.includes(id));
@@ -183,29 +236,38 @@ class BackgroundAnalysisManager {
 
         this.queue.push(...unique);
         this.total += unique.length;
-        if (!this.running) void this.run();
+        if (!this.running) void this.run(ownerId);
         this.emit();
     }
 
-    async refreshPendingUnanalyzedCount(): Promise<number | null> {
+    async refreshPendingUnanalyzedCount(
+        ownerId: string
+    ): Promise<number | null> {
+        this.assertOwner(ownerId);
         try {
             const res = await fetch(
                 '/api/games?hasAnalysis=false&page=1&limit=1'
             );
             if (!res.ok) throw new Error('Failed to fetch pending count');
             const json = (await res.json()) as { total?: number };
+            this.assertOwner(ownerId);
             this.pendingUnanalyzedCount =
                 typeof json.total === 'number' ? json.total : 0;
             this.emit();
             return this.pendingUnanalyzedCount;
         } catch {
+            if (this.ownerId !== ownerId) return null;
             this.pendingUnanalyzedCount = null;
             this.emit();
             return null;
         }
     }
 
-    async enqueuePendingUnanalyzed(opts?: { limit?: number }) {
+    async enqueuePendingUnanalyzed(
+        ownerId: string,
+        opts?: { limit?: number }
+    ) {
+        this.assertOwner(ownerId);
         const limit = Math.max(1, Math.min(200, Math.trunc(opts?.limit ?? 20)));
         const res = await fetch(
             `/api/games?hasAnalysis=false&page=1&limit=${limit}`
@@ -215,15 +277,22 @@ class BackgroundAnalysisManager {
             games?: { id: string }[];
             total?: number;
         };
+        this.assertOwner(ownerId);
         const ids = (json.games ?? []).map((g) => g.id).filter(Boolean);
         if (typeof json.total === 'number')
             this.pendingUnanalyzedCount = json.total;
-        this.enqueueGameDbIds(ids);
+        this.enqueueGameDbIds(ownerId, ids);
+        return ids.length;
     }
 
-    private async run() {
+    private async run(ownerId: string) {
+        this.assertOwner(ownerId);
+        const generation = ++this.runGeneration;
         this.running = true;
         this.lastError = null;
+        this.lastCompletion = null;
+        clearLastAnalysisCompletion(ownerId);
+        publishLibraryChanged(ownerId, { invalidateCompletion: true });
         this.cancelled = false;
         this.emit();
 
@@ -258,49 +327,94 @@ class BackgroundAnalysisManager {
             sync = null;
         }
 
+        let failed = 0;
+        let puzzlesGenerated = 0;
+        const errors: string[] = [];
+
         try {
             while (!this.cancelled && this.queue.length > 0) {
                 const gameDbId = this.queue.shift()!;
 
                 const overallTotal = Math.max(1, this.total);
-                const baseDone = this.completed;
-                this.label = `Analyzing ${baseDone + 1}/${overallTotal}`;
-                this.percent = (baseDone / overallTotal) * 100;
+                const baseProcessed = this.completed + failed;
+                this.label = `Analyzing ${baseProcessed + 1}/${overallTotal}`;
+                this.percent = (baseProcessed / overallTotal) * 100;
                 this.emit();
 
-                await this.analyzeOneGame({
-                    gameDbId,
-                    usernameByProvider: {
-                        lichess: sync?.linked.lichessUsername ?? undefined,
-                        chesscom: sync?.linked.chesscomUsername ?? undefined,
-                    },
-                    onLocalProgress: (localFrac, phase) => {
-                        const overallFrac =
-                            (baseDone + clamp01(localFrac)) / overallTotal;
-                        this.percent = overallFrac * 100;
-                        this.label = `Analyzing ${
-                            baseDone + 1
-                        }/${overallTotal}${phase ? ` • ${phase}` : ''}`;
-                        this.emit();
-                    },
-                });
-
-                this.completed += 1;
-                this.label = `Analyzed ${this.completed}/${Math.max(
+                try {
+                    const result = await this.analyzeOneGame({
+                        gameDbId,
+                        usernameByProvider: {
+                            lichess: sync?.linked.lichessUsername ?? undefined,
+                            chesscom:
+                                sync?.linked.chesscomUsername ?? undefined,
+                        },
+                        onLocalProgress: (localFrac, phase) => {
+                            const overallFrac =
+                                (baseProcessed + clamp01(localFrac)) /
+                                overallTotal;
+                            this.percent = overallFrac * 100;
+                            this.label = `Analyzing ${
+                                baseProcessed + 1
+                            }/${overallTotal}${phase ? ` • ${phase}` : ''}`;
+                            this.emit();
+                        },
+                    });
+                    puzzlesGenerated += result.puzzlesGenerated;
+                    this.completed += 1;
+                } catch (error) {
+                    if (this.cancelled) break;
+                    failed += 1;
+                    errors.push(
+                        error instanceof Error
+                            ? error.message
+                            : 'Analysis failed'
+                    );
+                }
+                this.label = `Processed ${this.completed + failed}/${Math.max(
                     1,
                     this.total
-                )}`;
-                this.percent = (this.completed / Math.max(1, this.total)) * 100;
+                )} • ${this.completed} analyzed${
+                    failed ? ` • ${failed} failed` : ''
+                }`;
+                this.percent =
+                    ((this.completed + failed) / Math.max(1, this.total)) * 100;
                 this.emit();
 
                 // Small yield so navigation/UI stays snappy between games.
                 await new Promise((r) => setTimeout(r, 0));
             }
-        } catch (e) {
-            this.lastError = e instanceof Error ? e.message : 'Analysis failed';
-            this.emit();
         } finally {
-            // Reset job totals when queue drains (but keep pending count)
+            if (
+                generation !== this.runGeneration ||
+                this.ownerId !== ownerId
+            ) {
+                return;
+            }
+            const pendingAtCompletion =
+                await this.refreshPendingUnanalyzedCount(ownerId);
+            if (
+                generation !== this.runGeneration ||
+                this.ownerId !== ownerId
+            ) {
+                return;
+            }
+            const summary = createBrowserAnalysisCompletion({
+                ownerId,
+                requested: this.total,
+                succeeded: this.completed,
+                failed,
+                cancelled: this.cancelled,
+                puzzlesGenerated,
+                pendingAtCompletion,
+                error: errors[0],
+            });
+            this.lastCompletion = summary;
+            this.lastError =
+                summary.status === 'failed' || summary.status === 'partial'
+                    ? errors[0] ?? 'Analysis failed'
+                    : null;
+
             this.running = false;
             this.queue = [];
             this.total = 0;
@@ -308,7 +422,7 @@ class BackgroundAnalysisManager {
             this.percent = 0;
             this.label = '';
             this.emit();
-            void this.refreshPendingUnanalyzedCount();
+            publishAnalysisCompletion(summary);
         }
     }
 
@@ -316,7 +430,7 @@ class BackgroundAnalysisManager {
         gameDbId: string;
         usernameByProvider: { lichess?: string; chesscom?: string };
         onLocalProgress?: (localFrac: number, phase?: string) => void;
-    }) {
+    }): Promise<{ puzzlesGenerated: number }> {
         const res = await fetch(`/api/games/${opts.gameDbId}`);
         if (!res.ok) {
             const txt = await res.text().catch(() => '');
@@ -376,6 +490,15 @@ class BackgroundAnalysisManager {
                     )}`
                 );
             }
+            const savedJson = (await saveRes.json().catch(() => ({}))) as {
+                puzzles?: { upserted?: number };
+            };
+            return {
+                puzzlesGenerated:
+                    typeof savedJson.puzzles?.upserted === 'number'
+                        ? savedJson.puzzles.upserted
+                        : puzzlesForGame.length,
+            };
         } else {
             throw new Error('Analysis produced no result');
         }

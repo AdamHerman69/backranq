@@ -7,6 +7,10 @@ import type {
     GamePhase,
 } from '@prisma/client';
 import type { Puzzle as UiPuzzle } from '@/lib/analysis/puzzles';
+import {
+    puzzleOutcomeFromMove,
+    type PuzzleNonMoveOutcome,
+} from '@/lib/puzzles/attemptOutcomes';
 
 function providerToUi(p: AnalyzedGame['provider']): 'lichess' | 'chesscom' {
     return p === 'LICHESS' ? 'lichess' : 'chesscom';
@@ -86,17 +90,40 @@ export type PuzzleAttemptStats = {
     failed: boolean;
     lastAttemptedAt: string | null;
     averageTimeMs: number | null;
+    outcome: 'new' | 'solved' | 'failed' | PuzzleNonMoveOutcome;
 };
 
 export function aggregatePuzzleStats(
-    attempts: Pick<
-        PuzzleAttempt,
-        'wasCorrect' | 'attemptedAt' | 'timeSpentMs'
-    >[]
+    attempts: Array<
+        Pick<
+            PuzzleAttempt,
+            'wasCorrect' | 'attemptedAt' | 'timeSpentMs'
+        > & { userMoveUci?: string }
+    >
 ): PuzzleAttemptStats {
     const attempted = attempts.length;
-    const correct = attempts.reduce((n, a) => n + (a.wasCorrect ? 1 : 0), 0);
-    const solved = correct > 0;
+    const nonMoveOutcome = attempts.some(
+        (attempt) =>
+            puzzleOutcomeFromMove(attempt.userMoveUci ?? '') === 'revealed'
+    )
+        ? ('revealed' as const)
+        : attempts.some(
+                (attempt) =>
+                    puzzleOutcomeFromMove(attempt.userMoveUci ?? '') ===
+                    'skipped'
+            )
+          ? ('skipped' as const)
+          : null;
+    const correct = attempts.reduce(
+        (count, attempt) =>
+            count +
+            (attempt.wasCorrect &&
+            !puzzleOutcomeFromMove(attempt.userMoveUci ?? '')
+                ? 1
+                : 0),
+        0
+    );
+    const solved = nonMoveOutcome === null && correct > 0;
     const failed = attempted > 0 && correct === 0;
     const successRate = attempted > 0 ? correct / attempted : null;
     const lastAttemptedAt =
@@ -110,6 +137,10 @@ export function aggregatePuzzleStats(
                   ?.attemptedAt.toISOString() ?? null
             : null;
     const times = attempts
+        .filter(
+            (attempt) =>
+                !puzzleOutcomeFromMove(attempt.userMoveUci ?? '')
+        )
         .map((a) => a.timeSpentMs)
         .filter(
             (x): x is number =>
@@ -128,6 +159,9 @@ export function aggregatePuzzleStats(
         failed,
         lastAttemptedAt,
         averageTimeMs,
+        outcome:
+            nonMoveOutcome ??
+            (solved ? 'solved' : failed ? 'failed' : 'new'),
     };
 }
 

@@ -17,7 +17,7 @@ export type PuzzleListItem = {
     id: string;
     title: string;
     subtitle: string;
-    status: 'new' | 'failed' | 'solved' | 'attempted';
+    status: 'new' | 'failed' | 'solved' | 'attempted' | 'revealed' | 'skipped';
     tags: string[];
 };
 
@@ -25,6 +25,8 @@ function statusLabel(s: PuzzleListItem['status']) {
     if (s === 'solved') return { text: 'Solved', color: '#027A48', bg: 'rgba(2,122,72,0.10)' };
     if (s === 'failed') return { text: 'Failed', color: '#B42318', bg: 'rgba(180,35,24,0.08)' };
     if (s === 'attempted') return { text: 'Attempted', color: '#6941C6', bg: 'rgba(105,65,198,0.10)' };
+    if (s === 'revealed') return { text: 'Revealed', color: '#B54708', bg: 'rgba(181,71,8,0.10)' };
+    if (s === 'skipped') return { text: 'Skipped', color: '#475467', bg: 'rgba(71,84,103,0.10)' };
     return { text: 'New', color: '#344054', bg: 'rgba(52,64,84,0.08)' };
 }
 
@@ -32,6 +34,8 @@ function statusBadgeClass(s: PuzzleListItem['status']) {
     if (s === 'solved') return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300';
     if (s === 'failed') return 'bg-red-500/15 text-red-700 dark:text-red-300';
     if (s === 'attempted') return 'bg-violet-500/15 text-violet-700 dark:text-violet-300';
+    if (s === 'revealed') return 'bg-amber-500/15 text-amber-700 dark:text-amber-300';
+    if (s === 'skipped') return 'bg-slate-500/15 text-slate-700 dark:text-slate-300';
     return 'bg-muted text-muted-foreground';
 }
 
@@ -151,4 +155,3 @@ export function PuzzlesList({
         </div>
     );
 }
-

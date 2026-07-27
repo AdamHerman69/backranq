@@ -126,6 +126,7 @@ export async function GET(req: Request) {
                         wasCorrect: true,
                         attemptedAt: true,
                         timeSpentMs: true,
+                        userMoveUci: true,
                     },
                     orderBy: { attemptedAt: 'desc' },
                 },

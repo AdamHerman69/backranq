@@ -4,15 +4,19 @@ import { readJson } from '../helpers/route';
 type CronRouteModule = typeof import('@/app/api/cron/sync-games/route');
 
 const publishMock = vi.fn();
-const syncLinkedAccountsMock = vi.fn();
+const planAndProcessDueSyncJobsInlineMock = vi.fn();
+const dispatchQueuedAnalysisJobsMock = vi.fn();
 
 async function importRoute(): Promise<CronRouteModule> {
     vi.resetModules();
     vi.doMock('@/lib/queues/backranq', () => ({
         publishBackranqQueueMessage: publishMock,
     }));
-    vi.doMock('@/lib/services/autoSync', () => ({
-        syncLinkedAccounts: syncLinkedAccountsMock,
+    vi.doMock('@/lib/services/syncJobs', () => ({
+        planAndProcessDueSyncJobsInline: planAndProcessDueSyncJobsInlineMock,
+    }));
+    vi.doMock('@/lib/services/analysisScheduler', () => ({
+        dispatchQueuedAnalysisJobs: dispatchQueuedAnalysisJobsMock,
     }));
     return import('@/app/api/cron/sync-games/route');
 }
@@ -28,7 +32,14 @@ describe('GET /api/cron/sync-games', () => {
         vi.clearAllMocks();
         vi.stubEnv('CRON_SECRET', 'test-cron-secret');
         publishMock.mockResolvedValue({ queued: true, messageId: 'msg-1' });
-        syncLinkedAccountsMock.mockResolvedValue({ usersScanned: 0, providers: [] });
+        planAndProcessDueSyncJobsInlineMock.mockResolvedValue({
+            plan: { usersScanned: 0, providers: [] },
+            processed: { processed: [] },
+        });
+        dispatchQueuedAnalysisJobsMock.mockResolvedValue({
+            claimedJobIds: [],
+            published: [],
+        });
     });
 
     it('requires the cron secret before doing work', async () => {
@@ -41,7 +52,8 @@ describe('GET /api/cron/sync-games', () => {
             error: 'Unauthorized',
         });
         expect(publishMock).not.toHaveBeenCalled();
-        expect(syncLinkedAccountsMock).not.toHaveBeenCalled();
+        expect(planAndProcessDueSyncJobsInlineMock).not.toHaveBeenCalled();
+        expect(dispatchQueuedAnalysisJobsMock).not.toHaveBeenCalled();
     });
 
     it('publishes a sync message when queueing succeeds', async () => {
@@ -59,7 +71,8 @@ describe('GET /api/cron/sync-games', () => {
             expect.objectContaining({ type: 'sync-all' }),
             expect.objectContaining({ idempotencyKey: expect.stringMatching(/^sync-all:/) })
         );
-        expect(syncLinkedAccountsMock).not.toHaveBeenCalled();
+        expect(planAndProcessDueSyncJobsInlineMock).not.toHaveBeenCalled();
+        expect(dispatchQueuedAnalysisJobsMock).not.toHaveBeenCalled();
     });
 
     it('runs sync inline when queue publishing is unavailable', async () => {
@@ -72,8 +85,10 @@ describe('GET /api/cron/sync-games', () => {
         await expect(readJson(response)).resolves.toMatchObject({
             ok: true,
             queued: false,
-            result: { usersScanned: 0 },
+            result: { plan: { usersScanned: 0 } },
+            dispatch: { claimedJobIds: [] },
         });
-        expect(syncLinkedAccountsMock).toHaveBeenCalledTimes(1);
+        expect(planAndProcessDueSyncJobsInlineMock).toHaveBeenCalledTimes(1);
+        expect(dispatchQueuedAnalysisJobsMock).toHaveBeenCalledTimes(1);
     });
 });

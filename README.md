@@ -12,6 +12,64 @@ The sign-in page (`/login`) only shows providers whose env vars are set (see `sr
 
 If you want to automatically link accounts across providers by matching email (avoids `OAuthAccountNotLinked`), set `AUTH_DANGEROUS_EMAIL_LINKING=true`.
 
+### Server analysis, billing, and queues
+
+Server analysis is credit-backed work. Browser analysis stays free and local; server analysis creates `AnalysisJob`, `AnalysisRun`, and `CreditLedgerEntry` records in one serializable transaction. If credit reservation fails, the job is not queued.
+
+Required billing env:
+
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_PRICE_PLUS_MONTHLY`
+- `STRIPE_PRICE_PRO_MONTHLY`
+- `BACKRANQ_APP_URL` or `NEXTAUTH_URL`
+
+Local Stripe smoke setup:
+
+```bash
+stripe listen --forward-to localhost:3000/api/stripe/webhook
+```
+
+Copy the printed `whsec_...` value into `STRIPE_WEBHOOK_SECRET`. The checked-in example prices are test-mode placeholders for the provisional $2/month Plus and $6/month Pro plans.
+
+Queue recovery is DB-led. Vercel Queue delivery is treated as a transport; retry state lives in Postgres:
+
+- `QUEUED` analysis jobs are dispatched with per-user fairness and a lease.
+- expired `RUNNING` analysis jobs are recovered by the scheduler and requeued with exponential backoff until max attempts.
+- sync jobs use the same lease/retry pattern and the active provider-job partial index prevents duplicate provider work per user.
+- automatic analysis enforces daily/monthly auto caps plus the stop-when-credits-below threshold.
+
+Admin ops endpoint:
+
+```bash
+curl -H "Authorization: Bearer $BACKRANQ_ADMIN_API_SECRET" \
+  "$BACKRANQ_APP_URL/api/admin/analysis-ops"
+```
+
+The snapshot includes queue counts, stuck counts, oldest queued/running ages, recent errors, and credit ledger totals.
+
+Deployment readiness endpoint:
+
+```bash
+curl -H "Authorization: Bearer $BACKRANQ_ADMIN_API_SECRET" \
+  "$BACKRANQ_APP_URL/api/admin/readiness"
+```
+
+Local smoke commands:
+
+```bash
+pnpm check:runtime
+pnpm check:stripe
+pnpm check:ledger
+pnpm load:analysis-queue
+```
+
+Migrations:
+
+```bash
+pnpm prisma migrate deploy
+```
+
 First, run the development server:
 
 ```bash

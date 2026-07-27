@@ -2,8 +2,10 @@
 
 import * as React from "react";
 import { toast } from "sonner";
+import { useSession } from "next-auth/react";
 
 import { providerToUi, timeClassToUi } from "@/lib/api/games";
+import { backgroundAnalysis } from "@/lib/analysis/backgroundAnalysisManager";
 import { enqueueServerAnalysisJobs } from "@/lib/services/gameSync";
 import type { Provider, TimeClass } from "@prisma/client";
 import {
@@ -13,6 +15,14 @@ import {
   type PreferencesSchema,
 } from "@/lib/preferences";
 import { AnalysisDefaultsFields } from "@/components/analysis/AnalysisDefaultsFields";
+import {
+  clearLastAnalysisCompletion,
+  createServerAnalysisBatch,
+  mergeServerAnalysisBatches,
+  readServerAnalysisBatch,
+  publishLibraryChanged,
+  writeServerAnalysisBatch,
+} from "@/lib/analysis/analysisCompletion";
 
 type ApiGameRow = {
   id: string;
@@ -34,11 +44,14 @@ export function AnalyzeGamesModal({
   onClose: () => void;
   title?: string;
 }) {
+  const { data: session } = useSession();
+  const ownerId = session?.user?.id ?? null;
   const [busy, setBusy] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [games, setGames] = React.useState<ApiGameRow[]>([]);
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
   const [prefsLoading, setPrefsLoading] = React.useState(false);
+  const [analysisMode, setAnalysisMode] = React.useState<"browser" | "server" | null>(null);
   const [analysisDefaults, setAnalysisDefaults] = React.useState<AnalysisDefaults>(
     () => pickAnalysisDefaults(defaultPreferences())
   );
@@ -49,6 +62,7 @@ export function AnalyzeGamesModal({
     setLoading(true);
     setGames([]);
     setSelected({});
+    setAnalysisMode(null);
     setPrefsLoading(true);
     setAnalysisDefaults(pickAnalysisDefaults(defaultPreferences()));
 
@@ -73,9 +87,6 @@ export function AnalyzeGamesModal({
         if (!r.ok) throw new Error(json?.error ?? "Failed to load games");
         const rows = Array.isArray(json.games) ? json.games : [];
         setGames(rows);
-        const next: Record<string, boolean> = {};
-        for (const g of rows) next[g.id] = true;
-        setSelected(next);
       })
       .catch((e) => {
         toast.error(e instanceof Error ? e.message : "Failed to load games");
@@ -134,14 +145,55 @@ export function AnalyzeGamesModal({
       toast.message("Select at least one game.");
       return;
     }
+    if (!analysisMode) {
+      toast.message("Choose browser or server analysis.");
+      return;
+    }
+    if (!ownerId) {
+      toast.error("Your session changed. Reopen analysis and try again.");
+      return;
+    }
+    backgroundAnalysis.setOwner(ownerId);
+    if (analysisMode === "server") {
+      const ok = window.confirm(
+        `Queue server analysis for ${ids.length} game${ids.length === 1 ? "" : "s"}? This may use up to ${ids.length} server credit${ids.length === 1 ? "" : "s"}.`
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     try {
-      void analysisDefaults;
-      const result = await enqueueServerAnalysisJobs({ gameIds: ids });
-      toast.message(
-        `Queued ${result.queued} game${result.queued === 1 ? "" : "s"} for server analysis.`
-      );
+      if (analysisMode === "browser") {
+        backgroundAnalysis.enqueueGameDbIdsWithOptions(ownerId, ids, { analysisDefaults });
+        clearLastAnalysisCompletion(ownerId);
+        publishLibraryChanged(ownerId, { invalidateCompletion: true });
+        toast.message(
+          `Browser analysis started for ${ids.length} game${ids.length === 1 ? "" : "s"}. Keep this tab open.`
+        );
+      } else {
+        const result = await enqueueServerAnalysisJobs({ gameIds: ids });
+        clearLastAnalysisCompletion(ownerId);
+        publishLibraryChanged(ownerId, { invalidateCompletion: true });
+        if (result.queued > 0) {
+          const incoming = createServerAnalysisBatch({
+            ownerId,
+            queued: result.queued,
+            jobIds: (result.jobs ?? [])
+              .filter((job) => job.acceptedInBatch === true)
+              .map((job) => job.id),
+            failedAtStart: 0,
+            puzzlesAtStart: null,
+            pendingAtStart: ids.length,
+          });
+          writeServerAnalysisBatch(
+            ownerId,
+            mergeServerAnalysisBatches(readServerAnalysisBatch(ownerId), incoming)
+          );
+        }
+        toastServerQueueResult(result);
+      }
       onClose();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to start analysis");
     } finally {
       setBusy(false);
     }
@@ -172,7 +224,7 @@ export function AnalyzeGamesModal({
         </div>
 
         <div className="mt-2 text-sm text-muted-foreground">
-          Pick which games to analyze. Analysis runs in the background so you can keep browsing.
+          Pick which games to analyze and choose whether this device or the server should do the work.
         </div>
 
         <div className="mt-4 flex-1 overflow-auto">
@@ -236,11 +288,54 @@ export function AnalyzeGamesModal({
                 type="button"
                 className="h-9 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground"
                 onClick={analyzeSelected}
-                disabled={busy || loading || selectedIds.length === 0}
+                disabled={busy || loading || selectedIds.length === 0 || !analysisMode}
               >
-                Analyze selected
+                {analysisMode === "browser"
+                  ? "Analyze in browser"
+                  : analysisMode === "server"
+                    ? "Analyze on server"
+                    : "Choose analysis mode"}
               </button>
             </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <label className="rounded-lg border p-3 text-sm">
+              <div className="flex items-start gap-3">
+                <input
+                  className="mt-1"
+                  type="radio"
+                  name="analysis-mode"
+                  checked={analysisMode === "browser"}
+                  onChange={() => setAnalysisMode("browser")}
+                  disabled={busy}
+                />
+                <span>
+                  <span className="block font-medium">Analyze in browser</span>
+                  <span className="text-muted-foreground">
+                    Free. Uses this device and this tab must stay open. Best for small batches.
+                  </span>
+                </span>
+              </div>
+            </label>
+            <label className="rounded-lg border p-3 text-sm">
+              <div className="flex items-start gap-3">
+                <input
+                  className="mt-1"
+                  type="radio"
+                  name="analysis-mode"
+                  checked={analysisMode === "server"}
+                  onChange={() => setAnalysisMode("server")}
+                  disabled={busy}
+                />
+                <span>
+                  <span className="block font-medium">Analyze on server</span>
+                  <span className="text-muted-foreground">
+                    Uses up to {selectedIds.length || 0} server credit{selectedIds.length === 1 ? "" : "s"}. Continues in the background.
+                  </span>
+                </span>
+              </div>
+            </label>
           </div>
 
           <div className="mt-4 overflow-auto rounded-xl border">
@@ -303,4 +398,29 @@ export function AnalyzeGamesModal({
       </div>
     </div>
   );
+}
+
+function toastServerQueueResult(result: {
+  queued: number;
+  skipped: number;
+  requested?: number;
+  accepted?: number;
+  errors?: Array<{ error: string }>;
+}) {
+  const parts = [
+    `Queued ${result.queued} game${result.queued === 1 ? "" : "s"}`,
+  ];
+  if (result.skipped > 0) {
+    parts.push(`${result.skipped} already queued or complete`);
+  }
+  const rejected =
+    result.requested != null && result.accepted != null
+      ? Math.max(0, result.requested - result.accepted)
+      : 0;
+  if (rejected > 0) parts.push(`${rejected} unavailable`);
+  if (result.errors?.length) parts.push(`${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`);
+
+  const message = `${parts.join(", ")} for server analysis.`;
+  if (result.errors?.length || rejected > 0) toast.warning(message);
+  else toast.message(message);
 }

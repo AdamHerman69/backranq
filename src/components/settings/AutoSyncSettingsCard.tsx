@@ -16,7 +16,7 @@ export function AutoSyncSettingsCard() {
     const [status, setStatus] = React.useState<SyncStatus | null>(null);
     const [prefs, setPrefs] = React.useState<AutoPrefs>({
         autoSyncEnabled: true,
-        autoAnalyzeEnabled: true,
+        autoAnalyzeEnabled: false,
         autoSyncProviders: { lichess: true, chesscom: true },
     });
     const [saving, setSaving] = React.useState(false);
@@ -38,6 +38,7 @@ export function AutoSyncSettingsCard() {
     }
 
     async function save(next: AutoPrefs) {
+        const previous = prefs;
         setPrefs(next);
         setSaving(true);
         const id = toast.loading('Saving auto-sync settings…');
@@ -52,6 +53,7 @@ export function AutoSyncSettingsCard() {
             toast.success('Auto-sync settings saved.', { id });
             await load();
         } catch (e) {
+            setPrefs(previous);
             toast.error(e instanceof Error ? e.message : 'Save failed', { id });
         } finally {
             setSaving(false);
@@ -59,10 +61,24 @@ export function AutoSyncSettingsCard() {
     }
 
     function toggle<K extends keyof AutoPrefs>(key: K, value: AutoPrefs[K]) {
+        if (saving) {
+            toast.message('Saving settings…');
+            return;
+        }
+        if (key === 'autoAnalyzeEnabled' && value === true && !prefs.autoAnalyzeEnabled) {
+            const ok = window.confirm(
+                'Automatically queue server analysis for newly imported games? This spends server credits within your daily/monthly caps.'
+            );
+            if (!ok) return;
+        }
         void save({ ...prefs, [key]: value });
     }
 
     function toggleProvider(provider: 'lichess' | 'chesscom', value: boolean) {
+        if (saving) {
+            toast.message('Saving settings…');
+            return;
+        }
         void save({
             ...prefs,
             autoSyncProviders: {
@@ -77,9 +93,9 @@ export function AutoSyncSettingsCard() {
     return (
         <Card>
             <CardHeader>
-                <CardTitle className="text-base">Automatic sync</CardTitle>
+                <CardTitle className="text-base">Automatic game sync</CardTitle>
                 <CardDescription>
-                    Backranq checks linked accounts once per day and queues new games for server analysis.
+                    Backranq can import new games once per day. Importing is free; automatic server analysis spends credits only when enabled.
                 </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -98,8 +114,8 @@ export function AutoSyncSettingsCard() {
 
                 <label className="flex items-center justify-between gap-4 rounded-md border p-3 text-sm">
                     <span>
-                        <span className="block font-medium">Auto-analyze imports</span>
-                        <span className="text-muted-foreground">Create server analysis jobs for newly imported games.</span>
+                        <span className="block font-medium">Automatically spend server credits on matching games</span>
+                        <span className="text-muted-foreground">Queue server analysis for newly imported games. Browser analysis is free but cannot run while this tab is closed.</span>
                     </span>
                     <input
                         type="checkbox"
@@ -155,6 +171,14 @@ export function AutoSyncSettingsCard() {
                     <Button type="button" variant="outline" size="sm" onClick={() => void load()}>
                         Refresh
                     </Button>
+                </div>
+
+                <div className="rounded-md border p-3 text-sm">
+                    <div className="font-medium">Server analysis rules</div>
+                    <div className="mt-1 text-muted-foreground">
+                        Safe defaults: losses and draws, rapid/classical, max 10 games per day,
+                        max 50 credits per month, Balanced profile, stop below 10 credits.
+                    </div>
                 </div>
             </CardContent>
         </Card>

@@ -3,9 +3,12 @@ import type { NormalizedGame } from '@/lib/types/game';
 import { fetchChessComGames } from '@/lib/providers/chesscom';
 import { fetchLichessGames } from '@/lib/providers/lichess';
 import { saveNormalizedGamesForUser } from '@/lib/services/gameImport';
-import { enqueueAnalysisJobsForGames } from '@/lib/services/analysisJobs';
-import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
+import {
+    enqueueAnalysisJob,
+    serverAnalysisConfigFromPreferences,
+} from '@/lib/services/analysisJobs';
 import { prisma } from '@/lib/prisma';
+import { eligibleAutoAnalysisGameIds } from '@/lib/services/analysisEligibility';
 import {
     defaultPreferences,
     mergePreferences,
@@ -114,6 +117,7 @@ export async function syncLinkedAccounts(): Promise<SyncLinkedAccountsResult> {
                     user,
                     provider,
                     prefs,
+                    rawPreferences: user.preferences,
                     lichessAccessToken: user.accounts[0]?.access_token ?? null,
                 })
             );
@@ -123,7 +127,7 @@ export async function syncLinkedAccounts(): Promise<SyncLinkedAccountsResult> {
     return { usersScanned: users.length, providers };
 }
 
-async function syncUserProvider(args: {
+export async function syncUserProvider(args: {
     user: {
         id: string;
         lichessUsername: string | null;
@@ -131,6 +135,7 @@ async function syncUserProvider(args: {
     };
     provider: Provider;
     prefs: PreferencesSchema;
+    rawPreferences?: unknown;
     lichessAccessToken?: string | null;
 }): Promise<SyncProviderResult> {
     const username = providerUsername(args.provider, args.user);
@@ -200,21 +205,27 @@ async function syncUserProvider(args: {
             games: fetched.games,
         });
 
-        const jobResults = args.prefs.autoAnalyzeEnabled
-            ? await enqueueAnalysisJobsForGames({
-                  userId: args.user.id,
-                  gameIds: saved.newGameDbIds,
-                  queuedReason: 'auto-sync',
-              })
-            : [];
-        for (const result of jobResults) {
-            if (!result.queued) continue;
-            await publishBackranqQueueMessage(
-                { type: 'analysis-job', jobId: result.job.id },
-                { idempotencyKey: `analysis:${result.job.gameId}` }
+        const eligibleGames = eligibleAutoAnalysisGameIds({
+            preferences: args.rawPreferences ?? {},
+            games: fetched.games.filter((game) =>
+                saved.newGameDbIds.includes(saved.ids[game.id])
+            ),
+            gameId: (game) => saved.ids[game.id],
+            username,
+        });
+        const config = serverAnalysisConfigFromPreferences(args.prefs).config;
+        const jobResults = [];
+        for (const item of eligibleGames) {
+            jobResults.push(
+                await enqueueAnalysisJob({
+                    userId: args.user.id,
+                    gameId: item.gameId,
+                    queuedReason: 'auto-sync',
+                    priority: item.eligibility.priority,
+                    config,
+                })
             );
         }
-
         const latestPlayedAt = maxPlayedAt(savedGames(fetched.games, saved.ids));
         await prisma.providerSyncState.update({
             where: { id: state.id },

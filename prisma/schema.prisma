@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   // Recommended for serverless: use a pooled DATABASE_URL at runtime,
   // and a non-pooled DIRECT_URL for migrations.
   directUrl = env("DIRECT_URL")
@@ -48,60 +48,146 @@ enum AnalysisJobStatus {
   CANCELLED
 }
 
+enum SyncJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum AnalysisExecutionMode {
+  LOCAL_BROWSER
+  SERVER_QUEUE
+  EXTERNAL_WORKER
+}
+
+enum AnalysisRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum CreditLedgerEntryType {
+  RESERVED
+  CONSUMED
+  REFUNDED
+  RELEASED
+  EXPIRED
+}
+
+enum BillingPlan {
+  FREE
+  PLUS
+  PRO
+}
+
 model User {
-  id               String   @id @default(uuid()) @db.Uuid
-  email            String?  @unique
+  id               String    @id @default(uuid()) @db.Uuid
+  email            String?   @unique
   emailVerified    DateTime?
   name             String?
   image            String?
   lichessUsername  String?
   chesscomUsername String?
-  preferences      Json     @default(dbgenerated("'{}'::jsonb"))
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  preferences      Json      @default(dbgenerated("'{}'::jsonb"))
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  games          AnalyzedGame[]
-  puzzles        Puzzle[]
-  puzzleAttempts PuzzleAttempt[]
-  providerSyncStates ProviderSyncState[]
-  analysisJobs   AnalysisJob[]
+  games               AnalyzedGame[]
+  puzzles             Puzzle[]
+  puzzleAttempts      PuzzleAttempt[]
+  providerSyncStates  ProviderSyncState[]
+  syncJobs            SyncJob[]
+  analysisJobs        AnalysisJob[]
+  analysisRuns        AnalysisRun[]
+  creditLedgerEntries CreditLedgerEntry[]
+  billingAccount      BillingAccount?
 
   // NextAuth (Auth.js) relations
   accounts Account[]
   sessions Session[]
 }
 
-model AnalyzedGame {
-  id               String    @id @default(uuid()) @db.Uuid
-  userId           String    @db.Uuid
-  provider         Provider
-  externalId       String
-  url              String?
-  pgn              String    @db.Text
-  playedAt         DateTime
-  timeClass        TimeClass
-  rated            Boolean?
-  result           String?
-  termination      String?
-  whiteName        String
-  whiteRating      Int?
-  blackName        String
-  blackRating      Int?
-  openingEco       String?
-  openingName      String?
-  openingVariation String?
-  analysis         Json
-  analyzedAt       DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+model BillingAccount {
+  id                        String      @id @default(uuid()) @db.Uuid
+  userId                    String      @unique @db.Uuid
+  plan                      BillingPlan @default(FREE)
+  stripeCustomerId          String?     @unique
+  stripeSubscriptionId      String?     @unique
+  stripeSubscriptionStatus  String?
+  stripePriceId             String?
+  stripeCurrentPeriodEnd    DateTime?
+  serverCreditsBalance      Int         @default(100)
+  monthlyServerCreditsUsed  Int         @default(0)
+  serverCreditsRenewAt      DateTime    @default(dbgenerated("(now() + '1 mon'::interval)"))
+  monthlyServerCreditsLimit Int         @default(100)
+  autoAnalysisMonthlyCap    Int         @default(50)
+  autoAnalysisDailyCap      Int         @default(10)
+  stopWhenCreditsBelow      Int         @default(0)
+  createdAt                 DateTime    @default(now())
+  updatedAt                 DateTime    @updatedAt
 
-  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  puzzles Puzzle[]
-  analysisJobs AnalysisJob[]
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([plan])
+  @@index([stripePriceId])
+  @@index([stripeSubscriptionStatus])
+  @@index([serverCreditsRenewAt])
+}
+
+model StripeWebhookEvent {
+  id          String    @id
+  type        String
+  status      String    @default("PROCESSING")
+  attempts    Int       @default(1)
+  lastError   String?   @db.Text
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status, updatedAt])
+  @@index([type, createdAt])
+}
+
+model AnalyzedGame {
+  id                   String    @id @default(uuid()) @db.Uuid
+  userId               String    @db.Uuid
+  provider             Provider
+  externalId           String
+  url                  String?
+  pgn                  String    @db.Text
+  playedAt             DateTime
+  timeClass            TimeClass
+  rated                Boolean?
+  result               String?
+  termination          String?
+  whiteName            String
+  whiteRating          Int?
+  blackName            String
+  blackRating          Int?
+  openingEco           String?
+  openingName          String?
+  openingVariation     String?
+  analysis             Json
+  analyzedAt           DateTime?
+  currentAnalysisRunId String?   @db.Uuid
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  puzzles             Puzzle[]
+  analysisJobs        AnalysisJob[]
+  analysisRuns        AnalysisRun[]       @relation("GameAnalysisRuns")
+  currentAnalysisRun  AnalysisRun?        @relation("CurrentAnalysisRun", fields: [currentAnalysisRunId], references: [id], onDelete: SetNull)
+  creditLedgerEntries CreditLedgerEntry[]
 
   @@unique([userId, provider, externalId])
   @@index([userId])
   @@index([provider, externalId])
+  @@index([currentAnalysisRunId])
 }
 
 model ProviderSyncState {
@@ -125,59 +211,162 @@ model ProviderSyncState {
   @@index([lastAttemptAt])
 }
 
-model AnalysisJob {
-  id           String            @id @default(uuid()) @db.Uuid
-  userId       String            @db.Uuid
-  gameId       String            @db.Uuid
-  status       AnalysisJobStatus @default(QUEUED)
-  priority     Int               @default(0)
-  attempts     Int               @default(0)
-  lockedAt     DateTime?
-  startedAt    DateTime?
-  completedAt  DateTime?
-  lastError    String?           @db.Text
-  queuedReason String?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+model SyncJob {
+  id                  String        @id @default(uuid()) @db.Uuid
+  userId              String        @db.Uuid
+  provider            Provider
+  status              SyncJobStatus @default(QUEUED)
+  scheduledFor        DateTime      @default(now())
+  lockedUntil         DateTime?
+  attempts            Int           @default(0)
+  lastError           String?       @db.Text
+  startedAt           DateTime?
+  completedAt         DateTime?
+  fetchedCount        Int           @default(0)
+  savedCount          Int           @default(0)
+  createdCount        Int           @default(0)
+  updatedCount        Int           @default(0)
+  queuedAnalysisCount Int           @default(0)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  game AnalyzedGame @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([userId, provider, status])
+  @@index([status, scheduledFor])
+  @@index([lockedUntil])
+}
+
+model AnalysisJob {
+  id               String            @id @default(uuid()) @db.Uuid
+  userId           String            @db.Uuid
+  gameId           String            @db.Uuid
+  analysisRunId    String?           @db.Uuid
+  status           AnalysisJobStatus @default(QUEUED)
+  priority         Int               @default(0)
+  attempts         Int               @default(0)
+  scheduledFor     DateTime?
+  lockedAt         DateTime?
+  lockedUntil      DateTime?
+  lastDispatchedAt DateTime?
+  dispatchedCount  Int               @default(0)
+  weight           Int               @default(0)
+  estimatedCredits Int               @default(1)
+  startedAt        DateTime?
+  completedAt      DateTime?
+  lastError        String?           @db.Text
+  queuedReason     String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game                AnalyzedGame        @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  analysisRun         AnalysisRun?        @relation(fields: [analysisRunId], references: [id], onDelete: SetNull)
+  creditLedgerEntries CreditLedgerEntry[]
 
   @@unique([gameId])
   @@index([userId, status])
+  @@index([analysisRunId])
   @@index([status, priority, createdAt])
+  @@index([status, scheduledFor, priority, createdAt])
   @@index([lockedAt])
+  @@index([lockedUntil])
+  @@index([lastDispatchedAt])
+}
+
+model AnalysisRun {
+  id              String                @id @default(uuid()) @db.Uuid
+  userId          String                @db.Uuid
+  gameId          String                @db.Uuid
+  executionMode   AnalysisExecutionMode
+  status          AnalysisRunStatus     @default(QUEUED)
+  queuedReason    String?
+  engineName      String?
+  engineVersion   String?
+  engineSource    String?
+  appVersion      String?
+  configSnapshot  Json                  @default(dbgenerated("'{}'::jsonb"))
+  configHash      String
+  startedAt       DateTime?
+  completedAt     DateTime?
+  durationMs      Int?
+  consumedCredits Int?
+  lastError       String?               @db.Text
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game                AnalyzedGame        @relation("GameAnalysisRuns", fields: [gameId], references: [id], onDelete: Cascade)
+  currentForGames     AnalyzedGame[]      @relation("CurrentAnalysisRun")
+  puzzles             Puzzle[]
+  analysisJobs        AnalysisJob[]
+  creditLedgerEntries CreditLedgerEntry[]
+
+  @@index([userId, status])
+  @@index([gameId, createdAt])
+  @@index([executionMode, status])
+  @@index([configHash])
+}
+
+model CreditLedgerEntry {
+  id             String                @id @default(uuid()) @db.Uuid
+  userId         String                @db.Uuid
+  analysisJobId  String?               @db.Uuid
+  analysisRunId  String?               @db.Uuid
+  gameId         String?               @db.Uuid
+  type           CreditLedgerEntryType
+  credits        Int
+  idempotencyKey String                @unique
+  reason         String?
+  metadata       Json                  @default(dbgenerated("'{}'::jsonb"))
+  createdAt      DateTime              @default(now())
+
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analysisJob AnalysisJob?  @relation(fields: [analysisJobId], references: [id], onDelete: SetNull)
+  analysisRun AnalysisRun?  @relation(fields: [analysisRunId], references: [id], onDelete: SetNull)
+  game        AnalyzedGame? @relation(fields: [gameId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, type, createdAt])
+  @@index([analysisJobId])
+  @@index([analysisRunId])
+  @@index([gameId])
 }
 
 model Puzzle {
-  id               String     @id @default(uuid()) @db.Uuid
-  userId           String     @db.Uuid
-  gameId           String     @db.Uuid
-  sourcePly        Int
-  fen              String
-  type             PuzzleType
-  kind             PuzzleKind @default(BLUNDER)
-  phase            GamePhase?
-  severity         String?
-  bestMoveUci      String
-  acceptedMovesUci String[]   @default([])
-  bestLine         Json
-  score            Json
-  tags             String[]   @default([])
-  openingEco       String?
-  openingName      String?
-  openingVariation String?
-  label            String?
-  createdAt        DateTime   @default(now())
-  archivedAt       DateTime?
+  id                 String     @id @default(uuid()) @db.Uuid
+  userId             String     @db.Uuid
+  gameId             String     @db.Uuid
+  analysisRunId      String?    @db.Uuid
+  analysisConfigHash String?
+  sourcePly          Int
+  fen                String
+  type               PuzzleType
+  kind               PuzzleKind @default(BLUNDER)
+  phase              GamePhase?
+  severity           String?
+  bestMoveUci        String
+  acceptedMovesUci   String[]   @default([])
+  bestLine           Json
+  score              Json
+  tags               String[]   @default([])
+  openingEco         String?
+  openingName        String?
+  openingVariation   String?
+  label              String?
+  createdAt          DateTime   @default(now())
+  archivedAt         DateTime?
 
-  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  game     AnalyzedGame    @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  attempts PuzzleAttempt[]
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game        AnalyzedGame    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  analysisRun AnalysisRun?    @relation(fields: [analysisRunId], references: [id], onDelete: SetNull)
+  attempts    PuzzleAttempt[]
 
   @@unique([gameId, sourcePly, fen])
   @@index([userId])
   @@index([gameId])
+  @@index([analysisRunId])
+  @@index([analysisConfigHash])
   @@index([userId, archivedAt])
   @@index([gameId, archivedAt])
 }
