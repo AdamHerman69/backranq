@@ -64,6 +64,30 @@ pnpm check:ledger
 pnpm load:analysis-queue
 ```
 
+### Authenticated end-to-end tests
+
+The Playwright suite starts an isolated PostgreSQL 17 container, applies the
+checked-in Prisma migrations, creates a short-lived Auth.js session plus
+deterministic games and puzzles, and removes the container and fixture user
+after the run.
+
+```bash
+pnpm test:e2e:install
+pnpm test:e2e
+```
+
+Use `pnpm test:e2e:headed` for a visible browser or `pnpm test:e2e:ui` for
+Playwright UI mode. Set `BACKRANQ_E2E_KEEP_DB=true` to retain the local
+container between runs.
+
+Remote databases are never used by default, including values in
+`.env.e2e.local`. A Supabase development branch can be used only with
+`BACKRANQ_E2E_USE_EXTERNAL_DATABASE=true`, an E2E URL, and all safety
+confirmations shown in `.env.e2e.example`, including the exact hosts from both
+the pooled and direct URLs. The wrapper validates these and verifies that both
+URLs identify the same disposable database/project before applying migrations.
+Never point these variables at the production project.
+
 Migrations:
 
 ```bash

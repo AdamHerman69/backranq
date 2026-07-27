@@ -12,6 +12,10 @@
         "lint": "eslint",
         "typecheck": "tsc --noEmit",
         "test": "vitest run",
+        "test:e2e": "node scripts/run-e2e.mjs",
+        "test:e2e:headed": "node scripts/run-e2e.mjs --headed",
+        "test:e2e:ui": "node scripts/run-e2e.mjs --ui",
+        "test:e2e:install": "playwright install chromium",
         "check:runtime": "node scripts/check-runtime-readiness.mjs",
         "check:stripe": "node scripts/smoke-stripe-billing.mjs",
         "check:ledger": "node scripts/reconcile-credit-ledger.mjs",
@@ -49,6 +53,7 @@
         "tailwind-merge": "^3.4.0"
     },
     "devDependencies": {
+        "@playwright/test": "1.61.1",
         "@types/node": "^20",
         "@types/react": "^19",
         "@types/react-dom": "^19",

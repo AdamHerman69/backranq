@@ -4,22 +4,8 @@ import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { Chess, type Move, type Square } from 'chess.js';
-import {
-    ChevronLeft,
-    ChevronRight,
-    Eye,
-    EyeOff,
-    Filter,
-    FlipHorizontal2,
-    Lightbulb,
-    Loader2,
-    Play,
-    Redo2,
-    RotateCcw,
-    Undo2,
-    WifiOff,
-} from 'lucide-react';
+import { Chess, type Square } from 'chess.js';
+import { Loader2 } from 'lucide-react';
 import { Chessboard } from 'react-chessboard';
 
 import type { NormalizedGame } from '@/lib/types/game';
@@ -34,35 +20,15 @@ import { useRandomPuzzles } from '@/lib/api/usePuzzles';
 import { usePuzzleAttempt } from '@/lib/hooks/usePuzzleAttempt';
 import {
     applyUciLine,
-    extractStartFenFromPgn,
     moveToUci,
     parseUci,
     sideToMoveFromFen,
-    uciLineToSan,
     uciToSan,
 } from '@/lib/chess/utils';
 import { ecoName } from '@/lib/chess/eco';
 
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import PuzzlesFilter, { type PuzzlesFilters } from '@/components/puzzles/PuzzlesFilter';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from '@/components/ui/select';
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from '@/components/ui/table';
+import type { PuzzlesFilters } from '@/components/puzzles/PuzzlesFilter';
 import type { PreferencesSchema } from '@/lib/preferences';
 import {
     classifyPuzzleMove,
@@ -71,329 +37,37 @@ import {
     appendAnalysisBranch,
     analysisHistoryStepLabel,
 } from '@/lib/puzzles/trainerUx';
-import { ModalDialog } from '@/components/ui/ModalDialog';
+import type { PuzzleNonMoveOutcome } from '@/lib/puzzles/attemptOutcomes';
+import { PuzzleTrainerAnalysisTools } from '@/components/puzzles/PuzzleTrainerAnalysisTools';
 import {
-    puzzleOutcomeFromMove,
-    type PuzzleNonMoveOutcome,
-} from '@/lib/puzzles/attemptOutcomes';
+    PuzzleTrainerBoardControls,
+    PuzzleTrainerBoardFeedback,
+    PuzzleTrainerDialogs,
+    PuzzleTrainerWrongMoveOverlay,
+} from '@/components/puzzles/PuzzleTrainerBoardUi';
+import { PuzzleTrainerDetails } from '@/components/puzzles/PuzzleTrainerDetails';
+import { PuzzleTrainerHeader } from '@/components/puzzles/PuzzleTrainerHeader';
+import {
+    clamp,
+    dbGameToNormalizedLoose,
+    describeFilters,
+    findPuzzleLastMove,
+    formatEval,
+    isEditableTarget,
+    parseCsv,
+    parsePuzzleAttempts,
+    parsePuzzleAttemptStats,
+    parseSourceGame,
+    scoreToUnit,
+    uciToArrow,
+    type PuzzleAttemptRow,
+    type SourceParsed,
+    type TrainerFilters,
+    type VerboseMove,
+    toRecord,
+} from '@/components/puzzles/puzzleTrainerUtils';
 
 type TrainerViewMode = 'solve' | 'analyze';
-
-type VerboseMove = Move & { promotion?: string };
-
-type SourceParsed = { startFen: string; moves: VerboseMove[] };
-type TrainerFilters = {
-    type: '' | 'avoidBlunder' | 'punishBlunder';
-    kind: '' | 'blunder' | 'missedWin' | 'missedTactic';
-    phase: '' | 'opening' | 'middlegame' | 'endgame';
-    multiSolution: '' | 'single' | 'multi';
-    openingEco: string[];
-    tags: string[];
-    solved: boolean | undefined;
-    failed: boolean | undefined;
-    gameId: string;
-};
-
-type DbGameLoose = Record<string, unknown>;
-
-type PuzzleAttemptRow = {
-    id: string;
-    attemptedAt: string;
-    userMoveUci: string;
-    wasCorrect: boolean;
-    timeSpentMs: number | null;
-    outcome: PuzzleNonMoveOutcome | null;
-};
-
-function toRecord(value: unknown): Record<string, unknown> {
-    return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
-}
-
-function parsePuzzleAttemptStats(value: unknown): PuzzleAttemptStats | null {
-    const stats = toRecord(value);
-    const {
-        attempted,
-        correct,
-        successRate,
-        solved,
-        failed,
-        lastAttemptedAt,
-        averageTimeMs,
-        outcome,
-    } = stats;
-
-    if (
-        typeof attempted !== 'number' ||
-        typeof correct !== 'number' ||
-        !(typeof successRate === 'number' || successRate === null) ||
-        typeof solved !== 'boolean' ||
-        typeof failed !== 'boolean' ||
-        !(typeof lastAttemptedAt === 'string' || lastAttemptedAt === null) ||
-        !(typeof averageTimeMs === 'number' || averageTimeMs === null)
-        || !(
-            outcome === 'new' ||
-            outcome === 'solved' ||
-            outcome === 'failed' ||
-            outcome === 'revealed' ||
-            outcome === 'skipped'
-        )
-    ) {
-        return null;
-    }
-
-    return {
-        attempted,
-        correct,
-        successRate,
-        solved,
-        failed,
-        lastAttemptedAt,
-        averageTimeMs,
-        outcome,
-    };
-}
-
-function parsePuzzleAttemptRow(value: unknown): PuzzleAttemptRow | null {
-    const row = toRecord(value);
-    const { id, attemptedAt, userMoveUci, wasCorrect, timeSpentMs } = row;
-    const outcome =
-        row.outcome === 'revealed' || row.outcome === 'skipped'
-            ? row.outcome
-            : puzzleOutcomeFromMove(
-                  typeof userMoveUci === 'string' ? userMoveUci : ''
-              );
-
-    if (
-        typeof id !== 'string' ||
-        typeof attemptedAt !== 'string' ||
-        typeof userMoveUci !== 'string' ||
-        typeof wasCorrect !== 'boolean' ||
-        !(typeof timeSpentMs === 'number' || timeSpentMs == null)
-    ) {
-        return null;
-    }
-
-    return {
-        id,
-        attemptedAt,
-        userMoveUci,
-        wasCorrect,
-        timeSpentMs: timeSpentMs ?? null,
-        outcome,
-    };
-}
-
-function parsePuzzleAttempts(value: unknown): PuzzleAttemptRow[] {
-    if (!Array.isArray(value)) return [];
-    return value
-        .map((attempt) => parsePuzzleAttemptRow(attempt))
-        .filter((attempt): attempt is PuzzleAttemptRow => attempt !== null);
-}
-
-function describeFilters(f: PuzzlesFilters): string {
-    const parts: string[] = [];
-
-    const labelType: Record<PuzzlesFilters['type'], string> = {
-        '': '',
-        avoidBlunder: 'Avoid blunder',
-        punishBlunder: 'Punish blunder',
-    };
-    const labelKind: Record<PuzzlesFilters['kind'], string> = {
-        '': '',
-        blunder: 'Blunder',
-        missedWin: 'Missed win',
-        missedTactic: 'Missed tactic',
-    };
-    const labelPhase: Record<PuzzlesFilters['phase'], string> = {
-        '': '',
-        opening: 'Opening',
-        middlegame: 'Middlegame',
-        endgame: 'Endgame',
-    };
-    const labelMulti: Record<PuzzlesFilters['multiSolution'], string> = {
-        '': '',
-        any: 'Any',
-        single: 'Single-solution',
-        multi: 'Multi-solution',
-    };
-    const labelStatus: Record<PuzzlesFilters['status'], string> = {
-        '': '',
-        solved: 'Solved',
-        failed: 'Failed',
-        attempted: 'Attempted',
-    };
-
-    if (f.type) parts.push(`Type: ${labelType[f.type]}`);
-    if (f.kind) parts.push(`Kind: ${labelKind[f.kind]}`);
-    if (f.phase) parts.push(`Phase: ${labelPhase[f.phase]}`);
-    if (f.multiSolution && f.multiSolution !== 'any')
-        parts.push(`Solutions: ${labelMulti[f.multiSolution]}`);
-    if (f.status) parts.push(`Status: ${labelStatus[f.status]}`);
-
-    if (f.openingEco?.length) {
-        const codes = f.openingEco.map((s) => s.toUpperCase());
-        const first = codes.slice(0, 2).join(', ');
-        parts.push(
-            `Openings: ${first}${codes.length > 2 ? ` +${codes.length - 2}` : ''}`
-        );
-    }
-    if (f.tags?.length) {
-        const first = f.tags.slice(0, 2).join(', ');
-        parts.push(`Tags: ${first}${f.tags.length > 2 ? ` +${f.tags.length - 2}` : ''}`);
-    }
-    if (f.gameId) parts.push(`Game: ${f.gameId}`);
-
-    return parts.length ? parts.join(' · ') : 'all';
-}
-
-function timeClassToUi(tc: string): NormalizedGame['timeClass'] {
-    const t = (tc ?? '').toUpperCase();
-    if (t === 'BULLET') return 'bullet';
-    if (t === 'BLITZ') return 'blitz';
-    if (t === 'RAPID') return 'rapid';
-    if (t === 'CLASSICAL') return 'classical';
-    return 'unknown';
-}
-
-function providerToUi(p: string): NormalizedGame['provider'] {
-    return (p ?? '').toUpperCase() === 'CHESSCOM' ? 'chesscom' : 'lichess';
-}
-
-function dbGameToNormalizedLoose(game: DbGameLoose): NormalizedGame {
-    return {
-        id: String(game['id']),
-        provider: providerToUi(String(game['provider'] ?? '')),
-        url: typeof game['url'] === 'string' ? game['url'] : undefined,
-        playedAt:
-            typeof game['playedAt'] === 'string'
-                ? String(game['playedAt'])
-                : new Date(String(game['playedAt'] ?? Date.now())).toISOString(),
-        timeClass: timeClassToUi(String(game['timeClass'] ?? '')),
-        rated: typeof game['rated'] === 'boolean' ? game['rated'] : undefined,
-        white: {
-            name: String(game['whiteName'] ?? ''),
-            rating:
-                typeof game['whiteRating'] === 'number'
-                    ? game['whiteRating']
-                    : undefined,
-        },
-        black: {
-            name: String(game['blackName'] ?? ''),
-            rating:
-                typeof game['blackRating'] === 'number'
-                    ? game['blackRating']
-                    : undefined,
-        },
-        result: typeof game['result'] === 'string' ? game['result'] : undefined,
-        termination:
-            typeof game['termination'] === 'string' ? game['termination'] : undefined,
-        pgn: String(game['pgn'] ?? ''),
-    };
-}
-
-function parseSourceGame(pgn: string): SourceParsed | null {
-    if (!pgn) return null;
-    const chess = new Chess();
-    try {
-        chess.loadPgn(pgn, { strict: false });
-    } catch {
-        return null;
-    }
-    const moves = chess.history({ verbose: true }) as VerboseMove[];
-    const fenTag = extractStartFenFromPgn(pgn);
-    if (fenTag) return { startFen: fenTag, moves };
-
-    const startChess = new Chess();
-    try {
-        startChess.loadPgn(pgn, { strict: false });
-        while (startChess.undo()) {}
-        return { startFen: startChess.fen(), moves };
-    } catch {
-        return { startFen: new Chess().fen(), moves };
-    }
-}
-
-function formatEval(score: Score | null, fen: string): string {
-    if (!score) return '—';
-    const turn = fen.split(' ')[1] === 'b' ? 'b' : 'w';
-    const sign = turn === 'w' ? 1 : -1; // convert to White POV
-    if (score.type === 'cp') {
-        const v = (score.value / 100) * sign;
-        const s = v >= 0 ? `+${v.toFixed(1)}` : v.toFixed(1);
-        return s;
-    }
-    const mv = score.value * sign;
-    return `#${mv}`;
-}
-
-function clamp(n: number, min: number, max: number) {
-    return Math.max(min, Math.min(max, n));
-}
-
-function scoreToUnit(score: Score | null, fen: string): number {
-    if (!score) return 0.5;
-    const turn = fen.split(' ')[1] === 'b' ? 'b' : 'w';
-    const sign = turn === 'w' ? 1 : -1; // to White POV
-
-    if (score.type === 'mate') {
-        const mv = score.value * sign;
-        return mv > 0 ? 1 : 0;
-    }
-    const cp = score.value * sign;
-    const x = cp / 600;
-    const t = Math.tanh(x);
-    return 0.5 + 0.5 * t;
-}
-
-function isEditableTarget(el: EventTarget | null) {
-    if (!(el instanceof HTMLElement)) return false;
-    return Boolean(
-        el.closest(
-            'input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="option"], [role="dialog"]'
-        )
-    );
-}
-
-function findPuzzleLastMove(args: {
-    puzzle: Puzzle;
-    source: SourceParsed;
-}): { from: Square; to: Square } | null {
-    const { puzzle, source } = args;
-    const c = new Chess(source.startFen);
-
-    const max = Math.min(source.moves.length, Math.max(0, puzzle.sourcePly));
-    let last: { from: Square; to: Square } | null = null;
-
-    for (let i = 0; i < max; i++) {
-        const m = source.moves[i];
-        try {
-            const mv = c.move({ from: m.from, to: m.to, promotion: m.promotion });
-            if (!mv) break;
-            last = { from: mv.from as Square, to: mv.to as Square };
-        } catch {
-            break;
-        }
-    }
-
-    // If we didn't land on the puzzle FEN, still return our best guess (last move before puzzle starts).
-    return last;
-}
-
-function uciToArrow(uci: string): { from: Square; to: Square } | null {
-    const p = parseUci(uci);
-    if (!p) return null;
-    return { from: p.from as Square, to: p.to as Square };
-}
-
-function parseCsv(v: string | null, max: number): string[] {
-    const s = (v ?? '').trim();
-    if (!s) return [];
-    return s
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean)
-        .slice(0, max);
-}
 
 export function PuzzleTrainer({
     initialViewMode,
@@ -2223,555 +1897,134 @@ export function PuzzleTrainer({
         currentPuzzleId,
     ]);
 
+    const analysisTrackLabel =
+        showRealMove && analyzeTrack === 'pv'
+            ? 'Source move position'
+            : analyzeTrack === 'game'
+              ? `Source game · ply ${analyzeGamePly}`
+              : analysisHistory.length > 1
+                ? analysisHistoryStepLabel({
+                      historyLength: analysisHistory.length,
+                      historyIndex: analysisHistoryIdx,
+                  })
+                : `Engine line · step ${pvStep}`;
+    const engineStatus = !analysisEnabled
+        ? 'Engine paused'
+        : liveAnalyze.error
+          ? `Engine error: ${liveAnalyze.error}`
+          : liveAnalyze.running
+            ? `Engine analyzing${
+                  typeof liveAnalyze.depth === 'number'
+                      ? ` · depth ${liveAnalyze.depth}`
+                      : ''
+              }`
+            : engineClient
+              ? 'Engine ready'
+              : 'Engine loading…';
     const header = (
-        <div className="space-y-2">
-            <div className="flex items-center gap-2">
-                <Tabs
-                    value={viewMode}
-                    className="flex-1"
-                    onValueChange={(v) => {
-                        if (v !== 'solve' && v !== 'analyze') return;
-                        if (v === 'analyze') {
-                            requestAnalyzeMode();
-                        } else {
-                            setViewMode('solve');
-                            setPvStep(0);
-                        }
-                    }}
-                >
-                    <TabsList className="w-full">
-                        <TabsTrigger className="flex-1" value="solve">
-                            Solve
-                        </TabsTrigger>
-                        <TabsTrigger className="flex-1" value="analyze">
-                            Analyze
-                        </TabsTrigger>
-                    </TabsList>
-                </Tabs>
-
-                <Button
-                    type="button"
-                    variant="outline"
-                    className="h-10 shrink-0 gap-2 px-3"
-                    onClick={() => setFiltersOpen((v) => !v)}
-                    aria-expanded={filtersOpen}
-                    aria-label="Filters"
-                    title="Filters"
-                >
-                    <Filter className="h-4 w-4" />
-                    <span className="max-w-[10rem] truncate text-xs text-muted-foreground">
-                        {filtersSummary}
-                    </span>
-                </Button>
-            </div>
-
-            {filtersOpen ? (
-                <div className="w-full rounded-lg border bg-card p-3">
-                    <PuzzlesFilter
-                        initial={uiFilters}
-                        preserveKeys={['view']}
-                        autoApply={false}
-                    />
-                </div>
-            ) : null}
-
-            {currentPuzzle ? (
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2">
-                    <p className="text-sm font-medium">
-                        {sideToMoveLabel} to move — find the best move
-                    </p>
-                    {contextHintsEnabled || reviewUnlocked ? (
-                        <div className="flex flex-wrap gap-1.5">
-                            <Badge variant="secondary">
-                                {currentPuzzle.mode === 'punishBlunder'
-                                    ? 'Punish a mistake'
-                                    : 'Avoid a mistake'}
-                            </Badge>
-                            {currentPuzzle.type ? (
-                                <Badge variant="outline">{currentPuzzle.type}</Badge>
-                            ) : null}
-                        </div>
-                    ) : preferencesLoading ? (
-                        <span className="text-xs text-muted-foreground">
-                            Loading preferences…
-                        </span>
-                    ) : (
-                        <span className="text-xs text-muted-foreground">
-                            Spoiler-free
-                        </span>
-                    )}
-                    {localOutcome === 'revealed' || localOutcome === 'skipped' ? (
-                        <Badge
-                            variant="outline"
-                            className="border-amber-500/40 text-amber-700 dark:text-amber-300"
-                        >
-                            {localOutcome === 'revealed' ? 'Revealed' : 'Skipped'}
-                        </Badge>
-                    ) : null}
-                </div>
-            ) : null}
-
-            {viewMode === 'analyze' ? (
-                <div className="space-y-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                        <span>
-                            Track:{' '}
-                            <strong className="font-medium text-foreground">
-                                {showRealMove && analyzeTrack === 'pv'
-                                    ? 'Source move position'
-                                    : analyzeTrack === 'game'
-                                    ? `Source game · ply ${analyzeGamePly}`
-                                    : analysisHistory.length > 1
-                                      ? analysisHistoryStepLabel({
-                                            historyLength:
-                                                analysisHistory.length,
-                                            historyIndex: analysisHistoryIdx,
-                                        })
-                                      : `Engine line · step ${pvStep}`}
-                            </strong>
-                        </span>
-                        <span role="status">
-                            {!analysisEnabled
-                                ? 'Engine paused'
-                                : liveAnalyze.error
-                                  ? `Engine error: ${liveAnalyze.error}`
-                                  : liveAnalyze.running
-                                    ? `Engine analyzing${
-                                          typeof liveAnalyze.depth === 'number'
-                                              ? ` · depth ${liveAnalyze.depth}`
-                                              : ''
-                                      }`
-                                    : engineClient
-                                      ? 'Engine ready'
-                                      : 'Engine loading…'}
-                        </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <div className="h-2 w-full flex-1 overflow-hidden rounded-full bg-muted">
-                            <div
-                                className="h-2 bg-foreground/70"
-                                style={{ width: `${Math.round(evalUnit * 100)}%` }}
-                            />
-                        </div>
-                        <div className="min-w-[3.5rem] text-right font-mono text-sm text-muted-foreground">
-                            {evalText}
-                        </div>
-                    </div>
-                </div>
-            ) : null}
-        </div>
+        <PuzzleTrainerHeader
+            viewMode={viewMode}
+            onViewModeChange={(mode) => {
+                if (mode === 'analyze') {
+                    requestAnalyzeMode();
+                } else {
+                    setViewMode('solve');
+                    setPvStep(0);
+                }
+            }}
+            filtersOpen={filtersOpen}
+            onToggleFilters={() => setFiltersOpen((value) => !value)}
+            filtersSummary={filtersSummary}
+            uiFilters={uiFilters}
+            currentPuzzle={currentPuzzle}
+            sideToMoveLabel={sideToMoveLabel}
+            contextHintsEnabled={contextHintsEnabled}
+            reviewUnlocked={reviewUnlocked}
+            preferencesLoading={preferencesLoading}
+            localOutcome={localOutcome}
+            analysisTrackLabel={analysisTrackLabel}
+            engineStatus={engineStatus}
+            evalUnit={evalUnit}
+            evalText={evalText}
+        />
     );
 
     const analysisTools =
         viewMode === 'analyze' ? (
-            <div className="mt-3 space-y-2">
-                <div
-                    className="flex flex-wrap items-center gap-3 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
-                    aria-label="Board arrow legend"
-                >
-                    <span className="font-medium text-foreground">Arrows</span>
-                    <span><span aria-hidden="true" className="mr-1 text-blue-500">●</span>Line 1</span>
-                    <span><span aria-hidden="true" className="mr-1 text-emerald-500">●</span>Line 2</span>
-                    <span><span aria-hidden="true" className="mr-1 text-amber-500">●</span>Line 3</span>
-                    <span>Shown only at the analyzed root position.</span>
-                </div>
-                {liveAnalyze.error ? (
-                    <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-700 dark:text-red-300" role="alert">
-                        {liveAnalyze.error}
-                    </div>
-                ) : analysisEnabled &&
-                  engineClient &&
-                  (currentAnalysis?.lines?.length ?? 0) === 0 ? (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Engine is calculating candidate lines…
-                    </div>
-                ) : null}
-                <div className="space-y-2">
-                    {(currentAnalysis?.lines ?? []).slice(0, Math.max(1, Math.min(5, analysisMultiPv))).map((l, i) => (
-                        <button
-                            key={i}
-                            type="button"
-                            onClick={() => {
-                                setAnalysisSelectedIdx(i);
-                                setAnalysisSelectedKey((l.pvUci ?? []).join(' '));
-                                setAnalyzeTrack('pv');
-                                setPvStep(0);
-                            }}
-                            className={
-                                'w-full rounded-md border bg-card px-3 py-3 text-left text-sm transition-colors ' +
-                                (i === selectedLine ? 'bg-muted' : 'hover:bg-muted/50')
+            <PuzzleTrainerAnalysisTools
+                error={liveAnalyze.error}
+                analysisEnabled={analysisEnabled}
+                engineReady={engineClient !== null}
+                currentAnalysis={currentAnalysis}
+                analysisMultiPv={analysisMultiPv}
+                selectedLine={selectedLine}
+                depth={liveAnalyze.depth ?? null}
+                fallbackFen={analysisRootFen ?? displayFen}
+                onSelectLine={(index, key) => {
+                    setAnalysisSelectedIdx(index);
+                    setAnalysisSelectedKey(key);
+                    setAnalyzeTrack('pv');
+                    setPvStep(0);
+                }}
+                onMultiPvChange={setAnalysisMultiPv}
+                onToggleEngine={() => {
+                    if (!analysisRootFen) return;
+                    setAnalysisEnabled((value) => {
+                        const next = !value;
+                        if (next) {
+                            if (!engineClient) {
+                                const client = new StockfishClient();
+                                engineRef.current = client;
+                                setEngineClient(client);
                             }
-                        >
-                            <div className="flex items-center justify-between gap-2">
-                                <div className="font-medium">#{i + 1}</div>
-                                <div className="font-mono text-xs text-muted-foreground">
-                                    {formatEval(l.score, currentAnalysis?.fen ?? analysisRootFen ?? displayFen)}
-                                    {typeof liveAnalyze.depth === 'number'
-                                        ? ` d${liveAnalyze.depth}`
-                                        : ''}
-                                </div>
-                            </div>
-                            <div className="mt-1 font-mono text-xs text-muted-foreground">
-                                {uciLineToSan(currentAnalysis?.fen ?? analysisRootFen ?? displayFen, l.pvUci ?? [], 6).join(' ')}
-                            </div>
-                        </button>
-                    ))}
-                </div>
-
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="w-[140px]">
-                        <Select
-                            value={String(analysisMultiPv)}
-                            onValueChange={(v) =>
-                                setAnalysisMultiPv(
-                                    Math.max(1, Math.min(5, Math.trunc(Number(v) || 1)))
-                                )
-                            }
-                        >
-                            <SelectTrigger className="h-9">
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {[1, 2, 3, 4, 5].map((n) => (
-                                    <SelectItem key={n} value={String(n)}>
-                                        Lines {n}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    </div>
-
-                    <Button
-                        type="button"
-                        variant="outline"
-                        className="h-9"
-                        onClick={() => {
-                            if (!analysisRootFen) return;
-                            setAnalysisEnabled((v) => {
-                                const next = !v;
-                                if (next) {
-                                    if (!engineClient) {
-                                        const client = new StockfishClient();
-                                        engineRef.current = client;
-                                        setEngineClient(client);
-                                    }
-                                    liveAnalyze.start();
-                                } else {
-                                    liveAnalyze.stop();
-                                }
-                                return next;
-                            });
-                        }}
-                        disabled={!analysisRootFen}
-                    >
-                        {analysisEnabled ? 'Pause engine' : 'Resume engine'}
-                    </Button>
-                </div>
-            </div>
+                            liveAnalyze.start();
+                        } else {
+                            liveAnalyze.stop();
+                        }
+                        return next;
+                    });
+                }}
+                canToggleEngine={analysisRootFen !== null}
+            />
         ) : null;
 
     const details = currentPuzzle ? (
-        <div className="mt-3 space-y-2">
-            <div
-                className="hidden grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-lg border bg-card p-2 lg:grid"
-                aria-label="Puzzle navigation"
-            >
-                <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="justify-self-start"
-                    onClick={() => setIdx((value) => Math.max(0, value - 1))}
-                    disabled={idx <= 0}
-                >
-                    Previous puzzle
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                    Puzzle {idx + 1}
-                </span>
-                <Button
-                    type="button"
-                    size="sm"
-                    className="justify-self-end"
-                    onClick={() => void nextPuzzle()}
-                    disabled={loadingNext}
-                >
-                    {loadingNext ? 'Loading…' : 'Next puzzle'}
-                </Button>
-            </div>
-            <Link
-                href={`/games/${encodeURIComponent(currentPuzzle.sourceGameId)}?ply=${encodeURIComponent(String(puzzlePly))}`}
-                className="block rounded-lg border bg-card p-4"
-            >
-                <div className="flex items-start gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-[10px] font-medium uppercase text-muted-foreground">
-                        {sourceGame?.provider === 'chesscom' ? 'c.com' : 'lich'}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium">
-                            {sourceGame
-                                ? `${sourceGame.white.name} vs ${sourceGame.black.name}`
-                                : 'Source game'}
-                        </div>
-                        <div className="mt-0.5 text-xs text-muted-foreground">
-                            {(contextHintsEnabled || reviewUnlocked) && openingText
-                                ? openingText
-                                : null}
-                            {(contextHintsEnabled || reviewUnlocked) &&
-                            openingText &&
-                            sourceGame?.playedAt
-                                ? ' · '
-                                : null}
-                            {sourceGame?.playedAt
-                                ? new Date(sourceGame.playedAt).toLocaleDateString()
-                                : sourceLoading
-                                  ? 'Loading source…'
-                                  : null}
-                        </div>
-                    </div>
-                </div>
-            </Link>
-            {sourceError ? (
-                <div className="flex items-center justify-between gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-                    <span>Source details unavailable. The puzzle board still works.</span>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSourceRetryNonce((value) => value + 1)}
-                    >
-                        Retry
-                    </Button>
-                </div>
-            ) : null}
-
-            <div className="flex items-center gap-3">
-                <Button
-                    type="button"
-                    variant="ghost"
-                    className="h-9 px-2"
-                    onClick={() =>
-                        setTagsRevealedForId(
-                            tagsRevealed ? null : currentPuzzleId
-                        )
-                    }
-                    aria-pressed={tagsRevealed}
-                    title={
-                        !contextHintsEnabled && !reviewUnlocked
-                            ? 'Available after your attempt'
-                            : tagsRevealed
-                              ? 'Hide tags'
-                              : 'Show tags'
-                    }
-                    disabled={!contextHintsEnabled && !reviewUnlocked}
-                >
-                    {tagsRevealed ? (
-                        <EyeOff className="h-4 w-4" />
-                    ) : (
-                        <Eye className="h-4 w-4" />
-                    )}
-                    <span className="ml-2 text-sm">tags</span>
-                </Button>
-
-                <Button
-                    type="button"
-                    variant="ghost"
-                    className="h-9 px-2"
-                    onClick={() =>
-                        setStatsVisibleForId(
-                            showPuzzleStats ? null : currentPuzzleId
-                        )
-                    }
-                    aria-pressed={showPuzzleStats}
-                    title={
-                        !reviewUnlocked
-                            ? 'Available after your attempt'
-                            : showPuzzleStats
-                              ? 'Hide puzzle stats'
-                              : 'Show puzzle stats'
-                    }
-                    disabled={!reviewUnlocked}
-                >
-                    {showPuzzleStats ? (
-                        <EyeOff className="h-4 w-4" />
-                    ) : (
-                        <Eye className="h-4 w-4" />
-                    )}
-                    <span className="text-sm">stats</span>
-                </Button>
-
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" role="status" aria-live="polite">
-                {attemptSyncState === 'saving' ? (
-                    <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving attempt…</>
-                ) : queuedAttempts > 0 ? (
-                    <>
-                        {!attemptOnline ? <WifiOff className="h-3.5 w-3.5" /> : null}
-                        {queuedAttempts} attempt{queuedAttempts === 1 ? '' : 's'} queued
-                        <Button type="button" variant="ghost" size="sm" className="h-7" onClick={() => void flushQueue()}>
-                            Retry sync
-                        </Button>
-                    </>
-                ) : attemptSyncError ? (
-                    <span className="text-amber-700 dark:text-amber-300">{attemptSyncError}</span>
-                ) : attemptResult && attemptSyncState === 'saved' ? (
-                    <span>Attempt saved</span>
-                ) : null}
-            </div>
-
-            {tagsRevealed ? (
-                <div className="flex flex-wrap gap-1">
-                    {(currentPuzzle.tags ?? []).map((t) => (
-                        <Badge key={t} variant="secondary">
-                            {t}
-                        </Badge>
-                    ))}
-                </div>
-            ) : null}
-
-            {showPuzzleStats ? (
-                <div className="space-y-3">
-                    <Card>
-                        <CardHeader>
-                            <CardTitle className="text-base">Your stats</CardTitle>
-                        </CardHeader>
-                        <CardContent className="text-sm text-muted-foreground">
-                            {puzzleStatsLoading ? (
-                                <div>Loading…</div>
-                            ) : puzzleStatsError ? (
-                                <div className="text-red-600">{puzzleStatsError}</div>
-                            ) : puzzleStats ? (
-                                <div className="space-y-1">
-                                    <div>Attempts: {puzzleStats.attempted}</div>
-                                    <div>Correct: {puzzleStats.correct}</div>
-                                    <div>
-                                        Success rate:{' '}
-                                        {puzzleStats.successRate == null
-                                            ? '—'
-                                            : `${Math.round(puzzleStats.successRate * 100)}%`}
-                                    </div>
-                                    <div>
-                                        Last attempted:{' '}
-                                        {puzzleStats.lastAttemptedAt
-                                            ? new Date(puzzleStats.lastAttemptedAt).toLocaleString()
-                                            : '—'}
-                                    </div>
-                                    <div>
-                                        Avg time:{' '}
-                                        {puzzleStats.averageTimeMs == null
-                                            ? '—'
-                                            : `${Math.round(puzzleStats.averageTimeMs / 1000)}s`}
-                                    </div>
-                                    <div>
-                                        Outcome:{' '}
-                                        {puzzleStats.outcome === 'revealed'
-                                            ? 'Revealed'
-                                            : puzzleStats.outcome === 'skipped'
-                                              ? 'Skipped'
-                                              : puzzleStats.outcome === 'solved'
-                                                ? 'Solved'
-                                                : puzzleStats.outcome === 'failed'
-                                                  ? 'Failed'
-                                                  : 'New'}
-                                    </div>
-                                </div>
-                            ) : (
-                                <div>—</div>
-                            )}
-                        </CardContent>
-                    </Card>
-
-                    {isMultiSolutionPuzzle && reviewUnlocked ? (
-                        <Card>
-                            <CardHeader>
-                                <CardTitle className="text-base">Solutions</CardTitle>
-                            </CardHeader>
-                            <CardContent className="text-sm text-muted-foreground space-y-2">
-                                <Badge variant="secondary">Multiple correct moves</Badge>
-                                <div>
-                                    Best move:{' '}
-                                    <span className="font-mono text-xs">
-                                        {bestMoveSan}
-                                    </span>
-                                </div>
-                                <div>
-                                    Accepted moves:{' '}
-                                    <span className="font-mono text-xs">{acceptedMovesText}</span>
-                                </div>
-                            </CardContent>
-                        </Card>
-                    ) : null}
-
-                    <Card>
-                        <CardHeader>
-                            <CardTitle className="text-base">History</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            {puzzleStatsLoading ? (
-                                <div className="text-sm text-muted-foreground">Loading…</div>
-                            ) : puzzleAttempts.length === 0 ? (
-                                <div className="text-sm text-muted-foreground">
-                                    No attempts yet.
-                                </div>
-                            ) : (
-                                <div className="rounded-md border">
-                                    <Table>
-                                        <TableHeader>
-                                            <TableRow>
-                                                <TableHead>Result</TableHead>
-                                                <TableHead>Move</TableHead>
-                                                <TableHead className="text-right">Time</TableHead>
-                                            </TableRow>
-                                        </TableHeader>
-                                        <TableBody>
-                                            {puzzleAttempts.slice(0, 20).map((a) => (
-                                                <TableRow key={a.id}>
-                                                    <TableCell>
-                                                        <Badge
-                                                            className={
-                                                                a.outcome === 'revealed'
-                                                                    ? 'border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-300'
-                                                                    : a.outcome === 'skipped'
-                                                                      ? 'border-transparent bg-slate-500/15 text-slate-700 dark:text-slate-300'
-                                                                      : a.wasCorrect
-                                                                    ? 'border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                                                                    : 'border-transparent bg-red-500/15 text-red-700 dark:text-red-300'
-                                                            }
-                                                        >
-                                                            {a.outcome === 'revealed'
-                                                                ? 'Revealed'
-                                                                : a.outcome === 'skipped'
-                                                                  ? 'Skipped'
-                                                                  : a.wasCorrect
-                                                                    ? 'Correct'
-                                                                    : 'Miss'}
-                                                        </Badge>
-                                                    </TableCell>
-                                                    <TableCell className="font-mono text-xs">
-                                                        {a.outcome
-                                                            ? '—'
-                                                            : currentPuzzle
-                                                            ? uciToSan(currentPuzzle.fen, a.userMoveUci) ?? a.userMoveUci
-                                                            : a.userMoveUci}
-                                                    </TableCell>
-                                                    <TableCell className="text-right text-sm text-muted-foreground">
-                                                        {a.timeSpentMs != null
-                                                            ? `${Math.round(a.timeSpentMs / 1000)}s`
-                                                            : '—'}
-                                                    </TableCell>
-                                                </TableRow>
-                                            ))}
-                                        </TableBody>
-                                    </Table>
-                                </div>
-                            )}
-                        </CardContent>
-                    </Card>
-                </div>
-            ) : null}
-        </div>
+        <PuzzleTrainerDetails
+            currentPuzzle={currentPuzzle}
+            puzzlePly={puzzlePly}
+            idx={idx}
+            loadingNext={loadingNext}
+            onPreviousPuzzle={() => setIdx((value) => Math.max(0, value - 1))}
+            onNextPuzzle={() => void nextPuzzle()}
+            sourceGame={sourceGame}
+            contextHintsEnabled={contextHintsEnabled}
+            reviewUnlocked={reviewUnlocked}
+            openingText={openingText}
+            sourceLoading={sourceLoading}
+            sourceError={sourceError}
+            onRetrySource={() => setSourceRetryNonce((value) => value + 1)}
+            tagsRevealed={tagsRevealed}
+            onToggleTags={() =>
+                setTagsRevealedForId(tagsRevealed ? null : currentPuzzleId)
+            }
+            showPuzzleStats={showPuzzleStats}
+            onToggleStats={() =>
+                setStatsVisibleForId(showPuzzleStats ? null : currentPuzzleId)
+            }
+            attemptSyncState={attemptSyncState}
+            queuedAttempts={queuedAttempts}
+            attemptOnline={attemptOnline}
+            attemptSyncError={attemptSyncError}
+            attemptResult={attemptResult}
+            onRetrySync={() => void flushQueue()}
+            puzzleStatsLoading={puzzleStatsLoading}
+            puzzleStatsError={puzzleStatsError}
+            puzzleStats={puzzleStats}
+            isMultiSolutionPuzzle={isMultiSolutionPuzzle}
+            bestMoveSan={bestMoveSan}
+            acceptedMovesText={acceptedMovesText}
+            puzzleAttempts={puzzleAttempts}
+        />
     ) : null;
 
     if (!currentPuzzle) {
@@ -2934,421 +2187,138 @@ export function PuzzleTrainer({
                             }}
                         />
 
-                        {viewMode === 'solve' && attemptResult === 'incorrect' && showWrongOverlay ? (
-                            <div className="absolute inset-x-3 bottom-3 z-[100] rounded-lg border bg-card/95 p-4 shadow-lg backdrop-blur-sm">
-                                    <div className="text-sm font-medium">Not the best move</div>
-                                    <div className="mt-1 text-sm text-muted-foreground">
-                                        Choose how you want to learn from it. Nothing will autoplay.
-                                    </div>
-                                    <div className="mt-4 flex flex-wrap gap-2">
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            onClick={() => setHintForId(currentPuzzleId)}
-                                        >
-                                            <Lightbulb className="mr-2 h-4 w-4" />
-                                            Hint
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            onClick={() => void loadRefutation()}
-                                            disabled={refutationLoading}
-                                        >
-                                            {refutationLoading ? (
-                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                            ) : (
-                                                <Play className="mr-2 h-4 w-4" />
-                                            )}
-                                            Play refutation
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            onClick={() => {
-                                                setShowWrongOverlay(false);
-                                                setPvStep(0);
-                                                setAnalysisRootFen(attemptFen);
-                                                setAnalysisHistory([attemptFen]);
-                                                setAnalysisHistoryIdx(0);
-                                                setAnalyzeTrack('pv');
-                                                setAnalyzeGamePly(puzzlePly);
-                                                setViewMode('analyze');
-                                            }}
-                                        >
-                                            Analyze
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            onClick={() => {
-                                                setShowWrongOverlay(false);
-                                                resetSolve();
-                                            }}
-                                        >
-                                            Try again
-                                        </Button>
-                                    </div>
-                            </div>
-                        ) : null}
+                        <PuzzleTrainerWrongMoveOverlay
+                            visible={
+                                viewMode === 'solve' &&
+                                attemptResult === 'incorrect' &&
+                                showWrongOverlay
+                            }
+                            refutationLoading={refutationLoading}
+                            onHint={() => setHintForId(currentPuzzleId)}
+                            onLoadRefutation={() => void loadRefutation()}
+                            onAnalyze={() => {
+                                setShowWrongOverlay(false);
+                                setPvStep(0);
+                                setAnalysisRootFen(attemptFen);
+                                setAnalysisHistory([attemptFen]);
+                                setAnalysisHistoryIdx(0);
+                                setAnalyzeTrack('pv');
+                                setAnalyzeGamePly(puzzlePly);
+                                setViewMode('analyze');
+                            }}
+                            onTryAgain={() => {
+                                setShowWrongOverlay(false);
+                                resetSolve();
+                            }}
+                        />
                     </div>
 
-                    <ModalDialog
-                        open={pendingPromotion !== null}
-                        onOpenChange={(open) => {
-                            if (!open) setPendingPromotion(null);
-                        }}
-                        title="Promote pawn to"
-                        description="Choose the piece for this legal promotion."
-                    >
-                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                            {(
-                                [
-                                    ['q', 'Queen'],
-                                    ['r', 'Rook'],
-                                    ['b', 'Bishop'],
-                                    ['n', 'Knight'],
-                                ] as const
-                            )
-                                .filter(([piece]) =>
-                                    pendingPromotion?.choices.includes(piece)
-                                )
-                                .map(([piece, label]) => (
-                                    <Button
-                                        key={piece}
-                                        type="button"
-                                        variant="outline"
-                                        onClick={() => choosePromotion(piece)}
-                                        aria-label={`Promote to ${label}`}
-                                    >
-                                        {label}
-                                    </Button>
-                                ))}
-                        </div>
-                    </ModalDialog>
-
-                    <ModalDialog
-                        open={disclosurePrompt !== null}
-                        onOpenChange={(open) => {
-                            if (!open) setDisclosureState(null);
-                        }}
-                        title="Reveal this puzzle?"
-                        description={
+                    <PuzzleTrainerDialogs
+                        promotionChoices={pendingPromotion?.choices ?? null}
+                        disclosurePrompt={disclosurePrompt}
+                        onClosePromotion={() => setPendingPromotion(null)}
+                        onChoosePromotion={choosePromotion}
+                        onCloseDisclosure={() => setDisclosureState(null)}
+                        onConfirmDisclosure={
                             disclosurePrompt === 'analyze'
-                                ? 'Opening analysis can expose the answer. Counted as revealed in this session.'
-                                : 'Showing the solution is counted as revealed in this session.'
+                                ? enterAnalyzeMode
+                                : revealSolution
                         }
-                    >
-                        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                            <Button
-                                type="button"
-                                variant="outline"
-                                onClick={() => setDisclosureState(null)}
-                            >
-                                Keep solving
-                            </Button>
-                            <Button
-                                type="button"
-                                onClick={
-                                    disclosurePrompt === 'analyze'
-                                        ? enterAnalyzeMode
-                                        : revealSolution
-                                }
-                            >
-                                {disclosurePrompt === 'analyze'
-                                    ? 'Reveal and analyze'
-                                    : 'Reveal solution'}
-                            </Button>
-                        </div>
-                    </ModalDialog>
+                    />
 
-                    <div
-                        className="mt-3 min-h-10 rounded-lg border bg-card px-3 py-2 text-sm"
-                        role="status"
-                        aria-live="polite"
-                        aria-atomic="true"
-                    >
-                        {(localOutcome === 'revealed' ||
-                            localOutcome === 'skipped') &&
-                        (attemptFeedback === 'best' ||
-                            attemptFeedback === 'accepted') ? (
-                            <span className="font-medium text-amber-700 dark:text-amber-300">
-                                Good practice move. This puzzle remains{' '}
-                                {localOutcome === 'revealed'
-                                    ? 'Revealed'
-                                    : 'Skipped'}.
-                            </span>
-                        ) : attemptFeedback === 'best' ? (
-                            <span className="font-medium text-emerald-700 dark:text-emerald-300">
-                                Best move — well found.
-                            </span>
-                        ) : attemptFeedback === 'accepted' ? (
-                            <span className="font-medium text-emerald-700 dark:text-emerald-300">
-                                Correct alternative. It works, though another accepted line is ranked best.
-                            </span>
-                        ) : attemptFeedback === 'wrong' ? (
-                            <span className="font-medium text-red-700 dark:text-red-300">
-                                Not the best move. Try again, ask for a hint, inspect the refutation, or analyze.
-                            </span>
-                        ) : hintLevel > 0 ? (
-                            <span className="text-amber-700 dark:text-amber-300">
-                                Hint: focus on the highlighted piece.
-                            </span>
-                        ) : (
-                            <span className="text-muted-foreground">
-                                Make a move when you are ready.
-                            </span>
-                        )}
-                    </div>
-                    {viewMode === 'solve' &&
-                    (attemptResult || showSolution || showRealMove) ? (
-                        <div
-                            className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground"
-                            aria-label="Board arrow legend"
-                        >
-                            <span>
-                                <span aria-hidden="true" className="mr-1 text-emerald-500">●</span>
-                                Accepted move
-                            </span>
-                            {attemptResult === 'incorrect' ? (
-                                <span>
-                                    <span aria-hidden="true" className="mr-1 text-red-500">●</span>
-                                    Your move
-                                </span>
-                            ) : null}
-                            {showRealMove ? (
-                                <span>
-                                    <span aria-hidden="true" className="mr-1 text-amber-500">●</span>
-                                    Source-game move
-                                </span>
-                            ) : null}
-                        </div>
-                    ) : null}
+                    <PuzzleTrainerBoardFeedback
+                        localOutcome={localOutcome}
+                        attemptFeedback={attemptFeedback}
+                        hintLevel={hintLevel}
+                        viewMode={viewMode}
+                        attemptResult={attemptResult}
+                        showSolution={showSolution}
+                        showRealMove={showRealMove}
+                        refutationLength={
+                            refutationLineUci ? refutationApplied.length : 0
+                        }
+                        refutationStep={refutationStep}
+                        refutationError={refutationError}
+                        onRefutationStepChange={setRefutationStep}
+                    />
 
-                    {refutationLineUci && refutationApplied.length > 1 ? (
-                        <div className="mt-3 rounded-lg border bg-card p-3">
-                            <div className="flex items-center justify-between gap-3 text-xs">
-                                <span className="font-medium">Refutation line</span>
-                                <span className="text-muted-foreground">
-                                    Step {refutationStep} / {refutationApplied.length - 1}
-                                </span>
-                            </div>
-                            <input
-                                type="range"
-                                min={0}
-                                max={Math.max(0, refutationApplied.length - 1)}
-                                value={refutationStep}
-                                onChange={(event) =>
-                                    setRefutationStep(Number(event.target.value))
-                                }
-                                className="mt-2 w-full accent-primary"
-                                aria-label="Refutation line step"
-                            />
-                            <div className="mt-2 flex justify-between gap-2">
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() =>
-                                        setRefutationStep((step) => Math.max(0, step - 1))
-                                    }
-                                    disabled={refutationStep <= 0}
-                                >
-                                    Previous move
-                                </Button>
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() =>
-                                        setRefutationStep((step) =>
-                                            Math.min(
-                                                refutationApplied.length - 1,
-                                                step + 1
-                                            )
-                                        )
-                                    }
-                                    disabled={refutationStep >= refutationApplied.length - 1}
-                                >
-                                    Next move
-                                </Button>
-                            </div>
-                        </div>
-                    ) : refutationError ? (
-                        <div className="mt-3 text-sm text-red-700 dark:text-red-300" role="alert">
-                            {refutationError}
-                        </div>
-                    ) : null}
-
-                    <div className="mt-2 grid w-full grid-cols-[44px_minmax(0,1fr)_44px] items-center gap-2">
-                        <Button
-                            type="button"
-                            variant="outline"
-                            size="icon"
-                            className="h-11 w-11"
-                            onClick={() => {
-                                if (viewMode === 'analyze') return analyzePrev();
-                                if (showContext && sourceParsed) {
-                                    setContextPly((p) => Math.max(0, p - 1));
-                                    return;
-                                }
-                                if (!attemptResult && !isReviewState && sourceParsed && puzzlePly > 0) {
-                                    setShowContext(true);
-                                    setContextPly(Math.max(0, puzzlePly - 1));
-                                    return;
-                                }
-                                setPvStep((s) => Math.max(0, s - 1));
-                            }}
-                            disabled={!canStepPrev}
-                            aria-label="Previous line move"
-                            title="Previous line move"
-                        >
-                            <ChevronLeft className="h-5 w-5" />
-                        </Button>
-
-                        <div className="flex min-w-0 items-center justify-center gap-2">
-                            <Button
-                                type="button"
-                                variant="outline"
-                                className="hidden h-10 px-2 text-xs sm:inline-flex sm:px-3 sm:text-sm"
-                                onClick={toggleSourceMove}
-                                disabled={
-                                    !realSourceMove ||
-                                    (!reviewUnlocked && !contextHintsEnabled)
-                                }
-                            >
-                                {showRealMove ? 'Hide source move' : 'Show source move'}
-                            </Button>
-                            {viewMode === 'solve' ? (
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    className="h-10 px-2 text-xs sm:px-3 sm:text-sm"
-                                    onClick={() => {
-                                        if (reviewUnlocked) revealSolution();
-                                        else if (currentPuzzleId) {
-                                            setDisclosureState({
-                                                puzzleId: currentPuzzleId,
-                                                type: 'solution',
-                                            });
-                                        }
-                                    }}
-                                    disabled={!currentPuzzle}
-                                >
-                                    Solution
-                                </Button>
-                            ) : null}
-                            <Button
-                                type="button"
-                                variant="outline"
-                                className="h-10 px-2 text-xs sm:px-3 sm:text-sm"
-                                onClick={() => {
-                                    setSolutionVisibleForId(null);
-                                    setSourceMoveVisibleForId(null);
-                                    if (viewMode === 'solve') return resetSolve();
-                                    resetAnalyzeToStart();
-                                }}
-                                disabled={!canReset}
-                                aria-label="Reset"
-                                title="Reset"
-                            >
-                                <RotateCcw className="h-4 w-4 sm:mr-2" />
-                                <span className="hidden sm:inline">reset</span>
-                            </Button>
-                        </div>
-
-                        <Button
-                            type="button"
-                            variant="outline"
-                            size="icon"
-                            className="h-11 w-11"
-                            onClick={() => {
-                                if (viewMode === 'analyze') return analyzeNext();
-                                if (showContext && sourceParsed) {
-                                    setContextPly((p) => {
-                                        const next = Math.min(puzzlePly, p + 1);
-                                        if (next >= puzzlePly) setShowContext(false);
-                                        return next;
-                                    });
-                                    return;
-                                }
-                                const max = Math.max(0, solveLineApplied.length - 1);
-                                setPvStep((s) => Math.min(max, s + 1));
-                            }}
-                            disabled={!canStepNext}
-                            aria-label="Next line move"
-                            title="Next line move"
-                        >
-                            <ChevronRight className="h-5 w-5" />
-                        </Button>
-                    </div>
-
-                    {viewMode === 'analyze' ? (
-                        <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
-                            <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() =>
-                                    setAnalysisHistoryIdx((value) =>
-                                        Math.max(0, value - 1)
-                                    )
-                                }
-                                disabled={analysisHistoryIdx <= 0}
-                            >
-                                <Undo2 className="mr-2 h-4 w-4" />
-                                Undo
-                            </Button>
-                            <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() =>
-                                    setAnalysisHistoryIdx((value) =>
-                                        Math.min(
-                                            analysisHistory.length - 1,
-                                            value + 1
-                                        )
-                                    )
-                                }
-                                disabled={
-                                    analysisHistoryIdx >= analysisHistory.length - 1
-                                }
-                            >
-                                <Redo2 className="mr-2 h-4 w-4" />
-                                Redo
-                            </Button>
-                            <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setBoardFlipped((value) => !value)}
-                                aria-pressed={boardFlipped}
-                            >
-                                <FlipHorizontal2 className="mr-2 h-4 w-4" />
-                                Flip board
-                            </Button>
-                        </div>
-                    ) : null}
-
-                    <div className="sticky bottom-3 z-30 mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-2 rounded-xl border bg-background/95 p-2 shadow-lg backdrop-blur lg:hidden">
-                        <Button
-                            type="button"
-                            variant="outline"
-                            className="h-11"
-                            onClick={() => setIdx((value) => Math.max(0, value - 1))}
-                            disabled={idx <= 0}
-                        >
-                            Previous
-                        </Button>
-                        <Button
-                            type="button"
-                            className="h-11 w-full"
-                            onClick={() => void nextPuzzle()}
-                            disabled={loadingNext}
-                        >
-                            {loadingNext ? 'Loading next puzzle…' : 'Next puzzle'}
-                        </Button>
-                    </div>
+                    <PuzzleTrainerBoardControls
+                        viewMode={viewMode}
+                        canStepPrev={canStepPrev}
+                        canStepNext={canStepNext}
+                        onStepPrev={() => {
+                            if (viewMode === 'analyze') return analyzePrev();
+                            if (showContext && sourceParsed) {
+                                setContextPly((value) => Math.max(0, value - 1));
+                                return;
+                            }
+                            if (
+                                !attemptResult &&
+                                !isReviewState &&
+                                sourceParsed &&
+                                puzzlePly > 0
+                            ) {
+                                setShowContext(true);
+                                setContextPly(Math.max(0, puzzlePly - 1));
+                                return;
+                            }
+                            setPvStep((value) => Math.max(0, value - 1));
+                        }}
+                        onStepNext={() => {
+                            if (viewMode === 'analyze') return analyzeNext();
+                            if (showContext && sourceParsed) {
+                                setContextPly((value) => {
+                                    const next = Math.min(puzzlePly, value + 1);
+                                    if (next >= puzzlePly) setShowContext(false);
+                                    return next;
+                                });
+                                return;
+                            }
+                            const max = Math.max(0, solveLineApplied.length - 1);
+                            setPvStep((value) => Math.min(max, value + 1));
+                        }}
+                        hasRealSourceMove={realSourceMove !== null}
+                        reviewUnlocked={reviewUnlocked}
+                        contextHintsEnabled={contextHintsEnabled}
+                        showRealMove={showRealMove}
+                        onToggleSourceMove={toggleSourceMove}
+                        onRevealSolution={() => {
+                            if (reviewUnlocked) revealSolution();
+                            else if (currentPuzzleId) {
+                                setDisclosureState({
+                                    puzzleId: currentPuzzleId,
+                                    type: 'solution',
+                                });
+                            }
+                        }}
+                        canReset={canReset}
+                        onReset={() => {
+                            setSolutionVisibleForId(null);
+                            setSourceMoveVisibleForId(null);
+                            if (viewMode === 'solve') return resetSolve();
+                            resetAnalyzeToStart();
+                        }}
+                        analysisHistoryIdx={analysisHistoryIdx}
+                        analysisHistoryLength={analysisHistory.length}
+                        onUndo={() =>
+                            setAnalysisHistoryIdx((value) =>
+                                Math.max(0, value - 1)
+                            )
+                        }
+                        onRedo={() =>
+                            setAnalysisHistoryIdx((value) =>
+                                Math.min(analysisHistory.length - 1, value + 1)
+                            )
+                        }
+                        boardFlipped={boardFlipped}
+                        onFlipBoard={() => setBoardFlipped((value) => !value)}
+                        idx={idx}
+                        loadingNext={loadingNext}
+                        onPreviousPuzzle={() =>
+                            setIdx((value) => Math.max(0, value - 1))
+                        }
+                        onNextPuzzle={() => void nextPuzzle()}
+                    />
 
                     <div className="lg:hidden">
                         {viewMode === 'analyze' ? analysisTools : null}
