@@ -28,7 +28,7 @@ export type GameCardData = {
     openingVariation?: string | null;
     analyzedAt: string | null;
     analysis: { whiteAccuracy?: number; blackAccuracy?: number } | null;
-    puzzles?: { id: string; sourcePly: number; type: 'AVOID_BLUNDER' | 'PUNISH_BLUNDER' }[];
+    trainingMoments?: { id: string; decisionPly: number }[];
 };
 
 function outcomeBadgeClass(letter: 'W' | 'L' | 'D' | '?') {
@@ -104,7 +104,9 @@ export function GameCard({
               ? game.analysis?.blackAccuracy
               : null;
 
-    const puzzles = Array.isArray(game.puzzles) ? game.puzzles : [];
+    const trainingMoments = Array.isArray(game.trainingMoments)
+        ? game.trainingMoments
+        : [];
 
     return (
         <Card>
@@ -147,16 +149,19 @@ export function GameCard({
                             )}
                         </div>
 
-                        {puzzles.length > 0 ? (
+                        {trainingMoments.length > 0 ? (
                             <div className="flex flex-wrap gap-1.5 pt-1">
-                                {puzzles.map((p) => (
+                                {trainingMoments.map((moment) => (
                                     <Link
-                                        key={p.id}
-                                        href={`/puzzles?puzzleId=${encodeURIComponent(p.id)}`}
-                                        title={`Personal puzzle at move ${Math.floor(p.sourcePly / 2) + 1}`}
+                                        key={moment.id}
+                                        href={`/training?momentId=${encodeURIComponent(moment.id)}`}
+                                        title={`Personal training moment at move ${Math.floor(moment.decisionPly / 2) + 1}`}
                                     >
                                         <Badge variant="outline" className="cursor-pointer">
-                                            Move {Math.floor(p.sourcePly / 2) + 1}
+                                            Train move{' '}
+                                            {Math.floor(
+                                                moment.decisionPly / 2
+                                            ) + 1}
                                         </Badge>
                                     </Link>
                                 ))}

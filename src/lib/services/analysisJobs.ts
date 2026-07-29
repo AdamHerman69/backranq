@@ -12,10 +12,10 @@ import {
     defaultPreferences,
     mergePreferences,
     pickAnalysisDefaults,
+    type AnalysisDefaults,
     type PartialPreferences,
 } from '@/lib/preferences';
 import {
-    createAnalysisRun,
     createAnalysisRunInTransaction,
     hashAnalysisConfig,
     type CreateAnalysisRunArgs,
@@ -23,9 +23,13 @@ import {
 import {
     DEFAULT_ANALYSIS_RETRY_MAX_ATTEMPTS,
     analysisJobClearedLeaseData,
-    analysisJobRunningLeaseData,
+    getAnalysisJobLockedUntil,
     getAnalysisRetryScheduledFor,
 } from '@/lib/services/analysisJobLeases';
+import {
+    parseAnalysisDispatchToken,
+    type AnalysisDispatchFence,
+} from '@/lib/services/analysisDispatchFence';
 import {
     reserveServerAnalysisCreditsInTransaction,
     SERVER_ANALYSIS_BILLING_POLICY_V1,
@@ -110,9 +114,17 @@ async function enqueueAnalysisJobOnce(args: {
             if (existing.status === 'QUEUED' || existing.status === 'RUNNING') {
                 return { job: existing, created: false, queued: false };
             }
+            const run = await createAnalysisRunProvenanceInTransaction({
+                tx,
+                job: existing,
+                queuedReason: args.queuedReason ?? existing.queuedReason,
+                config: args.config,
+                status: 'QUEUED',
+            });
             const job = await tx.analysisJob.update({
                 where: { id: existing.id },
                 data: {
+                    analysisRunId: run.id,
                     status: 'QUEUED',
                     priority: args.priority ?? existing.priority,
                     scheduledFor: args.scheduledFor ?? null,
@@ -123,27 +135,33 @@ async function enqueueAnalysisJobOnce(args: {
                     weight: args.weight ?? existing.weight ?? 0,
                     lockedAt: null,
                     lockedUntil: null,
+                    attempts: 0,
                     startedAt: null,
                     completedAt: null,
                     lastError: null,
                     queuedReason: args.queuedReason ?? existing.queuedReason,
                 },
             });
-            const run = await createAnalysisRunProvenanceInTransaction({
-                tx,
-                job,
-                queuedReason: args.queuedReason ?? existing.queuedReason,
-                config: args.config,
-                status: 'QUEUED',
-            });
             await reserveCreditsForQueuedAnalysisJob({ tx, job, run });
             return { job, created: false, queued: true };
         }
 
+        const run = await createAnalysisRunProvenanceInTransaction({
+            tx,
+            job: {
+                userId: args.userId,
+                gameId: args.gameId,
+                startedAt: null,
+            },
+            queuedReason: args.queuedReason,
+            config: args.config,
+            status: 'QUEUED',
+        });
         const job = await tx.analysisJob.create({
             data: {
                 userId: args.userId,
                 gameId: args.gameId,
+                analysisRunId: run.id,
                 priority: args.priority ?? 0,
                 scheduledFor: args.scheduledFor ?? null,
                 estimatedCredits:
@@ -151,13 +169,6 @@ async function enqueueAnalysisJobOnce(args: {
                 weight: args.weight ?? 0,
                 queuedReason: args.queuedReason,
             },
-        });
-        const run = await createAnalysisRunProvenanceInTransaction({
-            tx,
-            job,
-            queuedReason: args.queuedReason,
-            config: args.config,
-            status: 'QUEUED',
         });
         await reserveCreditsForQueuedAnalysisJob({ tx, job, run });
         return { job, created: true, queued: true };
@@ -191,18 +202,81 @@ export async function enqueueAnalysisJobsForGames(args: {
     return { results, errors };
 }
 
-export async function markAnalysisJobRunning(jobId: string) {
+export class StaleAnalysisDeliveryError extends Error {
+    constructor(jobId: string) {
+        super(`Analysis delivery is stale or no longer claimable: ${jobId}`);
+        this.name = 'StaleAnalysisDeliveryError';
+    }
+}
+
+export class MissingAnalysisRunProvenanceError extends Error {
+    constructor(jobId: string) {
+        super(
+            `Analysis job is missing immutable enqueue-time run provenance: ${jobId}`
+        );
+        this.name = 'MissingAnalysisRunProvenanceError';
+    }
+}
+
+export async function markAnalysisJobRunning(
+    jobId: string,
+    dispatchToken: string
+) {
+    const fence = requireAnalysisDispatchFence(jobId, dispatchToken);
     const now = new Date();
+    const claimableWhere = {
+        id: jobId,
+        status: 'QUEUED' as const,
+        lockedAt: fence.lockedAt,
+        dispatchedCount: fence.dispatchedCount,
+        lockedUntil: { gt: now },
+        OR: [{ scheduledFor: null }, { scheduledFor: { lte: now } }],
+    };
     const updated = await prisma.analysisJob.updateMany({
         where: {
-            id: jobId,
-            status: 'QUEUED',
-            lockedUntil: { gt: now },
-            OR: [{ scheduledFor: null }, { scheduledFor: { lte: now } }],
+            ...claimableWhere,
+            analysisRun: { is: {} },
         },
         data: {
             status: 'RUNNING',
-            ...analysisJobRunningLeaseData({ now }),
+            attempts: { increment: 1 },
+            lockedUntil: getAnalysisJobLockedUntil({ now }),
+            startedAt: now,
+            lastError: null,
+        },
+    });
+    if (updated.count !== 1) {
+        const runless = await prisma.$queryRaw<Array<{ id: string }>>(
+            Prisma.sql`
+                SELECT "id"
+                FROM "AnalysisJob"
+                WHERE "id" = ${jobId}::uuid
+                  AND "status" = 'QUEUED'
+                  AND "lockedAt" = ${fence.lockedAt}
+                  AND "dispatchedCount" = ${fence.dispatchedCount}
+                  AND "lockedUntil" > ${now}
+                  AND ("scheduledFor" IS NULL OR "scheduledFor" <= ${now})
+                  AND "analysisRunId" IS NULL
+                LIMIT 1
+            `
+        );
+        if (runless?.[0]) throw new MissingAnalysisRunProvenanceError(jobId);
+        return null;
+    }
+    return prisma.analysisJob.findUnique({ where: { id: jobId } });
+}
+
+export async function markAnalysisJobSucceeded(
+    jobId: string,
+    fence: AnalysisDispatchFence
+) {
+    const now = new Date();
+    const updated = await prisma.analysisJob.updateMany({
+        where: runningFenceWhere(jobId, fence),
+        data: {
+            status: 'SUCCEEDED',
+            ...analysisJobClearedLeaseData(),
+            completedAt: now,
             lastError: null,
         },
     });
@@ -210,51 +284,89 @@ export async function markAnalysisJobRunning(jobId: string) {
     return prisma.analysisJob.findUnique({ where: { id: jobId } });
 }
 
-export async function markAnalysisJobSucceeded(jobId: string) {
-    return prisma.analysisJob.update({
-        where: { id: jobId },
-        data: {
-            status: 'SUCCEEDED',
-            ...analysisJobClearedLeaseData(),
-            completedAt: new Date(),
-            lastError: null,
-        },
-    });
-}
-
-export async function markAnalysisJobFailed(jobId: string, error: unknown) {
+export async function markAnalysisJobFailed(
+    jobId: string,
+    fence: AnalysisDispatchFence,
+    error: unknown
+) {
     const now = new Date();
-    const job = await prisma.analysisJob.findUnique({ where: { id: jobId } });
+    const job = await prisma.analysisJob.findFirst({
+        where: runningFenceWhere(jobId, fence),
+    });
+    if (!job) return null;
+
     if (job && job.attempts < DEFAULT_ANALYSIS_RETRY_MAX_ATTEMPTS) {
-        return prisma.analysisJob.update({
-            where: { id: jobId },
+        const updated = await prisma.$transaction(async (tx) => {
+            const result = await tx.analysisJob.updateMany({
+                where: runningFenceWhere(jobId, fence),
+                data: {
+                    status: 'QUEUED',
+                    ...analysisJobClearedLeaseData(),
+                    scheduledFor: getAnalysisRetryScheduledFor({
+                        attempts: Math.max(1, job.attempts),
+                        now,
+                    }),
+                    completedAt: null,
+                    lastError: errorMessage(error),
+                },
+            });
+            if (result.count === 1 && job.analysisRunId) {
+                await tx.analysisRun.updateMany({
+                    where: {
+                        id: job.analysisRunId,
+                        status: 'RUNNING',
+                    },
+                    data: {
+                        status: 'QUEUED',
+                        completedAt: null,
+                        durationMs: null,
+                        lastError: errorMessage(error),
+                    },
+                });
+            }
+            return result;
+        });
+        if (updated.count !== 1) return null;
+        return prisma.analysisJob.findUnique({ where: { id: jobId } });
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+        const result = await tx.analysisJob.updateMany({
+            where: runningFenceWhere(jobId, fence),
             data: {
-                status: 'QUEUED',
+                status: 'FAILED',
                 ...analysisJobClearedLeaseData(),
-                scheduledFor: getAnalysisRetryScheduledFor({
-                    attempts: Math.max(1, job.attempts),
-                    now,
-                }),
-                completedAt: null,
+                completedAt: now,
                 lastError: errorMessage(error),
             },
         });
-    }
-
-    return prisma.analysisJob.update({
-        where: { id: jobId },
-        data: {
-            status: 'FAILED',
-            ...analysisJobClearedLeaseData(),
-            completedAt: new Date(),
-            lastError: errorMessage(error),
-        },
+        if (result.count === 1 && job.analysisRunId) {
+            await tx.analysisRun.updateMany({
+                where: {
+                    id: job.analysisRunId,
+                    status: 'RUNNING',
+                },
+                data: {
+                    status: 'FAILED',
+                    completedAt: now,
+                    consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
+                    lastError: errorMessage(error),
+                },
+            });
+        }
+        return result;
     });
+    if (updated.count !== 1) return null;
+    return prisma.analysisJob.findUnique({ where: { id: jobId } });
 }
 
-export async function markAnalysisJobRetryable(jobId: string, error: unknown) {
-    return prisma.analysisJob.update({
-        where: { id: jobId },
+export async function markAnalysisJobRetryable(
+    jobId: string,
+    fence: AnalysisDispatchFence,
+    error: unknown
+) {
+    const updated = await prisma.analysisJob.updateMany({
+        where: runningFenceWhere(jobId, fence),
         data: {
             status: 'QUEUED',
             ...analysisJobClearedLeaseData(),
@@ -262,6 +374,8 @@ export async function markAnalysisJobRetryable(jobId: string, error: unknown) {
             lastError: errorMessage(error),
         },
     });
+    if (updated.count !== 1) return null;
+    return prisma.analysisJob.findUnique({ where: { id: jobId } });
 }
 
 export async function getAnalysisJobCounts(userId: string) {
@@ -275,6 +389,37 @@ export async function getAnalysisJobCounts(userId: string) {
         where: { userId, status: 'FAILED' },
     });
     return { queued, running, failed };
+}
+
+export async function getAnalysisJobWakeupAt(jobId: string) {
+    const job = await prisma.analysisJob.findUnique({
+        where: { id: jobId },
+        select: {
+            status: true,
+            scheduledFor: true,
+            lockedUntil: true,
+        },
+    });
+    if (job?.status === 'RUNNING') return job.lockedUntil;
+    if (job?.status === 'QUEUED') return job.scheduledFor;
+    return null;
+}
+
+export async function getNextQueuedAnalysisRetry() {
+    const job = await prisma.analysisJob.findFirst({
+        where: {
+            status: 'QUEUED',
+            scheduledFor: { gt: new Date() },
+        },
+        orderBy: [{ scheduledFor: 'asc' }, { updatedAt: 'asc' }],
+        select: {
+            id: true,
+            scheduledFor: true,
+        },
+    });
+    return job?.scheduledFor
+        ? { jobId: job.id, retryAt: job.scheduledFor }
+        : null;
 }
 
 export function serverAnalysisConfigFromPreferences(
@@ -296,8 +441,15 @@ export function serverAnalysisConfigFromPreferences(
         version: 1,
         executionMode: SERVER_ANALYSIS_EXECUTION_MODE,
         engine: {
-            provider: 'stockfish.wasm',
+            provider: 'stockfish@18.0.8',
             client: 'ServerStockfishClient',
+            build: 'stockfish-18-lite-single',
+            flavor: 'lite-single-nnue-wasm',
+            options: {
+                Threads: 1,
+                Hash: 64,
+                UCI_ShowWDL: true,
+            },
         },
         analysisDefaults,
         extractOptions,
@@ -309,6 +461,32 @@ export function serverAnalysisConfigFromPreferences(
         config: {
             snapshot,
             hash: hashJson(snapshot),
+        },
+    };
+}
+
+export function serverAnalysisConfigFromSnapshot(args: {
+    snapshot: unknown;
+    hash: string;
+}): {
+    options: ReturnType<typeof analysisDefaultsToExtractOptions>;
+    config: ServerAnalysisConfig;
+} | null {
+    if (!isRecord(args.snapshot)) return null;
+    const analysisDefaults = args.snapshot.analysisDefaults;
+    if (!isRecord(analysisDefaults)) return null;
+
+    const snapshot = args.snapshot as Prisma.InputJsonObject;
+    const computedHash = hashJson(snapshot);
+    if (args.hash !== computedHash) return null;
+    return {
+        options: analysisDefaultsToExtractOptions(
+            analysisDefaults as AnalysisDefaults,
+            { returnAnalysis: true }
+        ),
+        config: {
+            snapshot,
+            hash: computedHash,
         },
     };
 }
@@ -334,30 +512,9 @@ export function analysisJobCreditsMetadata(
     };
 }
 
-export async function createAnalysisRunProvenance(args: {
-    job: Pick<
-        AnalysisJob,
-        'id' | 'userId' | 'gameId' | 'createdAt' | 'startedAt'
-    >;
-    queuedReason?: string | null;
-    config?: ServerAnalysisConfig;
-    status: AnalysisJobStatus;
-}) {
-    try {
-        const run = await createAnalysisRun(analysisRunProvenancePayload(args));
-        return analysisRunToSummary(run);
-    } catch (error) {
-        warnAnalysisRunUnavailable(error);
-        return null;
-    }
-}
-
 async function createAnalysisRunProvenanceInTransaction(args: {
     tx: Parameters<typeof createAnalysisRunInTransaction>[0]['tx'];
-    job: Pick<
-        AnalysisJob,
-        'id' | 'userId' | 'gameId' | 'createdAt' | 'startedAt'
-    >;
+    job: Pick<AnalysisJob, 'userId' | 'gameId' | 'startedAt'>;
     queuedReason?: string | null;
     config?: ServerAnalysisConfig;
     status: AnalysisJobStatus;
@@ -370,10 +527,7 @@ async function createAnalysisRunProvenanceInTransaction(args: {
 }
 
 function analysisRunProvenancePayload(args: {
-    job: Pick<
-        AnalysisJob,
-        'id' | 'userId' | 'gameId' | 'createdAt' | 'startedAt'
-    >;
+    job: Pick<AnalysisJob, 'userId' | 'gameId' | 'startedAt'>;
     queuedReason?: string | null;
     config?: ServerAnalysisConfig;
     status: AnalysisJobStatus;
@@ -385,8 +539,15 @@ function analysisRunProvenancePayload(args: {
         status: analysisJobStatusToRunStatus(args.status),
         queuedReason: args.queuedReason,
         engine: {
-            name: 'stockfish',
-            source: 'stockfish.wasm/server',
+            name: 'Stockfish 18',
+            version: '18.0.8',
+            source: 'stockfish@18.0.8/server/stockfish-18-lite-single',
+            flavor: 'lite-single-nnue-wasm',
+            options: {
+                Threads: 1,
+                Hash: 64,
+                UCI_ShowWDL: true,
+            },
         },
         configSnapshot: args.config?.snapshot,
         configHash: args.config?.hash,
@@ -395,31 +556,7 @@ function analysisRunProvenancePayload(args: {
                 ? (args.job.startedAt ?? new Date())
                 : null,
         consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
-        analysisJobId: args.job.id,
     };
-}
-
-export async function ensureAnalysisRunForJob(args: {
-    job: Pick<
-        AnalysisJob,
-        | 'id'
-        | 'userId'
-        | 'gameId'
-        | 'createdAt'
-        | 'startedAt'
-        | 'queuedReason'
-    >;
-    config?: ServerAnalysisConfig;
-    status: AnalysisJobStatus;
-}) {
-    const existing = await getAnalysisRunSummaryForJob(args.job.id);
-    if (existing) return existing;
-    return createAnalysisRunProvenance({
-        job: args.job,
-        queuedReason: args.job.queuedReason,
-        config: args.config,
-        status: args.status,
-    });
 }
 
 export async function transitionAnalysisRunForJob(args: {
@@ -601,5 +738,27 @@ function errorMessage(error: unknown) {
 function serializableTransactionOptions() {
     return {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function requireAnalysisDispatchFence(
+    jobId: string,
+    dispatchToken: string
+): AnalysisDispatchFence {
+    const fence = parseAnalysisDispatchToken({ jobId, dispatchToken });
+    if (!fence) throw new StaleAnalysisDeliveryError(jobId);
+    return fence;
+}
+
+function runningFenceWhere(jobId: string, fence: AnalysisDispatchFence) {
+    return {
+        id: jobId,
+        status: 'RUNNING' as const,
+        lockedAt: fence.lockedAt,
+        dispatchedCount: fence.dispatchedCount,
     };
 }

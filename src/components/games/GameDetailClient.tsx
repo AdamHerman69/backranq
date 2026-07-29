@@ -4,7 +4,10 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { GameViewer } from '@/components/games/GameViewer';
 import { GameActions } from '@/components/games/GameActions';
-import { GamePuzzlesPreview, type GamePuzzleRow } from '@/components/games/GamePuzzlesPreview';
+import {
+    GameTrainingMomentsPreview,
+    type GameTrainingMomentRow,
+} from '@/components/games/GameTrainingMomentsPreview';
 import { GameHeader, type GameHeaderData } from '@/components/games/GameHeader';
 import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
@@ -19,7 +22,7 @@ export default function GameDetailClient({
     normalizedGame,
     initialAnalysis,
     initialHasAnalysis,
-    puzzles,
+    trainingMoments,
     usernameByProvider,
     initialPly,
     serverAnalysisCapacity,
@@ -30,7 +33,7 @@ export default function GameDetailClient({
     normalizedGame: NormalizedGame;
     initialAnalysis: GameAnalysis | null;
     initialHasAnalysis: boolean;
-    puzzles: GamePuzzleRow[];
+    trainingMoments: GameTrainingMomentRow[];
     usernameByProvider: { lichess?: string; chesscom?: string };
     initialPly?: number;
     serverAnalysisCapacity: ManualServerAnalysisCapacity;
@@ -85,7 +88,7 @@ export default function GameDetailClient({
                     normalizedGame={normalizedGame}
                     usernameByProvider={usernameByProvider}
                     hasAnalysis={hasAnalysis}
-                    puzzleCount={puzzles.length}
+                    trainingMomentCount={trainingMoments.length}
                     serverAnalysisCapacity={serverAnalysisCapacity}
                     onAnalysisSaved={(nextAnalysis) =>
                         setAnalysisState({
@@ -105,10 +108,8 @@ export default function GameDetailClient({
                     analysis={analysis}
                     userBoardOrientation={userBoardOrientation}
                     initialPly={initialPly}
-                    puzzles={puzzles.map((p) => ({
-                        sourcePly: p.sourcePly,
-                        type: p.type,
-                        bestMoveUci: p.bestMoveUci,
+                    trainingMoments={trainingMoments.map((moment) => ({
+                        decisionPly: moment.decisionPly,
                     }))}
                 />
                 </CardContent>
@@ -116,7 +117,9 @@ export default function GameDetailClient({
 
             <Card>
                 <CardContent className="pt-6">
-                <GamePuzzlesPreview puzzles={puzzles} />
+                <GameTrainingMomentsPreview
+                    trainingMoments={trainingMoments}
+                />
                 </CardContent>
             </Card>
         </div>

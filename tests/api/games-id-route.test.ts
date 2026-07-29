@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { readJson } from '../helpers/route';
+import { createJsonRequest, readJson } from '../helpers/route';
 import {
     mockAuthModule,
     mockPrismaModule,
@@ -18,6 +18,18 @@ async function importRoute(): Promise<GameRouteModule> {
 
 function createGetRequest() {
     return new Request('http://localhost/api/games/game-1');
+}
+
+function createPatchRequest(body: unknown) {
+    return createJsonRequest('http://localhost/api/games/game-1', body, {
+        method: 'PATCH',
+    });
+}
+
+function createDeleteRequest() {
+    return new Request('http://localhost/api/games/game-1', {
+        method: 'DELETE',
+    });
 }
 
 function routeParams() {
@@ -81,6 +93,173 @@ describe('GET /api/games/[id]', () => {
         expect(response.status).toBe(404);
         await expect(readJson(response)).resolves.toEqual({
             error: 'Not found',
+        });
+    });
+});
+
+describe('PATCH /api/games/[id]', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        setMockUserId('user-1');
+    });
+
+    it('does not allow callers to set analyzedAt', async () => {
+        const route = await importRoute();
+
+        const response = await route.PATCH(
+            createPatchRequest({
+                analyzedAt: '2026-07-04T12:00:00.000Z',
+            }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'analyzedAt is managed by analysis completion',
+        });
+        expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects PGN replacement while an analysis job is active', async () => {
+        const route = await importRoute();
+        prismaMock.analyzedGame.findFirst.mockResolvedValue({
+            id: 'game-1',
+            pgn: '[Event "Old"]',
+        });
+        prismaMock.analysisJob.findFirst.mockResolvedValue({ id: 'job-1' });
+        prismaMock.$transaction.mockImplementation(
+            async (callback: unknown) =>
+                (
+                    callback as (tx: typeof prismaMock) => Promise<unknown>
+                )(prismaMock)
+        );
+
+        const response = await route.PATCH(
+            createPatchRequest({ pgn: '[Event "New"]' }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(409);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Cannot replace PGN while analysis is active',
+        });
+        expect(prismaMock.analyzedGame.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed PGN before any lookup or archival write', async () => {
+        const route = await importRoute();
+
+        const response = await route.PATCH(
+            createPatchRequest({ pgn: 'this is not PGN' }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Invalid pgn',
+        });
+        expect(prismaMock.$transaction).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('invalidates current analysis and active training moments when PGN changes', async () => {
+        const route = await importRoute();
+        prismaMock.analyzedGame.findFirst.mockResolvedValue({
+            id: 'game-1',
+            pgn: '[Event "Old"]',
+        });
+        prismaMock.analysisJob.findFirst.mockResolvedValue(null);
+        prismaMock.analyzedGame.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.analyzedGame.findUniqueOrThrow.mockResolvedValue({
+            id: 'game-1',
+            pgn: '[Event "New"]',
+        });
+        prismaMock.trainingMoment.updateMany.mockResolvedValue({ count: 2 });
+        prismaMock.$transaction.mockImplementation(
+            async (callback: unknown) =>
+                (
+                    callback as (tx: typeof prismaMock) => Promise<unknown>
+                )(prismaMock)
+        );
+
+        const response = await route.PATCH(
+            createPatchRequest({ pgn: '[Event "New"]' }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(200);
+        expect(prismaMock.analyzedGame.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'game-1',
+                userId: 'user-1',
+                pgn: '[Event "Old"]',
+            },
+            data: expect.objectContaining({
+                pgn: '[Event "New"]',
+                analysis: {},
+                analyzedAt: null,
+                currentAnalysisRunId: null,
+            }),
+        });
+        expect(prismaMock.trainingMoment.updateMany).toHaveBeenCalledWith({
+            where: { gameId: 'game-1', archivedAt: null },
+            data: {
+                status: 'INVALIDATED',
+                archivedAt: expect.any(Date),
+            },
+        });
+    });
+});
+
+describe('DELETE /api/games/[id]', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        setMockUserId('user-1');
+    });
+
+    it('atomically cancels active analysis and deletes the game', async () => {
+        const route = await importRoute();
+        prismaMock.analyzedGame.findFirst.mockResolvedValue({
+            id: 'game-1',
+        });
+        prismaMock.analysisJob.findMany.mockResolvedValue([
+            {
+                id: 'job-1',
+                status: 'RUNNING',
+                analysisRunId: 'run-1',
+                lastError: null,
+                creditLedgerEntries: [],
+            },
+        ]);
+        prismaMock.analysisJob.update.mockResolvedValue({ id: 'job-1' });
+        prismaMock.analysisRun.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.analyzedGame.deleteMany.mockResolvedValue({ count: 1 });
+        prismaMock.$transaction.mockImplementation(
+            async (callback: unknown) =>
+                (
+                    callback as (tx: typeof prismaMock) => Promise<unknown>
+                )(prismaMock)
+        );
+
+        const response = await route.DELETE(createDeleteRequest(), routeParams());
+
+        expect(response.status).toBe(200);
+        await expect(readJson(response)).resolves.toEqual({
+            ok: true,
+            cancelledJobs: 1,
+            consumedReservations: 0,
+            releasedReservations: 0,
+        });
+        expect(prismaMock.analysisJob.update).toHaveBeenCalledWith({
+            where: { id: 'job-1' },
+            data: expect.objectContaining({
+                status: 'CANCELLED',
+                lockedAt: null,
+                lockedUntil: null,
+            }),
+        });
+        expect(prismaMock.analyzedGame.deleteMany).toHaveBeenCalledWith({
+            where: { id: 'game-1', userId: 'user-1' },
         });
     });
 });

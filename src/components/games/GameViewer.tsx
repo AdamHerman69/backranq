@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Chess, type Move as VerboseMove, type Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
-import { extractStartFenFromPgn, parseUci, uciLineToSan, uciToSan } from '@/lib/chess/utils';
+import { extractStartFenFromPgn, parseUci, uciLineToSan } from '@/lib/chess/utils';
 import {
     getClassificationSymbol,
     type MoveClassification,
@@ -27,10 +27,8 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 
-type PuzzlePreview = {
-    sourcePly: number;
-    type: string;
-    bestMoveUci: string;
+type TrainingMomentPreview = {
+    decisionPly: number;
 };
 
 const START_FEN = new Chess().fen();
@@ -189,14 +187,14 @@ export function GameViewer({
     pgn,
     metaLabel,
     analysis,
-    puzzles,
+    trainingMoments,
     userBoardOrientation,
     initialPly,
 }: {
     pgn: string;
     metaLabel?: string;
     analysis?: GameAnalysis | null;
-    puzzles?: PuzzlePreview[];
+    trainingMoments?: TrainingMomentPreview[];
     userBoardOrientation?: 'white' | 'black';
     initialPly?: number;
 }) {
@@ -340,7 +338,7 @@ export function GameViewer({
         [fen, parsed]
     );
 
-    // Mirror PuzzleTrainer: only construct the engine when analysis is needed.
+    // Only construct the engine when analysis is needed.
     useEffect(() => {
         if (!analysisEnabled) return;
         if (!fen) return;
@@ -352,11 +350,13 @@ export function GameViewer({
         return parsed.positions[clampedPly]?.lastMove ?? null;
     }, [parsed, clampedPly]);
 
-    const puzzleByPly = useMemo(() => {
-        const m = new Map<number, PuzzlePreview>();
-        for (const p of puzzles ?? []) m.set(p.sourcePly, p);
+    const trainingMomentByPly = useMemo(() => {
+        const m = new Map<number, TrainingMomentPreview>();
+        for (const moment of trainingMoments ?? []) {
+            m.set(moment.decisionPly, moment);
+        }
         return m;
-    }, [puzzles]);
+    }, [trainingMoments]);
 
     // Arrow-key navigation through the game
     useEffect(() => {
@@ -754,14 +754,16 @@ export function GameViewer({
                                         const analyzedMove = analysis?.moves?.find(
                                             (am) => am.ply === idx
                                         );
-                                        const puzzle = puzzleByPly.get(idx);
+                                        const trainingMoment =
+                                            trainingMomentByPly.get(idx);
                                         const symbol = analyzedMove
                                             ? getClassificationSymbol(
                                                   analyzedMove.classification
                                               )
                                             : '';
-                                        const hasPuzzle =
-                                            !!puzzle || analyzedMove?.hasPuzzle;
+                                        const hasTrainingMoment =
+                                            !!trainingMoment ||
+                                            analyzedMove?.hasTrainingMoment;
                                         const active = clampedPly === idx + 1;
                                         const tooltipParts: string[] = [];
                                         if (analyzedMove) {
@@ -782,24 +784,10 @@ export function GameViewer({
                                                 );
                                             }
                                         }
-                                        if (puzzle)
+                                        if (trainingMoment)
                                             tooltipParts.push(
-                                                `📋 Puzzle: ${puzzle.type}`
+                                                '📋 Personal training moment'
                                             );
-
-                                        if (puzzle?.bestMoveUci) {
-                                            const fenBefore = parsed.positions[idx]?.fen;
-                                            if (fenBefore) {
-                                                const bestSan =
-                                                    uciToSan(
-                                                        fenBefore,
-                                                        puzzle.bestMoveUci
-                                                    ) ?? puzzle.bestMoveUci;
-                                                tooltipParts.push(
-                                                    `Puzzle: ${bestSan}`
-                                                );
-                                            }
-                                        }
 
                                         const accent = analyzedMove
                                             ? classificationAccent(
@@ -849,7 +837,7 @@ export function GameViewer({
                                                 ) : (
                                                     <span className="ml-auto" />
                                                 )}
-                                                {hasPuzzle ? (
+                                                {hasTrainingMoment ? (
                                                     <span className="ml-1 inline-flex h-2 w-2 rounded-full bg-violet-500/80" />
                                                 ) : null}
                                             </Button>

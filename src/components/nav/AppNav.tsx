@@ -26,21 +26,14 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   {
-    href: "/puzzles",
+    href: "/training",
     label: "Train",
-    active: (p) =>
-      p === "/puzzles" ||
-      (p.startsWith("/puzzles/") && !p.startsWith("/puzzles/library")),
+    active: (p) => p === "/training" || p.startsWith("/training/"),
   },
   {
     href: "/games",
     label: "Games",
     active: (p) => p === "/games" || p.startsWith("/games/"),
-  },
-  {
-    href: "/puzzles/library",
-    label: "Puzzles",
-    active: (p) => p === "/puzzles/library" || p.startsWith("/puzzles/library/"),
   },
   {
     href: "/stats",

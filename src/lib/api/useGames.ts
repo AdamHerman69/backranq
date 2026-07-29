@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AnalyzedGame } from '@prisma/client';
 import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
-import type { Puzzle } from '@/lib/analysis/puzzles';
+import type { TrainingMomentCandidate } from '@/lib/training/contracts';
 
 type ApiError = { error?: string };
 type GamesResponse = ApiError & {
@@ -154,7 +154,10 @@ export function useGameAnalysis(gameId: string | null) {
     }, [gameId]);
 
     const save = useCallback(
-        async (next: { analysis: GameAnalysis; puzzles: Puzzle[] }) => {
+        async (next: {
+            analysis: GameAnalysis;
+            trainingMoments: TrainingMomentCandidate[];
+        }) => {
             if (!gameId) throw new Error('Missing gameId');
             setLoading(true);
             setError(null);

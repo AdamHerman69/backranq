@@ -6,7 +6,14 @@ export type BackranqQueueMessage =
     | { type: 'sync-all'; requestedAt: string }
     | { type: 'sync-job'; jobId: string }
     | { type: 'dispatch-analysis'; requestedAt: string }
-    | { type: 'analysis-job'; jobId: string };
+    | { type: 'analysis-job'; jobId: string; dispatchToken: string };
+
+export type BackranqQueuePublishResult = {
+    queued: boolean;
+    messageId: string | null;
+    unavailableReason?: 'disabled' | 'publish-failed';
+    error?: unknown;
+};
 
 const queue = new QueueClient({ region: process.env.VERCEL_REGION ?? 'iad1' });
 
@@ -21,23 +28,35 @@ function queueDisabled() {
 
 export async function publishBackranqQueueMessage(
     message: BackranqQueueMessage,
-    opts?: { idempotencyKey?: string }
-) {
-    if (queueDisabled()) return { queued: false, messageId: null };
+    opts?: { idempotencyKey?: string; delaySeconds?: number }
+): Promise<BackranqQueuePublishResult> {
+    if (queueDisabled()) {
+        return {
+            queued: false,
+            messageId: null,
+            unavailableReason: 'disabled',
+        };
+    }
 
     try {
         const result = await queue.send(BACKRANQ_QUEUE_TOPIC, message, {
             idempotencyKey: opts?.idempotencyKey,
             retentionSeconds: 24 * 60 * 60,
+            delaySeconds: opts?.delaySeconds,
         });
         return { queued: true, messageId: result.messageId };
     } catch (error) {
         if (process.env.NODE_ENV !== 'production') {
             console.warn(
-                '[backranq queue] falling back to DB-only execution:',
+                '[backranq queue] publish failed; work remains queued in the database:',
                 error
             );
-            return { queued: false, messageId: null };
+            return {
+                queued: false,
+                messageId: null,
+                unavailableReason: 'publish-failed',
+                error,
+            };
         }
         throw error;
     }

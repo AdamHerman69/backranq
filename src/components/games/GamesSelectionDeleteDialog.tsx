@@ -29,7 +29,7 @@ export function GamesSelectionDeleteDialog({
             <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm">
                 Deleting these {selectedCount}{' '}
                 {selectedCount === 1 ? 'game' : 'games'} also permanently removes
-                every associated puzzle, including archived puzzles, and all of
+                every associated training moment, including archived moments, and
                 their attempt history.
             </div>
         </ActionConfirmDialog>

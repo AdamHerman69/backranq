@@ -3,7 +3,7 @@ import type { ManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCap
 
 type GamesSelectionSummary = {
     analyzed: number;
-    puzzles: number;
+    trainingMoments: number;
 };
 
 type GamesSelectionReanalysisDialogProps = {
@@ -125,11 +125,13 @@ export function GamesSelectionReanalysisDialog({
                     <dt className="text-muted-foreground">Impact</dt>
                     <dd>
                         Each completed re-analysis replaces that game&apos;s current
-                        evaluation. Matching puzzles are updated, stale puzzles are
-                        archived, and new puzzles are added. The selection currently
-                        contains {selectedSummary.puzzles} visible{' '}
-                        {selectedSummary.puzzles === 1 ? 'puzzle' : 'puzzles'}.
-                        Attempt history is preserved. Already queued games may be
+                        evaluation. Matching moments receive new revisions, stale
+                        moments are archived, and new moments are added. The
+                        selection currently contains{' '}
+                        {selectedSummary.trainingMoments} visible training{' '}
+                        {selectedSummary.trainingMoments === 1
+                            ? 'moment'
+                            : 'moments'}. Attempt history is preserved. Already queued games may be
                         skipped and do not add another charge.
                     </dd>
                 </div>

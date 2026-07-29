@@ -11,7 +11,7 @@ function input(overrides: Partial<HomeStateInput> = {}): HomeStateInput {
         hasLinkedAccount: true,
         gameCount: 4,
         unanalyzedGameCount: 0,
-        puzzleCount: 3,
+        trainingMomentCount: 3,
         browserAnalysisRunning: false,
         serverQueued: 0,
         serverRunning: 0,
@@ -24,7 +24,11 @@ describe('home product state', () => {
     it('does not collapse loading or errors into an empty library', () => {
         expect(
             deriveHomeProductState(
-                input({ loading: true, gameCount: 0, puzzleCount: 0 })
+                input({
+                    loading: true,
+                    gameCount: 0,
+                    trainingMomentCount: 0,
+                })
             )
         ).toBe('loading');
         expect(
@@ -32,7 +36,7 @@ describe('home product state', () => {
                 input({
                     error: 'network down',
                     gameCount: 0,
-                    puzzleCount: 0,
+                    trainingMomentCount: 0,
                 })
             )
         ).toBe('error');
@@ -44,12 +48,14 @@ describe('home product state', () => {
                 input({
                     hasLinkedAccount: false,
                     gameCount: 0,
-                    puzzleCount: 0,
+                    trainingMomentCount: 0,
                 })
             )
         ).toBe('no-linked-account');
         expect(
-            deriveHomeProductState(input({ gameCount: 0, puzzleCount: 0 }))
+            deriveHomeProductState(
+                input({ gameCount: 0, trainingMomentCount: 0 })
+            )
         ).toBe('no-games');
         expect(
             deriveHomeProductState(input({ unanalyzedGameCount: 2 }))
@@ -61,19 +67,19 @@ describe('home product state', () => {
         ).toBe('analysis-in-progress');
     });
 
-    it('keeps an existing puzzle library trainable without a linked provider', () => {
+    it('keeps existing training moments usable without a linked provider', () => {
         expect(
             deriveHomeProductState(
-                input({ hasLinkedAccount: false, puzzleCount: 3 })
+                input({ hasLinkedAccount: false, trainingMomentCount: 3 })
             )
-        ).toBe('analyzed-with-puzzles');
+        ).toBe('analyzed-with-training-moments');
     });
 
-    it('distinguishes generated puzzles from a successful no-candidate run', () => {
-        expect(deriveHomeProductState(input({ puzzleCount: 2 }))).toBe(
-            'analyzed-with-puzzles'
+    it('distinguishes generated moments from a successful no-candidate run', () => {
+        expect(deriveHomeProductState(input({ trainingMomentCount: 2 }))).toBe(
+            'analyzed-with-training-moments'
         );
-        expect(deriveHomeProductState(input({ puzzleCount: 0 }))).toBe(
+        expect(deriveHomeProductState(input({ trainingMomentCount: 0 }))).toBe(
             'analyzed-no-candidates'
         );
     });
@@ -91,7 +97,7 @@ describe('home product state', () => {
                         requested: 2,
                         succeeded: 1,
                         failed: 1,
-                        puzzlesGenerated: 1,
+                        trainingMomentsGenerated: 1,
                         pendingAtCompletion: 1,
                         completedAt: '2026-07-27T00:00:00.000Z',
                     },
@@ -113,7 +119,7 @@ describe('home product state', () => {
                         requested: 2,
                         succeeded: 1,
                         failed: 1,
-                        puzzlesGenerated: 1,
+                        trainingMomentsGenerated: 1,
                         pendingAtCompletion: 1,
                         completedAt: '2026-07-27T00:00:00.000Z',
                     },

@@ -1,10 +1,11 @@
 import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import { StockfishClient } from '@/lib/analysis/stockfishClient';
+import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
 import {
-    extractPuzzlesFromGames,
-    type ExtractOptions,
-} from '@/lib/analysis/extractPuzzles';
+    extractTrainingMomentsFromGames,
+    type TrainingMomentExtractionOptions,
+} from '@/lib/analysis/extractTrainingMoments';
 import { getSyncStatus } from '@/lib/services/gameSync';
 import { timeClassToUi } from '@/lib/api/games';
 import type { TimeClass } from '@prisma/client';
@@ -113,6 +114,7 @@ function normalizeApiDbGameToNormalized(
 class BackgroundAnalysisManager {
     private listeners = new Set<Listener>();
     private engine: StockfishClient | null = null;
+    private readonly tablebase = new LichessTablebaseClient();
     private cancelled = false;
     private ownerId: string | null = null;
     private runGeneration = 0;
@@ -129,7 +131,8 @@ class BackgroundAnalysisManager {
     private lastCompletion: AnalysisCompletionSummary | null = null;
 
     private nextRunAnalysisDefaultsOverride: AnalysisDefaults | null = null;
-    private activeExtractOptions: ExtractOptions | null = null;
+    private activeExtractOptions: TrainingMomentExtractionOptions | null =
+        null;
 
     subscribe(cb: Listener): () => void {
         this.listeners.add(cb);
@@ -328,7 +331,7 @@ class BackgroundAnalysisManager {
         }
 
         let failed = 0;
-        let puzzlesGenerated = 0;
+        let trainingMomentsGenerated = 0;
         const errors: string[] = [];
 
         try {
@@ -360,7 +363,8 @@ class BackgroundAnalysisManager {
                             this.emit();
                         },
                     });
-                    puzzlesGenerated += result.puzzlesGenerated;
+                    trainingMomentsGenerated +=
+                        result.trainingMomentsGenerated;
                     this.completed += 1;
                 } catch (error) {
                     if (this.cancelled) break;
@@ -405,7 +409,7 @@ class BackgroundAnalysisManager {
                 succeeded: this.completed,
                 failed,
                 cancelled: this.cancelled,
-                puzzlesGenerated,
+                trainingMomentsGenerated,
                 pendingAtCompletion,
                 error: errors[0],
             });
@@ -430,7 +434,7 @@ class BackgroundAnalysisManager {
         gameDbId: string;
         usernameByProvider: { lichess?: string; chesscom?: string };
         onLocalProgress?: (localFrac: number, phase?: string) => void;
-    }): Promise<{ puzzlesGenerated: number }> {
+    }): Promise<{ trainingMomentsGenerated: number }> {
         const res = await fetch(`/api/games/${opts.gameDbId}`);
         if (!res.ok) {
             const txt = await res.text().catch(() => '');
@@ -450,13 +454,15 @@ class BackgroundAnalysisManager {
         const extractOptions = this.activeExtractOptions ?? {
             movetimeMs: 200,
             returnAnalysis: true,
-            maxPuzzlesPerGame: null,
-            puzzleMode: 'both',
         };
-        const out = await extractPuzzlesFromGames({
+        const out = await extractTrainingMomentsFromGames({
             games: [g],
             selectedGameIds: new Set([g.id]),
             engine,
+            tablebase: this.tablebase,
+            canonicalSourceGameIdByGameId: {
+                [g.id]: opts.gameDbId,
+            },
             usernameByProvider: opts.usernameByProvider,
             onProgress: (p) => {
                 const local = p.plyCount > 0 ? (p.ply + 1) / p.plyCount : 0;
@@ -467,9 +473,17 @@ class BackgroundAnalysisManager {
 
         const analysis = out.analysis?.get(g.id) as GameAnalysis | undefined;
         if (analysis) {
-            const puzzlesForGame = (out.puzzles ?? []).filter(
-                (p) => p.sourceGameId === g.id
+            const extractionManifest = out.manifests.find(
+                (manifest) =>
+                    manifest.sourceGameId === opts.gameDbId
             );
+            if (!extractionManifest?.complete) {
+                throw new Error('Training extraction did not complete');
+            }
+            const trainingMomentsForGame = out.moments.filter(
+                (moment) => moment.sourceGameId === opts.gameDbId
+            );
+            const engineIdentity = await engine.getIdentity();
             const saveRes = await fetch(
                 `/api/games/${opts.gameDbId}/analysis`,
                 {
@@ -477,7 +491,11 @@ class BackgroundAnalysisManager {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         analysis,
-                        puzzles: puzzlesForGame,
+                        trainingMoments: trainingMomentsForGame,
+                        extractionManifest,
+                        configSnapshot: out.configSnapshot,
+                        configHash: out.configHash,
+                        engine: engineIdentity,
                     }),
                 }
             );
@@ -491,13 +509,13 @@ class BackgroundAnalysisManager {
                 );
             }
             const savedJson = (await saveRes.json().catch(() => ({}))) as {
-                puzzles?: { upserted?: number };
+                trainingMoments?: { upserted?: number };
             };
             return {
-                puzzlesGenerated:
-                    typeof savedJson.puzzles?.upserted === 'number'
-                        ? savedJson.puzzles.upserted
-                        : puzzlesForGame.length,
+                trainingMomentsGenerated:
+                    typeof savedJson.trainingMoments?.upserted === 'number'
+                        ? savedJson.trainingMoments.upserted
+                        : trainingMomentsForGame.length,
             };
         } else {
             throw new Error('Analysis produced no result');

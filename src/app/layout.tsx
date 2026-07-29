@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Backranq",
-  description: "Train chess puzzles from your own games",
+  description: "Train the critical decisions from your own chess games",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",

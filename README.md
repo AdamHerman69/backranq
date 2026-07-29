@@ -68,7 +68,7 @@ pnpm load:analysis-queue
 
 The Playwright suite starts an isolated PostgreSQL 17 container, applies the
 checked-in Prisma migrations, creates a short-lived Auth.js session plus
-deterministic games and puzzles, and removes the container and fixture user
+deterministic games and training moments, and removes the container and fixture user
 after the run.
 
 ```bash

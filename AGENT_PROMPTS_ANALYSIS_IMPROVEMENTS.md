@@ -1,3 +1,10 @@
+# Archived: legacy puzzle implementation prompts
+
+> Superseded by
+> `docs/personal-mistake-trainer-v2.md`. Do not implement the contracts,
+> filters, routes, or client-authoritative grading described below. This file
+> is retained only as historical design context for the removed Puzzle domain.
+
 ## Agent prompts: analysis + puzzle improvements
 
 This file contains **separate, well-scoped prompts** for agents to implement analysis/puzzle improvements.

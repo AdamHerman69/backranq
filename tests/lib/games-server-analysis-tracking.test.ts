@@ -86,7 +86,7 @@ describe('games server analysis tracking', () => {
                 queued: 1,
                 jobIds: ['job-existing'],
                 failedAtStart: 0,
-                puzzlesAtStart: null,
+                trainingMomentsAtStart: null,
                 pendingAtStart: null,
             })
         );
@@ -98,7 +98,7 @@ describe('games server analysis tracking', () => {
             requested: 1,
             succeeded: 1,
             failed: 0,
-            puzzlesGenerated: null,
+            trainingMomentsGenerated: null,
             pendingAtCompletion: null,
             completedAt: new Date().toISOString(),
         });

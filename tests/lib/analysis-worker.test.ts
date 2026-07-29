@@ -19,10 +19,15 @@ async function importWorker(): Promise<WorkerModule> {
 }
 
 describe('analysis worker batch runner', () => {
+    const lockedAt = new Date('2026-07-05T12:00:00Z');
+
     beforeEach(() => {
         vi.resetAllMocks();
         claimNextAnalysisJobsMock.mockResolvedValue({
-            claimedJobs: [{ id: 'job-1' }, { id: 'job-2' }],
+            claimedJobs: [
+                { id: 'job-1', lockedAt, dispatchedCount: 1 },
+                { id: 'job-2', lockedAt, dispatchedCount: 2 },
+            ],
             claimedJobIds: ['job-1', 'job-2'],
             claimMisses: [],
         });
@@ -30,12 +35,12 @@ describe('analysis worker batch runner', () => {
             .mockResolvedValueOnce({
                 jobId: 'job-1',
                 gameId: 'game-1',
-                puzzles: 2,
+                trainingMoments: 2,
             })
             .mockResolvedValueOnce({
                 jobId: 'job-2',
                 gameId: 'game-2',
-                puzzles: 0,
+                trainingMoments: 0,
             });
     });
 
@@ -52,6 +57,11 @@ describe('analysis worker batch runner', () => {
             perUserLimit: 1,
         });
         expect(analyzeGameJobMock).toHaveBeenCalledTimes(2);
+        expect(analyzeGameJobMock).toHaveBeenNthCalledWith(
+            1,
+            'job-1',
+            `analysis-delivery-v1:job-1:1:${lockedAt.getTime()}`
+        );
         expect(result).toEqual({
             claimedJobIds: ['job-1', 'job-2'],
             claimMisses: [],
@@ -60,13 +70,13 @@ describe('analysis worker batch runner', () => {
                     jobId: 'job-1',
                     ok: true,
                     gameId: 'game-1',
-                    puzzles: 2,
+                    trainingMoments: 2,
                 },
                 {
                     jobId: 'job-2',
                     ok: true,
                     gameId: 'game-2',
-                    puzzles: 0,
+                    trainingMoments: 0,
                 },
             ],
         });
@@ -76,7 +86,10 @@ describe('analysis worker batch runner', () => {
         claimNextAnalysisJobsMock.mockReset();
         analyzeGameJobMock.mockReset();
         claimNextAnalysisJobsMock.mockResolvedValue({
-            claimedJobs: [{ id: 'job-1' }, { id: 'job-2' }],
+            claimedJobs: [
+                { id: 'job-1', lockedAt, dispatchedCount: 1 },
+                { id: 'job-2', lockedAt, dispatchedCount: 2 },
+            ],
             claimedJobIds: ['job-1', 'job-2'],
             claimMisses: ['job-3'],
         });
@@ -85,7 +98,7 @@ describe('analysis worker batch runner', () => {
             .mockResolvedValueOnce({
                 jobId: 'job-2',
                 gameId: 'game-2',
-                puzzles: 1,
+                trainingMoments: 1,
             });
         const worker = await importWorker();
 
@@ -95,7 +108,12 @@ describe('analysis worker batch runner', () => {
 
         expect(result.processed).toEqual([
             { jobId: 'job-1', ok: false, error: 'engine failed' },
-            { jobId: 'job-2', ok: true, gameId: 'game-2', puzzles: 1 },
+            {
+                jobId: 'job-2',
+                ok: true,
+                gameId: 'game-2',
+                trainingMoments: 1,
+            },
         ]);
         expect(result.claimMisses).toEqual(['job-3']);
     });
@@ -105,7 +123,10 @@ describe('analysis worker batch runner', () => {
         analyzeGameJobMock.mockReset();
         releaseAnalysisDispatchLocksMock.mockResolvedValue({ count: 1 });
         claimNextAnalysisJobsMock.mockResolvedValue({
-            claimedJobs: [{ id: 'job-1' }, { id: 'job-2' }],
+            claimedJobs: [
+                { id: 'job-1', lockedAt, dispatchedCount: 1 },
+                { id: 'job-2', lockedAt, dispatchedCount: 2 },
+            ],
             claimedJobIds: ['job-1', 'job-2'],
             claimMisses: [],
         });

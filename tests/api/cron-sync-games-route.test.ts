@@ -6,6 +6,7 @@ type CronRouteModule = typeof import('@/app/api/cron/sync-games/route');
 const publishMock = vi.fn();
 const planAndProcessDueSyncJobsInlineMock = vi.fn();
 const dispatchQueuedAnalysisJobsMock = vi.fn();
+const reconcileAnalysisCreditSettlementsMock = vi.fn();
 
 async function importRoute(): Promise<CronRouteModule> {
     vi.resetModules();
@@ -17,6 +18,10 @@ async function importRoute(): Promise<CronRouteModule> {
     }));
     vi.doMock('@/lib/services/analysisScheduler', () => ({
         dispatchQueuedAnalysisJobs: dispatchQueuedAnalysisJobsMock,
+    }));
+    vi.doMock('@/lib/services/analysisOps', () => ({
+        reconcileAnalysisCreditSettlements:
+            reconcileAnalysisCreditSettlementsMock,
     }));
     return import('@/app/api/cron/sync-games/route');
 }
@@ -39,6 +44,12 @@ describe('GET /api/cron/sync-games', () => {
         dispatchQueuedAnalysisJobsMock.mockResolvedValue({
             claimedJobIds: [],
             published: [],
+        });
+        reconcileAnalysisCreditSettlementsMock.mockResolvedValue({
+            scanned: 0,
+            consumed: 0,
+            released: 0,
+            errors: [],
         });
     });
 

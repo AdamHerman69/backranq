@@ -164,41 +164,55 @@ export async function reserveServerAnalysisCreditsInTransaction(
 export async function consumeServerAnalysisCredits(
     args: BillingCreditWriteArgs
 ): Promise<BillingCreditWriteResult> {
-    return prisma.$transaction(async (tx) => {
-        const existing = await findIdempotentEntry(tx, args.idempotencyKey);
-        if (existing) return existingResult(tx, existing);
+    return prisma.$transaction(
+        (tx) => consumeServerAnalysisCreditsInTransaction({ tx, ...args }),
+        serializableTransactionOptions()
+    );
+}
 
-        assertPositiveCredits(args.credits);
-        const account = await getOrCreateDefaultBillingAccountInTransaction({
-            tx,
-            userId: args.userId,
-            now: new Date(),
-        });
-        const scopedSummary = await getLedgerSummary(tx, args);
-        if (scopedSummary.outstandingReserved < args.credits) {
-            throw new InsufficientReservedCreditsError();
-        }
-        if (
-            account.monthlyServerCreditsUsed + args.credits >
-            account.monthlyServerCreditsLimit
-        ) {
-            throw new MonthlyServerCreditsLimitExceededError();
-        }
+export async function consumeServerAnalysisCreditsInTransaction(
+    args: BillingCreditWriteArgs & { tx: BillingTransactionClient }
+): Promise<BillingCreditWriteResult> {
+    const { tx, ...writeArgs } = args;
+    const existing = await findIdempotentEntry(tx, writeArgs.idempotencyKey);
+    if (existing) return existingResult(tx, existing);
 
-        const updated = await tx.billingAccount.update({
-            where: { userId: args.userId },
-            data: {
-                monthlyServerCreditsUsed: { increment: args.credits },
-            },
-        });
-        return createLedgerResult(tx, updated, 'CONSUMED', args);
-    }, serializableTransactionOptions());
+    assertPositiveCredits(writeArgs.credits);
+    const account = await getOrCreateDefaultBillingAccountInTransaction({
+        tx,
+        userId: writeArgs.userId,
+        now: new Date(),
+    });
+    const scopedSummary = await getLedgerSummary(tx, writeArgs);
+    if (scopedSummary.outstandingReserved < writeArgs.credits) {
+        throw new InsufficientReservedCreditsError();
+    }
+    if (
+        account.monthlyServerCreditsUsed + writeArgs.credits >
+        account.monthlyServerCreditsLimit
+    ) {
+        throw new MonthlyServerCreditsLimitExceededError();
+    }
+
+    const updated = await tx.billingAccount.update({
+        where: { userId: writeArgs.userId },
+        data: {
+            monthlyServerCreditsUsed: { increment: writeArgs.credits },
+        },
+    });
+    return createLedgerResult(tx, updated, 'CONSUMED', writeArgs);
 }
 
 export async function releaseServerAnalysisCredits(
     args: BillingCreditWriteArgs
 ): Promise<BillingCreditWriteResult> {
     return writeReservedCreditReturn(args, 'RELEASED');
+}
+
+export async function releaseServerAnalysisCreditsInTransaction(
+    args: BillingCreditWriteArgs & { tx: BillingTransactionClient }
+): Promise<BillingCreditWriteResult> {
+    return writeReservedCreditReturnInTransaction(args, 'RELEASED');
 }
 
 export async function refundServerAnalysisCredits(
@@ -240,33 +254,43 @@ async function writeReservedCreditReturn(
     args: BillingCreditWriteArgs,
     type: 'RELEASED' | 'EXPIRED'
 ) {
-    return prisma.$transaction(async (tx) => {
-        const existing = await findIdempotentEntry(tx, args.idempotencyKey);
-        if (existing) return existingResult(tx, existing);
+    return prisma.$transaction(
+        (tx) =>
+            writeReservedCreditReturnInTransaction({ tx, ...args }, type),
+        serializableTransactionOptions()
+    );
+}
 
-        assertPositiveCredits(args.credits);
-        const account = await getOrCreateDefaultBillingAccountInTransaction({
-            tx,
-            userId: args.userId,
-            now: new Date(),
-        });
-        const scopedSummary = await getLedgerSummary(tx, args);
-        if (scopedSummary.outstandingReserved < args.credits) {
-            throw new InsufficientReservedCreditsError();
-        }
+async function writeReservedCreditReturnInTransaction(
+    args: BillingCreditWriteArgs & { tx: BillingTransactionClient },
+    type: 'RELEASED' | 'EXPIRED'
+) {
+    const { tx, ...writeArgs } = args;
+    const existing = await findIdempotentEntry(tx, writeArgs.idempotencyKey);
+    if (existing) return existingResult(tx, existing);
 
-        const updated = await tx.billingAccount.update({
-            where: { userId: args.userId },
-            data: {
-                serverCreditsBalance:
-                    type === 'RELEASED'
-                        ? { increment: args.credits }
-                        : undefined,
-            },
-        });
-        void account;
-        return createLedgerResult(tx, updated, type, args);
-    }, serializableTransactionOptions());
+    assertPositiveCredits(writeArgs.credits);
+    const account = await getOrCreateDefaultBillingAccountInTransaction({
+        tx,
+        userId: writeArgs.userId,
+        now: new Date(),
+    });
+    const scopedSummary = await getLedgerSummary(tx, writeArgs);
+    if (scopedSummary.outstandingReserved < writeArgs.credits) {
+        throw new InsufficientReservedCreditsError();
+    }
+
+    const updated = await tx.billingAccount.update({
+        where: { userId: writeArgs.userId },
+        data: {
+            serverCreditsBalance:
+                type === 'RELEASED'
+                    ? { increment: writeArgs.credits }
+                    : undefined,
+        },
+    });
+    void account;
+    return createLedgerResult(tx, updated, type, writeArgs);
 }
 
 async function getOrCreateDefaultBillingAccountInTransaction(args: {

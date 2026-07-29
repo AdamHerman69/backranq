@@ -69,10 +69,11 @@ export function GamesIndexClient({
             (summary, game) => {
                 if (!selectedIdSet.has(game.id)) return summary;
                 if (game.analyzedAt) summary.analyzed += 1;
-                summary.puzzles += game.puzzles?.length ?? 0;
+                summary.trainingMoments +=
+                    game.trainingMoments?.length ?? 0;
                 return summary;
             },
-            { analyzed: 0, puzzles: 0 }
+            { analyzed: 0, trainingMoments: 0 }
         );
     }, [games, selectedIds]);
 

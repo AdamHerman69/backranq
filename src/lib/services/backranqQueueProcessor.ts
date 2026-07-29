@@ -1,6 +1,14 @@
-import type { BackranqQueueMessage } from '@/lib/queues/backranq';
+import {
+    publishBackranqQueueMessage,
+    type BackranqQueueMessage,
+} from '@/lib/queues/backranq';
 import { analyzeGameJob } from '@/lib/services/serverAnalysis';
 import { dispatchQueuedAnalysisJobs } from '@/lib/services/analysisScheduler';
+import {
+    getAnalysisJobWakeupAt,
+    getNextQueuedAnalysisRetry,
+    StaleAnalysisDeliveryError,
+} from '@/lib/services/analysisJobs';
 import {
     dispatchPlannedSyncJobs,
     processSyncJob,
@@ -16,10 +24,59 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
         return { sync, dispatch };
     }
     if (message.type === 'dispatch-analysis') {
-        return dispatchQueuedAnalysisJobs();
+        const dispatch = await dispatchQueuedAnalysisJobs();
+        const nextRetry = await getNextQueuedAnalysisRetry();
+        const retryWakeup = nextRetry
+            ? await scheduleRetryWakeup(nextRetry)
+            : null;
+        return { dispatch, retryWakeup };
     }
     if (message.type === 'analysis-job') {
-        return analyzeGameJob(message.jobId);
+        let analysis:
+            | Awaited<ReturnType<typeof analyzeGameJob>>
+            | { status: 'STALE'; jobId: string; retryAt: Date | null };
+        try {
+            analysis = await analyzeGameJob(
+                message.jobId,
+                message.dispatchToken
+            );
+        } catch (error) {
+            if (!(error instanceof StaleAnalysisDeliveryError)) throw error;
+            analysis = {
+                status: 'STALE',
+                jobId: message.jobId,
+                retryAt: await getAnalysisJobWakeupAt(message.jobId),
+            };
+        }
+
+        // Completing one delivery frees per-user capacity. Always dispatch the
+        // next ready job so a batch drains without another HTTP or cron trigger.
+        const dispatch = await dispatchQueuedAnalysisJobs();
+        const retryWakeup =
+            (analysis.status === 'RETRY_SCHEDULED' ||
+                analysis.status === 'STALE') &&
+            analysis.retryAt
+                ? await scheduleRetryWakeup({
+                      jobId: analysis.jobId,
+                      retryAt: analysis.retryAt,
+                  })
+                : null;
+        return { analysis, dispatch, retryWakeup };
     }
     throw new Error('Unknown queue message');
+}
+
+async function scheduleRetryWakeup(args: { jobId: string; retryAt: Date }) {
+    const now = Date.now();
+    const delaySeconds = Math.max(
+        0,
+        Math.ceil((args.retryAt.getTime() - now) / 1_000)
+    );
+    return publishBackranqQueueMessage(
+        { type: 'dispatch-analysis', requestedAt: new Date(now).toISOString() },
+        {
+            idempotencyKey: `analysis-dispatch:retry:${args.jobId}:${args.retryAt.toISOString()}`,
+            delaySeconds,
+        }
+    );
 }

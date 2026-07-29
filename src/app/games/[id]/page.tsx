@@ -5,6 +5,7 @@ import { dbGameToNormalized } from '@/lib/api/games';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import GameDetailClient from '@/components/games/GameDetailClient';
 import { getManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
+import { GAME_TRAINING_MOMENT_MARKER_SELECT } from '@/lib/games/trainingMomentMarkers';
 
 export default async function GameDetailPage({
     params,
@@ -28,16 +29,25 @@ export default async function GameDetailPage({
         select: { lichessUsername: true, chesscomUsername: true },
     });
 
-    const [puzzles, serverAnalysisCapacity] = await Promise.all([
-        prisma.puzzle.findMany({
-            where: { userId, gameId: id, archivedAt: null },
-            orderBy: { sourcePly: 'asc' },
-            select: {
-                id: true,
-                sourcePly: true,
-                type: true,
-                bestMoveUci: true,
+    const [trainingMoments, serverAnalysisCapacity] = await Promise.all([
+        prisma.trainingMoment.findMany({
+            where: {
+                userId,
+                gameId: id,
+                archivedAt: null,
+                status: 'ACTIVE',
+                currentSolutionRevisionId: { not: null },
+                currentSolutionRevision: {
+                    is: {
+                        trainable: true,
+                        verificationStatus: {
+                            in: ['VERIFIED', 'AMBIGUOUS'],
+                        },
+                    },
+                },
             },
+            orderBy: { decisionPly: 'asc' },
+            select: GAME_TRAINING_MOMENT_MARKER_SELECT,
         }),
         getManualServerAnalysisCapacity(userId),
     ]);
@@ -78,12 +88,7 @@ export default async function GameDetailPage({
             initialAnalysis={initialAnalysis}
             initialHasAnalysis={game.analyzedAt !== null}
             initialPly={initialPly}
-            puzzles={puzzles.map((p) => ({
-                id: p.id,
-                sourcePly: p.sourcePly,
-                type: String(p.type),
-                bestMoveUci: p.bestMoveUci,
-            }))}
+            trainingMoments={trainingMoments}
             usernameByProvider={{
                 lichess: user?.lichessUsername ?? undefined,
                 chesscom: user?.chesscomUsername ?? undefined,

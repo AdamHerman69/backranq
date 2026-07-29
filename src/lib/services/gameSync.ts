@@ -66,6 +66,7 @@ type SaveGamesResult = {
 };
 
 export type EnqueueServerAnalysisJobsResult = {
+    executionAvailable?: boolean;
     requested?: number;
     accepted?: number;
     queued: number;

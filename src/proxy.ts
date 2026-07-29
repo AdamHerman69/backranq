@@ -27,7 +27,7 @@ export const config = {
     matcher: [
         '/stats/:path*',
         '/games/:path*',
-        '/puzzles/:path*',
+        '/training/:path*',
         '/settings/:path*',
         '/profile/:path*',
         '/insights/:path*',

@@ -7,7 +7,7 @@ export type HomeProductState =
     | 'no-games'
     | 'unanalyzed'
     | 'analysis-in-progress'
-    | 'analyzed-with-puzzles'
+    | 'analyzed-with-training-moments'
     | 'analyzed-no-candidates'
     | 'failed';
 
@@ -17,7 +17,7 @@ export type HomeStateInput = {
     hasLinkedAccount: boolean;
     gameCount: number;
     unanalyzedGameCount: number;
-    puzzleCount: number;
+    trainingMomentCount: number;
     browserAnalysisRunning: boolean;
     serverQueued: number;
     serverRunning: number;
@@ -32,11 +32,13 @@ export function deriveHomeProductState(
     if (
         !input.hasLinkedAccount &&
         input.gameCount === 0 &&
-        input.puzzleCount === 0
+        input.trainingMomentCount === 0
     ) {
         return 'no-linked-account';
     }
-    if (input.gameCount === 0 && input.puzzleCount === 0) return 'no-games';
+    if (input.gameCount === 0 && input.trainingMomentCount === 0) {
+        return 'no-games';
+    }
     if (
         input.browserAnalysisRunning ||
         input.serverQueued > 0 ||
@@ -55,6 +57,8 @@ export function deriveHomeProductState(
         return 'failed';
     }
     if (input.unanalyzedGameCount > 0) return 'unanalyzed';
-    if (input.puzzleCount > 0) return 'analyzed-with-puzzles';
+    if (input.trainingMomentCount > 0) {
+        return 'analyzed-with-training-moments';
+    }
     return 'analyzed-no-candidates';
 }

@@ -2,14 +2,51 @@ export type Score =
     | { type: 'cp'; value: number }
     | { type: 'mate'; value: number };
 
+export type EngineWdl = {
+    win: number;
+    draw: number;
+    loss: number;
+};
+
+export type EngineIdentity = {
+    name: string;
+    author?: string;
+    version?: string;
+    flavor?: string;
+    evalFile?: string;
+    source: string;
+    options: Record<string, string | number | boolean>;
+};
+
+export type AnalysisLimit = {
+    /** Preferred deterministic work limit. */
+    nodes?: number;
+    /** Optional deterministic depth limit. Used when nodes is not supplied. */
+    depth?: number;
+    /** Wall-time work limit when no deterministic node/depth budget is supplied. */
+    movetimeMs?: number;
+    /** Wall-clock safety watchdog; it is not an analysis-quality target. */
+    timeoutMs?: number;
+    signal?: AbortSignal;
+};
+
 export type MultiPvStreamingUpdate = {
     fen: string;
     depth?: number;
+    selDepth?: number;
+    nodes?: number;
+    nps?: number;
     timeMs?: number;
     lines: Array<{
         multipv: number;
         score: Score | null;
+        wdl?: EngineWdl;
         pvUci: string[];
+        depth?: number;
+        selDepth?: number;
+        nodes?: number;
+        nps?: number;
+        timeMs?: number;
     }>;
 };
 
@@ -22,7 +59,11 @@ export type EvalResult = {
     bestMoveUci: string;
     pvUci: string[];
     score: Score | null;
+    wdl?: EngineWdl;
     depth?: number;
+    selDepth?: number;
+    nodes?: number;
+    nps?: number;
     timeMs?: number;
 };
 
@@ -30,7 +71,11 @@ export type MultiPvLine = {
     multipv: number;
     pvUci: string[];
     score: Score | null;
+    wdl?: EngineWdl;
     depth?: number;
+    selDepth?: number;
+    nodes?: number;
+    nps?: number;
     timeMs?: number;
 };
 
@@ -38,20 +83,20 @@ export type MultiPvResult = {
     fen: string;
     bestMoveUci: string;
     lines: MultiPvLine[];
+    identity?: EngineIdentity;
 };
 
 export interface StockfishEngine {
-    evalPosition(opts: {
+    evalPosition(opts: AnalysisLimit & {
         fen: string;
-        movetimeMs?: number;
         cacheKey?: string;
     }): Promise<EvalResult>;
-    analyzeMultiPv(opts: {
+    analyzeMultiPv(opts: AnalysisLimit & {
         fen: string;
-        movetimeMs?: number;
         multiPv?: number;
         cacheKey?: string;
     }): Promise<MultiPvResult>;
+    getIdentity?(): Promise<EngineIdentity>;
     cancelAll?(): void;
     terminate?(): void;
 }
@@ -77,6 +122,7 @@ export class StockfishClient implements StockfishEngine {
               reject: (e: Error) => void;
               latest?: MultiPvStreamingUpdate;
               timeoutId?: number;
+              abortCleanup?: () => void;
           }
         | {
               kind: 'multipv';
@@ -85,6 +131,7 @@ export class StockfishClient implements StockfishEngine {
               reject: (e: Error) => void;
               latest?: MultiPvStreamingUpdate;
               timeoutId?: number;
+              abortCleanup?: () => void;
           }
     >();
 
@@ -100,6 +147,22 @@ export class StockfishClient implements StockfishEngine {
 
     private activeJobId: string | null = null;
     private terminated = false;
+    private identityWaiters = new Set<{
+        resolve: (identity: EngineIdentity) => void;
+        reject: (error: Error) => void;
+        timeoutId: number;
+    }>();
+    private identity: EngineIdentity = {
+        name: 'Stockfish 18',
+        version: '18.0.8',
+        flavor: 'lite-single-nnue-wasm',
+        source: 'stockfish@18.0.8/browser/stockfish-18-lite-single',
+        options: {
+            Threads: 1,
+            Hash: 64,
+            UCI_ShowWDL: true,
+        },
+    };
 
     constructor() {
         if (typeof window === 'undefined') {
@@ -147,6 +210,7 @@ export class StockfishClient implements StockfishEngine {
             } catch {
                 // ignore
             }
+            still.abortCleanup?.();
             const err = new Error(`Engine timeout after ${timeoutMs}ms`);
             this.debugLog('timeout', { id, timeoutMs });
             still.reject(err);
@@ -155,28 +219,82 @@ export class StockfishClient implements StockfishEngine {
 
     private clearTimeoutFor(id: string) {
         const p = this.pending.get(id);
-        if (!p?.timeoutId) return;
-        window.clearTimeout(p.timeoutId);
+        if (!p) return;
+        if (p.timeoutId) window.clearTimeout(p.timeoutId);
         p.timeoutId = undefined;
+        p.abortCleanup?.();
+        p.abortCleanup = undefined;
+    }
+
+    private installAbort(id: string, signal?: AbortSignal) {
+        if (!signal) return;
+        const onAbort = () => {
+            const pending = this.pending.get(id);
+            if (!pending) return;
+            this.pending.delete(id);
+            if (pending.timeoutId) window.clearTimeout(pending.timeoutId);
+            pending.abortCleanup?.();
+            if (this.activeJobId === id) this.activeJobId = null;
+            this.worker?.postMessage({ type: 'stop', id });
+            pending.reject(new Error('Analysis aborted'));
+        };
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        pending.abortCleanup = () =>
+            signal.removeEventListener('abort', onAbort);
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
     }
 
     terminate() {
         if (this.terminated) return;
         this.terminated = true;
         this.cancelAll();
+        for (const waiter of this.identityWaiters) {
+            window.clearTimeout(waiter.timeoutId);
+            waiter.reject(new Error('Engine terminated'));
+        }
+        this.identityWaiters.clear();
         this.worker?.terminate();
         this.worker = null;
         this.cacheEval.clear();
         this.cacheMulti.clear();
     }
 
-    async evalPosition(opts: {
+    async getIdentity(): Promise<EngineIdentity> {
+        if (this.terminated || !this.worker) {
+            throw new Error('Engine terminated');
+        }
+        return new Promise<EngineIdentity>((resolve, reject) => {
+            const waiter = {
+                resolve,
+                reject,
+                timeoutId: window.setTimeout(() => {
+                    this.identityWaiters.delete(waiter);
+                    reject(new Error('Engine identity timeout'));
+                }, 20_000),
+            };
+            this.identityWaiters.add(waiter);
+            this.worker?.postMessage({ type: 'identity' });
+        });
+    }
+
+    async evalPosition(opts: AnalysisLimit & {
         fen: string;
-        movetimeMs?: number;
         cacheKey?: string;
     }): Promise<EvalResult> {
-        const movetimeMs = Math.max(1, Math.trunc(opts.movetimeMs ?? 200));
-        const key = opts.cacheKey ?? `${opts.fen}::${movetimeMs}`;
+        if (opts.signal?.aborted) throw new Error('Analysis aborted');
+        const nodes =
+            opts.nodes == null ? undefined : Math.max(1, Math.trunc(opts.nodes));
+        const depth =
+            opts.depth == null ? undefined : Math.max(1, Math.trunc(opts.depth));
+        const movetimeMs =
+            nodes == null && depth == null
+                ? Math.max(1, Math.trunc(opts.movetimeMs ?? 200))
+                : undefined;
+        const key =
+            opts.cacheKey ??
+            `${opts.fen}::nodes=${nodes ?? ''}::depth=${depth ?? ''}::time=${movetimeMs}`;
         const cached = this.cacheEval.get(key);
         if (cached) return cached;
 
@@ -190,13 +308,21 @@ export class StockfishClient implements StockfishEngine {
             });
             this.activeJobId = id;
             // movetime is best-effort; add buffer for startup/GC/etc.
-            this.installTimeout(id, movetimeMs + 2000);
-            this.debugLog('start eval', { id, movetimeMs });
+            this.installTimeout(
+                id,
+                opts.timeoutMs ??
+                    Math.max((movetimeMs ?? 0) + 2000, 10_000)
+            );
+            this.installAbort(id, opts.signal);
+            if (!this.pending.has(id)) return;
+            this.debugLog('start eval', { id, nodes, depth, movetimeMs });
             this.worker?.postMessage({
                 type: 'start',
                 id,
                 fen: opts.fen,
                 multiPv: 1,
+                maxNodes: nodes,
+                maxDepth: depth,
                 maxTimeMs: movetimeMs,
                 emitIntervalMs: 120,
             });
@@ -206,17 +332,25 @@ export class StockfishClient implements StockfishEngine {
         return res;
     }
 
-    async analyzeMultiPv(opts: {
+    async analyzeMultiPv(opts: AnalysisLimit & {
         fen: string;
-        movetimeMs?: number;
         multiPv?: number;
         cacheKey?: string;
     }): Promise<MultiPvResult> {
-        const movetimeMs = Math.max(1, Math.trunc(opts.movetimeMs ?? 400));
-        const multiPv = Math.max(1, Math.min(5, Math.trunc(opts.multiPv ?? 3)));
+        if (opts.signal?.aborted) throw new Error('Analysis aborted');
+        const nodes =
+            opts.nodes == null ? undefined : Math.max(1, Math.trunc(opts.nodes));
+        const depth =
+            opts.depth == null ? undefined : Math.max(1, Math.trunc(opts.depth));
+        const movetimeMs =
+            nodes == null && depth == null
+                ? Math.max(1, Math.trunc(opts.movetimeMs ?? 400))
+                : undefined;
+        const multiPv = Math.max(1, Math.min(8, Math.trunc(opts.multiPv ?? 3)));
 
         const key =
-            opts.cacheKey ?? `${opts.fen}::${movetimeMs}::multipv=${multiPv}`;
+            opts.cacheKey ??
+            `${opts.fen}::nodes=${nodes ?? ''}::depth=${depth ?? ''}::time=${movetimeMs}::multipv=${multiPv}`;
         const cached = this.cacheMulti.get(key);
         if (cached) {
             return cached;
@@ -231,13 +365,27 @@ export class StockfishClient implements StockfishEngine {
                 reject,
             });
             this.activeJobId = id;
-            this.installTimeout(id, movetimeMs + 2500);
-            this.debugLog('start multipv', { id, movetimeMs, multiPv });
+            this.installTimeout(
+                id,
+                opts.timeoutMs ??
+                    Math.max((movetimeMs ?? 0) + 2500, 10_000)
+            );
+            this.installAbort(id, opts.signal);
+            if (!this.pending.has(id)) return;
+            this.debugLog('start multipv', {
+                id,
+                nodes,
+                depth,
+                movetimeMs,
+                multiPv,
+            });
             this.worker?.postMessage({
                 type: 'start',
                 id,
                 fen: opts.fen,
                 multiPv,
+                maxNodes: nodes,
+                maxDepth: depth,
                 maxTimeMs: movetimeMs,
                 emitIntervalMs: 120,
             });
@@ -250,7 +398,7 @@ export class StockfishClient implements StockfishEngine {
 
     startAnalyzeMultiPvStreaming(opts: {
         fen: string;
-        multiPv: number; // 1..5
+        multiPv: number; // 1..8
         minDepth?: number;
         maxDepth?: number;
         maxTimeMs?: number;
@@ -260,7 +408,7 @@ export class StockfishClient implements StockfishEngine {
         onDone?(): void;
     }): StreamingAnalysisHandle {
         const id = uid();
-        const multiPv = Math.max(1, Math.min(5, Math.trunc(opts.multiPv)));
+        const multiPv = Math.max(1, Math.min(8, Math.trunc(opts.multiPv)));
         const emitIntervalMs = Math.max(
             50,
             Math.trunc(opts.emitIntervalMs ?? 150)
@@ -324,6 +472,7 @@ export class StockfishClient implements StockfishEngine {
         // reject any pending futures
         for (const [id, p] of this.pending.entries()) {
             if (p.timeoutId) window.clearTimeout(p.timeoutId);
+            p.abortCleanup?.();
             this.pending.delete(id);
             p.reject(new Error('Cancelled'));
         }
@@ -333,6 +482,7 @@ export class StockfishClient implements StockfishEngine {
     private failAll(e: Error) {
         for (const [, p] of this.pending) {
             if (p.timeoutId) window.clearTimeout(p.timeoutId);
+            p.abortCleanup?.();
             p.reject(e);
         }
         this.pending.clear();
@@ -340,6 +490,11 @@ export class StockfishClient implements StockfishEngine {
             if (!s.stopped) s.onError?.(e);
         }
         this.streaming.clear();
+        for (const waiter of this.identityWaiters) {
+            window.clearTimeout(waiter.timeoutId);
+            waiter.reject(e);
+        }
+        this.identityWaiters.clear();
         this.activeJobId = null;
     }
 
@@ -393,8 +548,12 @@ export class StockfishClient implements StockfishEngine {
                         bestMoveUci,
                         pvUci: line0?.pvUci ?? [],
                         score: line0?.score ?? null,
-                        depth: latest.depth,
-                        timeMs: latest.timeMs,
+                        wdl: line0?.wdl,
+                        depth: line0?.depth ?? latest.depth,
+                        selDepth: line0?.selDepth ?? latest.selDepth,
+                        nodes: line0?.nodes ?? latest.nodes,
+                        nps: line0?.nps ?? latest.nps,
+                        timeMs: line0?.timeMs ?? latest.timeMs,
                     });
                 } else {
                     const lines: MultiPvLine[] = (latest.lines ?? []).map(
@@ -402,14 +561,19 @@ export class StockfishClient implements StockfishEngine {
                             multipv: l.multipv,
                             pvUci: l.pvUci ?? [],
                             score: l.score ?? null,
-                            depth: latest.depth,
-                            timeMs: latest.timeMs,
+                            wdl: l.wdl,
+                            depth: l.depth ?? latest.depth,
+                            selDepth: l.selDepth ?? latest.selDepth,
+                            nodes: l.nodes ?? latest.nodes,
+                            nps: l.nps ?? latest.nps,
+                            timeMs: l.timeMs ?? latest.timeMs,
                         })
                     );
                     p.resolve({
                         fen: latest.fen,
                         bestMoveUci,
                         lines,
+                        identity: this.identity,
                     });
                 }
             }
@@ -433,6 +597,58 @@ export class StockfishClient implements StockfishEngine {
                 p.reject(err);
             }
             if (this.activeJobId === id) this.activeJobId = null;
+            if (!id) {
+                for (const waiter of this.identityWaiters) {
+                    window.clearTimeout(waiter.timeoutId);
+                    waiter.reject(err);
+                }
+                this.identityWaiters.clear();
+            }
+            return;
+        }
+
+        if (msg.type === 'cancelled') {
+            const id = String(msg.id ?? '');
+            const message = String(msg.message ?? 'Analysis cancelled');
+            const error = new Error(message);
+            this.debugLog('cancelled', { id, message });
+            this.clearTimeoutFor(id);
+            const stream = this.streaming.get(id);
+            if (stream && !stream.stopped) stream.onError?.(error);
+            this.streaming.delete(id);
+            const pending = this.pending.get(id);
+            if (pending) {
+                this.pending.delete(id);
+                pending.reject(error);
+            }
+            if (this.activeJobId === id) this.activeJobId = null;
+            return;
+        }
+
+        if (msg.type === 'identity') {
+            const candidate = msg.identity;
+            if (
+                candidate &&
+                typeof candidate === 'object' &&
+                typeof (candidate as EngineIdentity).name === 'string' &&
+                typeof (candidate as EngineIdentity).source === 'string'
+            ) {
+                this.identity = {
+                    ...(candidate as EngineIdentity),
+                    options: {
+                        ...((candidate as EngineIdentity).options ?? {}),
+                    },
+                };
+                const identity = {
+                    ...this.identity,
+                    options: { ...this.identity.options },
+                };
+                for (const waiter of this.identityWaiters) {
+                    window.clearTimeout(waiter.timeoutId);
+                    waiter.resolve(identity);
+                }
+                this.identityWaiters.clear();
+            }
         }
     }
 }

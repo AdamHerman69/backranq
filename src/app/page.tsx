@@ -3,7 +3,6 @@
 import {
     useCallback,
     useEffect,
-    useMemo,
     useRef,
     useState,
     type ReactNode,
@@ -25,9 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { SignInButton } from '@/components/auth/SignInButton';
 import { SyncGamesWidget } from '@/components/sync/SyncGamesWidget';
-import { PuzzleTrainer } from '@/components/puzzles/PuzzleTrainer';
-import { PuzzlesList, type PuzzleListItem } from '@/components/puzzles/PuzzlesList';
-import { usePuzzles } from '@/lib/api/usePuzzles';
+import { TrainingTrainer } from '@/components/training/TrainingTrainer';
 import {
     ANALYSIS_COMPLETION_EVENT,
     LIBRARY_CHANGED_EVENT,
@@ -53,7 +50,7 @@ export default function Home() {
     const [dashboard, setDashboard] = useState<{
         ownerId: string | null;
         status: 'idle' | 'loading' | 'ready' | 'error';
-        puzzleCount: number;
+        trainingMomentCount: number;
         gameCount: number;
         unanalyzedGameCount: number;
         syncStatus: SyncStatus | null;
@@ -61,7 +58,7 @@ export default function Home() {
     }>({
         ownerId: null,
         status: 'idle',
-        puzzleCount: 0,
+        trainingMomentCount: 0,
         gameCount: 0,
         unanalyzedGameCount: 0,
         syncStatus: null,
@@ -83,29 +80,37 @@ export default function Home() {
             error: null,
         }));
         try {
-            const [puzzleRes, gameRes, unanalyzedRes, syncStatus] =
+            const [trainingRes, gameRes, unanalyzedRes, syncStatus] =
                 await Promise.all([
-                    fetch('/api/puzzles?limit=1', { cache: 'no-store' }),
+                    fetch('/api/training/session?limit=1', {
+                        cache: 'no-store',
+                    }),
                     fetch('/api/games?limit=1', { cache: 'no-store' }),
                     fetch('/api/games?hasAnalysis=false&limit=1', {
                         cache: 'no-store',
                     }),
                     getSyncStatus(),
                 ]);
-            if (!puzzleRes.ok || !gameRes.ok || !unanalyzedRes.ok) {
+            if (!trainingRes.ok || !gameRes.ok || !unanalyzedRes.ok) {
                 throw new Error('Could not load your training overview.');
             }
-            const [puzzleJson, gameJson, unanalyzedJson] = (await Promise.all([
-                puzzleRes.json(),
-                gameRes.json(),
-                unanalyzedRes.json(),
-            ])) as Array<{ total?: number }>;
+            const [trainingJson, gameJson, unanalyzedJson] =
+                (await Promise.all([
+                    trainingRes.json(),
+                    gameRes.json(),
+                    unanalyzedRes.json(),
+                ])) as [
+                    { items?: unknown[] },
+                    { total?: number },
+                    { total?: number },
+                ];
             if (requestId !== dashboardRequestId.current) return;
             setDashboard({
                 ownerId,
                 status: 'ready',
-                puzzleCount:
-                    typeof puzzleJson.total === 'number' ? puzzleJson.total : 0,
+                trainingMomentCount: Array.isArray(trainingJson.items)
+                    ? trainingJson.items.length
+                    : 0,
                 gameCount:
                     typeof gameJson.total === 'number' ? gameJson.total : 0,
                 unanalyzedGameCount:
@@ -135,7 +140,7 @@ export default function Home() {
         setDashboard({
             ownerId,
             status: 'idle',
-            puzzleCount: 0,
+            trainingMomentCount: 0,
             gameCount: 0,
             unanalyzedGameCount: 0,
             syncStatus: null,
@@ -196,7 +201,9 @@ export default function Home() {
     const dashboardStatus = dashboardMatchesOwner
         ? dashboard.status
         : 'idle';
-    const puzzleCount = dashboardMatchesOwner ? dashboard.puzzleCount : 0;
+    const trainingMomentCount = dashboardMatchesOwner
+        ? dashboard.trainingMomentCount
+        : 0;
     const gameCount = dashboardMatchesOwner ? dashboard.gameCount : 0;
     const unanalyzedGameCount = dashboardMatchesOwner
         ? dashboard.unanalyzedGameCount
@@ -204,40 +211,7 @@ export default function Home() {
     const dashboardSyncStatus = dashboardMatchesOwner
         ? dashboard.syncStatus
         : null;
-    const hasPuzzles = puzzleCount > 0;
-
-    // Puzzles list for logged-in users
-    const {
-        puzzles,
-        total: puzzleTotal,
-        page,
-        totalPages,
-        loading: puzzlesLoading,
-        error: puzzlesError,
-        refetch: refetchPuzzles,
-    } = usePuzzles({
-        limit: 10,
-        page: 1,
-        enabled: isLoggedIn,
-        scopeKey: ownerId ?? 'guest',
-    });
-
-    const puzzleListItems: PuzzleListItem[] = useMemo(() => {
-        return puzzles.map((p) => {
-            const stats = p.attemptStats ?? { attempted: 0, correct: 0, solved: false, failed: false };
-            const status: PuzzleListItem['status'] = 
-                stats.attempted === 0 ? 'new' : 
-                stats.solved ? 'solved' : 
-                stats.failed ? 'failed' : 'attempted';
-            return {
-                id: p.id,
-                title: 'Personal puzzle',
-                subtitle: 'Find the best move',
-                status,
-                tags: [],
-            };
-        });
-    }, [puzzles]);
+    const hasTrainingMoments = trainingMomentCount > 0;
 
     const hasLinkedAccount =
         !!dashboardSyncStatus?.linked.lichessUsername ||
@@ -249,7 +223,7 @@ export default function Home() {
         hasLinkedAccount,
         gameCount,
         unanalyzedGameCount,
-        puzzleCount,
+        trainingMomentCount,
         browserAnalysisRunning:
             analysisSnapshot.ownerId === ownerId &&
             analysisSnapshot.state === 'running',
@@ -281,7 +255,7 @@ export default function Home() {
                         </Badge> */}
                         
                         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-                            Puzzles from your 
+                            Training from your
                             <span className="block text-transparent bg-clip-text bg-gradient-to-r from-zinc-600 to-zinc-900 dark:from-zinc-200 dark:to-zinc-400">
                               blunders and missed wins
                             </span>
@@ -360,9 +334,9 @@ export default function Home() {
                                 <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
                                     <Shuffle className="h-5 w-5" />
                                 </div>
-                                <h3 className="font-semibold">Multi solution puzzles</h3>
+                                <h3 className="font-semibold">Multiple good moves</h3>
                                 <p className="mt-2 text-sm text-muted-foreground">
-                                    Not all puzzles have to be super tactical. Mix in positions where you blundered even though there were multiple correct moves. No more puzzle vision.
+                                    Not every training moment has to be tactical. Practice positions where you erred even though several good moves were available.
                                 </p>
                             </CardContent>
                         </Card>
@@ -388,7 +362,7 @@ export default function Home() {
                             </div>
                             <h3 className="font-medium">Analyze</h3>
                             <p className="mt-1 text-sm text-muted-foreground">
-                                Run local stockfish analysis to extract puzzles from blunders and missed wins.
+                                Run local Stockfish analysis to extract training moments from mistakes and missed opportunities.
                             </p>
                         </div>
                         <div>
@@ -397,7 +371,7 @@ export default function Home() {
                             </div>
                             <h3 className="font-medium">Train</h3>
                             <p className="mt-1 text-sm text-muted-foreground">
-                                Practice as you would with any puzzle set, analyze, improve.
+                                Always play the best move you can find, then compare and improve.
                             </p>
                         </div>
                     </div>
@@ -409,7 +383,7 @@ export default function Home() {
                         <CardContent className="py-8">
                             <h2 className="text-xl font-semibold">Ready to improve?</h2>
                             <p className="mt-2 text-muted-foreground">
-                                Sign in to start analyzing your games and generating personalized puzzles.
+                                Sign in to start analyzing your games and generating personal training moments.
                             </p>
                             <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-center">
                                 <SignInButton className="h-11 px-6">
@@ -443,10 +417,10 @@ export default function Home() {
                             ? 'Loading your training overview…'
                             : dashboardStatus === 'error'
                               ? 'Your library is still here, but its latest status could not be loaded.'
-                              : hasPuzzles
-                            ? `You have ${puzzleCount} puzzles from ${gameCount} games.`
+                            : hasTrainingMoments
+                            ? `Your next personal training position is ready from ${gameCount} games.`
                             : gameCount > 0
-                                ? `You have ${gameCount} games. Analyze them to generate puzzles.`
+                                ? `You have ${gameCount} games. Analyze them to generate personal training moments.`
                                 : 'Sync your first games to get started.'}
                     </p>
                 </div>
@@ -454,11 +428,6 @@ export default function Home() {
                     <Button variant="outline" asChild>
                         <Link href="/games">View Games</Link>
                     </Button>
-                    {hasPuzzles && (
-                        <Button variant="outline" asChild>
-                            <Link href="/puzzles/library">All Puzzles</Link>
-                        </Button>
-                    )}
                 </div>
             </div>
 
@@ -473,67 +442,26 @@ export default function Home() {
                 state={productState}
                 gameCount={gameCount}
                 unanalyzedGameCount={unanalyzedGameCount}
-                puzzleCount={puzzleCount}
+                trainingMomentCount={trainingMomentCount}
                 error={dashboardMatchesOwner ? dashboard.error : null}
                 onRetry={() => void fetchDashboard()}
             />
 
-            {hasPuzzles ? (
+            {hasTrainingMoments ? (
                 <>
-                    {/* Puzzle Trainer */}
+                    {/* Personal decision trainer */}
                     <Card>
                         <CardContent className="p-4 sm:p-6">
                             <div className="mb-4 flex items-center justify-between">
                                 <h2 className="text-lg font-semibold">Train</h2>
                                 <Button variant="ghost" size="sm" asChild>
-                                    <Link href="/puzzles">Open Trainer</Link>
+                                    <Link href="/training">Open Trainer</Link>
                                 </Button>
                             </div>
-                            <PuzzleTrainer initialViewMode="solve" />
+                            <TrainingTrainer ownerId={ownerId} compact />
                         </CardContent>
                     </Card>
 
-                    {/* Puzzles List */}
-                    <Card>
-                        <CardContent className="pt-6">
-                            <div className="mb-4 flex items-center justify-between">
-                                <h2 className="text-lg font-semibold">Recent Puzzles</h2>
-                                <Button variant="ghost" size="sm" asChild>
-                                    <Link href="/puzzles/library">View All</Link>
-                                </Button>
-                            </div>
-                            {puzzlesLoading ? (
-                                <div className="text-sm text-muted-foreground">Loading puzzles…</div>
-                            ) : puzzlesError ? (
-                                <div
-                                    className="flex flex-wrap items-center justify-between gap-3 text-sm"
-                                    role="alert"
-                                >
-                                    <span className="text-muted-foreground">
-                                        Could not load recent puzzles: {puzzlesError}
-                                    </span>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => void refetchPuzzles()}
-                                    >
-                                        Try again
-                                    </Button>
-                                </div>
-                            ) : puzzleListItems.length === 0 ? (
-                                <div className="text-sm text-muted-foreground">No puzzles yet.</div>
-                            ) : (
-                                <PuzzlesList
-                                    puzzles={puzzleListItems}
-                                    total={puzzleTotal}
-                                    page={page}
-                                    totalPages={totalPages}
-                                    baseQueryString=""
-                                />
-                            )}
-                        </CardContent>
-                    </Card>
                 </>
             ) : null}
         </div>
@@ -544,14 +472,14 @@ function HomeStateCard({
     state,
     gameCount,
     unanalyzedGameCount,
-    puzzleCount,
+    trainingMomentCount,
     error,
     onRetry,
 }: {
     state: HomeProductState;
     gameCount: number;
     unanalyzedGameCount: number;
-    puzzleCount: number;
+    trainingMomentCount: number;
     error: string | null;
     onRetry: () => void;
 }) {
@@ -563,7 +491,7 @@ function HomeStateCard({
                     <div>
                         <div className="font-medium">Loading your next step</div>
                         <div className="text-sm text-muted-foreground">
-                            Checking games, analysis and puzzle progress…
+                            Checking games, analysis and training progress…
                         </div>
                     </div>
                 </CardContent>
@@ -622,8 +550,8 @@ function HomeStateCard({
                 icon={<Clock3 className="h-5 w-5" aria-hidden="true" />}
                 title="Analysis is in progress"
                 description={`${Math.max(0, gameCount - unanalyzedGameCount)} of ${gameCount} games are analyzed. You can leave server analysis running or keep this tab open for browser analysis.`}
-                actionLabel={puzzleCount > 0 ? 'Train available puzzles' : 'View games'}
-                href={puzzleCount > 0 ? '/puzzles' : '/games'}
+                actionLabel={trainingMomentCount > 0 ? 'Train available decisions' : 'View games'}
+                href={trainingMomentCount > 0 ? '/training' : '/games'}
             />
         );
     }
@@ -645,7 +573,7 @@ function HomeStateCard({
             <NextActionCard
                 icon={<LineChart className="h-5 w-5" aria-hidden="true" />}
                 title="Analyze your imported games"
-                description={`${unanalyzedGameCount} of ${gameCount} game${gameCount === 1 ? '' : 's'} still need analysis before they can produce puzzles.`}
+                description={`${unanalyzedGameCount} of ${gameCount} game${gameCount === 1 ? '' : 's'} still need analysis before they can produce training moments.`}
                 actionLabel="Choose analysis"
                 href="/games"
             />
@@ -656,7 +584,7 @@ function HomeStateCard({
         return (
             <NextActionCard
                 icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
-                title="Analysis complete — no puzzle candidates"
+                title="Analysis complete — no training moments"
                 description={`All ${gameCount} games were analyzed successfully. None matched your current extraction settings; this is different from an analysis error.`}
                 actionLabel="Review extraction settings"
                 href="/settings"
@@ -668,9 +596,9 @@ function HomeStateCard({
         <NextActionCard
             icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
             title="Your training set is ready"
-            description={`${puzzleCount} personal puzzle${puzzleCount === 1 ? '' : 's'} are ready. The next best step is a short focused session.`}
+            description="Personal training decisions are ready. The next best step is a short focused session."
             actionLabel="Start training"
-            href="/puzzles"
+            href="/training"
         />
     );
 }

@@ -1,4 +1,5 @@
 import type { Score } from './stockfishClient';
+import { scoreToOrderingCp } from './evaluation';
 
 /**
  * Move classification similar to chess.com game review.
@@ -34,10 +35,9 @@ export type AnalyzedMove = {
     accuracy?: number;
     bestMoveUci?: string;
     bestMoveSan?: string;
-    // Puzzle linkage
-    hasPuzzle?: boolean;
-    puzzleId?: string;
-    puzzleType?: 'avoidBlunder' | 'punishBlunder';
+    // Canonical training-moment marker for the game-review timeline.
+    hasTrainingMoment?: boolean;
+    trainingMomentSource?: 'MY_MISTAKE' | 'MISSED_OPPORTUNITY';
 };
 
 /**
@@ -100,11 +100,7 @@ export function getClassificationClass(
  * Mate scores are converted to large values.
  */
 export function scoreToCp(score: Score | null): number | null {
-    if (!score) return null;
-    if (score.type === 'cp') return score.value;
-    // Mate: positive means side-to-move mates, negative means gets mated
-    const sign = Math.sign(score.value || 1);
-    return sign * 100000;
+    return scoreToOrderingCp(score);
 }
 
 /**
@@ -281,5 +277,3 @@ export function isMaterialSacrifice(args: {
     // - This is very simplified; real detection needs more context
     return evalAfterCp >= evalBeforeCp - 50;
 }
-
-

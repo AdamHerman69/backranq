@@ -12,7 +12,7 @@ export const E2E_GAMES = {
     promotion: '10000000-0000-4000-8000-00000000e2e2',
 } as const;
 
-export const E2E_PUZZLES = {
+export const E2E_TRAINING_MOMENTS = {
     wrongMove: '20000000-0000-4000-8000-00000000e2e1',
     dragMove: '20000000-0000-4000-8000-00000000e2e2',
     reveal: '20000000-0000-4000-8000-00000000e2e3',
@@ -27,6 +27,6 @@ export const E2E_AUTH_STATE_PATH = path.join(
     'e2e-user.json'
 );
 
-export function puzzlePath(id: string) {
-    return `/puzzles?puzzleId=${encodeURIComponent(id)}`;
+export function trainingPath(id: string) {
+    return `/training?momentId=${encodeURIComponent(id)}`;
 }

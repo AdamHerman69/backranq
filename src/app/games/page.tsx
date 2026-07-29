@@ -157,22 +157,43 @@ export default async function GamesPage({
         );
     }
 
-    const puzzlesByGameId = (() => new Map<string, { id: string; sourcePly: number; type: 'AVOID_BLUNDER' | 'PUNISH_BLUNDER' }[]>())();
+    const trainingMomentsByGameId = new Map<
+        string,
+        { id: string; decisionPly: number }[]
+    >();
     if (rows.length > 0) {
         const gameIds = rows.map((g) => g.id);
-        const puzzleRows = await prisma.puzzle.findMany({
-            where: { userId, archivedAt: null, gameId: { in: gameIds } },
-            orderBy: { sourcePly: 'asc' },
-            select: { id: true, gameId: true, sourcePly: true, type: true },
+        const momentRows = await prisma.trainingMoment.findMany({
+            where: {
+                userId,
+                archivedAt: null,
+                status: 'ACTIVE',
+                currentSolutionRevisionId: { not: null },
+                currentSolutionRevision: {
+                    is: {
+                        trainable: true,
+                        verificationStatus: {
+                            in: ['VERIFIED', 'AMBIGUOUS'],
+                        },
+                    },
+                },
+                gameId: { in: gameIds },
+            },
+            orderBy: { decisionPly: 'asc' },
+            select: {
+                id: true,
+                gameId: true,
+                decisionPly: true,
+            },
         });
-        for (const p of puzzleRows) {
-            const list = puzzlesByGameId.get(p.gameId) ?? [];
+        for (const moment of momentRows) {
+            const list =
+                trainingMomentsByGameId.get(moment.gameId) ?? [];
             list.push({
-                id: p.id,
-                sourcePly: p.sourcePly,
-                type: p.type,
+                id: moment.id,
+                decisionPly: moment.decisionPly,
             });
-            puzzlesByGameId.set(p.gameId, list);
+            trainingMomentsByGameId.set(moment.gameId, list);
         }
     }
 
@@ -200,7 +221,7 @@ export default async function GamesPage({
             g.analysis && typeof g.analysis === 'object'
                 ? ((g.analysis as unknown as Partial<GameAnalysis>) ?? null)
                 : null,
-        puzzles: puzzlesByGameId.get(g.id) ?? [],
+        trainingMoments: trainingMomentsByGameId.get(g.id) ?? [],
     });
     });
 

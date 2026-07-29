@@ -4,12 +4,13 @@ import {
     type ClaimNextAnalysisJobsOptions,
 } from '@/lib/services/analysisScheduler';
 import { analyzeGameJob } from '@/lib/services/serverAnalysis';
+import { createAnalysisDispatchToken } from '@/lib/services/analysisDispatchFence';
 
 export type AnalysisWorkerJobResult = {
     jobId: string;
     ok: boolean;
     gameId?: string;
-    puzzles?: number;
+    trainingMoments?: number;
     error?: string;
 };
 
@@ -31,12 +32,22 @@ export async function runAnalysisWorkerBatch(
     for (let index = 0; index < claim.claimedJobs.length; index += 1) {
         const job = claim.claimedJobs[index];
         try {
-            const result = await analyzeGameJob(job.id);
+            if (!job.lockedAt) {
+                throw new Error(`Claimed analysis job ${job.id} has no lock`);
+            }
+            const result = await analyzeGameJob(
+                job.id,
+                createAnalysisDispatchToken({
+                    jobId: job.id,
+                    lockedAt: job.lockedAt,
+                    dispatchedCount: job.dispatchedCount,
+                })
+            );
             processed.push({
                 jobId: job.id,
                 ok: result.status == null || result.status === 'SUCCEEDED',
                 gameId: result.gameId,
-                puzzles: result.puzzles,
+                trainingMoments: result.trainingMoments,
                 ...(result.error ? { error: result.error } : {}),
             });
         } catch (error) {

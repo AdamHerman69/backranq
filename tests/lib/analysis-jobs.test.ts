@@ -37,6 +37,9 @@ function billingAccount(overrides: Record<string, unknown> = {}) {
 }
 
 function primeCreditReservationMocks() {
+    prismaMock.analyzedGame.findFirst.mockResolvedValue({
+        pgn: '[Event "Source"]\n\n1. e4 *',
+    });
     prismaMock.analysisRun.create.mockResolvedValue({
         id: 'run-1',
         userId: 'user-1',
@@ -139,6 +142,7 @@ describe('analysis job enqueue service', () => {
             data: expect.objectContaining({
                 status: 'QUEUED',
                 lockedAt: null,
+                attempts: 0,
                 startedAt: null,
                 completedAt: null,
                 lastError: null,
@@ -155,22 +159,31 @@ describe('analysis job state transitions', () => {
 
     it('starts only a queued job with an active dispatch lease', async () => {
         const service = await importJobs();
+        const lockedAt = new Date('2026-07-05T12:00:00Z');
+        const dispatchToken = `analysis-delivery-v1:job-1:1:${lockedAt.getTime()}`;
         const running = {
             id: 'job-1',
             status: 'RUNNING',
-            lockedAt: new Date(),
+            lockedAt,
             lockedUntil: null,
+            dispatchedCount: 1,
         };
         prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 1 });
         prismaMock.analysisJob.findUnique.mockResolvedValue(running);
 
-        const result = await service.markAnalysisJobRunning('job-1');
+        const result = await service.markAnalysisJobRunning(
+            'job-1',
+            dispatchToken
+        );
 
         expect(result).toBe(running);
         expect(prismaMock.analysisJob.updateMany).toHaveBeenCalledWith({
             where: {
                 id: 'job-1',
                 status: 'QUEUED',
+                analysisRun: { is: {} },
+                lockedAt,
+                dispatchedCount: 1,
                 lockedUntil: { gt: expect.any(Date) },
                 OR: [
                     { scheduledFor: null },
@@ -188,10 +201,111 @@ describe('analysis job state transitions', () => {
     it('refuses stale or unclaimed analysis jobs', async () => {
         const service = await importJobs();
         prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 0 });
+        const lockedAt = new Date('2026-07-05T12:00:00Z');
 
-        const result = await service.markAnalysisJobRunning('job-1');
+        const result = await service.markAnalysisJobRunning(
+            'job-1',
+            `analysis-delivery-v1:job-1:1:${lockedAt.getTime()}`
+        );
 
         expect(result).toBeNull();
         expect(prismaMock.analysisJob.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when a claimable legacy delivery has no analysis run', async () => {
+        const service = await importJobs();
+        prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 0 });
+        prismaMock.$queryRaw.mockResolvedValue([{ id: 'job-1' }]);
+        const lockedAt = new Date('2026-07-05T12:00:00Z');
+
+        await expect(
+            service.markAnalysisJobRunning(
+                'job-1',
+                `analysis-delivery-v1:job-1:1:${lockedAt.getTime()}`
+            )
+        ).rejects.toThrow(/missing immutable enqueue-time run provenance/i);
+
+        expect(prismaMock.analysisJob.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed delivery token before touching the job', async () => {
+        const service = await importJobs();
+
+        await expect(
+            service.markAnalysisJobRunning('job-1', 'not-a-token')
+        ).rejects.toThrow(/stale or no longer claimable/i);
+
+        expect(prismaMock.analysisJob.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('uses an active running lease as the durable stale-delivery wakeup', async () => {
+        const service = await importJobs();
+        const lockedUntil = new Date('2026-07-05T12:10:00Z');
+        prismaMock.analysisJob.findUnique.mockResolvedValue({
+            status: 'RUNNING',
+            scheduledFor: null,
+            lockedUntil,
+        });
+
+        await expect(
+            service.getAnalysisJobWakeupAt('job-1')
+        ).resolves.toEqual(lockedUntil);
+        expect(prismaMock.analysisJob.findUnique).toHaveBeenCalledWith({
+            where: { id: 'job-1' },
+            select: {
+                status: true,
+                scheduledFor: true,
+                lockedUntil: true,
+            },
+        });
+    });
+
+    it('requires the same delivery generation when completing a job', async () => {
+        const service = await importJobs();
+        const lockedAt = new Date('2026-07-05T12:00:00Z');
+        prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 0 });
+
+        const result = await service.markAnalysisJobSucceeded('job-1', {
+            lockedAt,
+            dispatchedCount: 1,
+        });
+
+        expect(result).toBeNull();
+        expect(prismaMock.analysisJob.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'job-1',
+                status: 'RUNNING',
+                lockedAt,
+                dispatchedCount: 1,
+            },
+            data: expect.objectContaining({
+                status: 'SUCCEEDED',
+                lockedAt: null,
+                lockedUntil: null,
+            }),
+        });
+    });
+});
+
+describe('analysis run snapshot integrity', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('rejects a snapshot whose stored hash does not match its contents', async () => {
+        const service = await importJobs();
+        const snapshot = {
+            analysisDefaults: {
+                ...service.serverAnalysisConfigFromPreferences({}).config
+                    .snapshot,
+            },
+        };
+
+        expect(
+            service.serverAnalysisConfigFromSnapshot({
+                snapshot,
+                hash: 'tampered-hash',
+            })
+        ).toBeNull();
     });
 });

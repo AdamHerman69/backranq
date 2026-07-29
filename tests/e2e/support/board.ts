@@ -16,20 +16,24 @@ export async function clickMove(page: Page, from: string, to: string) {
 
 export async function dragMove(page: Page, from: string, to: string) {
     await waitForBoard(page);
-    const source = await square(page, from).boundingBox();
-    const target = await square(page, to).boundingBox();
-    if (!source || !target) {
+    const source = square(page, from);
+    const target = square(page, to);
+    await expect(source).toBeVisible();
+    await expect(target).toBeVisible();
+
+    // Hover resolves the source after Playwright has observed a stable layout.
+    // Resolve the target only after the drag has started so an asynchronous
+    // banner/layout shift cannot invalidate a pair of cached bounding boxes.
+    await source.hover();
+    await page.mouse.down();
+    const targetBox = await target.boundingBox();
+    if (!targetBox) {
+        await page.mouse.up();
         throw new Error(`Could not measure chess move ${from}-${to}.`);
     }
-
     await page.mouse.move(
-        source.x + source.width / 2,
-        source.y + source.height / 2
-    );
-    await page.mouse.down();
-    await page.mouse.move(
-        target.x + target.width / 2,
-        target.y + target.height / 2,
+        targetBox.x + targetBox.width / 2,
+        targetBox.y + targetBox.height / 2,
         { steps: 12 }
     );
     await page.mouse.up();

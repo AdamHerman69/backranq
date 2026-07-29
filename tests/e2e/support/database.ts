@@ -2,10 +2,10 @@ import { PrismaClient } from '@prisma/client';
 
 import { E2E_USER } from './fixtures';
 
-export async function resetE2ePuzzleAttempts() {
+export async function resetE2eTrainingAttempts() {
     const prisma = new PrismaClient();
     try {
-        await prisma.puzzleAttempt.deleteMany({
+        await prisma.trainingAttempt.deleteMany({
             where: { userId: E2E_USER.id },
         });
     } finally {

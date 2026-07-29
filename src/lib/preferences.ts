@@ -1,8 +1,21 @@
 import type { TimeClass } from '@/lib/types/game';
-import type { Puzzle } from '@/lib/analysis/puzzles';
-import type { ExtractOptions, PuzzleMode } from '@/lib/analysis/extractPuzzles';
+import type {
+    TrainingMomentExtractionOptions,
+} from '@/lib/analysis/extractTrainingMoments';
+import {
+    resolveTrainingConfig,
+    type TrainingCoveragePreset,
+    type TrainingGradingTolerance,
+} from '@/lib/training/config';
+import type { TrainingSourceKind } from '@/lib/training/contracts';
 
 export type RatedFilter = 'any' | 'rated' | 'casual';
+export const TRAINING_SESSION_MIXES = [
+    'ALL',
+    'MY_MISTAKES',
+    'MISSED_OPPORTUNITIES',
+] as const;
+export type TrainingSessionMix = (typeof TRAINING_SESSION_MIXES)[number];
 
 export type Filters = {
     lichessUsername: string;
@@ -18,9 +31,6 @@ export type Filters = {
 
 export type PreferencesSchema = {
     filters: Filters;
-
-    // trainer UX
-    trainerContextHintsEnabled: boolean;
 
     // server-side automation
     autoSyncEnabled: boolean;
@@ -49,28 +59,14 @@ export type PreferencesSchema = {
         monthlyCap?: number | string | null;
     };
 
-    // puzzle library state
-    puzzles: Puzzle[];
-    puzzleIdx: number;
-    puzzleTagFilter: string[];
-    puzzleOpeningFilter: string;
-
-    // extraction options
-    puzzleMode: PuzzleMode;
-    maxPuzzlesPerGame: string;
-    blunderSwingCp: string;
-    missedTacticSwingCp: string;
-    evalBandMinCp: string;
-    evalBandMaxCp: string;
-    requireTactical: boolean;
-    tacticalLookaheadPlies: string;
-    openingSkipPlies: string;
-    minPvMoves: string;
-    skipTrivialEndgames: boolean;
-    minNonKingPieces: string;
-    confirmMovetimeMs: string;
-    engineMoveTimeMs: string;
-    uniquenessMarginCp: string;
+    // Deterministic extraction work budgets and metadata lookahead. Coverage
+    // and grading policy live in the canonical training configuration.
+    trainingCoveragePreset: TrainingCoveragePreset;
+    trainingGradingTolerance: TrainingGradingTolerance;
+    trainingSessionMix: TrainingSessionMix;
+    analysisNodesPerPosition: string;
+    confirmationNodes: string;
+    themeLookaheadPlies: string;
 };
 
 export type PartialPreferences = Omit<
@@ -84,22 +80,52 @@ export type PartialPreferences = Omit<
 
 export type AnalysisDefaults = Pick<
     PreferencesSchema,
-    | 'puzzleMode'
-    | 'engineMoveTimeMs'
-    | 'openingSkipPlies'
-    | 'minPvMoves'
-    | 'skipTrivialEndgames'
-    | 'minNonKingPieces'
-    | 'evalBandMinCp'
-    | 'evalBandMaxCp'
-    | 'requireTactical'
-    | 'tacticalLookaheadPlies'
-    | 'maxPuzzlesPerGame'
-    | 'blunderSwingCp'
-    | 'missedTacticSwingCp'
-    | 'confirmMovetimeMs'
-    | 'uniquenessMarginCp'
+    | 'analysisNodesPerPosition'
+    | 'confirmationNodes'
+    | 'themeLookaheadPlies'
+    | 'trainingCoveragePreset'
+    | 'trainingGradingTolerance'
 >;
+
+export const ANALYSIS_NUMERIC_PREFERENCE_RULES = {
+    analysisNodesPerPosition: {
+        min: 1_000,
+        max: 10_000_000,
+        integer: true,
+        allowBlank: false,
+    },
+    confirmationNodes: {
+        min: 1_000,
+        max: 20_000_000,
+        integer: true,
+        allowBlank: true,
+    },
+    themeLookaheadPlies: {
+        min: 0,
+        max: 32,
+        integer: true,
+        allowBlank: false,
+    },
+} as const;
+
+export type AnalysisNumericPreferenceKey =
+    keyof typeof ANALYSIS_NUMERIC_PREFERENCE_RULES;
+
+export function validateAnalysisNumericPreference(
+    key: AnalysisNumericPreferenceKey,
+    value: string
+): boolean {
+    const rule = ANALYSIS_NUMERIC_PREFERENCE_RULES[key];
+    const trimmed = value.trim();
+    if (!trimmed) return rule.allowBlank;
+    const number = Number(trimmed);
+    return (
+        Number.isFinite(number) &&
+        (!rule.integer || Number.isInteger(number)) &&
+        number >= rule.min &&
+        number <= rule.max
+    );
+}
 
 export function defaultPreferences(): PreferencesSchema {
     return {
@@ -114,7 +140,6 @@ export function defaultPreferences(): PreferencesSchema {
             maxElo: '',
             max: '100',
         },
-        trainerContextHintsEnabled: false,
         autoSyncEnabled: true,
         autoAnalyzeEnabled: false,
         autoSyncProviders: {
@@ -140,25 +165,12 @@ export function defaultPreferences(): PreferencesSchema {
             dailyCap: 10,
             monthlyCap: 50,
         },
-        puzzles: [],
-        puzzleIdx: 0,
-        puzzleTagFilter: [],
-        puzzleOpeningFilter: '',
-        puzzleMode: 'both',
-        maxPuzzlesPerGame: '5',
-        blunderSwingCp: '250',
-        missedTacticSwingCp: '180',
-        evalBandMinCp: '-300',
-        evalBandMaxCp: '600',
-        requireTactical: true,
-        tacticalLookaheadPlies: '4',
-        openingSkipPlies: '8',
-        minPvMoves: '2',
-        skipTrivialEndgames: true,
-        minNonKingPieces: '4',
-        confirmMovetimeMs: '',
-        engineMoveTimeMs: '200',
-        uniquenessMarginCp: '',
+        trainingCoveragePreset: 'ALL_CONFIRMED',
+        trainingGradingTolerance: 'PRACTICAL',
+        trainingSessionMix: 'ALL',
+        analysisNodesPerPosition: '100000',
+        confirmationNodes: '200000',
+        themeLookaheadPlies: '4',
     };
 }
 
@@ -166,108 +178,80 @@ export function pickAnalysisDefaults(
     prefs: PreferencesSchema
 ): AnalysisDefaults {
     return {
-        puzzleMode: prefs.puzzleMode,
-        engineMoveTimeMs: prefs.engineMoveTimeMs,
-        openingSkipPlies: prefs.openingSkipPlies,
-        minPvMoves: prefs.minPvMoves,
-        skipTrivialEndgames: prefs.skipTrivialEndgames,
-        minNonKingPieces: prefs.minNonKingPieces,
-        evalBandMinCp: prefs.evalBandMinCp,
-        evalBandMaxCp: prefs.evalBandMaxCp,
-        requireTactical: prefs.requireTactical,
-        tacticalLookaheadPlies: prefs.tacticalLookaheadPlies,
-        maxPuzzlesPerGame: prefs.maxPuzzlesPerGame,
-        blunderSwingCp: prefs.blunderSwingCp,
-        missedTacticSwingCp: prefs.missedTacticSwingCp,
-        confirmMovetimeMs: prefs.confirmMovetimeMs,
-        uniquenessMarginCp: prefs.uniquenessMarginCp,
+        analysisNodesPerPosition: prefs.analysisNodesPerPosition,
+        confirmationNodes: prefs.confirmationNodes,
+        themeLookaheadPlies: prefs.themeLookaheadPlies,
+        trainingCoveragePreset: prefs.trainingCoveragePreset,
+        trainingGradingTolerance: prefs.trainingGradingTolerance,
     };
 }
 
-function parseFiniteNumber(s: string): number | null {
-    const n = Number(s);
-    if (!Number.isFinite(n)) return null;
-    return n;
+function parseBoundedNumberOrDefault(
+    key: AnalysisNumericPreferenceKey,
+    value: string,
+    fallback: number
+): number {
+    if (!validateAnalysisNumericPreference(key, value)) return fallback;
+    const number = Number(value.trim());
+    return ANALYSIS_NUMERIC_PREFERENCE_RULES[key].integer
+        ? Math.trunc(number)
+        : number;
 }
 
-function parseFiniteNumberOrDefault(s: string, fallback: number): number {
-    const n = parseFiniteNumber(s);
-    return n ?? fallback;
-}
-
-function parseOptionalFiniteNumber(s: string): number | null {
-    const t = (s ?? '').trim();
-    if (!t) return null;
-    return parseFiniteNumber(t);
-}
-
-function parseOptionalPositiveNumber(s: string): number | null {
-    const n = parseOptionalFiniteNumber(s);
-    if (n == null) return null;
-    return n > 0 ? n : null;
-}
-
-function parseMaxPuzzlesPerGame(s: string): number | null {
-    const t = (s ?? '').trim();
-    if (!t) return null; // blank = unlimited
-    const n = Math.trunc(Number(t));
-    if (!Number.isFinite(n)) return null;
-    if (n <= 0) return null; // 0 or negative = unlimited
-    return n;
+function parseOptionalBoundedNumber(
+    key: AnalysisNumericPreferenceKey,
+    value: string
+): number | null {
+    if (!value.trim()) return null;
+    if (!validateAnalysisNumericPreference(key, value)) return null;
+    const number = Number(value.trim());
+    return ANALYSIS_NUMERIC_PREFERENCE_RULES[key].integer
+        ? Math.trunc(number)
+        : number;
 }
 
 export function analysisDefaultsToExtractOptions(
     a: AnalysisDefaults,
     opts?: { returnAnalysis?: boolean }
-): ExtractOptions {
+): TrainingMomentExtractionOptions {
+    const trainingConfig = resolveTrainingConfig({
+        coveragePreset: a.trainingCoveragePreset,
+        gradingTolerance: a.trainingGradingTolerance,
+    });
     return {
-        movetimeMs: parseFiniteNumberOrDefault(a.engineMoveTimeMs, 200),
-        puzzleMode: a.puzzleMode ?? 'both',
-        maxPuzzlesPerGame: parseMaxPuzzlesPerGame(a.maxPuzzlesPerGame),
-        blunderSwingCp: parseFiniteNumberOrDefault(a.blunderSwingCp, 250),
-        missedTacticSwingCp: parseFiniteNumberOrDefault(
-            a.missedTacticSwingCp,
-            180
+        nodesPerPosition: parseBoundedNumberOrDefault(
+            'analysisNodesPerPosition',
+            a.analysisNodesPerPosition,
+            100_000
         ),
-        evalBandMinCp: parseOptionalFiniteNumber(a.evalBandMinCp),
-        evalBandMaxCp: parseOptionalFiniteNumber(a.evalBandMaxCp),
-        requireTactical: !!a.requireTactical,
-        tacticalLookaheadPlies: parseFiniteNumberOrDefault(
-            a.tacticalLookaheadPlies,
+        themeLookaheadPlies: parseBoundedNumberOrDefault(
+            'themeLookaheadPlies',
+            a.themeLookaheadPlies,
             4
         ),
-        openingSkipPlies: parseFiniteNumberOrDefault(a.openingSkipPlies, 8),
-        minPvMoves: parseFiniteNumberOrDefault(a.minPvMoves, 2),
-        skipTrivialEndgames: !!a.skipTrivialEndgames,
-        minNonKingPieces: parseFiniteNumberOrDefault(a.minNonKingPieces, 4),
-        confirmMovetimeMs: parseOptionalPositiveNumber(a.confirmMovetimeMs),
-        uniquenessMarginCp: parseOptionalPositiveNumber(a.uniquenessMarginCp),
+        confirmNodes: parseOptionalBoundedNumber(
+            'confirmationNodes',
+            a.confirmationNodes
+        ),
+        minWinningChanceLoss: trainingConfig.minWinChanceLoss,
+        fallbackMinCpLoss: trainingConfig.fallbackMinCpLoss,
+        maxAcceptedWinningChanceLoss:
+            trainingConfig.gradingPolicy.success.maxWinChanceLoss,
+        fallbackMaxAcceptedCpLoss:
+            trainingConfig.gradingPolicy.success.maxCpLoss,
+        gradingPolicy: trainingConfig.gradingPolicy,
         returnAnalysis: opts?.returnAnalysis ?? false,
     };
 }
 
-function dedupPuzzles(puzzles: Puzzle[]): Puzzle[] {
-    const map = new Map<string, Puzzle>();
-    for (const p of puzzles) {
-        const k = `${p.sourceGameId}::${p.sourcePly}::${p.fen}`;
-        if (!map.has(k)) map.set(k, p);
+export function trainingSourceKindsForSessionMix(
+    mix: TrainingSessionMix
+): TrainingSourceKind[] {
+    if (mix === 'MY_MISTAKES') return ['MY_MISTAKE'];
+    if (mix === 'MISSED_OPPORTUNITIES') {
+        return ['MISSED_OPPORTUNITY'];
     }
-    return Array.from(map.values());
-}
-
-function ensurePuzzleHasMode(p: Puzzle): Puzzle {
-    const x = p as unknown as { mode?: unknown; tags?: unknown };
-    if (x.mode === 'avoidBlunder' || x.mode === 'punishBlunder') return p;
-
-    const tags = Array.isArray(x.tags)
-        ? (x.tags as unknown[]).filter(
-              (t): t is string => typeof t === 'string'
-          )
-        : [];
-    const mode = tags.includes('punishBlunder')
-        ? 'punishBlunder'
-        : 'avoidBlunder';
-    return { ...(p as unknown as Record<string, unknown>), mode } as Puzzle;
+    return [];
 }
 
 export function mergePreferences(
@@ -295,19 +279,6 @@ export function mergePreferences(
             },
         },
     };
-
-    if (patch.puzzles) {
-        merged.puzzles = dedupPuzzles(patch.puzzles.map(ensurePuzzleHasMode));
-    }
-
-    // Clamp puzzleIdx if puzzles changed
-    merged.puzzleIdx = Math.max(
-        0,
-        Math.min(
-            merged.puzzleIdx ?? 0,
-            Math.max(0, (merged.puzzles?.length ?? 0) - 1)
-        )
-    );
 
     return merged;
 }

@@ -54,7 +54,9 @@ test.describe('authenticated games library', () => {
         });
         await expect(deleteDialog).toBeVisible();
         await expect(
-            deleteDialog.getByText(/permanently removes every associated puzzle/)
+            deleteDialog.getByText(
+                /permanently removes every associated training moment/
+            )
         ).toBeVisible();
         await deleteDialog.getByRole('button', { name: 'Cancel' }).click();
     });

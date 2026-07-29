@@ -7,7 +7,8 @@ import { useRouter } from 'next/navigation';
 import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import { StockfishClient } from '@/lib/analysis/stockfishClient';
-import { extractPuzzlesFromGames } from '@/lib/analysis/extractPuzzles';
+import { extractTrainingMomentsFromGames } from '@/lib/analysis/extractTrainingMoments';
+import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
 import { AnalysisProgress, type AnalysisProgressState } from '@/components/analysis/AnalysisProgress';
 import { Button } from '@/components/ui/button';
 import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
@@ -21,7 +22,7 @@ export function GameActions({
     normalizedGame,
     usernameByProvider,
     hasAnalysis,
-    puzzleCount,
+    trainingMomentCount,
     serverAnalysisCapacity,
     onAnalysisSaved,
 }: {
@@ -30,7 +31,7 @@ export function GameActions({
     normalizedGame: NormalizedGame;
     usernameByProvider: { lichess?: string; chesscom?: string };
     hasAnalysis: boolean;
-    puzzleCount: number;
+    trainingMomentCount: number;
     serverAnalysisCapacity: ManualServerAnalysisCapacity;
     onAnalysisSaved?: (analysis: GameAnalysis) => void;
 }) {
@@ -83,10 +84,14 @@ export function GameActions({
             const engine = engineRef.current ?? new StockfishClient();
             engineRef.current = engine;
 
-            const res = await extractPuzzlesFromGames({
+            const res = await extractTrainingMomentsFromGames({
                 games: [normalizedGame],
                 selectedGameIds: new Set([normalizedGame.id]),
                 engine,
+                tablebase: new LichessTablebaseClient(),
+                canonicalSourceGameIdByGameId: {
+                    [normalizedGame.id]: dbGameId,
+                },
                 usernameByProvider,
                 onProgress: (p) => {
                     const percent =
@@ -100,23 +105,31 @@ export function GameActions({
                 options: {
                     movetimeMs: 200,
                     returnAnalysis: true,
-                    // Generate puzzles too (unlimited for analyzed games).
-                    maxPuzzlesPerGame: null,
-                    puzzleMode: 'both',
                 },
             });
 
             const analysis = res.analysis?.get(normalizedGame.id);
             if (!analysis) throw new Error('Analysis produced no result');
+            const extractionManifest = res.manifests.find(
+                (manifest) => manifest.sourceGameId === dbGameId
+            );
+            if (!extractionManifest?.complete) {
+                throw new Error('Training extraction did not complete');
+            }
+            const engineIdentity = await engine.getIdentity();
 
             const saveRes = await fetch(`/api/games/${dbGameId}/analysis`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     analysis,
-                    puzzles: (res.puzzles ?? []).filter(
-                        (p) => p.sourceGameId === normalizedGame.id
+                    trainingMoments: res.moments.filter(
+                        (moment) => moment.sourceGameId === dbGameId
                     ),
+                    extractionManifest,
+                    configSnapshot: res.configSnapshot,
+                    configHash: res.configHash,
+                    engine: engineIdentity,
                 }),
             });
             const saveJson = (await saveRes.json().catch(() => ({}))) as {
@@ -257,8 +270,8 @@ export function GameActions({
                     {actionLabel} on server
                 </Button>
 
-                <Button asChild variant="ghost" title="Browse your puzzle library">
-                    <Link href="/puzzles/library">Open puzzle library →</Link>
+                <Button asChild variant="ghost" title="Open your training session">
+                    <Link href="/training">Train personal decisions →</Link>
                 </Button>
 
                 <Button type="button" variant="outline" onClick={exportPgn}>
@@ -291,7 +304,7 @@ export function GameActions({
                 open={browserReviewOpen}
                 onOpenChange={setBrowserReviewOpen}
                 title="Re-analyze this game in the browser?"
-                description="This tab must remain open until analysis and puzzle extraction finish."
+                description="This tab must remain open until analysis and training extraction finish."
                 confirmLabel="Start free re-analysis"
                 onConfirm={() => analyze('reanalyze')}
                 busy={busy}
@@ -306,23 +319,23 @@ export function GameActions({
                             Current training set
                         </dt>
                         <dd className="font-semibold">
-                            {puzzleCount} active{' '}
-                            {puzzleCount === 1 ? 'puzzle' : 'puzzles'}
+                            {trainingMomentCount} active training{' '}
+                            {trainingMomentCount === 1 ? 'moment' : 'moments'}
                         </dd>
                     </div>
                     <div className="sm:col-span-2">
-                        <dt className="text-muted-foreground">Puzzle impact</dt>
+                        <dt className="text-muted-foreground">Training impact</dt>
                         <dd>
-                            Matching puzzles are updated in place. Active puzzles
-                            that are no longer generated are archived, and newly
-                            found puzzles are added.
+                            Matching moments receive a new immutable solution
+                            revision. Stale moments are archived and newly found
+                            decisions are added.
                         </dd>
                     </div>
                     <div className="sm:col-span-2">
                         <dt className="text-muted-foreground">Attempt history</dt>
                         <dd>
-                            Existing attempts are preserved. They remain attached to
-                            matching or archived puzzles.
+                            Existing attempts stay attached to the exact solution
+                            revision that was graded.
                         </dd>
                     </div>
                 </dl>
@@ -401,10 +414,12 @@ export function GameActions({
                             <dt className="text-muted-foreground">Impact</dt>
                             <dd>
                                 The completed re-analysis replaces the current
-                                evaluation. Of {puzzleCount} currently active{' '}
-                                {puzzleCount === 1 ? 'puzzle' : 'puzzles'}, matching
-                                puzzles are updated, stale puzzles are archived, and
-                                new puzzles are added. Attempt history is preserved.
+                                evaluation. Of {trainingMomentCount} currently active
+                                training{' '}
+                                {trainingMomentCount === 1 ? 'moment' : 'moments'},
+                                matching moments receive new revisions, stale moments
+                                are archived, and new moments are added. Attempt
+                                history is preserved.
                             </dd>
                         </div>
                     ) : null}
@@ -441,7 +456,7 @@ export function GameActions({
             >
                 <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm">
                     Deleting this game also permanently removes every associated
-                    puzzle, including archived puzzles, and all of their attempt
+                    training moment, including archived moments, and their attempt
                     history.
                 </div>
             </ActionConfirmDialog>

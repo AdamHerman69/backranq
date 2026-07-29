@@ -1,5 +1,13 @@
 import type { GameAnalysis } from '@/lib/analysis/classification';
-import type { Puzzle } from '@/lib/analysis/puzzles';
+import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainingMoments';
+import { hashSourcePgn } from '@/lib/chess/pgn';
+import { hashAnalysisConfig } from '@/lib/services/analysisRuns';
+import {
+    solutionSemanticsHash,
+    type SolutionRevisionInput,
+    type TrainingMomentCandidate,
+} from '@/lib/training/contracts';
+import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createJsonRequest, readJson } from '../helpers/route';
 import {
@@ -18,7 +26,15 @@ const ownedGame = {
     id: 'game-1',
     provider: 'LICHESS',
     externalId: 'source-game-1',
+    playedAt: new Date('2026-07-04T12:00:00.000Z'),
+    pgn: '[Event "Test"]\n\n1. e4 *',
 };
+const sourcePgnHash = hashSourcePgn(ownedGame.pgn);
+const defaultConfigSnapshot = {};
+const defaultConfigHash = hashAnalysisConfig(defaultConfigSnapshot);
+const rootFen =
+    'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const rootAssessmentKey = assessmentPositionKey(rootFen, []);
 
 const validAnalysis: GameAnalysis = {
     gameId: 'lichess:source-game-1',
@@ -41,21 +57,104 @@ const validAnalysis: GameAnalysis = {
     ],
 };
 
-const validPuzzle: Puzzle = {
-    id: 'puzzle-1',
-    type: 'blunder',
-    mode: 'avoidBlunder',
-    provider: 'lichess',
-    sourceGameId: 'lichess:source-game-1',
-    sourcePly: 12,
-    playedAt: '2026-07-04T12:00:00.000Z',
+const solutionCore: Omit<
+    SolutionRevisionInput,
+    'solutionHash' | 'evidence' | 'generatorVersion' | 'configHash'
+> = {
+    verificationStatus: 'AMBIGUOUS',
+    solutionShape: 'OPEN',
+    gradingStrategy: 'OUTCOME_TOLERANCE',
+    continuationShape: 'CONDITIONAL_LINE',
+    trainable: true,
+    bestMoveUci: 'd2d4',
+    acceptedMovesUci: ['d2d4'],
+    moveAssessments: [
+        {
+            positionKey: rootAssessmentKey,
+            decisionIndex: 0,
+            fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+            moveUci: 'd2d4',
+            source: 'PRECOMPUTED',
+            grade: 'BEST',
+            scoreAfter: { kind: 'cp', cp: 40, pov: 'WHITE' },
+            evidence: { depth: 20 },
+        },
+    ],
+    bestLineUci: ['d2d4', 'd7d5'],
+    solutionTree: {
+        fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+        ply: 0,
+        role: 'USER',
+        evidenceSource: 'ENGINE',
+        acceptedMovesUci: ['d2d4'],
+        alternativesComplete: false,
+        branches: [],
+        stopReason: 'NO_STABLE_LINE',
+    },
+    scoreAtStart: { kind: 'cp', cp: 40, pov: 'WHITE' },
+    playedMoveScore: { kind: 'cp', cp: -80, pov: 'WHITE' },
+    targetOutcome: {
+        kind: 'MAXIMIZE_WINNING_CHANCE',
+        score: { kind: 'cp', cp: 40, pov: 'WHITE' },
+    },
+    gradingPolicy: {
+        version: 2,
+        pov: 'TRAINING_SIDE',
+        best: { maxCpLoss: 15, maxWinChanceLoss: 0.02 },
+        success: {
+            maxCpLoss: 50,
+            maxWinChanceLoss: 0.05,
+            preserveOutcome: true,
+        },
+        improvement: {
+            minRecoveredCp: 50,
+            minRecoveredWinChance: 0.05,
+        },
+        unknownMove: 'DYNAMIC',
+        matePolicy: 'EXACT',
+        tablebasePolicy: 'EXACT',
+    },
+};
+
+const validTrainingMoment: TrainingMomentCandidate = {
+    sourceGameId: 'game-1',
+    sourceProvider: 'lichess',
+    sourcePlayedAt: ownedGame.playedAt.toISOString(),
+    sourcePgnHash,
+    decisionPly: 0,
     fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+    positionHistory: [],
     sideToMove: 'w',
-    bestLineUci: ['e2e4', 'e7e5'],
-    bestMoveUci: 'e2e4',
-    score: { type: 'cp', value: 42 },
-    label: 'Find the best move',
-    tags: ['opening'],
+    originalMoveUci: 'e2e4',
+    sourceKinds: ['MY_MISTAKE'],
+    lessonKinds: ['AVOID_MISTAKE'],
+    themes: ['quietMove'],
+    originalDecision: {
+        scoreBefore: { kind: 'cp', cp: 40, pov: 'WHITE' },
+        scoreAfter: { kind: 'cp', cp: -80, pov: 'WHITE' },
+        cpLoss: 120,
+        winChanceLoss: 0.1,
+    },
+    confidence: 0.75,
+    phase: 'OPENING',
+    solution: {
+        ...solutionCore,
+        solutionHash: solutionSemanticsHash(solutionCore),
+        evidence: { fixture: true },
+        generatorVersion: 'test-extractor-v2',
+        configHash: defaultConfigHash,
+    },
+};
+
+const validManifest: ExtractionCompletionManifest = {
+    version: 1,
+    complete: true,
+    sourceGameId: 'game-1',
+    sourcePgnHash,
+    scannedPlies: 1,
+    expectedPlies: 1,
+    termination: 'COMPLETED',
+    errors: [],
 };
 
 async function importRoute(): Promise<AnalysisRouteModule> {
@@ -86,7 +185,11 @@ describe('PUT /api/games/[id]/analysis', () => {
     it('rejects malformed bodies before any write', async () => {
         const route = await importRoute();
         const response = await route.PUT(
-            createPutRequest({ analysis: null, puzzles: [] }),
+            createPutRequest({
+                analysis: null,
+                trainingMoments: [],
+                extractionManifest: validManifest,
+            }),
             routeParams()
         );
 
@@ -96,11 +199,48 @@ describe('PUT /api/games/[id]/analysis', () => {
         expect(response.status).toBe(400);
         expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
         expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
-        expect(prismaMock.puzzle.deleteMany).not.toHaveBeenCalled();
-        expect(prismaMock.puzzle.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.upsert).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
         expect(
             (prismaMock as PrismaMockWithTransaction).$transaction
         ).not.toHaveBeenCalled();
+    });
+
+    it('rejects non-sequential or fractional analyzed plies before any write', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: {
+                    ...validAnalysis,
+                    moves: [{ ...validAnalysis.moves[0], ply: 0.5 }],
+                },
+                trainingMoments: [],
+                extractionManifest: validManifest,
+            }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(400);
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('rejects oversized config snapshots before creating a run', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: validAnalysis,
+                trainingMoments: [],
+                extractionManifest: validManifest,
+                configSnapshot: { padding: 'x'.repeat(65_000) },
+            }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(413);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'configSnapshot is too large',
+        });
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
     });
 
     it('rejects games owned by another user before any write', async () => {
@@ -108,7 +248,11 @@ describe('PUT /api/games/[id]/analysis', () => {
         prismaMock.analyzedGame.findFirst.mockResolvedValue(null);
 
         const response = await route.PUT(
-            createPutRequest({ analysis: validAnalysis, puzzles: [] }),
+            createPutRequest({
+                analysis: validAnalysis,
+                trainingMoments: [],
+                extractionManifest: validManifest,
+            }),
             routeParams()
         );
 
@@ -120,28 +264,142 @@ describe('PUT /api/games/[id]/analysis', () => {
             (prismaMock as PrismaMockWithTransaction).$transaction
         ).not.toHaveBeenCalled();
         expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
-        expect(prismaMock.puzzle.deleteMany).not.toHaveBeenCalled();
-        expect(prismaMock.puzzle.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.upsert).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 
-    it('rejects invalid puzzles before any write', async () => {
+    it('rejects invalid training moments before any write', async () => {
         const route = await importRoute();
         const response = await route.PUT(
             createPutRequest({
                 analysis: validAnalysis,
-                puzzles: [{ ...validPuzzle, sourcePly: -1 }],
+                trainingMoments: [
+                    { ...validTrainingMoment, decisionPly: -1 },
+                ],
+                extractionManifest: validManifest,
             }),
             routeParams()
         );
 
         await expect(readJson(response)).resolves.toEqual({
-            error: 'Invalid puzzles',
+            error: 'Invalid training moments',
         });
         expect(response.status).toBe(400);
         expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
         expect(
             (prismaMock as PrismaMockWithTransaction).$transaction
         ).not.toHaveBeenCalled();
+    });
+
+    it('rejects a self-hashed solution with an illegal line before any write', async () => {
+        const route = await importRoute();
+        const illegalSolutionCore = {
+            ...solutionCore,
+            bestLineUci: ['d2d4', 'a1a8'],
+        } satisfies typeof solutionCore;
+        const illegalMoment: TrainingMomentCandidate = {
+            ...validTrainingMoment,
+            solution: {
+                ...illegalSolutionCore,
+                solutionHash:
+                    solutionSemanticsHash(illegalSolutionCore),
+                evidence: { fixture: true },
+                generatorVersion: 'test-extractor-v2',
+                configHash: defaultConfigHash,
+            },
+        };
+
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: validAnalysis,
+                trainingMoments: [illegalMoment],
+                extractionManifest: validManifest,
+            }),
+            routeParams()
+        );
+
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Invalid training moments',
+        });
+        expect(response.status).toBe(400);
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
+        expect(
+            (prismaMock as PrismaMockWithTransaction).$transaction
+        ).not.toHaveBeenCalled();
+        expect(prismaMock.analysisRun.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects duplicate canonical decisions even when their solution hashes differ', async () => {
+        const route = await importRoute();
+        const alternateSolutionCore: typeof solutionCore = {
+            ...solutionCore,
+            bestMoveUci: 'g1f3',
+            acceptedMovesUci: ['g1f3'],
+            moveAssessments: [
+                {
+                    positionKey: rootAssessmentKey,
+                    decisionIndex: 0,
+                    fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                    moveUci: 'g1f3',
+                    source: 'PRECOMPUTED',
+                    grade: 'BEST',
+                    scoreAfter: {
+                        kind: 'cp',
+                        cp: 40,
+                        pov: 'WHITE',
+                    },
+                    evidence: {
+                        bestGapCp: 0,
+                        bestGapWinChance: 0,
+                    },
+                },
+            ],
+            bestLineUci: ['g1f3', 'g8f6'],
+            solutionTree: {
+                fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                ply: 0,
+                role: 'USER',
+                evidenceSource: 'ENGINE',
+                acceptedMovesUci: ['g1f3'],
+                alternativesComplete: false,
+                branches: [],
+                stopReason: 'NO_STABLE_LINE',
+            },
+        };
+        const alternateMoment: TrainingMomentCandidate = {
+            ...validTrainingMoment,
+            solution: {
+                ...alternateSolutionCore,
+                solutionHash:
+                    solutionSemanticsHash(alternateSolutionCore),
+                evidence: { fixture: 'alternate' },
+                generatorVersion: 'test-extractor-v2',
+                configHash: defaultConfigHash,
+            },
+        };
+
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: validAnalysis,
+                trainingMoments: [
+                    validTrainingMoment,
+                    alternateMoment,
+                ],
+                extractionManifest: validManifest,
+            }),
+            routeParams()
+        );
+
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Invalid training moments',
+        });
+        expect(response.status).toBe(400);
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
+        expect(
+            (prismaMock as PrismaMockWithTransaction).$transaction
+        ).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.upsert).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 
     it('rejects analysis for a different source game before any write', async () => {
@@ -151,7 +409,8 @@ describe('PUT /api/games/[id]/analysis', () => {
         const response = await route.PUT(
             createPutRequest({
                 analysis: { ...validAnalysis, gameId: 'lichess:other-game' },
-                puzzles: [],
+                trainingMoments: [],
+                extractionManifest: validManifest,
             }),
             routeParams()
         );
@@ -164,35 +423,68 @@ describe('PUT /api/games/[id]/analysis', () => {
             (prismaMock as PrismaMockWithTransaction).$transaction
         ).not.toHaveBeenCalled();
         expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
-        expect(prismaMock.puzzle.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 
-    it('rejects puzzles for a different source game before any write', async () => {
+    it('rejects move analysis that does not match the stored PGN', async () => {
+        const route = await importRoute();
+        prismaMock.analyzedGame.findFirst.mockResolvedValue(ownedGame);
+
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: {
+                    ...validAnalysis,
+                    moves: [
+                        {
+                            ...validAnalysis.moves[0],
+                            san: 'd4',
+                            uci: 'd2d4',
+                            bestMoveUci: 'd2d4',
+                        },
+                    ],
+                },
+                trainingMoments: [],
+                extractionManifest: validManifest,
+            }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Analysis does not match source PGN',
+        });
+        expect(
+            (prismaMock as PrismaMockWithTransaction).$transaction
+        ).not.toHaveBeenCalled();
+    });
+
+    it('rejects training moments for a different source game before any write', async () => {
         const route = await importRoute();
         prismaMock.analyzedGame.findFirst.mockResolvedValue(ownedGame);
 
         const response = await route.PUT(
             createPutRequest({
                 analysis: validAnalysis,
-                puzzles: [
-                    { ...validPuzzle, sourceGameId: 'lichess:other-game' },
+                trainingMoments: [
+                    { ...validTrainingMoment, sourceGameId: 'other-game' },
                 ],
+                extractionManifest: validManifest,
             }),
             routeParams()
         );
 
         await expect(readJson(response)).resolves.toEqual({
-            error: 'Puzzle game mismatch',
+            error: 'Training moments do not match source game positions',
         });
         expect(response.status).toBe(400);
         expect(
             (prismaMock as PrismaMockWithTransaction).$transaction
         ).not.toHaveBeenCalled();
         expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
-        expect(prismaMock.puzzle.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 
-    it('allows empty puzzle arrays and saves analysis atomically', async () => {
+    it('allows a complete empty extraction and saves analysis atomically', async () => {
         const route = await importRoute();
         const analyzedAt = new Date('2026-07-04T12:30:00.000Z');
         const completedRun = {
@@ -205,9 +497,13 @@ describe('PUT /api/games/[id]/analysis', () => {
             engineName: null,
             engineVersion: null,
             engineSource: 'local-browser',
+            engineFlavor: null,
+            engineEvalFile: null,
+            engineOptions: {},
             appVersion: null,
             configSnapshot: {},
-            configHash: 'config-hash',
+            configHash: defaultConfigHash,
+            inputPgnHash: sourcePgnHash,
             startedAt: new Date('2026-07-04T12:29:00.000Z'),
             completedAt: analyzedAt,
             durationMs: 60_000,
@@ -228,22 +524,28 @@ describe('PUT /api/games/[id]/analysis', () => {
                     id: 'run-1',
                     userId: 'user-1',
                     gameId: 'game-1',
-                    configHash: 'config-hash',
+                    configHash: defaultConfigHash,
+                    inputPgnHash: sourcePgnHash,
                     startedAt: new Date('2026-07-04T12:29:00.000Z'),
                 }),
-                update: vi.fn().mockResolvedValue(completedRun),
+                updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+                findUniqueOrThrow: vi.fn().mockResolvedValue(completedRun),
             },
             analyzedGame: {
-                update: vi.fn().mockResolvedValue({
+                findFirst: vi.fn().mockResolvedValue(ownedGame),
+                updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+                findUniqueOrThrow: vi.fn().mockResolvedValue({
                     id: 'game-1',
                     analyzedAt,
                     currentAnalysisRunId: 'run-1',
                 }),
             },
-            puzzle: {
-                upsert: vi.fn(),
+            trainingMoment: {
                 updateMany: vi.fn().mockResolvedValue({ count: 3 }),
             },
+            solutionRevision: {},
+            solutionMoveAssessment: {},
+            trainingMomentObservation: {},
         };
 
         prismaMock.analyzedGame.findFirst.mockResolvedValue(ownedGame);
@@ -252,7 +554,11 @@ describe('PUT /api/games/[id]/analysis', () => {
         );
 
         const response = await route.PUT(
-            createPutRequest({ analysis: validAnalysis, puzzles: [] }),
+            createPutRequest({
+                analysis: validAnalysis,
+                trainingMoments: [],
+                extractionManifest: validManifest,
+            }),
             routeParams()
         );
 
@@ -263,12 +569,12 @@ describe('PUT /api/games/[id]/analysis', () => {
                 analyzedAt: analyzedAt.toISOString(),
                 currentAnalysisRunId: 'run-1',
             },
-            puzzles: { upserted: 0, staleArchived: 3 },
+            trainingMoments: { upserted: 0, staleArchived: 3 },
             analysisRun: {
                 id: 'run-1',
                 executionMode: 'LOCAL_BROWSER',
                 status: 'SUCCEEDED',
-                configHash: 'config-hash',
+                configHash: defaultConfigHash,
             },
         });
         expect(response.status).toBe(200);
@@ -281,37 +587,38 @@ describe('PUT /api/games/[id]/analysis', () => {
                 consumedCredits: 0,
             }),
         });
-        expect(tx.analyzedGame.update).toHaveBeenCalledWith({
-            where: { id: 'game-1' },
+        expect(tx.analyzedGame.updateMany).toHaveBeenCalledWith({
+            where: { id: 'game-1', pgn: ownedGame.pgn },
             data: {
                 analysis: expect.objectContaining({ gameId: validAnalysis.gameId }),
                 analyzedAt: expect.any(Date),
                 currentAnalysisRunId: 'run-1',
             },
-            select: { id: true, analyzedAt: true, currentAnalysisRunId: true },
         });
-        expect(tx.analysisRun.update).toHaveBeenCalledWith({
-            where: { id: 'run-1' },
+        expect(tx.analysisRun.updateMany).toHaveBeenCalledWith({
+            where: { id: 'run-1', status: 'RUNNING' },
             data: expect.objectContaining({
                 status: 'SUCCEEDED',
                 completedAt: expect.any(Date),
                 lastError: null,
             }),
         });
-        expect(tx.puzzle.upsert).not.toHaveBeenCalled();
-        expect(tx.puzzle.updateMany).toHaveBeenCalledWith({
+        expect(tx.trainingMoment.updateMany).toHaveBeenCalledWith({
             where: {
                 userId: 'user-1',
                 gameId: 'game-1',
                 archivedAt: null,
             },
-            data: { archivedAt: expect.any(Date) },
+            data: {
+                archivedAt: expect.any(Date),
+                status: 'ARCHIVED',
+            },
         });
         expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
-        expect(prismaMock.puzzle.deleteMany).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.upsert).not.toHaveBeenCalled();
     });
 
-    it('returns failure when a transaction write fails without top-level writes', async () => {
+    it('rolls back run creation with completion failure in one transaction', async () => {
         const route = await importRoute();
         const runningRun = {
             id: 'run-1',
@@ -319,26 +626,34 @@ describe('PUT /api/games/[id]/analysis', () => {
             gameId: 'game-1',
             executionMode: 'LOCAL_BROWSER',
             status: 'RUNNING',
-            configHash: 'config-hash',
+            configHash: defaultConfigHash,
+            inputPgnHash: sourcePgnHash,
             startedAt: new Date('2026-07-04T12:29:00.000Z'),
         };
         const tx = {
             analysisRun: {
                 create: vi.fn().mockResolvedValue(runningRun),
                 findFirst: vi.fn().mockResolvedValue(runningRun),
-                update: vi.fn(),
+                updateMany: vi.fn(),
+                findUniqueOrThrow: vi.fn(),
             },
             analyzedGame: {
-                update: vi.fn().mockResolvedValue({
+                findFirst: vi.fn().mockResolvedValue(ownedGame),
+                updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+                findUniqueOrThrow: vi.fn().mockResolvedValue({
                     id: 'game-1',
                     analyzedAt: new Date('2026-07-04T12:30:00.000Z'),
                     currentAnalysisRunId: 'run-1',
                 }),
             },
-            puzzle: {
+            trainingMoment: {
+                findUnique: vi.fn().mockResolvedValue(null),
                 upsert: vi.fn().mockRejectedValue(new Error('database failed')),
                 updateMany: vi.fn(),
             },
+            solutionRevision: {},
+            solutionMoveAssessment: {},
+            trainingMomentObservation: {},
         };
 
         prismaMock.analyzedGame.findFirst.mockResolvedValue(ownedGame);
@@ -349,7 +664,8 @@ describe('PUT /api/games/[id]/analysis', () => {
         const response = await route.PUT(
             createPutRequest({
                 analysis: validAnalysis,
-                puzzles: [validPuzzle],
+                trainingMoments: [validTrainingMoment],
+                extractionManifest: validManifest,
             }),
             routeParams()
         );
@@ -358,13 +674,17 @@ describe('PUT /api/games/[id]/analysis', () => {
             error: 'Failed to save analysis',
         });
         expect(response.status).toBe(500);
+        expect(
+            (prismaMock as PrismaMockWithTransaction).$transaction
+        ).toHaveBeenCalledTimes(1);
         expect(tx.analysisRun.create).toHaveBeenCalled();
-        expect(tx.analyzedGame.update).toHaveBeenCalled();
-        expect(tx.puzzle.upsert).toHaveBeenCalled();
-        expect(tx.puzzle.updateMany).not.toHaveBeenCalled();
+        expect(tx.analyzedGame.updateMany).toHaveBeenCalled();
+        expect(tx.trainingMoment.upsert).toHaveBeenCalled();
+        expect(tx.trainingMoment.updateMany).not.toHaveBeenCalled();
         expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
-        expect(prismaMock.puzzle.upsert).not.toHaveBeenCalled();
-        expect(prismaMock.puzzle.deleteMany).not.toHaveBeenCalled();
-        expect(prismaMock.puzzle.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.upsert).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.analysisRun.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.analysisRun.findUniqueOrThrow).not.toHaveBeenCalled();
     });
 });

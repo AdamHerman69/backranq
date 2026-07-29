@@ -62,12 +62,16 @@ function writeDismissedCount(ownerId: string, n: number) {
   }
 }
 
-async function fetchPuzzleCount(): Promise<number | null> {
+async function fetchTrainingMomentCount(): Promise<number | null> {
   try {
-    const response = await fetch("/api/puzzles?limit=1", { cache: "no-store" });
+    const response = await fetch("/api/training/session?limit=50", {
+      cache: "no-store",
+    });
     if (!response.ok) return null;
-    const json = (await response.json().catch(() => ({}))) as { total?: number };
-    return typeof json.total === "number" ? json.total : null;
+    const json = (await response.json().catch(() => ({}))) as {
+      items?: unknown[];
+    };
+    return Array.isArray(json.items) ? json.items.length : null;
   } catch {
     return null;
   }
@@ -76,12 +80,12 @@ async function fetchPuzzleCount(): Promise<number | null> {
 function completionMessage(summary: AnalysisCompletionSummary) {
   const analyzed = `${summary.succeeded} game${summary.succeeded === 1 ? "" : "s"} analyzed`;
   const failed = summary.failed > 0 ? `, ${summary.failed} failed` : "";
-  const puzzles =
-    summary.puzzlesGenerated == null
+  const trainingMoments =
+    summary.trainingMomentsGenerated == null
       ? ""
-      : `, ${summary.puzzlesGenerated} puzzle candidate${summary.puzzlesGenerated === 1 ? "" : "s"}`;
-  if (summary.status === "cancelled") return `Analysis cancelled after ${analyzed}${puzzles}.`;
-  return `${analyzed}${failed}${puzzles}.`;
+      : `, ${summary.trainingMomentsGenerated} training moment${summary.trainingMomentsGenerated === 1 ? "" : "s"}`;
+  if (summary.status === "cancelled") return `Analysis cancelled after ${analyzed}${trainingMoments}.`;
+  return `${analyzed}${failed}${trainingMoments}.`;
 }
 
 export function BackgroundAnalysisBar() {
@@ -90,7 +94,7 @@ export function BackgroundAnalysisBar() {
   const ownerId = session?.user?.id ?? null;
   const [snap, setSnap] = React.useState<BackgroundAnalysisSnapshot>(() => backgroundAnalysis.snapshot());
   const [syncStatus, setSyncStatus] = React.useState<SyncStatus | null>(null);
-  const [puzzleCount, setPuzzleCount] = React.useState<number | null>(null);
+  const [trainingMomentCount, setTrainingMomentCount] = React.useState<number | null>(null);
   const [lastCompletion, setLastCompletion] = React.useState<AnalysisCompletionSummary | null>(null);
   const [collapsed, setCollapsed] = React.useState(false);
   const [dismissedForPending, setDismissedForPending] = React.useState(0);
@@ -112,8 +116,8 @@ export function BackgroundAnalysisBar() {
       toastedCompletionId.current = summary.id;
       const options = {
         action:
-          (summary.puzzlesGenerated ?? 0) > 0
-            ? { label: "Train", onClick: () => router.push("/puzzles") }
+          (summary.trainingMomentsGenerated ?? 0) > 0
+            ? { label: "Train", onClick: () => router.push("/training") }
             : { label: "Details", onClick: () => router.push("/games") },
       };
       if (summary.status === "failed") toast.error(completionMessage(summary), options);
@@ -127,7 +131,7 @@ export function BackgroundAnalysisBar() {
     activeOwnerId.current = ownerId;
     backgroundAnalysis.setOwner(ownerId);
     setSyncStatus(null);
-    setPuzzleCount(null);
+    setTrainingMomentCount(null);
     setLastCompletion(ownerId ? readLastAnalysisCompletion(ownerId) : null);
     setDismissedForPending(ownerId ? readDismissedCount(ownerId) : 0);
     setSnap(backgroundAnalysis.snapshot());
@@ -171,27 +175,27 @@ export function BackgroundAnalysisBar() {
       serverBatch.current = batch;
       setHasTrackedServerBatch(!!batch);
 
-      const [pendingResult, statusResult, puzzleResult] =
+      const [pendingResult, statusResult, trainingMomentResult] =
         await Promise.allSettled([
           backgroundAnalysis.refreshPendingUnanalyzedCount(ownerId),
           getSyncStatus(),
-          fetchPuzzleCount(),
+          fetchTrainingMomentCount(),
         ]);
       if (activeOwnerId.current !== ownerId) return;
 
       const nextStatus =
         statusResult.status === "fulfilled" ? statusResult.value : null;
-      const nextPuzzleCount =
-        puzzleResult.status === "fulfilled" ? puzzleResult.value : null;
+      const nextTrainingMomentCount =
+        trainingMomentResult.status === "fulfilled" ? trainingMomentResult.value : null;
       if (nextStatus) setSyncStatus(nextStatus);
-      if (nextPuzzleCount != null) setPuzzleCount(nextPuzzleCount);
+      if (nextTrainingMomentCount != null) setTrainingMomentCount(nextTrainingMomentCount);
       if (!nextStatus) return;
 
       const observation: ServerAnalysisObservation = {
         queued: nextStatus.analysisJobs?.queued ?? 0,
         running: nextStatus.analysisJobs?.running ?? 0,
         failed: nextStatus.analysisJobs?.failed ?? 0,
-        puzzleCount: nextPuzzleCount,
+        trainingMomentCount: nextTrainingMomentCount,
         pendingCount:
           pendingResult.status === "fulfilled" ? pendingResult.value : null,
       };
@@ -220,7 +224,7 @@ export function BackgroundAnalysisBar() {
               ? activeJobs.map((job) => job.id)
               : [],
           failedAtStart: observation.failed,
-          puzzlesAtStart: observation.puzzleCount,
+          trainingMomentsAtStart: observation.trainingMomentCount,
           pendingAtStart: observation.pendingCount,
         });
         serverBatch.current = batch;
@@ -447,7 +451,7 @@ export function BackgroundAnalysisBar() {
             .filter((job) => job.acceptedInBatch === true)
             .map((job) => job.id),
           failedAtStart: latestStatus.analysisJobs?.failed ?? 0,
-          puzzlesAtStart: puzzleCount,
+          trainingMomentsAtStart: trainingMomentCount,
           pendingAtStart: snap.pendingUnanalyzedCount,
         });
         const batch = mergeServerAnalysisBatches(
@@ -489,9 +493,11 @@ export function BackgroundAnalysisBar() {
     backgroundAnalysis.clearCompletion(authenticatedOwnerId);
   }
 
-  const completionHasPuzzles =
+  const completionHasTrainingMoments =
     !!currentCompletion &&
-    (currentCompletion.puzzlesGenerated ?? puzzleCount ?? 0) > 0;
+    (currentCompletion.trainingMomentsGenerated ??
+      trainingMomentCount ??
+      0) > 0;
   const canRetry =
     pending > 0 &&
     (isError ||
@@ -565,8 +571,8 @@ export function BackgroundAnalysisBar() {
 
               {currentCompletion && !isRunning && !hasServerWork ? (
                 <>
-                  <Button size="sm" onClick={() => router.push(completionHasPuzzles ? "/puzzles" : "/games")}>
-                    {completionHasPuzzles ? "Train puzzles" : "View games"}
+                  <Button size="sm" onClick={() => router.push(completionHasTrainingMoments ? "/training" : "/games")}>
+                    {completionHasTrainingMoments ? "Train decisions" : "View games"}
                   </Button>
                   <Button size="sm" variant="ghost" onClick={dismissCompletion}>
                     Dismiss
@@ -632,7 +638,7 @@ export function BackgroundAnalysisBar() {
             </div>
           )}
           <div>
-            Server analysis continues after you close this tab. Each accepted game reserves one credit and stores or replaces its generated puzzle set.
+            Server analysis continues after you close this tab. Each accepted game reserves one credit and stores its generated training moments.
           </div>
         </div>
       </ActionConfirmDialog>

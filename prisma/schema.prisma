@@ -23,15 +23,83 @@ enum TimeClass {
   UNKNOWN
 }
 
-enum PuzzleType {
-  AVOID_BLUNDER
-  PUNISH_BLUNDER
+enum TrainingMomentStatus {
+  ACTIVE
+  UNSTABLE
+  INVALIDATED
+  ARCHIVED
 }
 
-enum PuzzleKind {
-  BLUNDER
-  MISSED_WIN
-  MISSED_TACTIC
+enum TrainingSourceKind {
+  MY_MISTAKE
+  MISSED_OPPORTUNITY
+}
+
+enum TrainingLessonKind {
+  AVOID_MISTAKE
+  PUNISH_MISTAKE
+  SAVE_DRAW
+  PRESERVE_WIN
+  CONVERT_ADVANTAGE
+  IMPROVE_POSITION
+}
+
+enum VerificationStatus {
+  VERIFIED
+  AMBIGUOUS
+  UNSTABLE
+  INVALID
+}
+
+enum SolutionShape {
+  UNIQUE
+  MULTIPLE
+  OPEN
+}
+
+enum GradingStrategy {
+  PRECOMPUTED
+  OUTCOME_TOLERANCE
+  DYNAMIC
+  TABLEBASE
+}
+
+enum ContinuationShape {
+  SINGLE_DECISION
+  CONDITIONAL_LINE
+}
+
+enum AttemptStatus {
+  PENDING
+  GRADED
+  REVEALED
+  SKIPPED
+  UNRESOLVED
+}
+
+enum AttemptGrade {
+  BEST
+  GOOD
+  IMPROVED
+  REPEATED_MISTAKE
+  DIFFERENT_MISTAKE
+}
+
+enum MoveAssessmentSource {
+  PRECOMPUTED
+  DYNAMIC
+  TABLEBASE
+}
+
+enum MoveAssessmentStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum AttemptStepActor {
+  USER
+  ENGINE
 }
 
 enum GamePhase {
@@ -97,8 +165,8 @@ model User {
   updatedAt        DateTime  @updatedAt
 
   games               AnalyzedGame[]
-  puzzles             Puzzle[]
-  puzzleAttempts      PuzzleAttempt[]
+  trainingMoments     TrainingMoment[]
+  trainingAttempts    TrainingAttempt[]
   providerSyncStates  ProviderSyncState[]
   syncJobs            SyncJob[]
   analysisJobs        AnalysisJob[]
@@ -178,13 +246,14 @@ model AnalyzedGame {
   updatedAt            DateTime  @updatedAt
 
   user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  puzzles             Puzzle[]
+  trainingMoments     TrainingMoment[]
   analysisJobs        AnalysisJob[]
   analysisRuns        AnalysisRun[]       @relation("GameAnalysisRuns")
   currentAnalysisRun  AnalysisRun?        @relation("CurrentAnalysisRun", fields: [currentAnalysisRunId], references: [id], onDelete: SetNull)
   creditLedgerEntries CreditLedgerEntry[]
 
   @@unique([userId, provider, externalId])
+  @@unique([id, userId])
   @@index([userId])
   @@index([provider, externalId])
   @@index([currentAnalysisRunId])
@@ -241,7 +310,7 @@ model AnalysisJob {
   id               String            @id @default(uuid()) @db.Uuid
   userId           String            @db.Uuid
   gameId           String            @db.Uuid
-  analysisRunId    String?           @db.Uuid
+  analysisRunId    String            @db.Uuid
   status           AnalysisJobStatus @default(QUEUED)
   priority         Int               @default(0)
   attempts         Int               @default(0)
@@ -260,8 +329,8 @@ model AnalysisJob {
   updatedAt        DateTime          @updatedAt
 
   user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  game                AnalyzedGame        @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  analysisRun         AnalysisRun?        @relation(fields: [analysisRunId], references: [id], onDelete: SetNull)
+  game                AnalyzedGame        @relation(fields: [gameId, userId], references: [id, userId], onDelete: Cascade)
+  analysisRun         AnalysisRun         @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
   creditLedgerEntries CreditLedgerEntry[]
 
   @@unique([gameId])
@@ -274,6 +343,15 @@ model AnalysisJob {
   @@index([lastDispatchedAt])
 }
 
+/// Durable serverless-safe operational counters. These counters are deliberately
+/// separate from AnalysisJob so rejected stale deliveries cannot mutate the
+/// currently fenced job generation.
+model AnalysisOpsCounter {
+  key       String   @id
+  value     BigInt   @default(0)
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
 model AnalysisRun {
   id              String                @id @default(uuid()) @db.Uuid
   userId          String                @db.Uuid
@@ -284,7 +362,11 @@ model AnalysisRun {
   engineName      String?
   engineVersion   String?
   engineSource    String?
+  engineFlavor    String?
+  engineEvalFile  String?
+  engineOptions   Json                  @default(dbgenerated("'{}'::jsonb"))
   appVersion      String?
+  inputPgnHash    String
   configSnapshot  Json                  @default(dbgenerated("'{}'::jsonb"))
   configHash      String
   startedAt       DateTime?
@@ -295,17 +377,20 @@ model AnalysisRun {
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
 
-  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  game                AnalyzedGame        @relation("GameAnalysisRuns", fields: [gameId], references: [id], onDelete: Cascade)
-  currentForGames     AnalyzedGame[]      @relation("CurrentAnalysisRun")
-  puzzles             Puzzle[]
-  analysisJobs        AnalysisJob[]
-  creditLedgerEntries CreditLedgerEntry[]
+  user                       User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game                       AnalyzedGame                @relation("GameAnalysisRuns", fields: [gameId, userId], references: [id, userId], onDelete: Cascade)
+  currentForGames            AnalyzedGame[]              @relation("CurrentAnalysisRun")
+  solutionRevisions          SolutionRevision[]
+  trainingMomentObservations TrainingMomentObservation[]
+  analysisJobs               AnalysisJob[]
+  creditLedgerEntries        CreditLedgerEntry[]
 
+  @@unique([id, gameId, userId])
   @@index([userId, status])
   @@index([gameId, createdAt])
   @@index([executionMode, status])
   @@index([configHash])
+  @@index([inputPgnHash])
 }
 
 model CreditLedgerEntry {
@@ -333,60 +418,182 @@ model CreditLedgerEntry {
   @@index([gameId])
 }
 
-model Puzzle {
-  id                 String     @id @default(uuid()) @db.Uuid
-  userId             String     @db.Uuid
-  gameId             String     @db.Uuid
-  analysisRunId      String?    @db.Uuid
-  analysisConfigHash String?
-  sourcePly          Int
-  fen                String
-  type               PuzzleType
-  kind               PuzzleKind @default(BLUNDER)
-  phase              GamePhase?
-  severity           String?
-  bestMoveUci        String
-  acceptedMovesUci   String[]   @default([])
-  bestLine           Json
-  score              Json
-  tags               String[]   @default([])
-  openingEco         String?
-  openingName        String?
-  openingVariation   String?
-  label              String?
-  createdAt          DateTime   @default(now())
-  archivedAt         DateTime?
+/// Canonical trainable user decision. Extraction reasons such as "avoid my
+/// mistake" and "punish a missed opportunity" are metadata on this single
+/// identity, never separate exercises.
+model TrainingMoment {
+  id                        String               @id @default(uuid()) @db.Uuid
+  userId                    String               @db.Uuid
+  gameId                    String               @db.Uuid
+  momentKey                 String               @unique
+  sourcePgnHash             String
+  decisionPly               Int
+  fen                       String
+  positionHistory           String[]             @default([])
+  sideToMove                String
+  originalMoveUci           String
+  scoreBefore               Json
+  scoreAfter                Json
+  cpLoss                    Float?
+  winChanceLoss             Float?
+  confidence                Float?
+  phase                     GamePhase?
+  status                    TrainingMomentStatus @default(ACTIVE)
+  sourceKinds               TrainingSourceKind[] @default([])
+  lessonKinds               TrainingLessonKind[] @default([])
+  themes                    String[]             @default([])
+  currentSolutionRevisionId String?              @db.Uuid
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @default(now()) @updatedAt
+  lastTrainedAt             DateTime?
+  archivedAt                DateTime?
 
-  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  game        AnalyzedGame    @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  analysisRun AnalysisRun?    @relation(fields: [analysisRunId], references: [id], onDelete: SetNull)
-  attempts    PuzzleAttempt[]
+  user                    User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game                    AnalyzedGame                @relation(fields: [gameId, userId], references: [id, userId], onDelete: Cascade)
+  currentSolutionRevision SolutionRevision?           @relation("CurrentSolutionRevision", fields: [currentSolutionRevisionId], references: [id], onDelete: SetNull)
+  solutionRevisions       SolutionRevision[]          @relation("MomentSolutionRevisions")
+  observations            TrainingMomentObservation[]
+  attempts                TrainingAttempt[]
 
-  @@unique([gameId, sourcePly, fen])
-  @@index([userId])
-  @@index([gameId])
-  @@index([analysisRunId])
-  @@index([analysisConfigHash])
-  @@index([userId, archivedAt])
+  @@unique([gameId, sourcePgnHash, decisionPly])
+  @@unique([id, userId])
+  @@unique([currentSolutionRevisionId])
+  @@index([userId, status, archivedAt])
+  @@index([userId, status, lastTrainedAt, createdAt])
   @@index([gameId, archivedAt])
 }
 
-model PuzzleAttempt {
-  id          String   @id @default(uuid()) @db.Uuid
-  puzzleId    String   @db.Uuid
-  userId      String   @db.Uuid
-  attemptedAt DateTime @default(now())
-  userMoveUci String
-  wasCorrect  Boolean
-  timeSpentMs Int?
+model SolutionRevision {
+  id                 String             @id @default(uuid()) @db.Uuid
+  momentId           String             @db.Uuid
+  analysisRunId      String             @db.Uuid
+  revision           Int
+  solutionHash       String
+  verificationStatus VerificationStatus
+  solutionShape      SolutionShape
+  gradingStrategy    GradingStrategy
+  continuationShape  ContinuationShape
+  trainable          Boolean            @default(true)
+  bestMoveUci        String
+  acceptedMovesUci   String[]           @default([])
+  bestLine           Json
+  solutionTree       Json               @default(dbgenerated("'{}'::jsonb"))
+  scoreAtStart       Json?
+  playedMoveScore    Json?
+  targetOutcome      Json               @default(dbgenerated("'{}'::jsonb"))
+  gradingPolicy      Json
+  evidence           Json               @default(dbgenerated("'{}'::jsonb"))
+  generatorVersion   String
+  configHash         String
+  createdAt          DateTime           @default(now())
 
-  puzzle Puzzle @relation(fields: [puzzleId], references: [id], onDelete: Cascade)
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  moment           TrainingMoment              @relation("MomentSolutionRevisions", fields: [momentId], references: [id], onDelete: Cascade)
+  currentForMoment TrainingMoment?             @relation("CurrentSolutionRevision")
+  analysisRun      AnalysisRun                 @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  moveAssessments  SolutionMoveAssessment[]
+  observations     TrainingMomentObservation[]
+  attempts         TrainingAttempt[]
 
-  @@index([puzzleId])
+  @@unique([momentId, revision])
+  @@unique([momentId, analysisRunId])
+  @@unique([id, momentId])
+  @@index([solutionHash])
+  @@index([analysisRunId])
+}
+
+/// Immutable provenance link for every run that observed a moment, including
+/// runs whose grading semantics reused an existing SolutionRevision.
+model TrainingMomentObservation {
+  momentId             String   @db.Uuid
+  analysisRunId        String   @db.Uuid
+  solutionRevisionId   String   @db.Uuid
+  observedSolutionHash String
+  evidence             Json     @default(dbgenerated("'{}'::jsonb"))
+  createdAt            DateTime @default(now())
+
+  moment           TrainingMoment   @relation(fields: [momentId], references: [id], onDelete: Cascade)
+  analysisRun      AnalysisRun      @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  solutionRevision SolutionRevision @relation(fields: [solutionRevisionId, momentId], references: [id, momentId], onDelete: Cascade)
+
+  @@id([momentId, analysisRunId])
+  @@index([analysisRunId])
+  @@index([solutionRevisionId])
+}
+
+model SolutionMoveAssessment {
+  id                 String               @id @default(uuid()) @db.Uuid
+  solutionRevisionId String               @db.Uuid
+  positionKey        String
+  decisionIndex      Int
+  fen                String
+  moveUci            String
+  source             MoveAssessmentSource
+  status             MoveAssessmentStatus @default(PENDING)
+  grade              AttemptGrade?
+  scoreAfter         Json?
+  evidence           Json                 @default(dbgenerated("'{}'::jsonb"))
+  attempts           Int                  @default(0)
+  lockedAt           DateTime?
+  lockedUntil        DateTime?
+  lastError          String?              @db.Text
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @default(now()) @updatedAt
+
+  solutionRevision SolutionRevision @relation(fields: [solutionRevisionId], references: [id], onDelete: Cascade)
+
+  @@unique([solutionRevisionId, decisionIndex, positionKey, moveUci], map: "SolutionMoveAssessment_revision_decision_position_move_key")
+  @@index([solutionRevisionId, decisionIndex])
+  @@index([status, lockedUntil, createdAt])
+}
+
+model TrainingAttempt {
+  id                 String                @id @default(uuid()) @db.Uuid
+  trainingMomentId   String                @db.Uuid
+  userId             String                @db.Uuid
+  solutionRevisionId String                @db.Uuid
+  clientAttemptId    String
+  attemptedAt        DateTime              @default(now())
+  userMoveUci        String?
+  timeSpentMs        Int?
+  status             AttemptStatus         @default(PENDING)
+  grade              AttemptGrade?
+  gradingSource      MoveAssessmentSource?
+  gradingEvidence    Json                  @default(dbgenerated("'{}'::jsonb"))
+  bestGapCp          Int?
+  bestGapWinChance   Float?
+  recoveredCp        Int?
+  recoveredWinChance Float?
+  completedAt        DateTime?
+
+  trainingMoment   TrainingMoment        @relation(fields: [trainingMomentId, userId], references: [id, userId], onDelete: Cascade)
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  solutionRevision SolutionRevision      @relation(fields: [solutionRevisionId, trainingMomentId], references: [id, momentId], onDelete: Cascade)
+  steps            TrainingAttemptStep[]
+
+  @@unique([userId, clientAttemptId])
+  @@index([trainingMomentId])
   @@index([userId])
-  @@index([userId, puzzleId])
-  @@index([userId, puzzleId, wasCorrect])
+  @@index([solutionRevisionId])
+  @@index([userId, trainingMomentId])
+  @@index([userId, trainingMomentId, solutionRevisionId])
+}
+
+model TrainingAttemptStep {
+  id          String           @id @default(uuid()) @db.Uuid
+  attemptId   String           @db.Uuid
+  stepIndex   Int
+  actor       AttemptStepActor
+  fenBefore   String
+  moveUci     String
+  grade       AttemptGrade?
+  evidence    Json             @default(dbgenerated("'{}'::jsonb"))
+  timeSpentMs Int?
+  createdAt   DateTime         @default(now())
+
+  attempt TrainingAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, stepIndex])
+  @@index([attemptId])
 }
 
 // NextAuth (Auth.js) Prisma Adapter models

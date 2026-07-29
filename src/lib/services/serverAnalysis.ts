@@ -1,53 +1,70 @@
-import { Prisma } from '@prisma/client';
 import type { GameAnalysis } from '@/lib/analysis/classification';
-import { extractPuzzlesFromGames } from '@/lib/analysis/extractPuzzles';
-import { dbGameToNormalized, gameAnalysisToJson } from '@/lib/api/games';
-import { replaceGamePuzzlesInTransaction } from '@/lib/api/puzzlePersistence';
+import { extractTrainingMomentsFromGames } from '@/lib/analysis/extractTrainingMoments';
+import { dbGameToNormalized } from '@/lib/api/games';
 import { ServerStockfishClient } from '@/lib/analysis/serverStockfishClient';
+import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
 import { prisma } from '@/lib/prisma';
 import {
-    ensureAnalysisRunForJob,
     markAnalysisJobFailed,
     markAnalysisJobRunning,
-    markAnalysisJobSucceeded,
     SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
     SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
-    serverAnalysisConfigFromPreferences,
+    serverAnalysisConfigFromSnapshot,
     transitionAnalysisRunForJob,
+    StaleAnalysisDeliveryError,
 } from '@/lib/services/analysisJobs';
+import { parseAnalysisDispatchToken } from '@/lib/services/analysisDispatchFence';
 import {
     completeAnalysisRunWithGameAnalysis,
-    markAnalysisRunFailed,
+    completeAnalysisRunWithoutGameWrite,
 } from '@/lib/services/analysisRuns';
 import {
     consumeServerAnalysisCredits,
     releaseServerAnalysisCredits,
 } from '@/lib/services/billingAccounts';
+import { recordStaleAnalysisDelivery } from '@/lib/services/analysisOps';
 
 export type AnalyzeGameJobResult = {
     jobId: string;
     gameId: string;
     status: 'SUCCEEDED' | 'RETRY_SCHEDULED' | 'FAILED';
-    puzzles: number;
+    trainingMoments: number;
     error?: string;
+    retryAt?: Date;
+    settlementPending?: boolean;
 };
 
-export async function analyzeGameJob(jobId: string): Promise<AnalyzeGameJobResult> {
-    const running = await markAnalysisJobRunning(jobId);
-    if (!running) {
-        throw new Error('Analysis job is not claimable');
+export async function analyzeGameJob(
+    jobId: string,
+    dispatchToken: string
+): Promise<AnalyzeGameJobResult> {
+    const fence = parseAnalysisDispatchToken({ jobId, dispatchToken });
+    if (!fence) {
+        return rejectStaleAnalysisDelivery(jobId);
     }
-    const engine = new ServerStockfishClient();
+
+    const running = await markAnalysisJobRunning(jobId, dispatchToken);
+    if (!running) {
+        return rejectStaleAnalysisDelivery(jobId);
+    }
+    let engine: ServerStockfishClient | null = null;
     let analysisRunId: string | null = null;
+    let completionCommitted = false;
 
     try {
         const job = await prisma.analysisJob.findUnique({
             where: { id: running.id },
             include: {
                 game: true,
+                analysisRun: {
+                    select: {
+                        id: true,
+                        configSnapshot: true,
+                        configHash: true,
+                    },
+                },
                 user: {
                     select: {
-                        preferences: true,
                         lichessUsername: true,
                         chesscomUsername: true,
                     },
@@ -55,57 +72,90 @@ export async function analyzeGameJob(jobId: string): Promise<AnalyzeGameJobResul
             },
         });
         if (!job) throw new Error('Analysis job not found');
-        const { options, config } = serverAnalysisConfigFromPreferences(
-            job.user.preferences
-        );
-        const run = await ensureAnalysisRunForJob({
-            job,
-            config,
-            status: 'RUNNING',
+        const resolvedConfig = serverAnalysisConfigFromSnapshot({
+            snapshot: job.analysisRun.configSnapshot,
+            hash: job.analysisRun.configHash,
         });
-        analysisRunId = run?.id ?? null;
-        await transitionAnalysisRunForJob({
+        if (!resolvedConfig) {
+            throw new Error(
+                'Analysis run has invalid enqueue-time configuration provenance'
+            );
+        }
+        const { options, config } = resolvedConfig;
+        const run = job.analysisRun;
+        analysisRunId = run.id;
+        const transitionedRun = await transitionAnalysisRunForJob({
             jobId: job.id,
             status: 'RUNNING',
             queuedReason: job.queuedReason,
             config,
             startedAt: running.startedAt,
         });
+        if (!transitionedRun) {
+            throw new Error(
+                'Analysis run provenance could not transition to running'
+            );
+        }
+        engine = new ServerStockfishClient();
 
         if (job.game.analyzedAt && running.queuedReason !== 'manual-reanalysis') {
-            const completed = await markAnalysisJobSucceeded(job.id);
-            await transitionAnalysisRunForJob({
-                jobId: job.id,
-                status: 'SUCCEEDED',
-                queuedReason: job.queuedReason,
-                config,
-                startedAt: completed.startedAt,
-                completedAt: completed.completedAt,
-                result: {
-                    puzzles: 0,
-                    skippedAlreadyAnalyzed: true,
-                },
-            });
-            await releaseAnalysisJobReservation({
-                userId: job.userId,
-                gameId: job.gameId,
+            await completeAnalysisRunWithoutGameWrite({
+                runId: run.id,
                 analysisJobId: job.id,
-                analysisRunId,
-                reason: 'already-analyzed',
+                fence,
+                consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
             });
+            completionCommitted = true;
+            try {
+                await releaseAnalysisJobReservation({
+                    userId: job.userId,
+                    gameId: job.gameId,
+                    analysisJobId: job.id,
+                    analysisRunId,
+                    reason: 'already-analyzed',
+                });
+                await markSettlementComplete({
+                    jobId: job.id,
+                    analysisRunId: run.id,
+                    consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
+                });
+            } catch (error) {
+                await recordSettlementPending({
+                    jobId: job.id,
+                    analysisRunId,
+                    action: 'release',
+                    error,
+                });
+                return {
+                    jobId: job.id,
+                    gameId: job.gameId,
+                    status: 'SUCCEEDED',
+                    trainingMoments: 0,
+                    settlementPending: true,
+                    error: errorMessage(error),
+                };
+            }
             return {
                 jobId: job.id,
                 gameId: job.gameId,
                 status: 'SUCCEEDED',
-                puzzles: 0,
+                trainingMoments: 0,
             };
         }
 
         const normalized = dbGameToNormalized(job.game);
-        const out = await extractPuzzlesFromGames({
+        if (!run.configHash) {
+            throw new Error('Analysis run config hash is required');
+        }
+        const out = await extractTrainingMomentsFromGames({
             games: [normalized],
             selectedGameIds: new Set([normalized.id]),
             engine,
+            tablebase: new LichessTablebaseClient(),
+            canonicalSourceGameIdByGameId: {
+                [normalized.id]: job.gameId,
+            },
+            analysisConfigHash: run.configHash,
             usernameByProvider: {
                 lichess: job.user.lichessUsername ?? undefined,
                 chesscom: job.user.chesscomUsername ?? undefined,
@@ -118,95 +168,133 @@ export async function analyzeGameJob(jobId: string): Promise<AnalyzeGameJobResul
             | undefined;
         if (!analysis) throw new Error('Analysis produced no result');
 
-        const puzzlesForGame = out.puzzles.filter(
-            (puzzle) => puzzle.sourceGameId === normalized.id
+        const trainingMomentsForGame = out.moments.filter(
+            (moment) => moment.sourceGameId === job.gameId
         );
-        if (run) {
-            await completeAnalysisRunWithGameAnalysis({
-                runId: run.id,
-                userId: job.userId,
-                gameId: job.gameId,
-                analysis,
-                puzzles: puzzlesForGame,
-                consumedCredits: SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
-            });
-        } else {
-            await prisma.$transaction(async (tx) => {
-                await tx.analyzedGame.update({
-                    where: { id: job.gameId },
-                    data: {
-                        analysis: gameAnalysisToJson(
-                            analysis
-                        ) as Prisma.InputJsonValue,
-                        analyzedAt: new Date(),
-                    },
-                });
-                await replaceGamePuzzlesInTransaction({
-                    tx,
-                    userId: job.userId,
-                    gameId: job.gameId,
-                    puzzles: puzzlesForGame,
-                });
-            });
+        const extractionManifest = out.manifests.find(
+            (manifest) => manifest.sourceGameId === job.gameId
+        );
+        if (!extractionManifest?.complete) {
+            throw new Error('Training extraction did not complete');
         }
-
-        await markAnalysisJobSucceeded(job.id);
-        await consumeAnalysisJobReservation({
+        await completeAnalysisRunWithGameAnalysis({
+            runId: run.id,
             userId: job.userId,
             gameId: job.gameId,
-            analysisJobId: job.id,
-            analysisRunId,
-            reason: 'analysis-succeeded',
+            analysis,
+            trainingMoments: trainingMomentsForGame,
+            extractionManifest,
+            consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
+            analysisJob: {
+                id: job.id,
+                fence,
+            },
         });
+        completionCommitted = true;
+
+        try {
+            await consumeAnalysisJobReservation({
+                userId: job.userId,
+                gameId: job.gameId,
+                analysisJobId: job.id,
+                analysisRunId,
+                reason: 'analysis-succeeded',
+            });
+            await markSettlementComplete({
+                jobId: job.id,
+                analysisRunId: run.id,
+                consumedCredits: SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
+            });
+        } catch (error) {
+            await recordSettlementPending({
+                jobId: job.id,
+                analysisRunId,
+                action: 'consume',
+                error,
+            });
+            return {
+                jobId: job.id,
+                gameId: job.gameId,
+                status: 'SUCCEEDED',
+                trainingMoments: trainingMomentsForGame.length,
+                settlementPending: true,
+                error: errorMessage(error),
+            };
+        }
         return {
             jobId: job.id,
             gameId: job.gameId,
             status: 'SUCCEEDED',
-            puzzles: puzzlesForGame.length,
+            trainingMoments: trainingMomentsForGame.length,
         };
     } catch (error) {
-        const updated = await markAnalysisJobFailed(running.id, error);
-        if (updated.status === 'QUEUED') {
-            await transitionAnalysisRunForJob({
+        if (error instanceof StaleAnalysisDeliveryError) throw error;
+        if (completionCommitted) {
+            await recordSettlementPending({
                 jobId: running.id,
-                status: 'QUEUED',
+                analysisRunId,
+                action: 'consume',
                 error,
-            }).catch(() => undefined);
+            });
             return {
                 jobId: running.id,
                 gameId: running.gameId,
-                status: 'RETRY_SCHEDULED',
-                puzzles: 0,
+                status: 'SUCCEEDED',
+                trainingMoments: 0,
+                settlementPending: true,
                 error: errorMessage(error),
             };
         }
 
-        if (analysisRunId) {
-            await markAnalysisRunFailed({
-                runId: analysisRunId,
-                error,
-                consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
-            }).catch(() => undefined);
-        }
-        if (running) {
-            await releaseAnalysisJobReservation({
-                userId: running.userId,
+        const updated = await markAnalysisJobFailed(running.id, fence, error);
+        if (!updated) throw new StaleAnalysisDeliveryError(running.id);
+        if (updated.status === 'QUEUED') {
+            return {
+                jobId: running.id,
                 gameId: running.gameId,
-                analysisJobId: running.id,
-                analysisRunId,
-                reason: 'analysis-failed',
-            });
+                status: 'RETRY_SCHEDULED',
+                trainingMoments: 0,
+                error: errorMessage(error),
+                retryAt: updated.scheduledFor ?? undefined,
+            };
+        }
+
+        let settlementPending = false;
+        if (running) {
+            try {
+                await releaseAnalysisJobReservation({
+                    userId: running.userId,
+                    gameId: running.gameId,
+                    analysisJobId: running.id,
+                    analysisRunId,
+                    reason: 'analysis-failed',
+                });
+            } catch (settlementError) {
+                settlementPending = true;
+                await recordSettlementPending({
+                    jobId: running.id,
+                    analysisRunId,
+                    action: 'release',
+                    error: settlementError,
+                });
+            }
         }
         return {
             jobId: running.id,
             gameId: running.gameId,
             status: 'FAILED',
-            puzzles: 0,
+            trainingMoments: 0,
             error: errorMessage(error),
+            settlementPending,
         };
     } finally {
-        engine.terminate();
+        engine?.terminate();
     }
+}
+
+async function rejectStaleAnalysisDelivery(jobId: string): Promise<never> {
+    await recordStaleAnalysisDelivery();
+    throw new StaleAnalysisDeliveryError(jobId);
 }
 
 async function consumeAnalysisJobReservation(args: {
@@ -224,10 +312,6 @@ async function consumeAnalysisJobReservation(args: {
         credits: SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
         idempotencyKey: ledgerIdempotencyKey(args, 'consume'),
         reason: args.reason,
-    }).catch((error) => {
-        if (process.env.NODE_ENV !== 'production') {
-            console.warn('[credit ledger] consume skipped:', error);
-        }
     });
 }
 
@@ -246,10 +330,6 @@ async function releaseAnalysisJobReservation(args: {
         credits: SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
         idempotencyKey: ledgerIdempotencyKey(args, 'release'),
         reason: args.reason,
-    }).catch((error) => {
-        if (process.env.NODE_ENV !== 'production') {
-            console.warn('[credit ledger] release skipped:', error);
-        }
     });
 }
 
@@ -264,4 +344,70 @@ function ledgerIdempotencyKey(
 
 function errorMessage(error: unknown) {
     return error instanceof Error ? error.message : String(error);
+}
+
+async function markSettlementComplete(args: {
+    jobId: string;
+    analysisRunId: string;
+    consumedCredits: number;
+}) {
+    await prisma.$transaction(async (tx) => {
+        await tx.analysisJob.updateMany({
+            where: {
+                id: args.jobId,
+                status: 'SUCCEEDED',
+                analysisRunId: args.analysisRunId,
+                lastError: { startsWith: 'CREDIT_SETTLEMENT_PENDING:' },
+            },
+            data: { lastError: null },
+        });
+        await tx.analysisRun.updateMany({
+            where: {
+                id: args.analysisRunId,
+                status: 'SUCCEEDED',
+            },
+            data: {
+                consumedCredits: args.consumedCredits,
+                lastError: null,
+            },
+        });
+    });
+}
+
+async function recordSettlementPending(args: {
+    jobId: string;
+    analysisRunId: string | null;
+    action: 'consume' | 'release';
+    error: unknown;
+}) {
+    const message = `CREDIT_SETTLEMENT_PENDING:${args.action}:${errorMessage(
+        args.error
+    ).slice(0, 1_800)}`;
+    await prisma.$transaction(async (tx) => {
+        await tx.analysisJob.updateMany({
+            where: {
+                id: args.jobId,
+                status: { in: ['SUCCEEDED', 'FAILED'] },
+            },
+            data: { lastError: message },
+        });
+        if (args.analysisRunId) {
+            await tx.analysisRun.updateMany({
+                where: {
+                    id: args.analysisRunId,
+                    status: { in: ['SUCCEEDED', 'FAILED'] },
+                },
+                data: { lastError: message },
+            });
+        }
+    });
+    console.error(
+        JSON.stringify({
+            event: 'analysis_credit_settlement_pending',
+            action: args.action,
+            jobId: args.jobId,
+            analysisRunId: args.analysisRunId,
+            error: errorMessage(args.error),
+        })
+    );
 }

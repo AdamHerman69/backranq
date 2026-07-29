@@ -7,8 +7,8 @@ import { Card, CardContent } from '@/components/ui/card';
 import { AnalysisDefaultsCard } from '@/components/settings/AnalysisDefaultsCard';
 import { AutoSyncSettingsCard } from '@/components/settings/AutoSyncSettingsCard';
 import { BillingSettingsCard } from '@/components/settings/BillingSettingsCard';
-import { TrainerSettingsCard } from '@/components/settings/TrainerSettingsCard';
 import { getOrCreateDefaultBillingAccount } from '@/lib/services/billingAccounts';
+import { TrainingSessionSettingsCard } from '@/components/settings/TrainingSessionSettingsCard';
 
 export default async function SettingsPage() {
     const session = await auth();
@@ -86,7 +86,7 @@ export default async function SettingsPage() {
                 }}
             />
             <AutoSyncSettingsCard />
-            <TrainerSettingsCard />
+            <TrainingSessionSettingsCard />
             <AnalysisDefaultsCard />
         </div>
     );

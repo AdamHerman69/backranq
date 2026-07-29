@@ -1,0 +1,100 @@
+{
+  "version": 2,
+  "generatorContract": "personal-mistake-trainer-v2",
+  "costBudget": {
+    "maxEvalCallsPerRun": 32,
+    "maxMultiPvCallsPerRun": 8,
+    "maxRequestedNodesPerRun": 10000
+  },
+  "extractionCases": [
+    {
+      "id": "golden-quiet",
+      "coverage": ["quiet-defense", "equivalent-alternatives"],
+      "pgn": "1. e4 *",
+      "usernameColor": "white",
+      "expectedMoments": [{
+        "sourcePgnHash": "eac5d656499c367e89ede1c47c7fdb259dedfd251b196f40cd6246665d23d860",
+        "trainingMomentKey": "40d6c390090845b4abfc21be8a39a791f083c96f3eda63199bb44f1955942e0c",
+        "decisionPly": 0,
+        "sourceKinds": ["MY_MISTAKE"],
+        "lessonKinds": ["SAVE_DRAW"],
+        "solutionShape": "MULTIPLE",
+        "bestMoveUci": "e2e3"
+      }]
+    },
+    {
+      "id": "golden-mate",
+      "coverage": ["mate"],
+      "pgn": "[SetUp \"1\"]\n[FEN \"7k/5Q2/6K1/8/8/8/8/8 w - - 0 1\"]\n\n1. Qf3 *",
+      "usernameColor": "white",
+      "expectedMoments": [{
+        "sourcePgnHash": "b52e9766120ed9fc3c4ea81b1e1bc75df948eb070ebb362e2ec97045e4c37a05",
+        "trainingMomentKey": "812848c8cf881d85a7fa04bae4aab49af59aef811e338c0b916906466234f564",
+        "decisionPly": 0,
+        "sourceKinds": ["MY_MISTAKE"],
+        "lessonKinds": ["AVOID_MISTAKE"],
+        "solutionShape": "OPEN",
+        "bestMoveUci": "f7f8"
+      }]
+    },
+    {
+      "id": "golden-repetition",
+      "coverage": ["repetition-save"],
+      "pgn": "1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 e6 *",
+      "usernameColor": "black",
+      "expectedMoments": [{
+        "sourcePgnHash": "7dd02d84806463bd4b9b558b6a54d7a4c9056f4830b983cdd1b8b2cdc987417c",
+        "trainingMomentKey": "16eb0c3843308acf6e89fe51ed3a7c395f9870798d801c163a1df0a53cb5a79e",
+        "decisionPly": 7,
+        "sourceKinds": ["MY_MISTAKE"],
+        "lessonKinds": ["SAVE_DRAW"],
+        "solutionShape": "OPEN",
+        "bestMoveUci": "f6g8"
+      }]
+    },
+    {
+      "id": "golden-en-passant",
+      "coverage": ["en-passant"],
+      "pgn": "[SetUp \"1\"]\n[FEN \"rnbqkbnr/1pp1pppp/p7/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3\"]\n\n1. Nf3 *",
+      "usernameColor": "white",
+      "expectedMoments": [{
+        "sourcePgnHash": "36a8501bed124e21ac9642e71d60c2d332ff86f2fe1e2a7ba6f011c6b7db12dd",
+        "trainingMomentKey": "64a0b6a39376948198d4569cbf5d254a2270bd02cf222b915f69188affa43e7e",
+        "decisionPly": 0,
+        "sourceKinds": ["MY_MISTAKE"],
+        "lessonKinds": ["AVOID_MISTAKE"],
+        "solutionShape": "OPEN",
+        "bestMoveUci": "e5d6"
+      }]
+    },
+    {
+      "id": "golden-no-error",
+      "coverage": ["negative-no-error"],
+      "pgn": "1. e4 *",
+      "usernameColor": "white",
+      "expectedMoments": []
+    }
+  ],
+  "linkedAssertions": [
+    {
+      "coverage": "underpromotion",
+      "file": "tests/lib/extract-training-moments.test.ts",
+      "testName": "preserves an underpromotion as the canonical best move"
+    },
+    {
+      "coverage": "sacrifice",
+      "file": "tests/lib/extract-training-moments.test.ts",
+      "testName": "keeps a verified sacrifice as lesson metadata rather than filtering it"
+    },
+    {
+      "coverage": "stalemate",
+      "file": "tests/lib/continuation-verifier.test.ts",
+      "testName": "stops immediately after a legal move reaches $label"
+    },
+    {
+      "coverage": "tablebase",
+      "file": "tests/lib/continuation-verifier.test.ts",
+      "testName": "uses exact tablebase WDL/DTZ without calling the engine or inventing cp"
+    }
+  ]
+}

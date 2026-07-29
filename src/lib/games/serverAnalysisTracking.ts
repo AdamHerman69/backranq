@@ -26,7 +26,7 @@ export function registerServerAnalysisEnqueue(args: {
     ownerId: string;
     result: EnqueueServerAnalysisJobsResult;
     failedAtStart?: number;
-    puzzlesAtStart?: number | null;
+    trainingMomentsAtStart?: number | null;
     pendingAtStart?: number | null;
 }): ServerAnalysisBatch | null {
     if (!args.ownerId || args.result.queued <= 0) return null;
@@ -39,7 +39,7 @@ export function registerServerAnalysisEnqueue(args: {
         queued: jobIds.length,
         jobIds,
         failedAtStart: args.failedAtStart ?? 0,
-        puzzlesAtStart: args.puzzlesAtStart ?? null,
+        trainingMomentsAtStart: args.trainingMomentsAtStart ?? null,
         pendingAtStart: args.pendingAtStart ?? null,
     });
     const merged = mergeServerAnalysisBatches(

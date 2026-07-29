@@ -11,6 +11,9 @@ type AnalysisJobsRouteModule = typeof import('@/app/api/analysis/jobs/route');
 
 const publishMock = vi.fn();
 const dispatchQueuedAnalysisJobsMock = vi.fn();
+const cancelUnexecutableAnalysisJobsMock = vi.fn();
+const GAME_ID = '11111111-1111-4111-8111-111111111111';
+const OTHER_GAME_ID = '22222222-2222-4222-8222-222222222222';
 
 async function importRoute(): Promise<AnalysisJobsRouteModule> {
     vi.resetModules();
@@ -27,6 +30,8 @@ async function importRoute(): Promise<AnalysisJobsRouteModule> {
     }));
     vi.doMock('@/lib/services/analysisScheduler', () => ({
         dispatchQueuedAnalysisJobs: dispatchQueuedAnalysisJobsMock,
+        cancelUnexecutableAnalysisJobs:
+            cancelUnexecutableAnalysisJobsMock,
     }));
     return import('@/app/api/analysis/jobs/route');
 }
@@ -117,6 +122,33 @@ describe('GET /api/analysis/jobs', () => {
             })
         );
     });
+
+    it('tracks a correlated batch larger than 100 jobs', async () => {
+        const route = await importRoute();
+        prismaMock.analysisJob.findMany.mockResolvedValue([]);
+        const ids = Array.from(
+            { length: 150 },
+            (_, index) =>
+                `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`
+        );
+
+        const response = await route.GET(
+            new Request(
+                `http://localhost/api/analysis/jobs?ids=${ids.join(',')}`
+            )
+        );
+
+        expect(response.status).toBe(200);
+        expect(prismaMock.analysisJob.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    userId: 'user-1',
+                    id: { in: ids },
+                }),
+                take: 150,
+            })
+        );
+    });
 });
 
 describe('POST /api/analysis/jobs', () => {
@@ -127,6 +159,9 @@ describe('POST /api/analysis/jobs', () => {
         dispatchQueuedAnalysisJobsMock.mockResolvedValue({
             claimedJobIds: ['job-1'],
             published: [{ jobId: 'job-1', queued: true, messageId: 'msg-1' }],
+        });
+        cancelUnexecutableAnalysisJobsMock.mockResolvedValue({
+            cancelled: 1,
         });
         primeCreditReservationMocks();
     });
@@ -144,14 +179,46 @@ describe('POST /api/analysis/jobs', () => {
         expect(prismaMock.analyzedGame.findMany).not.toHaveBeenCalled();
     });
 
+    it('rejects an oversized request body before parsing or querying games', async () => {
+        const route = await importRoute();
+        const response = await route.POST(
+            post({ gameIds: ['x'.repeat(40_000)] })
+        );
+
+        expect(response.status).toBe(413);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Request exceeds limit of 32768 bytes',
+        });
+        expect(prismaMock.analyzedGame.findMany).not.toHaveBeenCalled();
+        expect(dispatchQueuedAnalysisJobsMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects invalid game UUIDs before querying Prisma', async () => {
+        const route = await importRoute();
+
+        const response = await route.POST(
+            post({ gameIds: [GAME_ID, 'not-a-uuid'] })
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Invalid gameIds',
+        });
+        expect(prismaMock.analyzedGame.findMany).not.toHaveBeenCalled();
+        expect(dispatchQueuedAnalysisJobsMock).not.toHaveBeenCalled();
+    });
+
     it('queues only games owned by the current user', async () => {
         const route = await importRoute();
-        prismaMock.analyzedGame.findMany.mockResolvedValue([{ id: 'game-1' }]);
+        prismaMock.analyzedGame.findMany.mockResolvedValue([{ id: GAME_ID }]);
+        prismaMock.analyzedGame.findFirst.mockResolvedValue({
+            pgn: '[Event "Source"]\n\n1. e4 *',
+        });
         prismaMock.analysisJob.findUnique.mockResolvedValue(null);
         prismaMock.analysisJob.create.mockResolvedValue({
             id: 'job-1',
             userId: 'user-1',
-            gameId: 'game-1',
+            gameId: GAME_ID,
             status: 'QUEUED',
             estimatedCredits: 1,
             queuedReason: 'manual',
@@ -160,7 +227,7 @@ describe('POST /api/analysis/jobs', () => {
         });
 
         const response = await route.POST(
-            post({ gameIds: ['game-1', 'other-user-game'] })
+            post({ gameIds: [GAME_ID, OTHER_GAME_ID] })
         );
         const body = await readJson<{ queued: number; skipped: number }>(
             response
@@ -169,13 +236,13 @@ describe('POST /api/analysis/jobs', () => {
         expect(response.status).toBe(200);
         expect(body).toMatchObject({ queued: 1, skipped: 0 });
         expect(prismaMock.analyzedGame.findMany).toHaveBeenCalledWith({
-            where: { userId: 'user-1', id: { in: ['game-1', 'other-user-game'] } },
+            where: { userId: 'user-1', id: { in: [GAME_ID, OTHER_GAME_ID] } },
             select: { id: true },
         });
         expect(prismaMock.analysisJob.create).toHaveBeenCalledWith({
             data: expect.objectContaining({
                 userId: 'user-1',
-                gameId: 'game-1',
+                gameId: GAME_ID,
                 queuedReason: 'manual',
             }),
         });
@@ -185,14 +252,62 @@ describe('POST /api/analysis/jobs', () => {
         });
     });
 
+    it('reports queue-disabled execution truthfully and cancels the reservation', async () => {
+        const route = await importRoute();
+        prismaMock.analyzedGame.findMany.mockResolvedValue([{ id: GAME_ID }]);
+        prismaMock.analyzedGame.findFirst.mockResolvedValue({
+            pgn: '[Event "Source"]\n\n1. e4 *',
+        });
+        prismaMock.analysisJob.findUnique.mockResolvedValue(null);
+        prismaMock.analysisJob.create.mockResolvedValue({
+            id: 'job-1',
+            userId: 'user-1',
+            gameId: GAME_ID,
+            status: 'QUEUED',
+            estimatedCredits: 1,
+            queuedReason: 'manual',
+            createdAt: new Date(),
+            startedAt: null,
+        });
+        dispatchQueuedAnalysisJobsMock.mockResolvedValue({
+            claimedJobIds: ['job-1'],
+            published: [
+                {
+                    jobId: 'job-1',
+                    queued: false,
+                    messageId: null,
+                    unavailableReason: 'disabled',
+                },
+            ],
+        });
+
+        const response = await route.POST(post({ gameIds: [GAME_ID] }));
+
+        expect(response.status).toBe(503);
+        await expect(readJson(response)).resolves.toMatchObject({
+            code: 'SERVER_ANALYSIS_UNAVAILABLE',
+            executionAvailable: false,
+            queued: 0,
+            cancelled: 1,
+        });
+        expect(cancelUnexecutableAnalysisJobsMock).toHaveBeenCalledWith({
+            userId: 'user-1',
+            jobIds: ['job-1'],
+            reason: 'Server analysis queue is disabled',
+        });
+    });
+
     it('marks forced re-analysis for dispatcher scheduling', async () => {
         const route = await importRoute();
         const updatedAt = new Date('2026-07-05T12:00:00.000Z');
-        prismaMock.analyzedGame.findMany.mockResolvedValue([{ id: 'game-1' }]);
+        prismaMock.analyzedGame.findMany.mockResolvedValue([{ id: GAME_ID }]);
+        prismaMock.analyzedGame.findFirst.mockResolvedValue({
+            pgn: '[Event "Source"]\n\n1. e4 *',
+        });
         prismaMock.analysisJob.findUnique.mockResolvedValue({
             id: 'job-1',
             userId: 'user-1',
-            gameId: 'game-1',
+            gameId: GAME_ID,
             status: 'SUCCEEDED',
             priority: 0,
             estimatedCredits: 1,
@@ -202,7 +317,7 @@ describe('POST /api/analysis/jobs', () => {
         prismaMock.analysisJob.update.mockResolvedValue({
             id: 'job-1',
             userId: 'user-1',
-            gameId: 'game-1',
+            gameId: GAME_ID,
             status: 'QUEUED',
             estimatedCredits: 1,
             queuedReason: 'manual-reanalysis',
@@ -211,7 +326,9 @@ describe('POST /api/analysis/jobs', () => {
             updatedAt,
         });
 
-        const response = await route.POST(post({ gameIds: ['game-1'], force: true }));
+        const response = await route.POST(
+            post({ gameIds: [GAME_ID], force: true })
+        );
 
         expect(response.status).toBe(200);
         expect(prismaMock.analysisJob.update).toHaveBeenCalledWith({

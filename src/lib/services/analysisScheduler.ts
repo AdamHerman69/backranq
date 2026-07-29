@@ -1,6 +1,14 @@
-import type { AnalysisJob } from '@prisma/client';
+import type { AnalysisJob, Prisma } from '@prisma/client';
 import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
 import { prisma } from '@/lib/prisma';
+import {
+    createAnalysisDispatchToken,
+    type AnalysisDispatchFence,
+} from '@/lib/services/analysisDispatchFence';
+import {
+    releaseServerAnalysisCredits,
+    releaseServerAnalysisCreditsInTransaction,
+} from '@/lib/services/billingAccounts';
 import {
     DEFAULT_ANALYSIS_JOB_LEASE_MS,
     DEFAULT_ANALYSIS_RETRY_BACKOFF_BASE_MS,
@@ -24,6 +32,7 @@ export type AnalysisDispatchCandidate = Pick<
     | 'status'
     | 'priority'
     | 'attempts'
+    | 'dispatchedCount'
     | 'lockedAt'
     | 'lockedUntil'
     | 'queuedReason'
@@ -76,12 +85,16 @@ export type ClaimNextAnalysisJobsResult = AnalysisDispatchPlan & {
 export type RecoverExpiredAnalysisJobsResult = {
     requeued: number;
     failed: number;
+    releasedReservations: number;
+    settlementErrors: Array<{ jobId: string; error: string }>;
 };
 
 export type AnalysisDispatchPublishResult = {
     jobId: string;
     queued: boolean;
     messageId: string | null;
+    dispatchToken: string;
+    unavailableReason?: 'disabled' | 'publish-failed';
     error?: unknown;
 };
 
@@ -93,6 +106,87 @@ export type DispatchQueuedAnalysisJobsOptions = ClaimNextAnalysisJobsOptions & {
 export type DispatchQueuedAnalysisJobsResult = ClaimNextAnalysisJobsResult & {
     published: AnalysisDispatchPublishResult[];
 };
+
+export async function cancelUnexecutableAnalysisJobs(args: {
+    userId: string;
+    jobIds: string[];
+    reason: string;
+}) {
+    const jobIds = Array.from(new Set(args.jobIds.filter(Boolean)));
+    let cancelled = 0;
+    for (const jobId of jobIds) {
+        const didCancel = await prisma.$transaction(async (tx) => {
+            const job = await tx.analysisJob.findFirst({
+                where: {
+                    id: jobId,
+                    userId: args.userId,
+                    status: 'QUEUED',
+                },
+                select: {
+                    id: true,
+                    gameId: true,
+                    analysisRunId: true,
+                    estimatedCredits: true,
+                },
+            });
+            if (!job) return false;
+
+            const now = new Date();
+            const updated = await tx.analysisJob.updateMany({
+                where: {
+                    id: job.id,
+                    userId: args.userId,
+                    status: 'QUEUED',
+                },
+                data: {
+                    status: 'CANCELLED',
+                    lockedAt: null,
+                    lockedUntil: null,
+                    scheduledFor: null,
+                    completedAt: now,
+                    lastError: args.reason.slice(0, 2_000),
+                },
+            });
+            if (updated.count !== 1) return false;
+
+            if (job.analysisRunId) {
+                await tx.analysisRun.updateMany({
+                    where: {
+                        id: job.analysisRunId,
+                        userId: args.userId,
+                        status: 'QUEUED',
+                    },
+                    data: {
+                        status: 'CANCELLED',
+                        completedAt: now,
+                        consumedCredits: 0,
+                        lastError: args.reason.slice(0, 2_000),
+                    },
+                });
+            }
+
+            await releaseServerAnalysisCreditsInTransaction({
+                tx,
+                userId: args.userId,
+                gameId: job.gameId,
+                analysisJobId: job.id,
+                analysisRunId: job.analysisRunId,
+                credits: Math.max(1, Math.trunc(job.estimatedCredits)),
+                idempotencyKey: job.analysisRunId
+                    ? `analysis-run:${job.analysisRunId}:queue-unavailable-release`
+                    : `analysis-job:${job.id}:queue-unavailable-release`,
+                reason: 'queue-unavailable',
+                metadata: {
+                    settlement: 'release',
+                    queueUnavailable: true,
+                } satisfies Prisma.InputJsonObject,
+            });
+            return true;
+        });
+        if (didCancel) cancelled += 1;
+    }
+    return { cancelled };
+}
 
 type MutableUserQueues = Map<string, AnalysisDispatchCandidate[]>;
 
@@ -145,11 +239,12 @@ export function planAnalysisDispatch(args: {
             skipped.locked += 1;
             continue;
         }
-        if (job.scheduledFor && job.scheduledFor.getTime() > now.getTime()) {
-            skipped.scheduledForLater += 1;
-            continue;
-        }
-        if (!retryBackoffElapsed(job, args.options, now)) {
+        if (job.scheduledFor) {
+            if (job.scheduledFor.getTime() > now.getTime()) {
+                skipped.scheduledForLater += 1;
+                continue;
+            }
+        } else if (!retryBackoffElapsed(job, args.options, now)) {
             skipped.retryBackoff += 1;
             continue;
         }
@@ -316,7 +411,12 @@ export async function claimNextAnalysisJobs(
             },
         });
         if (result.count === 1) {
-            claimedJobs.push({ ...job, lockedAt: now, lockedUntil });
+            claimedJobs.push({
+                ...job,
+                dispatchedCount: job.dispatchedCount + 1,
+                lockedAt: now,
+                lockedUntil,
+            });
         } else {
             claimMisses.push(job.id);
         }
@@ -349,56 +449,171 @@ export async function recoverExpiredAnalysisJobs(args: {
         take: args.limit ?? DEFAULT_ANALYSIS_RECOVERY_SCAN_LIMIT,
         select: {
             id: true,
+            userId: true,
+            gameId: true,
+            analysisRunId: true,
+            estimatedCredits: true,
             attempts: true,
+            lockedAt: true,
+            dispatchedCount: true,
         },
     });
 
     let requeued = 0;
     let failed = 0;
+    let releasedReservations = 0;
+    const settlementErrors: RecoverExpiredAnalysisJobsResult['settlementErrors'] =
+        [];
     for (const job of expired) {
         if (job.attempts >= maxAttempts) {
-            const result = await prisma.analysisJob.updateMany({
-                where: {
-                    id: job.id,
-                    status: 'RUNNING',
-                    OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
-                },
-                data: {
-                    status: 'FAILED',
-                    lockedAt: null,
-                    lockedUntil: null,
-                    completedAt: now,
-                    lastError: 'Analysis job lease expired after maximum attempts',
-                },
+            const result = await prisma.$transaction(async (tx) => {
+                const updated = await tx.analysisJob.updateMany({
+                    where: {
+                        id: job.id,
+                        status: 'RUNNING',
+                        lockedAt: job.lockedAt,
+                        dispatchedCount: job.dispatchedCount,
+                        OR: [
+                            { lockedUntil: null },
+                            { lockedUntil: { lte: now } },
+                        ],
+                    },
+                    data: {
+                        status: 'FAILED',
+                        lockedAt: null,
+                        lockedUntil: null,
+                        completedAt: now,
+                        lastError:
+                            'Analysis job lease expired after maximum attempts',
+                    },
+                });
+                if (updated.count === 1 && job.analysisRunId) {
+                    await tx.analysisRun.updateMany({
+                        where: {
+                            id: job.analysisRunId,
+                            status: { in: ['QUEUED', 'RUNNING'] },
+                        },
+                        data: {
+                            status: 'FAILED',
+                            completedAt: now,
+                            consumedCredits: 0,
+                            lastError:
+                                'Analysis job lease expired after maximum attempts',
+                        },
+                    });
+                }
+                return updated;
             });
             failed += result.count;
+            if (result.count === 1) {
+                try {
+                    await releaseServerAnalysisCredits({
+                        userId: job.userId,
+                        gameId: job.gameId,
+                        analysisJobId: job.id,
+                        analysisRunId: job.analysisRunId,
+                        credits: Math.max(1, job.estimatedCredits ?? 1),
+                        idempotencyKey: job.analysisRunId
+                            ? `analysis-run:${job.analysisRunId}:release`
+                            : `analysis-job:${job.id}:release`,
+                        reason: 'analysis-max-attempts-exhausted',
+                    });
+                    releasedReservations += 1;
+                } catch (error) {
+                    settlementErrors.push({
+                        jobId: job.id,
+                        error: errorMessage(error),
+                    });
+                    await recordAnalysisReleaseSettlementPending({
+                        jobId: job.id,
+                        analysisRunId: job.analysisRunId,
+                        error,
+                    });
+                    console.error(
+                        JSON.stringify({
+                            event: 'analysis_credit_settlement_failed',
+                            action: 'release',
+                            jobId: job.id,
+                            analysisRunId: job.analysisRunId,
+                            reason: 'analysis-max-attempts-exhausted',
+                            error: errorMessage(error),
+                        })
+                    );
+                }
+            }
             continue;
         }
 
-        const result = await prisma.analysisJob.updateMany({
-            where: {
-                id: job.id,
-                status: 'RUNNING',
-                OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
-            },
-            data: {
-                status: 'QUEUED',
-                lockedAt: null,
-                lockedUntil: null,
-                completedAt: null,
-                scheduledFor: getAnalysisRetryScheduledFor({
-                    attempts: Math.max(1, job.attempts),
-                    now,
-                    retryBackoffBaseMs: args.retryBackoffBaseMs,
-                    retryBackoffMaxMs: args.retryBackoffMaxMs,
-                }),
-                lastError: 'Analysis job lease expired and was requeued',
-            },
+        const result = await prisma.$transaction(async (tx) => {
+            const updated = await tx.analysisJob.updateMany({
+                where: {
+                    id: job.id,
+                    status: 'RUNNING',
+                    lockedAt: job.lockedAt,
+                    dispatchedCount: job.dispatchedCount,
+                    OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
+                },
+                data: {
+                    status: 'QUEUED',
+                    lockedAt: null,
+                    lockedUntil: null,
+                    completedAt: null,
+                    scheduledFor: getAnalysisRetryScheduledFor({
+                        attempts: Math.max(1, job.attempts),
+                        now,
+                        retryBackoffBaseMs: args.retryBackoffBaseMs,
+                        retryBackoffMaxMs: args.retryBackoffMaxMs,
+                    }),
+                    lastError: 'Analysis job lease expired and was requeued',
+                },
+            });
+            if (updated.count === 1 && job.analysisRunId) {
+                await tx.analysisRun.updateMany({
+                    where: {
+                        id: job.analysisRunId,
+                        status: 'RUNNING',
+                    },
+                    data: {
+                        status: 'QUEUED',
+                        completedAt: null,
+                        lastError:
+                            'Analysis job lease expired and was requeued',
+                    },
+                });
+            }
+            return updated;
         });
         requeued += result.count;
     }
 
-    return { requeued, failed };
+    return { requeued, failed, releasedReservations, settlementErrors };
+}
+
+async function recordAnalysisReleaseSettlementPending(args: {
+    jobId: string;
+    analysisRunId: string;
+    error: unknown;
+}) {
+    const message = `CREDIT_SETTLEMENT_PENDING:release:${errorMessage(
+        args.error
+    ).slice(0, 1_800)}`;
+    await prisma.$transaction(async (tx) => {
+        await tx.analysisJob.updateMany({
+            where: {
+                id: args.jobId,
+                analysisRunId: args.analysisRunId,
+                status: 'FAILED',
+            },
+            data: { lastError: message },
+        });
+        await tx.analysisRun.updateMany({
+            where: {
+                id: args.analysisRunId,
+                status: 'FAILED',
+            },
+            data: { lastError: message },
+        });
+    });
 }
 
 export async function dispatchQueuedAnalysisJobs(
@@ -408,28 +623,58 @@ export async function dispatchQueuedAnalysisJobs(
     const published: AnalysisDispatchPublishResult[] = [];
 
     for (const job of claim.claimedJobs) {
+        if (!job.lockedAt) {
+            throw new Error(`Claimed analysis job ${job.id} has no dispatch lock`);
+        }
+        const dispatchToken = createAnalysisDispatchToken({
+            jobId: job.id,
+            lockedAt: job.lockedAt,
+            dispatchedCount: job.dispatchedCount,
+        });
         try {
             const result = await publishBackranqQueueMessage(
-                { type: 'analysis-job', jobId: job.id },
+                {
+                    type: 'analysis-job',
+                    jobId: job.id,
+                    dispatchToken,
+                },
                 { idempotencyKey: analysisDispatchIdempotencyKey(job) }
             );
             published.push({
                 jobId: job.id,
                 queued: result.queued,
                 messageId: result.messageId,
+                dispatchToken,
+                unavailableReason: result.unavailableReason,
+                error: result.error,
             });
             if (!result.queued && options.releaseUnpublishedLocks !== false) {
-                await releaseAnalysisDispatchLocks([job.id]);
+                await releaseAnalysisDispatchLocks(
+                    [job.id],
+                    `QUEUE_PUBLISH_PENDING:${result.unavailableReason ?? 'unavailable'}`
+                );
+                if (result.unavailableReason === 'disabled') {
+                    await cancelUnexecutableAnalysisJobs({
+                        userId: job.userId,
+                        jobIds: [job.id],
+                        reason: 'Server analysis queue is disabled',
+                    });
+                }
             }
         } catch (error) {
             published.push({
                 jobId: job.id,
                 queued: false,
                 messageId: null,
+                dispatchToken,
+                unavailableReason: 'publish-failed',
                 error,
             });
             if (options.releaseUnpublishedLocks !== false) {
-                await releaseAnalysisDispatchLocks([job.id]);
+                await releaseAnalysisDispatchLocks(
+                    [job.id],
+                    `QUEUE_PUBLISH_PENDING:${errorMessage(error)}`
+                );
             }
             if (options.throwOnPublishError !== false) throw error;
         }
@@ -438,7 +683,10 @@ export async function dispatchQueuedAnalysisJobs(
     return { ...claim, published };
 }
 
-export async function releaseAnalysisDispatchLocks(jobIds: string[]) {
+export async function releaseAnalysisDispatchLocks(
+    jobIds: string[],
+    reason?: string
+) {
     const ids = Array.from(new Set(jobIds.filter(Boolean)));
     if (ids.length === 0) return { count: 0 };
     return prisma.analysisJob.updateMany({
@@ -446,17 +694,32 @@ export async function releaseAnalysisDispatchLocks(jobIds: string[]) {
             id: { in: ids },
             status: 'QUEUED',
         },
-        data: { lockedAt: null, lockedUntil: null },
+        data: {
+            lockedAt: null,
+            lockedUntil: null,
+            ...(reason ? { lastError: reason.slice(0, 2_000) } : {}),
+        },
     });
 }
 
 export function analysisDispatchIdempotencyKey(
-    job: Pick<AnalysisDispatchCandidate, 'gameId' | 'queuedReason' | 'updatedAt'>
+    job: Pick<
+        AnalysisDispatchCandidate,
+        'id' | 'gameId' | 'dispatchedCount'
+    >
 ) {
-    if (job.queuedReason === 'manual-reanalysis') {
-        return `analysis:${job.gameId}:reanalysis:${job.updatedAt.toISOString()}`;
-    }
-    return `analysis:${job.gameId}`;
+    return `analysis:${job.gameId}:${job.id}:delivery:${job.dispatchedCount}`;
+}
+
+export function analysisFenceWhere(
+    jobId: string,
+    fence: AnalysisDispatchFence
+) {
+    return {
+        id: jobId,
+        lockedAt: fence.lockedAt,
+        dispatchedCount: fence.dispatchedCount,
+    };
 }
 
 export function compareAnalysisDispatchCandidates(
@@ -517,4 +780,10 @@ function countRowsToRecord(
     return Object.fromEntries(
         rows.map((row) => [row.userId, row._count._all])
     );
+}
+
+function errorMessage(error: unknown) {
+    return error instanceof Error
+        ? error.message.slice(0, 2_000)
+        : String(error).slice(0, 2_000);
 }

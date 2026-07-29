@@ -1,4 +1,9 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import {
+    consumeServerAnalysisCredits,
+    releaseServerAnalysisCredits,
+} from '@/lib/services/billingAccounts';
 
 export type AnalysisOpsSnapshot = {
     analysisJobs: {
@@ -6,6 +11,12 @@ export type AnalysisOpsSnapshot = {
         running: number;
         failed: number;
         lockedQueued: number;
+        readyQueued: number;
+        retryScheduled: number;
+        settlementPending: number;
+        publishPending: number;
+        totalDispatches: number;
+        staleDeliveries: number;
         stuckRunning: number;
         oldestQueuedAgeSeconds: number | null;
         oldestRunningAgeSeconds: number | null;
@@ -25,6 +36,13 @@ export type AnalysisOpsSnapshot = {
         consumed: number;
         refunded: number;
         released: number;
+        expired: number;
+        outstandingReserved: number;
+        invariantViolations: {
+            activeWithoutReservation: number;
+            terminalWithOutstandingReservation: number;
+            oversettled: number;
+        };
     };
     stripeWebhooks: {
         processing: number;
@@ -34,6 +52,169 @@ export type AnalysisOpsSnapshot = {
     };
 };
 
+const STALE_ANALYSIS_DELIVERIES_COUNTER =
+    'analysis_stale_deliveries_total';
+
+type CreditInvariantRow = {
+    activeWithoutReservation: bigint | number;
+    terminalWithOutstandingReservation: bigint | number;
+    oversettled: bigint | number;
+};
+
+export async function recordStaleAnalysisDelivery() {
+    try {
+        await prisma.analysisOpsCounter.upsert({
+            where: { key: STALE_ANALYSIS_DELIVERIES_COUNTER },
+            create: {
+                key: STALE_ANALYSIS_DELIVERIES_COUNTER,
+                value: BigInt(1),
+            },
+            update: { value: { increment: BigInt(1) } },
+        });
+    } catch (error) {
+        console.error(
+            JSON.stringify({
+                event: 'analysis_stale_delivery_metric_failed',
+                error: error instanceof Error ? error.message : String(error),
+            })
+        );
+    }
+}
+
+export type AnalysisCreditReconciliationResult = {
+    scanned: number;
+    consumed: number;
+    released: number;
+    errors: Array<{ jobId: string; action: 'consume' | 'release'; error: string }>;
+};
+
+export async function reconcileAnalysisCreditSettlements(args: {
+    limit?: number;
+} = {}): Promise<AnalysisCreditReconciliationResult> {
+    const limit = Math.max(1, Math.min(500, Math.trunc(args.limit ?? 100)));
+    const jobs = await prisma.analysisJob.findMany({
+        where: {
+            status: { in: ['SUCCEEDED', 'FAILED', 'CANCELLED'] },
+            OR: [
+                {
+                    lastError: {
+                        startsWith: 'CREDIT_SETTLEMENT_PENDING:',
+                    },
+                },
+                {
+                    analysisRun: {
+                        is: {
+                            creditLedgerEntries: {
+                                some: { type: 'RESERVED' },
+                                none: {
+                                    type: {
+                                        in: [
+                                            'CONSUMED',
+                                            'RELEASED',
+                                            'EXPIRED',
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            ],
+        },
+        orderBy: [{ completedAt: 'asc' }, { updatedAt: 'asc' }],
+        take: limit,
+        select: {
+            id: true,
+            userId: true,
+            gameId: true,
+            analysisRunId: true,
+            status: true,
+            estimatedCredits: true,
+            lastError: true,
+        },
+    });
+
+    const result: AnalysisCreditReconciliationResult = {
+        scanned: jobs.length,
+        consumed: 0,
+        released: 0,
+        errors: [],
+    };
+
+    for (const job of jobs) {
+        const action =
+            job.lastError?.startsWith('CREDIT_SETTLEMENT_PENDING:release:')
+                ? 'release'
+                : job.status === 'SUCCEEDED'
+                  ? 'consume'
+                  : 'release';
+        const ref = {
+            userId: job.userId,
+            gameId: job.gameId,
+            analysisJobId: job.id,
+            analysisRunId: job.analysisRunId,
+            credits: Math.max(1, job.estimatedCredits ?? 1),
+            idempotencyKey: job.analysisRunId
+                ? `analysis-run:${job.analysisRunId}:${action}`
+                : `analysis-job:${job.id}:${action}`,
+            reason: 'analysis-credit-reconciliation',
+        };
+        try {
+            if (action === 'consume') {
+                await consumeServerAnalysisCredits(ref);
+                result.consumed += 1;
+            } else {
+                await releaseServerAnalysisCredits(ref);
+                result.released += 1;
+            }
+            await prisma.$transaction(async (tx) => {
+                await tx.analysisJob.updateMany({
+                    where: {
+                        id: job.id,
+                        status: job.status,
+                        lastError: {
+                            startsWith: 'CREDIT_SETTLEMENT_PENDING:',
+                        },
+                    },
+                    data: { lastError: null },
+                });
+                if (job.analysisRunId) {
+                    await tx.analysisRun.updateMany({
+                        where: {
+                            id: job.analysisRunId,
+                            status: job.status,
+                            lastError: {
+                                startsWith: 'CREDIT_SETTLEMENT_PENDING:',
+                            },
+                        },
+                        data: {
+                            ...(action === 'consume'
+                                ? { consumedCredits: ref.credits }
+                                : {}),
+                            lastError: null,
+                        },
+                    });
+                }
+            });
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : String(error);
+            result.errors.push({ jobId: job.id, action, error: message });
+            console.error(
+                JSON.stringify({
+                    event: 'analysis_credit_reconciliation_failed',
+                    jobId: job.id,
+                    analysisRunId: job.analysisRunId,
+                    action,
+                    error: message,
+                })
+            );
+        }
+    }
+
+    return result;
+}
+
 export async function getAnalysisOpsSnapshot(args: { now?: Date } = {}) {
     const now = args.now ?? new Date();
     const [
@@ -41,6 +222,11 @@ export async function getAnalysisOpsSnapshot(args: { now?: Date } = {}) {
         running,
         failed,
         lockedQueued,
+        readyQueued,
+        retryScheduled,
+        settlementPending,
+        publishPending,
+        dispatchTotals,
         stuckRunning,
         syncQueued,
         syncRunning,
@@ -57,6 +243,8 @@ export async function getAnalysisOpsSnapshot(args: { now?: Date } = {}) {
         stripeFailed,
         recentStripeErrors,
         creditRows,
+        staleDeliveryCounter,
+        creditInvariantRows,
     ] = await Promise.all([
         prisma.analysisJob.count({ where: { status: 'QUEUED' } }),
         prisma.analysisJob.count({ where: { status: 'RUNNING' } }),
@@ -65,7 +253,38 @@ export async function getAnalysisOpsSnapshot(args: { now?: Date } = {}) {
             where: { status: 'QUEUED', lockedUntil: { gt: now } },
         }),
         prisma.analysisJob.count({
-            where: { status: 'RUNNING', lockedUntil: { lt: now } },
+            where: {
+                status: 'QUEUED',
+                OR: [{ scheduledFor: null }, { scheduledFor: { lte: now } }],
+                AND: [
+                    {
+                        OR: [
+                            { lockedUntil: null },
+                            { lockedUntil: { lte: now } },
+                        ],
+                    },
+                ],
+            },
+        }),
+        prisma.analysisJob.count({
+            where: { status: 'QUEUED', scheduledFor: { gt: now } },
+        }),
+        prisma.analysisJob.count({
+            where: {
+                lastError: { startsWith: 'CREDIT_SETTLEMENT_PENDING:' },
+            },
+        }),
+        prisma.analysisJob.count({
+            where: { lastError: { startsWith: 'QUEUE_PUBLISH_PENDING:' } },
+        }),
+        prisma.analysisJob.aggregate({
+            _sum: { dispatchedCount: true },
+        }),
+        prisma.analysisJob.count({
+            where: {
+                status: 'RUNNING',
+                OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
+            },
         }),
         prisma.syncJob.count({ where: { status: 'QUEUED' } }),
         prisma.syncJob.count({ where: { status: 'RUNNING' } }),
@@ -118,6 +337,51 @@ export async function getAnalysisOpsSnapshot(args: { now?: Date } = {}) {
             by: ['type'],
             _sum: { credits: true },
         }),
+        prisma.analysisOpsCounter.findUnique({
+            where: { key: STALE_ANALYSIS_DELIVERIES_COUNTER },
+            select: { value: true },
+        }),
+        prisma.$queryRaw<CreditInvariantRow[]>(Prisma.sql`
+            WITH "runCredits" AS (
+                SELECT
+                    "analysisRunId",
+                    COALESCE(SUM("credits") FILTER (WHERE "type" = 'RESERVED'), 0)::bigint AS "reserved",
+                    COALESCE(SUM("credits") FILTER (WHERE "type" = 'CONSUMED'), 0)::bigint AS "consumed",
+                    COALESCE(SUM("credits") FILTER (WHERE "type" = 'REFUNDED'), 0)::bigint AS "refunded",
+                    COALESCE(SUM("credits") FILTER (WHERE "type" = 'RELEASED'), 0)::bigint AS "released",
+                    COALESCE(SUM("credits") FILTER (WHERE "type" = 'EXPIRED'), 0)::bigint AS "expired"
+                FROM "CreditLedgerEntry"
+                WHERE "analysisRunId" IS NOT NULL
+                GROUP BY "analysisRunId"
+            ),
+            "serverRuns" AS (
+                SELECT
+                    run."status",
+                    COALESCE(credits."reserved", 0)::bigint AS "reserved",
+                    COALESCE(credits."consumed", 0)::bigint AS "consumed",
+                    COALESCE(credits."refunded", 0)::bigint AS "refunded",
+                    COALESCE(credits."released", 0)::bigint AS "released",
+                    COALESCE(credits."expired", 0)::bigint AS "expired"
+                FROM "AnalysisRun" run
+                LEFT JOIN "runCredits" credits
+                    ON credits."analysisRunId" = run."id"
+                WHERE run."executionMode" = 'SERVER_QUEUE'
+            )
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE "status" IN ('QUEUED', 'RUNNING')
+                      AND "reserved" - "consumed" - "released" - "expired" <= 0
+                )::bigint AS "activeWithoutReservation",
+                COUNT(*) FILTER (
+                    WHERE "status" IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+                      AND "reserved" - "consumed" - "released" - "expired" > 0
+                )::bigint AS "terminalWithOutstandingReservation",
+                COUNT(*) FILTER (
+                    WHERE "consumed" + "released" + "expired" > "reserved"
+                       OR "refunded" > "consumed"
+                )::bigint AS "oversettled"
+            FROM "serverRuns"
+        `),
     ]);
 
     const credits = {
@@ -125,6 +389,13 @@ export async function getAnalysisOpsSnapshot(args: { now?: Date } = {}) {
         consumed: 0,
         refunded: 0,
         released: 0,
+        expired: 0,
+        outstandingReserved: 0,
+        invariantViolations: {
+            activeWithoutReservation: 0,
+            terminalWithOutstandingReservation: 0,
+            oversettled: 0,
+        },
     };
     for (const row of creditRows) {
         const value = row._sum.credits ?? 0;
@@ -132,7 +403,25 @@ export async function getAnalysisOpsSnapshot(args: { now?: Date } = {}) {
         if (row.type === 'CONSUMED') credits.consumed = value;
         if (row.type === 'REFUNDED') credits.refunded = value;
         if (row.type === 'RELEASED') credits.released = value;
+        if (row.type === 'EXPIRED') credits.expired = value;
     }
+    credits.outstandingReserved = Math.max(
+        0,
+        credits.reserved -
+            credits.consumed -
+            credits.released -
+            credits.expired
+    );
+    const creditInvariant = creditInvariantRows?.[0];
+    credits.invariantViolations = {
+        activeWithoutReservation: safeMetricNumber(
+            creditInvariant?.activeWithoutReservation
+        ),
+        terminalWithOutstandingReservation: safeMetricNumber(
+            creditInvariant?.terminalWithOutstandingReservation
+        ),
+        oversettled: safeMetricNumber(creditInvariant?.oversettled),
+    };
 
     return {
         analysisJobs: {
@@ -140,6 +429,12 @@ export async function getAnalysisOpsSnapshot(args: { now?: Date } = {}) {
             running,
             failed,
             lockedQueued,
+            readyQueued,
+            retryScheduled,
+            settlementPending,
+            publishPending,
+            totalDispatches: dispatchTotals._sum.dispatchedCount ?? 0,
+            staleDeliveries: safeMetricNumber(staleDeliveryCounter?.value),
             stuckRunning,
             oldestQueuedAgeSeconds: ageSeconds(
                 oldestQueuedAnalysisJob?.createdAt,
@@ -190,4 +485,12 @@ export async function getAnalysisOpsSnapshot(args: { now?: Date } = {}) {
 function ageSeconds(date: Date | null | undefined, now: Date) {
     if (!date) return null;
     return Math.max(0, Math.floor((now.getTime() - date.getTime()) / 1_000));
+}
+
+function safeMetricNumber(value: bigint | number | null | undefined) {
+    if (value == null) return 0;
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number >= 0
+        ? number
+        : Number.MAX_SAFE_INTEGER;
 }

@@ -20,7 +20,7 @@ function observation(
         queued: 0,
         running: 0,
         failed: 0,
-        puzzleCount: 0,
+        trainingMomentCount: 0,
         pendingCount: 0,
         ...overrides,
     };
@@ -32,7 +32,7 @@ describe('analysis completion summaries', () => {
             ownerId: 'user-a',
             queued: 3,
             failedAtStart: 1,
-            puzzlesAtStart: 10,
+            trainingMomentsAtStart: 10,
             pendingAtStart: 7,
         });
 
@@ -50,13 +50,17 @@ describe('analysis completion summaries', () => {
             ownerId: 'user-a',
             queued: 2,
             failedAtStart: 4,
-            puzzlesAtStart: 10,
+            trainingMomentsAtStart: 10,
             pendingAtStart: 0,
         });
 
         const summary = deriveServerAnalysisCompletion(
             observation({ running: 2, failed: 4, pendingCount: 0 }),
-            observation({ failed: 4, puzzleCount: 12, pendingCount: 0 }),
+            observation({
+                failed: 4,
+                trainingMomentCount: 12,
+                pendingCount: 0,
+            }),
             batch
         );
 
@@ -75,7 +79,7 @@ describe('analysis completion summaries', () => {
             queued: 2,
             jobIds: ['job-1', 'job-2'],
             failedAtStart: 0,
-            puzzlesAtStart: 4,
+            trainingMomentsAtStart: 4,
             pendingAtStart: 2,
         });
         const summary = deriveServerJobCompletion(
@@ -84,7 +88,7 @@ describe('analysis completion summaries', () => {
                 { id: 'job-1', status: 'SUCCEEDED' },
                 { id: 'job-2', status: 'FAILED' },
             ],
-            { puzzleCount: 5, pendingCount: 1 }
+            { trainingMomentCount: 5, pendingCount: 1 }
         );
 
         expect(summary).toMatchObject({
@@ -92,7 +96,7 @@ describe('analysis completion summaries', () => {
             status: 'partial',
             succeeded: 1,
             failed: 1,
-            puzzlesGenerated: 1,
+            trainingMomentsGenerated: 1,
         });
     });
 
@@ -102,7 +106,7 @@ describe('analysis completion summaries', () => {
             queued: 1,
             jobIds: ['job-1'],
             failedAtStart: 0,
-            puzzlesAtStart: 4,
+            trainingMomentsAtStart: 4,
             pendingAtStart: 2,
         });
         const second = createServerAnalysisBatch({
@@ -110,7 +114,7 @@ describe('analysis completion summaries', () => {
             queued: 1,
             jobIds: ['job-2'],
             failedAtStart: 0,
-            puzzlesAtStart: 4,
+            trainingMomentsAtStart: 4,
             pendingAtStart: 2,
         });
 
@@ -129,7 +133,7 @@ describe('analysis completion summaries', () => {
                 succeeded: 2,
                 failed: 0,
                 cancelled: true,
-                puzzlesGenerated: 3,
+                trainingMomentsGenerated: 3,
                 pendingAtCompletion: 2,
             })
         ).toMatchObject({
@@ -166,7 +170,7 @@ describe('owner-scoped analysis persistence', () => {
             requested: 2,
             succeeded: 1,
             failed: 1,
-            puzzlesGenerated: 1,
+            trainingMomentsGenerated: 1,
             pendingAtCompletion: 1,
             completedAt: new Date().toISOString(),
         });
@@ -177,7 +181,7 @@ describe('owner-scoped analysis persistence', () => {
                 queued: 1,
                 jobIds: ['job-a'],
                 failedAtStart: 0,
-                puzzlesAtStart: 0,
+                trainingMomentsAtStart: 0,
                 pendingAtStart: 1,
             })
         );

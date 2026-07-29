@@ -14,7 +14,7 @@ export type AnalysisCompletionSummary = {
     requested: number;
     succeeded: number;
     failed: number;
-    puzzlesGenerated: number | null;
+    trainingMomentsGenerated: number | null;
     pendingAtCompletion: number | null;
     completedAt: string;
     error?: string;
@@ -26,7 +26,7 @@ export type ServerAnalysisBatch = {
     queued: number;
     jobIds: string[];
     failedAtStart: number;
-    puzzlesAtStart: number | null;
+    trainingMomentsAtStart: number | null;
     pendingAtStart: number | null;
     startedAt: string;
 };
@@ -35,7 +35,7 @@ export type ServerAnalysisObservation = {
     queued: number;
     running: number;
     failed: number;
-    puzzleCount: number | null;
+    trainingMomentCount: number | null;
     pendingCount: number | null;
 };
 
@@ -79,7 +79,7 @@ export function createBrowserAnalysisCompletion(input: {
     succeeded: number;
     failed: number;
     cancelled: boolean;
-    puzzlesGenerated: number;
+    trainingMomentsGenerated: number;
     pendingAtCompletion: number | null;
     error?: string;
 }) {
@@ -97,7 +97,10 @@ export function createBrowserAnalysisCompletion(input: {
         requested: Math.max(0, input.requested),
         succeeded: Math.max(0, input.succeeded),
         failed: Math.max(0, input.failed),
-        puzzlesGenerated: Math.max(0, input.puzzlesGenerated),
+        trainingMomentsGenerated: Math.max(
+            0,
+            input.trainingMomentsGenerated
+        ),
         pendingAtCompletion: input.pendingAtCompletion,
         error: input.error,
     });
@@ -108,7 +111,7 @@ export function createServerAnalysisBatch(input: {
     queued: number;
     jobIds?: string[];
     failedAtStart: number;
-    puzzlesAtStart: number | null;
+    trainingMomentsAtStart: number | null;
     pendingAtStart: number | null;
 }): ServerAnalysisBatch {
     return {
@@ -117,7 +120,7 @@ export function createServerAnalysisBatch(input: {
         queued: Math.max(0, input.queued),
         jobIds: Array.from(new Set(input.jobIds ?? [])),
         failedAtStart: Math.max(0, input.failedAtStart),
-        puzzlesAtStart: input.puzzlesAtStart,
+        trainingMomentsAtStart: input.trainingMomentsAtStart,
         pendingAtStart: input.pendingAtStart,
         startedAt: new Date().toISOString(),
     };
@@ -154,8 +157,9 @@ export function mergeServerAnalysisBatches(
             current.failedAtStart,
             incoming.failedAtStart
         ),
-        puzzlesAtStart:
-            current.puzzlesAtStart ?? incoming.puzzlesAtStart,
+        trainingMomentsAtStart:
+            current.trainingMomentsAtStart ??
+            incoming.trainingMomentsAtStart,
         pendingAtStart: current.pendingAtStart ?? incoming.pendingAtStart,
         startedAt:
             Date.parse(current.startedAt) <= Date.parse(incoming.startedAt)
@@ -169,7 +173,7 @@ export function deriveServerJobCompletion(
     jobs: ServerAnalysisJobObservation[],
     observation: Pick<
         ServerAnalysisObservation,
-        'puzzleCount' | 'pendingCount'
+        'trainingMomentCount' | 'pendingCount'
     >
 ): AnalysisCompletionSummary | null {
     if (batch.jobIds.length === 0) return null;
@@ -224,16 +228,16 @@ function createServerCompletion(input: {
     failed: number;
     observation: Pick<
         ServerAnalysisObservation,
-        'puzzleCount' | 'pendingCount'
+        'trainingMomentCount' | 'pendingCount'
     >;
 }) {
-    const puzzlesGenerated =
-        input.batch.puzzlesAtStart != null &&
-        input.observation.puzzleCount != null
+    const trainingMomentsGenerated =
+        input.batch.trainingMomentsAtStart != null &&
+        input.observation.trainingMomentCount != null
             ? Math.max(
                   0,
-                  input.observation.puzzleCount -
-                      input.batch.puzzlesAtStart
+                  input.observation.trainingMomentCount -
+                      input.batch.trainingMomentsAtStart
               )
             : null;
     return createAnalysisCompletion({
@@ -249,7 +253,7 @@ function createServerCompletion(input: {
         requested: input.batch.queued,
         succeeded: input.succeeded,
         failed: input.failed,
-        puzzlesGenerated,
+        trainingMomentsGenerated,
         pendingAtCompletion: input.observation.pendingCount,
     });
 }

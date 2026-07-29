@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
 import { dispatchQueuedAnalysisJobs } from '@/lib/services/analysisScheduler';
 import { planAndProcessDueSyncJobsInline } from '@/lib/services/syncJobs';
+import { reconcileAnalysisCreditSettlements } from '@/lib/services/analysisOps';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -17,6 +18,7 @@ export async function GET(req: Request) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const settlements = await reconcileAnalysisCreditSettlements();
     const queued = await publishBackranqQueueMessage(
         { type: 'sync-all', requestedAt: new Date().toISOString() },
         { idempotencyKey: `sync-all:${new Date().toISOString().slice(0, 13)}` }
@@ -27,10 +29,17 @@ export async function GET(req: Request) {
             ok: true,
             queued: true,
             messageId: queued.messageId,
+            settlements,
         });
     }
 
     const result = await planAndProcessDueSyncJobsInline();
     const dispatch = await dispatchQueuedAnalysisJobs();
-    return NextResponse.json({ ok: true, queued: false, result, dispatch });
+    return NextResponse.json({
+        ok: true,
+        queued: false,
+        result,
+        dispatch,
+        settlements,
+    });
 }

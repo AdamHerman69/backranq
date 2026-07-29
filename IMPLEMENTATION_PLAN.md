@@ -1,3 +1,11 @@
+# Archived: original proof-of-concept implementation plan
+
+> Superseded by
+> `docs/personal-mistake-trainer-v2.md`. The Puzzle/PuzzleAttempt model,
+> `/api/puzzles` routes, client-side correctness, and extraction gates below
+> are historical and must not be restored. V2 TrainingMoment is the sole
+> supported training domain.
+
 # Backranq Implementation Plan
 
 > A step-by-step guide for AI agents to transform the proof-of-concept into a full-fledged chess puzzle application.

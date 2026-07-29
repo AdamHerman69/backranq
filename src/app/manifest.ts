@@ -2,9 +2,9 @@ import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
     return {
-        name: 'Backranq - Chess Puzzle Trainer',
+        name: 'Backranq - Personal Chess Trainer',
         short_name: 'Backranq',
-        description: 'Train chess puzzles from your own games',
+        description: 'Train critical decisions from your own games',
         start_url: '/',
         display: 'standalone',
         background_color: '#000000',

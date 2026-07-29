@@ -425,7 +425,7 @@ export function SyncGamesModal({
                                         .map((job) => job.id),
                                     failedAtStart:
                                         currentStatus?.analysisJobs?.failed ?? 0,
-                                    puzzlesAtStart: null,
+                                    trainingMomentsAtStart: null,
                                     pendingAtStart: null,
                                 });
                             const batch = mergeServerAnalysisBatches(

@@ -5,6 +5,8 @@ import {
 } from '../helpers/route-mocks';
 
 const publishMock = vi.fn();
+const releaseCreditsMock = vi.fn();
+const releaseCreditsInTransactionMock = vi.fn();
 
 type SchedulerModule = typeof import('@/lib/services/analysisScheduler');
 type AnalysisDispatchCandidate =
@@ -16,6 +18,17 @@ async function importScheduler(): Promise<SchedulerModule> {
     vi.doMock('@/lib/queues/backranq', () => ({
         publishBackranqQueueMessage: publishMock,
     }));
+    vi.doMock('@/lib/services/billingAccounts', () => ({
+        releaseServerAnalysisCredits: releaseCreditsMock,
+        releaseServerAnalysisCreditsInTransaction:
+            releaseCreditsInTransactionMock,
+    }));
+    prismaMock.$transaction.mockImplementation(
+        async (callback: unknown) =>
+            (callback as (tx: typeof prismaMock) => Promise<unknown>)(
+                prismaMock
+            )
+    );
     return import('@/lib/services/analysisScheduler');
 }
 
@@ -34,6 +47,7 @@ function job(
         status: 'QUEUED',
         priority: 0,
         attempts: 0,
+        dispatchedCount: 0,
         lockedAt: null,
         lockedUntil: null,
         queuedReason: 'auto-sync',
@@ -192,6 +206,180 @@ describe('analysis scheduler dispatch', () => {
         vi.clearAllMocks();
     });
 
+    it('fails an exhausted lease, fails its run, and releases the reservation', async () => {
+        const { recoverExpiredAnalysisJobs } = await importScheduler();
+        const lockedAt = new Date('2026-01-01T00:00:00Z');
+        const now = new Date('2026-01-01T00:20:00Z');
+        prismaMock.analysisJob.findMany.mockResolvedValue([
+            {
+                id: 'job-1',
+                userId: 'user-1',
+                gameId: 'game-1',
+                analysisRunId: 'run-1',
+                estimatedCredits: 1,
+                attempts: 5,
+                dispatchedCount: 2,
+                lockedAt,
+            },
+        ]);
+        prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.analysisRun.updateMany.mockResolvedValue({ count: 1 });
+        releaseCreditsMock.mockResolvedValue({ created: true });
+
+        const result = await recoverExpiredAnalysisJobs({
+            now,
+            maxAttempts: 5,
+        });
+
+        expect(result).toEqual({
+            requeued: 0,
+            failed: 1,
+            releasedReservations: 1,
+            settlementErrors: [],
+        });
+        expect(prismaMock.analysisJob.updateMany).toHaveBeenCalledWith({
+            where: expect.objectContaining({
+                id: 'job-1',
+                status: 'RUNNING',
+                lockedAt,
+                dispatchedCount: 2,
+            }),
+            data: expect.objectContaining({ status: 'FAILED' }),
+        });
+        expect(prismaMock.analysisRun.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'run-1',
+                status: { in: ['QUEUED', 'RUNNING'] },
+            },
+            data: expect.objectContaining({ status: 'FAILED' }),
+        });
+        expect(releaseCreditsMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                analysisJobId: 'job-1',
+                analysisRunId: 'run-1',
+                idempotencyKey: 'analysis-run:run-1:release',
+            })
+        );
+    });
+
+    it('persists a run-scoped settlement marker when exhausted-lease release fails', async () => {
+        const { recoverExpiredAnalysisJobs } = await importScheduler();
+        const lockedAt = new Date('2026-01-01T00:00:00Z');
+        const now = new Date('2026-01-01T00:20:00Z');
+        prismaMock.analysisJob.findMany.mockResolvedValue([
+            {
+                id: 'recycled-job',
+                userId: 'user-1',
+                gameId: 'game-1',
+                analysisRunId: 'run-2',
+                estimatedCredits: 1,
+                attempts: 5,
+                dispatchedCount: 2,
+                lockedAt,
+            },
+        ]);
+        prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.analysisRun.updateMany.mockResolvedValue({ count: 1 });
+        releaseCreditsMock.mockRejectedValue(
+            new Error('temporary ledger failure')
+        );
+
+        const result = await recoverExpiredAnalysisJobs({
+            now,
+            maxAttempts: 5,
+        });
+
+        expect(result).toEqual({
+            requeued: 0,
+            failed: 1,
+            releasedReservations: 0,
+            settlementErrors: [
+                {
+                    jobId: 'recycled-job',
+                    error: 'temporary ledger failure',
+                },
+            ],
+        });
+        expect(prismaMock.analysisJob.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'recycled-job',
+                analysisRunId: 'run-2',
+                status: 'FAILED',
+            },
+            data: {
+                lastError:
+                    'CREDIT_SETTLEMENT_PENDING:release:temporary ledger failure',
+            },
+        });
+        expect(prismaMock.analysisRun.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'run-2',
+                status: 'FAILED',
+            },
+            data: {
+                lastError:
+                    'CREDIT_SETTLEMENT_PENDING:release:temporary ledger failure',
+            },
+        });
+    });
+
+    it('atomically cancels queue-disabled jobs and releases their run reservation', async () => {
+        const { cancelUnexecutableAnalysisJobs } =
+            await importScheduler();
+        prismaMock.analysisJob.findFirst.mockResolvedValue({
+            id: 'job-1',
+            gameId: 'game-1',
+            analysisRunId: 'run-1',
+            estimatedCredits: 1,
+        });
+        prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.analysisRun.updateMany.mockResolvedValue({ count: 1 });
+        releaseCreditsInTransactionMock.mockResolvedValue({
+            created: true,
+        });
+
+        const result = await cancelUnexecutableAnalysisJobs({
+            userId: 'user-1',
+            jobIds: ['job-1'],
+            reason: 'Server analysis queue is disabled',
+        });
+
+        expect(result).toEqual({ cancelled: 1 });
+        expect(prismaMock.analysisJob.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'job-1',
+                userId: 'user-1',
+                status: 'QUEUED',
+            },
+            data: expect.objectContaining({
+                status: 'CANCELLED',
+                lastError: 'Server analysis queue is disabled',
+            }),
+        });
+        expect(prismaMock.analysisRun.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'run-1',
+                userId: 'user-1',
+                status: 'QUEUED',
+            },
+            data: expect.objectContaining({
+                status: 'CANCELLED',
+                consumedCredits: 0,
+            }),
+        });
+        expect(
+            releaseCreditsInTransactionMock
+        ).toHaveBeenCalledWith(
+            expect.objectContaining({
+                userId: 'user-1',
+                analysisJobId: 'job-1',
+                analysisRunId: 'run-1',
+                idempotencyKey:
+                    'analysis-run:run-1:queue-unavailable-release',
+            })
+        );
+    });
+
     it('claims selected jobs and publishes compatible Vercel Queue messages', async () => {
         const { dispatchQueuedAnalysisJobs } = await importScheduler();
         const jobs = [
@@ -220,16 +408,67 @@ describe('analysis scheduler dispatch', () => {
         expect(result.claimedJobIds).toEqual(['u1-a', 'u2-a']);
         expect(prismaMock.analysisJob.updateMany).toHaveBeenCalledTimes(2);
         expect(publishMock).toHaveBeenCalledWith(
-            { type: 'analysis-job', jobId: 'u1-a' },
-            { idempotencyKey: 'analysis:game-u1-a' }
+            {
+                type: 'analysis-job',
+                jobId: 'u1-a',
+                dispatchToken:
+                    'analysis-delivery-v1:u1-a:1:1767225600000',
+            },
+            {
+                idempotencyKey:
+                    'analysis:game-u1-a:u1-a:delivery:1',
+            }
         );
         expect(publishMock).toHaveBeenCalledWith(
-            { type: 'analysis-job', jobId: 'u2-a' },
-            { idempotencyKey: 'analysis:game-u2-a' }
+            {
+                type: 'analysis-job',
+                jobId: 'u2-a',
+                dispatchToken:
+                    'analysis-delivery-v1:u2-a:1:1767225600000',
+            },
+            {
+                idempotencyKey:
+                    'analysis:game-u2-a:u2-a:delivery:1',
+            }
         );
         expect(result.published).toEqual([
-            { jobId: 'u1-a', queued: true, messageId: 'msg-1' },
-            { jobId: 'u2-a', queued: true, messageId: 'msg-2' },
+            {
+                jobId: 'u1-a',
+                queued: true,
+                messageId: 'msg-1',
+                dispatchToken:
+                    'analysis-delivery-v1:u1-a:1:1767225600000',
+                unavailableReason: undefined,
+                error: undefined,
+            },
+            {
+                jobId: 'u2-a',
+                queued: true,
+                messageId: 'msg-2',
+                dispatchToken:
+                    'analysis-delivery-v1:u2-a:1:1767225600000',
+                unavailableReason: undefined,
+                error: undefined,
+            },
         ]);
+    });
+
+    it('uses a new deduplication key for every delivery generation', async () => {
+        const { analysisDispatchIdempotencyKey } = await importScheduler();
+
+        expect(
+            analysisDispatchIdempotencyKey({
+                id: 'job-1',
+                gameId: 'game-1',
+                dispatchedCount: 3,
+            })
+        ).toBe('analysis:game-1:job-1:delivery:3');
+        expect(
+            analysisDispatchIdempotencyKey({
+                id: 'job-1',
+                gameId: 'game-1',
+                dispatchedCount: 4,
+            })
+        ).toBe('analysis:game-1:job-1:delivery:4');
     });
 });

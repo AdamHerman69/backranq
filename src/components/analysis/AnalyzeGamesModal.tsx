@@ -181,7 +181,7 @@ export function AnalyzeGamesModal({
               .filter((job) => job.acceptedInBatch === true)
               .map((job) => job.id),
             failedAtStart: 0,
-            puzzlesAtStart: null,
+            trainingMomentsAtStart: null,
             pendingAtStart: ids.length,
           });
           writeServerAnalysisBatch(
@@ -230,7 +230,7 @@ export function AnalyzeGamesModal({
         <div className="mt-4 flex-1 overflow-auto">
           <div className="rounded-xl border p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm font-semibold">Puzzle analysis settings</div>
+              <div className="text-sm font-semibold">Training analysis settings</div>
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
