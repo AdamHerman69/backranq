@@ -14,6 +14,209 @@ type TrainingWriteDb = Pick<
     '$transaction' | 'trainingMoment' | 'trainingAttempt'
 >;
 
+const attemptMomentSelect = {
+    id: true,
+    fen: true,
+    phase: true,
+    cpLoss: true,
+    winChanceLoss: true,
+    sourceKinds: true,
+    lessonKinds: true,
+    themes: true,
+    currentSolutionRevisionId: true,
+    game: {
+        select: {
+            provider: true,
+            timeClass: true,
+        },
+    },
+    currentSolutionRevision: {
+        select: {
+            trainable: true,
+            verificationStatus: true,
+            solutionHash: true,
+            configHash: true,
+        },
+    },
+} satisfies Prisma.TrainingMomentSelect;
+
+type AttemptMoment = Prisma.TrainingMomentGetPayload<{
+    select: typeof attemptMomentSelect;
+}>;
+
+const PRACTICE_THEME_TAXONOMY_VERSION = 'backranq-theme-v1';
+const PRACTICE_REVIEW_ALGORITHM_VERSION = 'backranq-review-v1';
+
+function attemptContext(
+    moment: AttemptMoment,
+    revision: NonNullable<AttemptMoment['currentSolutionRevision']>
+) {
+    return {
+        contextPhase: moment.phase,
+        contextCpLoss: moment.cpLoss,
+        contextWinChanceLoss: moment.winChanceLoss,
+        contextSourceKinds: moment.sourceKinds,
+        contextLessonKinds: moment.lessonKinds,
+        contextThemes: moment.themes,
+        contextThemeTaxonomyVersion:
+            PRACTICE_THEME_TAXONOMY_VERSION,
+        contextProvider: moment.game.provider,
+        contextTimeClass: moment.game.timeClass,
+        contextConfigHash: revision.configHash,
+        contextSolutionHash: revision.solutionHash,
+    };
+}
+
+type PracticeEvidenceTx = Pick<
+    Prisma.TransactionClient,
+    | 'trainingAttemptStatusEvent'
+    | 'practiceReviewState'
+    | 'practiceReviewEvent'
+>;
+
+async function appendAttemptStatusEvent(args: {
+    tx: PracticeEvidenceTx;
+    attemptId: string;
+    userId: string;
+    status: 'GRADED' | 'REVEALED';
+    grade?: AttemptGrade | null;
+    occurredAt: Date;
+}) {
+    await args.tx.trainingAttemptStatusEvent.create({
+        data: {
+            attemptId: args.attemptId,
+            userId: args.userId,
+            eventKey:
+                args.status === 'GRADED'
+                    ? 'graded'
+                    : 'revealed',
+            status: args.status,
+            grade: args.grade ?? null,
+            reason:
+                args.status === 'GRADED'
+                    ? 'GRADED'
+                    : 'REVEALED',
+            occurredAt: args.occurredAt,
+        },
+    });
+}
+
+async function recordReviewEvidence(args: {
+    tx: PracticeEvidenceTx;
+    attemptId: string;
+    userId: string;
+    trainingMomentId: string;
+    solutionHash: string;
+    configHash: string;
+    grade?: AttemptGrade;
+    revealed: boolean;
+    occurredAt: Date;
+}) {
+    const eventKey = `${args.attemptId}:review`;
+    const recorded = await args.tx.practiceReviewEvent.findUnique({
+        where: {
+            userId_eventKey: {
+                userId: args.userId,
+                eventKey,
+            },
+        },
+        select: { id: true },
+    });
+    if (recorded) return;
+
+    const existing = await args.tx.practiceReviewState.findUnique({
+        where: {
+            userId_trainingMomentId_solutionHash_configHash: {
+                userId: args.userId,
+                trainingMomentId: args.trainingMomentId,
+                solutionHash: args.solutionHash,
+                configHash: args.configHash,
+            },
+        },
+        select: {
+            id: true,
+            intervalDays: true,
+            lapses: true,
+            successes: true,
+        },
+    });
+    const success =
+        !args.revealed &&
+        (args.grade === 'BEST' || args.grade === 'GOOD');
+    const intervalBeforeDays = existing?.intervalDays ?? 0;
+    const intervalAfterDays = success
+        ? existing?.successes
+            ? Math.min(
+                  60,
+                  existing.successes === 1
+                      ? 3
+                      : Math.max(3, intervalBeforeDays * 2)
+              )
+            : 1
+        : 1;
+    const nextDueAt = new Date(
+        args.occurredAt.getTime() +
+            intervalAfterDays * 24 * 60 * 60 * 1_000
+    );
+    const state = await args.tx.practiceReviewState.upsert({
+        where: {
+            userId_trainingMomentId_solutionHash_configHash: {
+                userId: args.userId,
+                trainingMomentId: args.trainingMomentId,
+                solutionHash: args.solutionHash,
+                configHash: args.configHash,
+            },
+        },
+        create: {
+            userId: args.userId,
+            trainingMomentId: args.trainingMomentId,
+            solutionHash: args.solutionHash,
+            configHash: args.configHash,
+            nextDueAt,
+            intervalDays: intervalAfterDays,
+            lapses: success ? 0 : 1,
+            successes: success ? 1 : 0,
+            algorithmVersion:
+                PRACTICE_REVIEW_ALGORITHM_VERSION,
+            lastReviewedAt: args.occurredAt,
+        },
+        update: {
+            nextDueAt,
+            intervalDays: intervalAfterDays,
+            lapses: success
+                ? existing?.lapses ?? 0
+                : (existing?.lapses ?? 0) + 1,
+            successes: success
+                ? (existing?.successes ?? 0) + 1
+                : existing?.successes ?? 0,
+            algorithmVersion:
+                PRACTICE_REVIEW_ALGORITHM_VERSION,
+            lastReviewedAt: args.occurredAt,
+        },
+        select: { id: true },
+    });
+    await args.tx.practiceReviewEvent.create({
+        data: {
+            stateId: state.id,
+            attemptId: args.attemptId,
+            userId: args.userId,
+            eventKey,
+            outcome: args.revealed
+                ? 'REVEAL'
+                : success
+                  ? 'SUCCESS'
+                  : 'LAPSE',
+            grade: args.grade ?? null,
+            occurredAt: args.occurredAt,
+            intervalBeforeDays,
+            intervalAfterDays,
+            nextDueAt,
+            algorithmVersion:
+                PRACTICE_REVIEW_ALGORITHM_VERSION,
+        },
+    });
+}
+
 export type TrainingAttemptDependencies = {
     db: TrainingWriteDb;
     now?: () => Date;
@@ -192,17 +395,7 @@ export async function recordTrainingAttempt(args: {
             status: 'ACTIVE',
             archivedAt: null,
         },
-        select: {
-            id: true,
-            fen: true,
-            currentSolutionRevisionId: true,
-            currentSolutionRevision: {
-                select: {
-                    trainable: true,
-                    verificationStatus: true,
-                },
-            },
-        },
+        select: attemptMomentSelect,
     });
     if (!moment?.currentSolutionRevision) {
         throw new TrainingAttemptError(
@@ -211,6 +404,7 @@ export async function recordTrainingAttempt(args: {
             404
         );
     }
+    const revision = moment.currentSolutionRevision;
     if (
         moment.currentSolutionRevisionId !==
         args.request.solutionRevisionId
@@ -222,9 +416,9 @@ export async function recordTrainingAttempt(args: {
         );
     }
     if (
-        !moment.currentSolutionRevision.trainable ||
+        !revision.trainable ||
         !['VERIFIED', 'AMBIGUOUS'].includes(
-            moment.currentSolutionRevision.verificationStatus
+            revision.verificationStatus
         )
     ) {
         throw new TrainingAttemptError(
@@ -283,6 +477,10 @@ export async function recordTrainingAttempt(args: {
                     recoveredWinChance:
                         comparison?.recoveredWinChance ?? null,
                     completedAt: now,
+                    ...attemptContext(
+                        moment,
+                        revision
+                    ),
                 },
                 select: { id: true },
             });
@@ -313,6 +511,33 @@ export async function recordTrainingAttempt(args: {
                     status: 'ACTIVE',
                 },
                 data: { lastTrainedAt: now },
+            });
+            await appendAttemptStatusEvent({
+                tx,
+                attemptId: created.id,
+                userId: args.userId,
+                status: args.request.status,
+                grade:
+                    args.request.status === 'GRADED'
+                        ? args.request.grade
+                        : null,
+                occurredAt: now,
+            });
+            await recordReviewEvidence({
+                tx,
+                attemptId: created.id,
+                userId: args.userId,
+                trainingMomentId: moment.id,
+                solutionHash:
+                    revision.solutionHash,
+                configHash:
+                    revision.configHash,
+                grade:
+                    args.request.status === 'GRADED'
+                        ? args.request.grade
+                        : undefined,
+                revealed: args.request.status === 'REVEALED',
+                occurredAt: now,
             });
             return created;
         });

@@ -70,3 +70,46 @@ test('mobile game sync and history import stay inside the viewport', async ({
     expect(overflow.page).toBe(false);
     expect(overflow.dialog).toBe(false);
 });
+
+test('Progress reflows at 320px with reachable canonical navigation', async ({
+    page,
+}) => {
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.goto('/progress');
+
+    await expect(
+        page.getByRole('heading', { level: 1, name: 'Progress' })
+    ).toBeVisible();
+    await expect(
+        page
+            .getByRole('form', { name: 'Progress scope' })
+            .getByLabel('Time window')
+    ).toBeVisible();
+    await expect(
+        page.getByRole('region', { name: 'Data coverage' })
+    ).toBeVisible();
+
+    const hasHorizontalOverflow = await page.evaluate(
+        () =>
+            document.documentElement.scrollWidth >
+            document.documentElement.clientWidth + 1
+    );
+    expect(hasHorizontalOverflow).toBe(false);
+
+    await page.getByRole('button', { name: 'Open menu' }).click();
+    const primaryNav = page.getByRole('navigation', {
+        name: 'Primary',
+    });
+    await expect(
+        primaryNav.getByRole('link', {
+            name: 'Progress',
+            exact: true,
+        })
+    ).toHaveAttribute('aria-current', 'page');
+    await expect(
+        primaryNav.getByRole('link', {
+            name: 'Stats',
+            exact: true,
+        })
+    ).toHaveCount(0);
+});

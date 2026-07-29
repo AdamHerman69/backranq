@@ -602,6 +602,7 @@ describe('PUT /api/games/[id]/analysis', () => {
                 analysis: expect.objectContaining({ gameId: validAnalysis.gameId }),
                 analyzedAt: expect.any(Date),
                 currentAnalysisRunId: 'run-1',
+                currentAnalysisValid: true,
             },
         });
         expect(tx.analysisRun.updateMany).toHaveBeenCalledWith({

@@ -32,6 +32,7 @@ type ChessComGame = {
     url?: string;
     uuid?: string;
     time_class?: string;
+    time_control?: string;
     rated?: boolean;
     white?: ChessComSide;
     black?: ChessComSide;
@@ -304,7 +305,8 @@ function selectArchives(args: {
 
 function normalizeChessComGame(
     game: ChessComGame,
-    filters: GameFetchFilters
+    filters: GameFetchFilters,
+    requestedUsername: string
 ): NormalizedGame | null {
     const pgn = game?.pgn;
     if (!pgn) return null;
@@ -317,6 +319,27 @@ function normalizeChessComGame(
     const stableUuid = game.uuid?.trim();
     const stableUrl = game.url?.trim();
     const summary = parsePgnSummary(pgn);
+    const expected = requestedUsername
+        .trim()
+        .toLocaleLowerCase('en-US');
+    const whiteMatches =
+        game.white?.username?.trim().toLocaleLowerCase('en-US') ===
+        expected;
+    const blackMatches =
+        game.black?.username?.trim().toLocaleLowerCase('en-US') ===
+        expected;
+    const rawTimeControl = game.time_control?.trim();
+    const parsedTimeControl = rawTimeControl?.match(
+        /^(\d+)(?:\+(\d+))?$/
+    );
+    const initialSeconds = parsedTimeControl?.[1]
+        ? Number(parsedTimeControl[1])
+        : undefined;
+    const incrementSeconds = parsedTimeControl?.[2]
+        ? Number(parsedTimeControl[2])
+        : parsedTimeControl
+          ? 0
+          : undefined;
     const normalized: NormalizedGame = {
         id: `chesscom:${
             stableUuid || `${stableUrl ?? ''}:${playedAtSeconds ?? ''}`
@@ -331,12 +354,37 @@ function normalizeChessComGame(
         result: summary.result,
         termination: summary.termination,
         pgn,
+        provenance: {
+            username: requestedUsername.trim(),
+            userSide:
+                whiteMatches && !blackMatches
+                    ? 'white'
+                    : blackMatches && !whiteMatches
+                      ? 'black'
+                      : 'unknown',
+            timeControl: rawTimeControl
+                ? {
+                      raw: rawTimeControl,
+                      initialSeconds:
+                          initialSeconds != null &&
+                          Number.isSafeInteger(initialSeconds)
+                              ? initialSeconds
+                              : undefined,
+                      incrementSeconds:
+                          incrementSeconds != null &&
+                          Number.isSafeInteger(incrementSeconds)
+                              ? incrementSeconds
+                              : undefined,
+                  }
+                : undefined,
+        },
     };
     return passesFilters(normalized, filters) ? normalized : null;
 }
 
 async function fetchArchiveGames(args: {
     archive: string;
+    username: string;
     filters: GameFetchFilters;
     signal?: AbortSignal;
 }) {
@@ -372,7 +420,9 @@ async function fetchArchiveGames(args: {
         requireArchiveGame(game, index)
     );
     return list
-        .map((game) => normalizeChessComGame(game, args.filters))
+        .map((game) =>
+            normalizeChessComGame(game, args.filters, args.username)
+        )
         .filter((game): game is NormalizedGame => !!game);
 }
 
@@ -404,6 +454,7 @@ export async function fetchChessComGames(args: {
         games.push(
             ...(await fetchArchiveGames({
                 archive,
+                username: args.username,
                 filters: { ...args.filters, max: undefined },
                 signal: args.signal,
             }))
@@ -448,6 +499,7 @@ export async function fetchChessComGamesBatch(args: {
         games.push(
             ...(await fetchArchiveGames({
                 archive,
+                username: args.username,
                 filters: {
                     since: args.since,
                     until: args.until,

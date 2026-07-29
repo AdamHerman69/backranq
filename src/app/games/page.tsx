@@ -11,6 +11,10 @@ import { classifyOpeningFromPgn } from '@/lib/chess/opening';
 import { GamesIndexClient } from '@/components/games/GamesIndexClient';
 import { buildUserGameFiltersWhere } from '@/lib/games/outcome';
 import { getManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
+import {
+    gamesAnalysisStateWhere,
+    parseGamesDateBound,
+} from '@/lib/games/indexFilters';
 
 function clampInt(v: number, min: number, max: number) {
     return Math.max(min, Math.min(max, v));
@@ -42,6 +46,12 @@ export default async function GamesPage({
     const since = typeof sp.since === 'string' ? sp.since : '';
     const until = typeof sp.until === 'string' ? sp.until : '';
     const hasAnalysis = typeof sp.hasAnalysis === 'string' ? sp.hasAnalysis : '';
+    const analysisState =
+        sp.analysisState === 'needs-analysis'
+            ? 'needs-analysis'
+            : sp.analysisState === 'analyzed'
+              ? 'analyzed'
+              : '';
     const q = typeof sp.q === 'string' ? sp.q.trim() : '';
 
     const user = await prisma.user.findUnique({
@@ -84,11 +94,23 @@ export default async function GamesPage({
                       ? 'CLASSICAL'
                       : 'UNKNOWN';
     }
-    if (hasAnalysis === 'true') where.analyzedAt = { not: null };
-    if (hasAnalysis === 'false') where.analyzedAt = null;
+    if (analysisState === 'analyzed') {
+        Object.assign(
+            where,
+            gamesAnalysisStateWhere('analyzed')
+        );
+    } else if (analysisState === 'needs-analysis') {
+        Object.assign(
+            where,
+            gamesAnalysisStateWhere('needs-analysis')
+        );
+    } else {
+        if (hasAnalysis === 'true') where.analyzedAt = { not: null };
+        if (hasAnalysis === 'false') where.analyzedAt = null;
+    }
     if (since) {
-        const d = new Date(since);
-        if (!Number.isNaN(d.getTime())) {
+        const d = parseGamesDateBound(since, 'start');
+        if (d) {
             where.playedAt = {
                 ...(where.playedAt as Prisma.DateTimeFilter),
                 gte: d,
@@ -96,8 +118,8 @@ export default async function GamesPage({
         }
     }
     if (until) {
-        const d = new Date(until);
-        if (!Number.isNaN(d.getTime())) {
+        const d = parseGamesDateBound(until, 'end');
+        if (d) {
             where.playedAt = {
                 ...(where.playedAt as Prisma.DateTimeFilter),
                 lte: d,
@@ -249,7 +271,11 @@ export default async function GamesPage({
                     if (provider) p.set('provider', provider);
                     if (timeClass) p.set('timeClass', timeClass);
                     if (resultParam) p.set('result', resultParam);
-                    if (hasAnalysis) p.set('hasAnalysis', hasAnalysis);
+                    if (analysisState) {
+                        p.set('analysisState', analysisState);
+                    } else if (hasAnalysis) {
+                        p.set('hasAnalysis', hasAnalysis);
+                    }
                     if (since) p.set('since', since);
                     if (until) p.set('until', until);
                     if (q) p.set('q', q);
@@ -277,10 +303,17 @@ export default async function GamesPage({
                         resultParam === 'draws'
                             ? (resultParam as 'wins' | 'losses' | 'draws')
                             : '',
-                    hasAnalysis:
-                        hasAnalysis === 'true' || hasAnalysis === 'false'
-                            ? (hasAnalysis as 'true' | 'false')
-                            : '',
+                    analysisState:
+                        analysisState === 'analyzed'
+                            ? 'analyzed'
+                            : analysisState === 'needs-analysis'
+                              ? 'needs-analysis'
+                              : hasAnalysis === 'true' ||
+                                  hasAnalysis === 'false'
+                                ? hasAnalysis === 'true'
+                                    ? 'analyzed'
+                                    : 'needs-analysis'
+                                : '',
                     since,
                     until,
                     q,

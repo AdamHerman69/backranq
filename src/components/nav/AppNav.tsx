@@ -41,9 +41,9 @@ export const appNavItems: NavItem[] = [
     active: (p) => p === "/games" || p.startsWith("/games/"),
   },
   {
-    href: "/stats",
-    label: "Stats",
-    active: (p) => p === "/stats" || p.startsWith("/stats/"),
+    href: "/progress",
+    label: "Progress",
+    active: (p) => p === "/progress" || p.startsWith("/progress/"),
   },
   {
     href: "/settings",
@@ -76,7 +76,9 @@ function NavLinkButton({
       variant={active ? "secondary" : "ghost"}
       className={cn("w-full justify-start", !active && "text-muted-foreground")}
     >
-      <Link href={href}>{label}</Link>
+      <Link href={href} aria-current={active ? "page" : undefined}>
+        {label}
+      </Link>
     </Button>
   );
 }
@@ -108,7 +110,10 @@ export function AppNav() {
                 <SheetTitle>Backranq</SheetTitle>
               </SheetHeader>
 
-              <div className="mt-4 flex flex-col gap-1">
+              <nav
+                aria-label="Primary"
+                className="mt-4 flex flex-col gap-1"
+              >
                 {appNavItems.map((it) => {
                   const isActive = it.active ? it.active(pathname) : pathname === it.href;
                   return (
@@ -120,7 +125,7 @@ export function AppNav() {
                     />
                   );
                 })}
-              </div>
+              </nav>
 
               <div className="mt-6">
                 {authed ? (
@@ -148,7 +153,7 @@ export function AppNav() {
           </Link>
         </Button>
 
-        <nav className="hidden items-center gap-1 md:flex">
+        <nav aria-label="Primary" className="hidden items-center gap-1 md:flex">
           {appNavItems.map((it) => {
             const isActive = it.active ? it.active(pathname) : pathname === it.href;
             return (
@@ -158,7 +163,12 @@ export function AppNav() {
                 variant={isActive ? "secondary" : "ghost"}
                 className={cn(!isActive && "text-muted-foreground")}
               >
-                <Link href={it.href}>{it.label}</Link>
+                <Link
+                  href={it.href}
+                  aria-current={isActive ? "page" : undefined}
+                >
+                  {it.label}
+                </Link>
               </Button>
             );
           })}

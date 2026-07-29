@@ -17,9 +17,13 @@ export default async function PracticePage({
         rawMomentId && isTrainingApiUuid(rawMomentId)
             ? rawMomentId
             : undefined;
+    const entry = sp.entry === 'progress' ? 'progress' : undefined;
+    const callbackSearchParams = new URLSearchParams();
+    if (momentId) callbackSearchParams.set('momentId', momentId);
+    if (entry) callbackSearchParams.set('entry', entry);
     const practiceCallbackUrl = safeAuthCallbackUrl(
-        momentId
-            ? `/practice?${new URLSearchParams({ momentId }).toString()}`
+        callbackSearchParams.size > 0
+            ? `/practice?${callbackSearchParams.toString()}`
             : '/practice',
         '/practice'
     );
@@ -42,6 +46,7 @@ export default async function PracticePage({
             <TrainingTrainer
                 initialMomentId={momentId}
                 ownerId={userId}
+                entry={entry}
             />
         </div>
     );

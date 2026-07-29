@@ -486,6 +486,15 @@ function optionalRating(
     );
 }
 
+function optionalNonnegativeInteger(value: unknown) {
+    return (
+        value == null ||
+        (typeof value === 'number' &&
+            Number.isSafeInteger(value) &&
+            value >= 0)
+    );
+}
+
 function isTimeClass(value: unknown): value is NormalizedGame['timeClass'] {
     return (
         value === 'bullet' ||
@@ -627,6 +636,66 @@ export function validateHistoryImportGame(args: {
         };
     }
 
+    const whiteMatches =
+        normalizeChessUsername(white.name) === usernameNormalized;
+    const blackMatches =
+        normalizeChessUsername(black.name) === usernameNormalized;
+    const provenance = isRecord(value.provenance)
+        ? value.provenance
+        : null;
+    const provenanceUsername =
+        typeof provenance?.username === 'string'
+            ? provenance.username.trim()
+            : usernameNormalized;
+    if (
+        !provenanceUsername ||
+        provenanceUsername.length > 200 ||
+        normalizeChessUsername(provenanceUsername) !== usernameNormalized
+    ) {
+        return {
+            error: {
+                index,
+                id,
+                kind: 'validation',
+                error: 'Invalid game provenance',
+            },
+        };
+    }
+    if (
+        provenance?.accountId != null &&
+        (typeof provenance.accountId !== 'string' ||
+            !provenance.accountId.trim() ||
+            provenance.accountId.length > 500)
+    ) {
+        return {
+            error: {
+                index,
+                id,
+                kind: 'validation',
+                error: 'Invalid game provenance',
+            },
+        };
+    }
+    const timeControl = isRecord(provenance?.timeControl)
+        ? provenance.timeControl
+        : null;
+    if (
+        (timeControl?.raw != null &&
+            (typeof timeControl.raw !== 'string' ||
+                timeControl.raw.length > 200)) ||
+        !optionalNonnegativeInteger(timeControl?.initialSeconds) ||
+        !optionalNonnegativeInteger(timeControl?.incrementSeconds)
+    ) {
+        return {
+            error: {
+                index,
+                id,
+                kind: 'validation',
+                error: 'Invalid time control provenance',
+            },
+        };
+    }
+
     return {
         game: {
             id,
@@ -657,6 +726,39 @@ export function validateHistoryImportGame(args: {
                     ? value.termination
                     : undefined,
             pgn: value.pgn,
+            provenance: provenance
+                ? {
+                      username: provenanceUsername,
+                      accountId:
+                          typeof provenance.accountId === 'string'
+                              ? provenance.accountId.trim()
+                              : undefined,
+                      userSide:
+                          whiteMatches && !blackMatches
+                              ? 'white'
+                              : blackMatches && !whiteMatches
+                                ? 'black'
+                                : 'unknown',
+                      timeControl: timeControl
+                          ? {
+                                raw:
+                                    typeof timeControl.raw === 'string'
+                                        ? timeControl.raw
+                                        : undefined,
+                                initialSeconds:
+                                    typeof timeControl.initialSeconds ===
+                                    'number'
+                                        ? timeControl.initialSeconds
+                                        : undefined,
+                                incrementSeconds:
+                                    typeof timeControl.incrementSeconds ===
+                                    'number'
+                                        ? timeControl.incrementSeconds
+                                        : undefined,
+                            }
+                          : undefined,
+                  }
+                : undefined,
         },
     };
 }
@@ -1228,6 +1330,23 @@ export async function importHistoricalGames(args: {
                     error: 'History snapshot ticket is invalid or expired',
                 });
                 continue;
+            }
+            if (!parsed.game.provenance) {
+                const whiteMatches =
+                    normalizeChessUsername(parsed.game.white.name) ===
+                    identity.usernameNormalized;
+                const blackMatches =
+                    normalizeChessUsername(parsed.game.black.name) ===
+                    identity.usernameNormalized;
+                parsed.game.provenance = {
+                    username: identity.username,
+                    userSide:
+                        whiteMatches && !blackMatches
+                            ? 'white'
+                            : blackMatches && !whiteMatches
+                              ? 'black'
+                              : 'unknown',
+                };
             }
             parsedGames.push({
                 index,

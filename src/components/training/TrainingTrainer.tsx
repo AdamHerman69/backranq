@@ -275,13 +275,19 @@ function unresolvedExplanation(
 export function TrainingTrainer({
     initialMomentId,
     ownerId,
+    entry,
     compact = false,
 }: {
     initialMomentId?: string;
     ownerId?: string;
+    entry?: 'progress';
     compact?: boolean;
 }) {
-    const training = usePracticeFeed(initialMomentId, ownerId);
+    const training = usePracticeFeed(
+        initialMomentId,
+        ownerId,
+        entry
+    );
     const [flipped, setFlipped] = useState(false);
     const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
     const [pendingPromotion, setPendingPromotion] =

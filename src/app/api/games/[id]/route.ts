@@ -7,7 +7,7 @@ import {
     isRecord,
     stringValue,
 } from '@/lib/api/validation';
-import { isValidSourcePgn } from '@/lib/chess/pgn';
+import { hashSourcePgn, isValidSourcePgn } from '@/lib/chess/pgn';
 import {
     GameDeletionConflictError,
     deleteOwnedGameSafely,
@@ -218,6 +218,14 @@ export async function PATCH(
                                   analysis: {} as Prisma.InputJsonValue,
                                   analyzedAt: null,
                                   currentAnalysisRunId: null,
+                                  currentAnalysisValid: false,
+                                  sourcePgnHash: hashSourcePgn(body.pgn!),
+                                  sourceUsername: null,
+                                  sourceAccountId: null,
+                                  userSide: 'UNKNOWN',
+                                  timeControlRaw: null,
+                                  timeControlInitialSeconds: null,
+                                  timeControlIncrementSeconds: null,
                               }
                             : {}),
                     },

@@ -6,6 +6,7 @@ import type {
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import type { AnalyzedGame, Provider, TimeClass } from '@prisma/client';
 import { classifyOpeningFromPgn } from '@/lib/chess/opening';
+import { hashSourcePgn } from '@/lib/chess/pgn';
 
 export function parseExternalId(game: NormalizedGame): string {
     // Our provider APIs currently set ids like "lichess:<id>" and "chesscom:<uuid>"
@@ -63,14 +64,33 @@ export function jsonToGameAnalysis(json: unknown): GameAnalysis | null {
 
 export function normalizedGameToDb(game: NormalizedGame, userId: string) {
     const opening = classifyOpeningFromPgn(game.pgn);
+    const timeControl = game.provenance?.timeControl;
     return {
         userId,
         provider: providerToDb(game.provider),
         externalId: parseExternalId(game),
         url: game.url ?? null,
         pgn: game.pgn,
+        sourcePgnHash: hashSourcePgn(game.pgn),
+        sourceUsername: game.provenance?.username ?? null,
+        sourceAccountId: game.provenance?.accountId ?? null,
+        userSide:
+            game.provenance?.userSide === 'white'
+                ? ('WHITE' as const)
+                : game.provenance?.userSide === 'black'
+                  ? ('BLACK' as const)
+                  : ('UNKNOWN' as const),
         playedAt: new Date(game.playedAt),
         timeClass: timeClassToDb(game.timeClass),
+        timeControlRaw: timeControl?.raw ?? null,
+        timeControlInitialSeconds:
+            typeof timeControl?.initialSeconds === 'number'
+                ? Math.trunc(timeControl.initialSeconds)
+                : null,
+        timeControlIncrementSeconds:
+            typeof timeControl?.incrementSeconds === 'number'
+                ? Math.trunc(timeControl.incrementSeconds)
+                : null,
         rated: typeof game.rated === 'boolean' ? game.rated : null,
         result: game.result ?? null,
         termination: game.termination ?? null,
@@ -112,5 +132,31 @@ export function dbGameToNormalized(dbGame: AnalyzedGame): NormalizedGame {
         result: dbGame.result ?? undefined,
         termination: dbGame.termination ?? undefined,
         pgn: dbGame.pgn,
+        provenance: dbGame.sourceUsername
+            ? {
+                  username: dbGame.sourceUsername,
+                  accountId: dbGame.sourceAccountId ?? undefined,
+                  userSide:
+                      dbGame.userSide === 'WHITE'
+                          ? 'white'
+                          : dbGame.userSide === 'BLACK'
+                            ? 'black'
+                            : 'unknown',
+                  timeControl:
+                      dbGame.timeControlRaw != null ||
+                      dbGame.timeControlInitialSeconds != null ||
+                      dbGame.timeControlIncrementSeconds != null
+                          ? {
+                                raw: dbGame.timeControlRaw ?? undefined,
+                                initialSeconds:
+                                    dbGame.timeControlInitialSeconds ??
+                                    undefined,
+                                incrementSeconds:
+                                    dbGame.timeControlIncrementSeconds ??
+                                    undefined,
+                            }
+                          : undefined,
+              }
+            : undefined,
     };
 }

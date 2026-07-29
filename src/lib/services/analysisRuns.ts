@@ -427,6 +427,7 @@ export async function completeAnalysisRunWithGameAnalysisInTransaction(
             analysis: gameAnalysisToJson(args.analysis) as Prisma.InputJsonValue,
             analyzedAt: completedAt,
             currentAnalysisRunId: run.id,
+            currentAnalysisValid: true,
         },
     });
     if (gameWrite.count !== 1) throw new SourcePgnChangedError();

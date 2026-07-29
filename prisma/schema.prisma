@@ -23,6 +23,12 @@ enum TimeClass {
   UNKNOWN
 }
 
+enum GameUserSide {
+  WHITE
+  BLACK
+  UNKNOWN
+}
+
 enum TrainingMomentStatus {
   ACTIVE
   UNSTABLE
@@ -102,6 +108,57 @@ enum AttemptStepActor {
   ENGINE
 }
 
+enum PracticeFocus {
+  ALL
+  MEANINGFUL
+  MAJOR
+}
+
+enum PracticeEntrySurface {
+  PRACTICE
+  HOME
+  GAMES
+  PROGRESS
+}
+
+enum PracticeExposureEventKind {
+  SHOWN
+  TERMINAL
+}
+
+enum PracticeExposureTerminalReason {
+  MOVE_SUBMITTED
+  REVEALED
+  ABANDONED
+  REPLACED
+  NAVIGATED_AWAY
+}
+
+enum TrainingAttemptStatusEventReason {
+  SUBMITTED
+  RETRY
+  GRADED
+  REVEALED
+  ENGINE_UNAVAILABLE
+  UNSTABLE_EVIDENCE
+  MISSING_OUTCOME_EVIDENCE
+  STALE_PENDING
+}
+
+enum PracticeReviewOutcome {
+  SUCCESS
+  LAPSE
+  REVEAL
+  UNRESOLVED
+}
+
+enum ProgressAnalyticsEventName {
+  PROGRESS_VIEWED
+  INSIGHT_EXPANDED
+  ACTION_CLICKED
+  PRACTICE_STARTED_FROM_PROGRESS
+}
+
 enum GamePhase {
   OPENING
   MIDDLEGAME
@@ -164,16 +221,22 @@ model User {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  games               AnalyzedGame[]
-  trainingMoments     TrainingMoment[]
-  trainingAttempts    TrainingAttempt[]
-  providerSyncStates  ProviderSyncState[]
-  historyImportQuotas HistoryImportQuota[]
-  syncJobs            SyncJob[]
-  analysisJobs        AnalysisJob[]
-  analysisRuns        AnalysisRun[]
-  creditLedgerEntries CreditLedgerEntry[]
-  billingAccount      BillingAccount?
+  games                   AnalyzedGame[]
+  trainingMoments         TrainingMoment[]
+  trainingAttempts        TrainingAttempt[]
+  practiceExposures       PracticeExposure[]
+  attemptStatusEvents     TrainingAttemptStatusEvent[]
+  practiceReviewStates    PracticeReviewState[]
+  practiceReviewEvents    PracticeReviewEvent[]
+  progressAnalyticsEvents ProgressAnalyticsEvent[]
+  progressAnalyticsRateBucket ProgressAnalyticsRateBucket?
+  providerSyncStates      ProviderSyncState[]
+  historyImportQuotas     HistoryImportQuota[]
+  syncJobs                SyncJob[]
+  analysisJobs            AnalysisJob[]
+  analysisRuns            AnalysisRun[]
+  creditLedgerEntries     CreditLedgerEntry[]
+  billingAccount          BillingAccount?
 
   // NextAuth (Auth.js) relations
   accounts Account[]
@@ -227,29 +290,37 @@ model StripeWebhookEvent {
 }
 
 model AnalyzedGame {
-  id                   String    @id @default(uuid()) @db.Uuid
-  userId               String    @db.Uuid
-  provider             Provider
-  externalId           String
-  url                  String?
-  pgn                  String    @db.Text
-  playedAt             DateTime
-  timeClass            TimeClass
-  rated                Boolean?
-  result               String?
-  termination          String?
-  whiteName            String
-  whiteRating          Int?
-  blackName            String
-  blackRating          Int?
-  openingEco           String?
-  openingName          String?
-  openingVariation     String?
-  analysis             Json
-  analyzedAt           DateTime?
-  currentAnalysisRunId String?   @db.Uuid
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  id                          String       @id @default(uuid()) @db.Uuid
+  userId                      String       @db.Uuid
+  provider                    Provider
+  externalId                  String
+  url                         String?
+  pgn                         String       @db.Text
+  sourcePgnHash               String
+  sourceUsername              String?
+  sourceAccountId             String?
+  userSide                    GameUserSide @default(UNKNOWN)
+  playedAt                    DateTime
+  timeClass                   TimeClass
+  timeControlRaw              String?
+  timeControlInitialSeconds   Int?
+  timeControlIncrementSeconds Int?
+  rated                       Boolean?
+  result                      String?
+  termination                 String?
+  whiteName                   String
+  whiteRating                 Int?
+  blackName                   String
+  blackRating                 Int?
+  openingEco                  String?
+  openingName                 String?
+  openingVariation            String?
+  analysis                    Json
+  analyzedAt                  DateTime?
+  currentAnalysisRunId        String?      @db.Uuid
+  currentAnalysisValid        Boolean      @default(false)
+  createdAt                   DateTime     @default(now())
+  updatedAt                   DateTime     @updatedAt
 
   user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   trainingMoments     TrainingMoment[]
@@ -261,6 +332,10 @@ model AnalyzedGame {
   @@unique([userId, provider, externalId])
   @@unique([id, userId])
   @@index([userId])
+  @@index([userId, playedAt, provider, timeClass])
+  @@index([userId, analyzedAt])
+  @@index([userId, currentAnalysisValid, playedAt])
+  @@index([userId, sourcePgnHash])
   @@index([provider, externalId])
   @@index([currentAnalysisRunId])
 }
@@ -482,6 +557,8 @@ model TrainingMoment {
   solutionRevisions       SolutionRevision[]          @relation("MomentSolutionRevisions")
   observations            TrainingMomentObservation[]
   attempts                TrainingAttempt[]
+  practiceExposures       PracticeExposure[]
+  practiceReviewStates    PracticeReviewState[]
 
   @@unique([gameId, sourcePgnHash, decisionPly])
   @@unique([id, userId])
@@ -515,12 +592,13 @@ model SolutionRevision {
   configHash         String
   createdAt          DateTime           @default(now())
 
-  moment           TrainingMoment              @relation("MomentSolutionRevisions", fields: [momentId], references: [id], onDelete: Cascade)
-  currentForMoment TrainingMoment?             @relation("CurrentSolutionRevision")
-  analysisRun      AnalysisRun                 @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
-  moveAssessments  SolutionMoveAssessment[]
-  observations     TrainingMomentObservation[]
-  attempts         TrainingAttempt[]
+  moment            TrainingMoment              @relation("MomentSolutionRevisions", fields: [momentId], references: [id], onDelete: Cascade)
+  currentForMoment  TrainingMoment?             @relation("CurrentSolutionRevision")
+  analysisRun       AnalysisRun                 @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  moveAssessments   SolutionMoveAssessment[]
+  observations      TrainingMomentObservation[]
+  attempts          TrainingAttempt[]
+  practiceExposures PracticeExposure[]
 
   @@unique([momentId, revision])
   @@unique([momentId, analysisRunId])
@@ -575,35 +653,53 @@ model SolutionMoveAssessment {
 }
 
 model TrainingAttempt {
-  id                 String                @id @default(uuid()) @db.Uuid
-  trainingMomentId   String                @db.Uuid
-  userId             String                @db.Uuid
-  solutionRevisionId String                @db.Uuid
-  clientAttemptId    String
-  attemptedAt        DateTime              @default(now())
-  userMoveUci        String?
-  timeSpentMs        Int?
-  status             AttemptStatus         @default(PENDING)
-  grade              AttemptGrade?
-  gradingSource      MoveAssessmentSource?
-  gradingEvidence    Json                  @default(dbgenerated("'{}'::jsonb"))
-  bestGapCp          Int?
-  bestGapWinChance   Float?
-  recoveredCp        Int?
-  recoveredWinChance Float?
-  completedAt        DateTime?
+  id                          String                @id @default(uuid()) @db.Uuid
+  trainingMomentId            String                @db.Uuid
+  userId                      String                @db.Uuid
+  solutionRevisionId          String                @db.Uuid
+  clientAttemptId             String
+  attemptedAt                 DateTime              @default(now())
+  userMoveUci                 String?
+  timeSpentMs                 Int?
+  status                      AttemptStatus         @default(PENDING)
+  grade                       AttemptGrade?
+  gradingSource               MoveAssessmentSource?
+  gradingEvidence             Json                  @default(dbgenerated("'{}'::jsonb"))
+  bestGapCp                   Int?
+  bestGapWinChance            Float?
+  recoveredCp                 Int?
+  recoveredWinChance          Float?
+  completedAt                 DateTime?
+  contextPhase                GamePhase?
+  contextCpLoss               Float?
+  contextWinChanceLoss        Float?
+  contextSourceKinds          TrainingSourceKind[]  @default([])
+  contextLessonKinds          TrainingLessonKind[]  @default([])
+  contextThemes               String[]              @default([])
+  contextThemeTaxonomyVersion String                @default("backranq-theme-v1")
+  contextProvider             Provider
+  contextTimeClass            TimeClass
+  contextConfigHash           String
+  contextSolutionHash         String
 
-  trainingMoment   TrainingMoment        @relation(fields: [trainingMomentId, userId], references: [id, userId], onDelete: Cascade)
-  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  solutionRevision SolutionRevision      @relation(fields: [solutionRevisionId, trainingMomentId], references: [id, momentId], onDelete: Cascade)
-  steps            TrainingAttemptStep[]
+  trainingMoment    TrainingMoment               @relation(fields: [trainingMomentId, userId], references: [id, userId], onDelete: Cascade)
+  user              User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  solutionRevision  SolutionRevision             @relation(fields: [solutionRevisionId, trainingMomentId], references: [id, momentId], onDelete: Cascade)
+  steps             TrainingAttemptStep[]
+  practiceExposures PracticeExposure[]
+  statusEvents      TrainingAttemptStatusEvent[]
+  reviewEvents      PracticeReviewEvent[]
 
   @@unique([userId, clientAttemptId])
+  @@unique([id, userId])
   @@index([trainingMomentId])
   @@index([userId])
   @@index([solutionRevisionId])
   @@index([userId, trainingMomentId])
   @@index([userId, trainingMomentId, solutionRevisionId])
+  @@index([userId, attemptedAt, status])
+  @@index([userId, contextProvider, contextTimeClass, attemptedAt])
+  @@index([userId, contextPhase, attemptedAt])
 }
 
 model TrainingAttemptStep {
@@ -622,6 +718,146 @@ model TrainingAttemptStep {
 
   @@unique([attemptId, stepIndex])
   @@index([attemptId])
+}
+
+/// Append-only lifecycle records for a Position being shown and leaving the
+/// active Practice surface. `clientExposureId` correlates the SHOWN and
+/// TERMINAL records without turning an exposure into mutable session state.
+model PracticeExposure {
+  id                 String                          @id @default(uuid()) @db.Uuid
+  userId             String                          @db.Uuid
+  trainingMomentId   String                          @db.Uuid
+  solutionRevisionId String                          @db.Uuid
+  attemptId          String?                         @db.Uuid
+  clientExposureId   String
+  clientEventId      String
+  kind               PracticeExposureEventKind
+  shownAt            DateTime
+  clientOccurredAt   DateTime
+  recordedAt         DateTime                        @default(now())
+  entrySurface       PracticeEntrySurface
+  recommendationKey  String?
+  focus              PracticeFocus?
+  terminalReason     PracticeExposureTerminalReason?
+
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trainingMoment   TrainingMoment   @relation(fields: [trainingMomentId, userId], references: [id, userId], onDelete: Cascade)
+  solutionRevision SolutionRevision @relation(fields: [solutionRevisionId, trainingMomentId], references: [id, momentId], onDelete: Cascade)
+  attempt          TrainingAttempt? @relation(fields: [attemptId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@unique([userId, clientEventId])
+  @@index([userId, recordedAt])
+  @@index([userId, kind, recordedAt])
+  @@index([trainingMomentId, recordedAt])
+  @@index([solutionRevisionId])
+  @@index([attemptId])
+  @@index([userId, clientExposureId, recordedAt])
+}
+
+/// Append-only status history. TrainingAttempt remains the current-state row;
+/// this table makes unresolved/retry/grade/reveal transitions auditable.
+model TrainingAttemptStatusEvent {
+  id         String                           @id @default(uuid()) @db.Uuid
+  attemptId  String                           @db.Uuid
+  userId     String                           @db.Uuid
+  eventKey   String
+  status     AttemptStatus
+  grade      AttemptGrade?
+  reason     TrainingAttemptStatusEventReason
+  occurredAt DateTime
+  recordedAt DateTime                         @default(now())
+
+  attempt TrainingAttempt @relation(fields: [attemptId, userId], references: [id, userId], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, eventKey])
+  @@index([userId, occurredAt])
+  @@index([userId, status, occurredAt])
+}
+
+/// Current due-state for one user, Position, and immutable solution semantics.
+/// This is scheduling state, not a Practice session or goal.
+model PracticeReviewState {
+  id               String   @id @default(uuid()) @db.Uuid
+  userId           String   @db.Uuid
+  trainingMomentId String   @db.Uuid
+  solutionHash     String
+  configHash       String
+  nextDueAt        DateTime
+  intervalDays     Int
+  lapses           Int      @default(0)
+  successes        Int      @default(0)
+  algorithmVersion String
+  lastReviewedAt   DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
+
+  user           User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trainingMoment TrainingMoment        @relation(fields: [trainingMomentId, userId], references: [id, userId], onDelete: Cascade)
+  events         PracticeReviewEvent[]
+
+  @@unique([userId, trainingMomentId, solutionHash, configHash])
+  @@index([userId, nextDueAt])
+  @@index([trainingMomentId])
+}
+
+/// Append-only evidence used to derive PracticeReviewState.
+model PracticeReviewEvent {
+  id                 String                @id @default(uuid()) @db.Uuid
+  stateId            String                @db.Uuid
+  attemptId          String?               @db.Uuid
+  userId             String                @db.Uuid
+  eventKey           String
+  outcome            PracticeReviewOutcome
+  grade              AttemptGrade?
+  occurredAt         DateTime
+  recordedAt         DateTime              @default(now())
+  intervalBeforeDays Int
+  intervalAfterDays  Int
+  nextDueAt          DateTime
+  algorithmVersion   String
+
+  state   PracticeReviewState @relation(fields: [stateId], references: [id], onDelete: Cascade)
+  attempt TrainingAttempt?    @relation(fields: [attemptId, userId], references: [id, userId], onDelete: Cascade)
+  user    User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, eventKey])
+  @@index([userId, occurredAt])
+  @@index([stateId, occurredAt])
+  @@index([attemptId])
+}
+
+/// Minimal typed product analytics for Progress. There is deliberately no
+/// free-form payload field, so Positions, moves, FENs, or solutions cannot leak.
+model ProgressAnalyticsEvent {
+  id                String                     @id @default(uuid()) @db.Uuid
+  userId            String                     @db.Uuid
+  clientEventId     String
+  eventName         ProgressAnalyticsEventName
+  occurredAt        DateTime
+  recordedAt        DateTime                   @default(now())
+  insightKey        String?
+  actionKey         String?
+  recommendationKey String?
+  windowDays        Int?
+  provider          Provider?
+  timeClass         TimeClass?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clientEventId])
+  @@index([userId, eventName, occurredAt])
+  @@index([userId, occurredAt])
+  @@index([userId, recordedAt])
+}
+
+model ProgressAnalyticsRateBucket {
+  userId          String   @id @db.Uuid
+  windowStartedAt DateTime
+  eventCount      Int
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 // NextAuth (Auth.js) Prisma Adapter models

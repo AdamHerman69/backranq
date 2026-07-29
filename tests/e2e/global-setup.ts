@@ -7,6 +7,7 @@ import type { FullConfig } from '@playwright/test';
 import { Chess } from 'chess.js';
 
 import { assertSafeE2eDatabaseConfig } from '../../scripts/lib/e2e-database-safety.mjs';
+import { hashSourcePgn } from '../../src/lib/chess/pgn';
 import { assessmentPositionKey } from '../../src/lib/training/assessmentIdentity';
 import {
     E2E_AUTH_STATE_PATH,
@@ -29,7 +30,28 @@ const E2E_SOLUTION_REVISIONS = {
     offline: '40000000-0000-4000-8000-00000000e2e4',
     promotion: '40000000-0000-4000-8000-00000000e2e5',
 } as const;
-const SOURCE_PGN_HASH = 'a'.repeat(64);
+const STANDARD_PGN = `[Event "Backranq E2E"]
+[Site "Local"]
+[Date "2026.07.20"]
+[Round "-"]
+[White "E2EHero"]
+[Black "TacticalTester"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 1-0`;
+const PROMOTION_PGN = `[Event "Backranq E2E Promotion"]
+[Site "Local"]
+[Date "2026.07.19"]
+[Round "-"]
+[White "PromotionTester"]
+[Black "E2EHero"]
+[Result "0-1"]
+[SetUp "1"]
+[FEN "${PROMOTION_FEN}"]
+
+0-1`;
+const STANDARD_SOURCE_PGN_HASH = hashSourcePgn(STANDARD_PGN);
+const PROMOTION_SOURCE_PGN_HASH = hashSourcePgn(PROMOTION_PGN);
 const TRAINING_CONFIG_HASH = 'b'.repeat(64);
 
 function assertSafeE2eDatabase() {
@@ -237,7 +259,10 @@ async function seedTrainingMoment(
                 .createHash('sha256')
                 .update(`e2e:${fixture.id}`)
                 .digest('hex'),
-            sourcePgnHash: SOURCE_PGN_HASH,
+            sourcePgnHash:
+                fixture.gameId === E2E_GAMES.standard
+                    ? STANDARD_SOURCE_PGN_HASH
+                    : PROMOTION_SOURCE_PGN_HASH,
             decisionPly: fixture.decisionPly,
             fen: fixture.fen,
             sideToMove: fixture.sideToMove,
@@ -401,15 +426,10 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                 provider: 'LICHESS',
                 externalId: 'backranq-e2e-standard',
                 url: 'https://lichess.org/backranq-e2e-standard',
-                pgn: `[Event "Backranq E2E"]
-[Site "Local"]
-[Date "2026.07.20"]
-[Round "-"]
-[White "E2EHero"]
-[Black "TacticalTester"]
-[Result "1-0"]
-
-1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 1-0`,
+                pgn: STANDARD_PGN,
+                sourcePgnHash: STANDARD_SOURCE_PGN_HASH,
+                sourceUsername: E2E_USER.username,
+                userSide: 'WHITE',
                 playedAt: new Date('2026-07-20T12:00:00.000Z'),
                 timeClass: 'RAPID',
                 rated: true,
@@ -432,17 +452,10 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                 provider: 'CHESSCOM',
                 externalId: 'backranq-e2e-promotion',
                 url: 'https://www.chess.com/game/live/backranq-e2e-promotion',
-                pgn: `[Event "Backranq E2E Promotion"]
-[Site "Local"]
-[Date "2026.07.19"]
-[Round "-"]
-[White "PromotionTester"]
-[Black "E2EHero"]
-[Result "0-1"]
-[SetUp "1"]
-[FEN "${PROMOTION_FEN}"]
-
-0-1`,
+                pgn: PROMOTION_PGN,
+                sourcePgnHash: PROMOTION_SOURCE_PGN_HASH,
+                sourceUsername: E2E_USER.username,
+                userSide: 'BLACK',
                 playedAt: new Date('2026-07-19T12:00:00.000Z'),
                 timeClass: 'BLITZ',
                 rated: false,
@@ -467,7 +480,7 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                 gameId: E2E_GAMES.standard,
                 executionMode: 'LOCAL_BROWSER',
                 status: 'SUCCEEDED',
-                inputPgnHash: SOURCE_PGN_HASH,
+                inputPgnHash: STANDARD_SOURCE_PGN_HASH,
                 configHash: TRAINING_CONFIG_HASH,
                 completedAt: new Date('2026-07-20T12:15:00.000Z'),
             },
@@ -477,7 +490,7 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                 gameId: E2E_GAMES.promotion,
                 executionMode: 'LOCAL_BROWSER',
                 status: 'SUCCEEDED',
-                inputPgnHash: SOURCE_PGN_HASH,
+                inputPgnHash: PROMOTION_SOURCE_PGN_HASH,
                 configHash: TRAINING_CONFIG_HASH,
                 completedAt: new Date('2026-07-19T12:15:00.000Z'),
             },

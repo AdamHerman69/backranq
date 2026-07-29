@@ -29,6 +29,10 @@ type LichessGameJson = {
     lastMoveAt?: number;
     speed?: string;
     rated?: boolean;
+    clock?: {
+        initial?: number;
+        increment?: number;
+    };
     players?: {
         white?: LichessPlayer;
         black?: LichessPlayer;
@@ -63,6 +67,59 @@ function normalizedPlayerIdentity(player: LichessPlayer | undefined) {
     return typeof identity === 'string'
         ? identity.trim().toLocaleLowerCase('en-US')
         : '';
+}
+
+function lichessProvenance(
+    game: LichessGameJson,
+    requestedUsername: string
+): NonNullable<NormalizedGame['provenance']> {
+    const expected = requestedUsername
+        .trim()
+        .toLocaleLowerCase('en-US');
+    const whiteMatches =
+        normalizedPlayerIdentity(game.players?.white) === expected;
+    const blackMatches =
+        normalizedPlayerIdentity(game.players?.black) === expected;
+    const matchedPlayer =
+        whiteMatches && !blackMatches
+            ? game.players?.white
+            : blackMatches && !whiteMatches
+              ? game.players?.black
+              : undefined;
+    const initial =
+        typeof game.clock?.initial === 'number' &&
+        Number.isSafeInteger(game.clock.initial) &&
+        game.clock.initial >= 0
+            ? game.clock.initial
+            : undefined;
+    const increment =
+        typeof game.clock?.increment === 'number' &&
+        Number.isSafeInteger(game.clock.increment) &&
+        game.clock.increment >= 0
+            ? game.clock.increment
+            : undefined;
+
+    return {
+        username: requestedUsername.trim(),
+        accountId: matchedPlayer?.userId,
+        userSide:
+            whiteMatches && !blackMatches
+                ? 'white'
+                : blackMatches && !whiteMatches
+                  ? 'black'
+                  : 'unknown',
+        timeControl:
+            initial != null || increment != null
+                ? {
+                      raw:
+                          initial != null && increment != null
+                              ? `${initial}+${increment}`
+                              : undefined,
+                      initialSeconds: initial,
+                      incrementSeconds: increment,
+                  }
+                : undefined,
+    };
 }
 
 function requireLichessGame(
@@ -290,6 +347,7 @@ async function fetchLichessGamesPage(args: {
             result: summary.result,
             termination: summary.termination,
             pgn,
+            provenance: lichessProvenance(obj, args.username),
         };
 
         if (!passesFilters(g, { ...args.filters, max })) continue;

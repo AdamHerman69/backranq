@@ -63,6 +63,17 @@ function dependencies() {
         trainingMoment: {
             updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
+        trainingAttemptStatusEvent: {
+            create: vi.fn().mockResolvedValue({ id: 'status-event-1' }),
+        },
+        practiceReviewState: {
+            findUnique: vi.fn().mockResolvedValue(null),
+            upsert: vi.fn().mockResolvedValue({ id: 'review-state-1' }),
+        },
+        practiceReviewEvent: {
+            findUnique: vi.fn().mockResolvedValue(null),
+            create: vi.fn().mockResolvedValue({ id: 'review-event-1' }),
+        },
     };
     const db = {
         trainingAttempt: {
@@ -72,10 +83,22 @@ function dependencies() {
             findFirst: vi.fn().mockResolvedValue({
                 id: momentId,
                 fen: rootFen,
+                phase: 'MIDDLEGAME',
+                cpLoss: 120,
+                winChanceLoss: 0.2,
+                sourceKinds: ['MY_MISTAKE'],
+                lessonKinds: ['TACTICAL'],
+                themes: ['fork'],
                 currentSolutionRevisionId: revisionId,
+                game: {
+                    provider: 'LICHESS',
+                    timeClass: 'RAPID',
+                },
                 currentSolutionRevision: {
                     trainable: true,
                     verificationStatus: 'VERIFIED',
+                    solutionHash: 'solution-hash-1',
+                    configHash: 'config-hash-1',
                 },
             }),
         },
@@ -117,6 +140,16 @@ describe('client-graded training attempt recording', () => {
                 gradingEvidence: expect.objectContaining({
                     clientGraded: true,
                 }),
+                contextPhase: 'MIDDLEGAME',
+                contextCpLoss: 120,
+                contextWinChanceLoss: 0.2,
+                contextSourceKinds: ['MY_MISTAKE'],
+                contextLessonKinds: ['TACTICAL'],
+                contextThemes: ['fork'],
+                contextProvider: 'LICHESS',
+                contextTimeClass: 'RAPID',
+                contextSolutionHash: 'solution-hash-1',
+                contextConfigHash: 'config-hash-1',
             }),
             select: { id: true },
         });
@@ -132,6 +165,32 @@ describe('client-graded training attempt recording', () => {
             ],
         });
         expect(tx.trainingMoment.updateMany).toHaveBeenCalled();
+        expect(
+            tx.trainingAttemptStatusEvent.create
+        ).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                attemptId: created.id,
+                status: 'GRADED',
+                grade: 'BEST',
+                reason: 'GRADED',
+            }),
+        });
+        expect(tx.practiceReviewState.upsert).toHaveBeenCalledWith(
+            expect.objectContaining({
+                create: expect.objectContaining({
+                    solutionHash: 'solution-hash-1',
+                    configHash: 'config-hash-1',
+                    successes: 1,
+                }),
+            })
+        );
+        expect(tx.practiceReviewEvent.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                attemptId: created.id,
+                outcome: 'SUCCESS',
+                grade: 'BEST',
+            }),
+        });
     });
 
     it('records reveal-only history without requiring a move', async () => {
@@ -161,6 +220,21 @@ describe('client-graded training attempt recording', () => {
         expect(
             tx.trainingAttemptStep.createMany
         ).not.toHaveBeenCalled();
+        expect(
+            tx.trainingAttemptStatusEvent.create
+        ).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                status: 'REVEALED',
+                grade: null,
+                reason: 'REVEALED',
+            }),
+        });
+        expect(tx.practiceReviewEvent.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                outcome: 'REVEAL',
+                grade: null,
+            }),
+        });
     });
 
     it('validates the complete local continuation line before writing', async () => {
@@ -258,5 +332,8 @@ describe('client-graded training attempt recording', () => {
         });
         expect(db.trainingMoment.findFirst).not.toHaveBeenCalled();
         expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
+        expect(
+            tx.trainingAttemptStatusEvent.create
+        ).not.toHaveBeenCalled();
     });
 });

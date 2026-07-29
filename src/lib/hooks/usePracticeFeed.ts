@@ -47,6 +47,8 @@ import {
     startCoordinatedPracticeFeedRequest,
     type CoordinatedPracticeFeedRequest,
 } from '@/lib/training/practiceFeedCoordinator';
+import { recordPracticeExposureEvent } from '@/lib/training/exposureClient';
+import { recordProgressEvent } from '@/lib/progress/analyticsClient';
 
 export const PRACTICE_FEED_BATCH_SIZE = 12;
 export const PRACTICE_FEED_LOW_WATER_MARK = 4;
@@ -128,6 +130,15 @@ type LastSubmission = {
     fenAfterMove: string;
 };
 
+type ActiveExposure = {
+    clientExposureId: string;
+    momentId: string;
+    solutionRevisionId: string;
+    shownAt: string;
+    terminalRecorded: boolean;
+    terminalPending: boolean;
+};
+
 function newClientAttemptId(): string {
     if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
         return crypto.randomUUID();
@@ -198,7 +209,8 @@ function writeQueue(
 
 export function usePracticeFeed(
     initialMomentId?: string,
-    ownerIdOverride?: string
+    ownerIdOverride?: string,
+    entry?: 'progress'
 ) {
     const { data: session } = useSession();
     const ownerId = ownerIdOverride ?? session?.user?.id ?? null;
@@ -250,6 +262,95 @@ export function usePracticeFeed(
         useRef<
             CoordinatedPracticeFeedRequest<TrainingPromptDto[]> | null
         >(null);
+    const activeExposureRef = useRef<ActiveExposure | null>(null);
+    const progressStartRecordedRef = useRef(false);
+
+    const recommendationKey =
+        entry === 'progress'
+            ? initialMomentId
+                ? ('review-position' as const)
+                : ('mixed-practice' as const)
+            : undefined;
+
+    const recordTerminalExposure = useCallback(
+        (
+            exposure: ActiveExposure,
+            terminalReason:
+                | 'MOVE_SUBMITTED'
+                | 'REVEALED'
+                | 'ABANDONED'
+                | 'REPLACED'
+                | 'NAVIGATED_AWAY',
+            terminalAttemptId?: string
+        ) => {
+            if (exposure.terminalRecorded) return;
+            exposure.terminalRecorded = true;
+            const occurredAt = new Date().toISOString();
+            void recordPracticeExposureEvent({
+                kind: 'TERMINAL',
+                clientExposureId: exposure.clientExposureId,
+                clientEventId: newClientAttemptId(),
+                momentId: exposure.momentId,
+                solutionRevisionId:
+                    exposure.solutionRevisionId,
+                shownAt: exposure.shownAt,
+                occurredAt,
+                entry,
+                recommendationKey,
+                focus: appliedFiltersRef.current.focus,
+                terminalReason,
+                attemptId: terminalAttemptId,
+            });
+        },
+        [entry, recommendationKey]
+    );
+
+    const finishExposure = useCallback(
+        (
+            terminalReason:
+                | 'ABANDONED'
+                | 'REPLACED'
+                | 'NAVIGATED_AWAY'
+        ) => {
+            const exposure = activeExposureRef.current;
+            if (
+                !exposure ||
+                exposure.terminalRecorded ||
+                exposure.terminalPending
+            ) {
+                return;
+            }
+            recordTerminalExposure(exposure, terminalReason);
+        },
+        [recordTerminalExposure]
+    );
+
+    const finishExposureAfterPersistence = useCallback(
+        (
+            persistence: Promise<string | null>,
+            terminalReason: 'MOVE_SUBMITTED' | 'REVEALED'
+        ) => {
+            const exposure = activeExposureRef.current;
+            if (!exposure || exposure.terminalRecorded) return;
+            exposure.terminalPending = true;
+            void persistence.then((attemptId) => {
+                exposure.terminalPending = false;
+                if (attemptId) {
+                    recordTerminalExposure(
+                        exposure,
+                        terminalReason,
+                        attemptId
+                    );
+                } else {
+                    recordTerminalExposure(
+                        exposure,
+                        'REPLACED'
+                    );
+                }
+            });
+        },
+        [recordTerminalExposure]
+    );
 
     const replaceBuffer = useCallback((positions: TrainingPromptDto[]) => {
         bufferRef.current = positions;
@@ -266,6 +367,42 @@ export function usePracticeFeed(
 
     const activatePrompt = useCallback(
         (next: TrainingPromptDto) => {
+            finishExposure('REPLACED');
+            const shownAt = new Date().toISOString();
+            const exposure: ActiveExposure = {
+                clientExposureId: newClientAttemptId(),
+                momentId: next.id,
+                solutionRevisionId: next.solutionRevisionId,
+                shownAt,
+                terminalRecorded: false,
+                terminalPending: false,
+            };
+            activeExposureRef.current = exposure;
+            void recordPracticeExposureEvent({
+                kind: 'SHOWN',
+                clientExposureId: exposure.clientExposureId,
+                clientEventId: newClientAttemptId(),
+                momentId: next.id,
+                solutionRevisionId: next.solutionRevisionId,
+                shownAt,
+                occurredAt: shownAt,
+                entry,
+                recommendationKey,
+                focus: appliedFiltersRef.current.focus,
+            });
+            if (
+                entry === 'progress' &&
+                !progressStartRecordedRef.current
+            ) {
+                progressStartRecordedRef.current = true;
+                void recordProgressEvent({
+                    eventName:
+                        'PRACTICE_STARTED_FROM_PROGRESS',
+                    clientEventId: newClientAttemptId(),
+                    occurredAt: shownAt,
+                    recommendationKey,
+                });
+            }
             setPrompt(next);
             setPositionFen(next.fen);
             setPhase('READY');
@@ -284,7 +421,12 @@ export function usePracticeFeed(
             recordedStepsRef.current = [];
             promptStartedAtRef.current = Date.now();
         },
-        []
+        [entry, finishExposure, recommendationKey]
+    );
+
+    useEffect(
+        () => () => finishExposure('NAVIGATED_AWAY'),
+        [finishExposure]
     );
 
     const appendFeedPage = useCallback(
@@ -628,13 +770,18 @@ export function usePracticeFeed(
         ) => {
             if (!ownerId || !online) {
                 queueRecord(momentId, request);
-                return;
+                return null;
             }
             try {
-                await recordTrainingAttempt(momentId, request);
+                const recorded = await recordTrainingAttempt(
+                    momentId,
+                    request
+                );
+                return recorded.attemptId;
             } catch (caught) {
                 queueRecord(momentId, request);
                 if (shouldQueue(caught)) setOnline(false);
+                return null;
             }
         },
         [online, ownerId, queueRecord]
@@ -750,7 +897,7 @@ export function usePracticeFeed(
                 : sources.includes('TABLEBASE')
                   ? 'TABLEBASE'
                   : 'PRECOMPUTED';
-            void persistRecord(prompt.id, {
+            const persistence = persistRecord(prompt.id, {
                 kind: 'RECORD',
                 clientAttemptId,
                 solutionRevisionId:
@@ -761,8 +908,16 @@ export function usePracticeFeed(
                 comparison,
                 steps: stepsWithUser,
             });
+            finishExposureAfterPersistence(
+                persistence,
+                'MOVE_SUBMITTED'
+            );
         },
-        [persistRecord, prompt]
+        [
+            finishExposureAfterPersistence,
+            persistRecord,
+            prompt,
+        ]
     );
 
     const submitMove = useCallback(
@@ -912,14 +1067,23 @@ export function usePracticeFeed(
         setResponse(revealed);
         setPhase('REVEALED');
         setError(null);
-        void persistRecord(prompt.id, {
+        const persistence = persistRecord(prompt.id, {
             kind: 'RECORD',
             clientAttemptId,
             solutionRevisionId: prompt.solutionRevisionId,
             status: 'REVEALED',
             steps: recordedStepsRef.current,
         });
-    }, [persistRecord, phase, prompt]);
+        finishExposureAfterPersistence(
+            persistence,
+            'REVEALED'
+        );
+    }, [
+        finishExposureAfterPersistence,
+        persistRecord,
+        phase,
+        prompt,
+    ]);
 
     const flushQueue = useCallback(async () => {
         if (!ownerId || !online || flushInFlightRef.current) return;
@@ -970,6 +1134,7 @@ export function usePracticeFeed(
             ) {
                 return;
             }
+            finishExposure('REPLACED');
 
             setLoadError((current) =>
                 practiceFeedLoadErrorAfterEvent(
@@ -1028,6 +1193,7 @@ export function usePracticeFeed(
         }
     }, [
         activatePrompt,
+        finishExposure,
         loading,
         phase,
         replaceBuffer,
@@ -1037,6 +1203,7 @@ export function usePracticeFeed(
     const resetFeed = useCallback(
         (filters: PracticeFilters) => {
             if (initialMomentId) return;
+            finishExposure('REPLACED');
             feedGenerationRef.current += 1;
             initialLoadControllerRef.current?.abort();
             abortCoordinatedPracticeFeedRequest(pageRequestRef);
@@ -1068,7 +1235,7 @@ export function usePracticeFeed(
                 revision: current.revision + 1,
             }));
         },
-        [initialMomentId, replaceBuffer]
+        [finishExposure, initialMomentId, replaceBuffer]
     );
 
     const retryFeed = useCallback(() => {

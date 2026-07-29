@@ -17,7 +17,7 @@ export type GamesFilters = {
     provider: '' | 'lichess' | 'chesscom';
     timeClass: '' | 'bullet' | 'blitz' | 'rapid' | 'classical' | 'unknown';
     result: '' | 'wins' | 'losses' | 'draws';
-    hasAnalysis: '' | 'true' | 'false';
+    analysisState: '' | 'analyzed' | 'needs-analysis';
     since: string;
     until: string;
     q: string;
@@ -46,7 +46,7 @@ export function GamesFilter({
             !!filters.provider ||
             !!filters.timeClass ||
             !!filters.result ||
-            !!filters.hasAnalysis ||
+            !!filters.analysisState ||
             !!filters.since ||
             !!filters.until ||
             !!filters.q;
@@ -58,7 +58,9 @@ export function GamesFilter({
         if (nextFilters.provider) next.set('provider', nextFilters.provider);
         if (nextFilters.timeClass) next.set('timeClass', nextFilters.timeClass);
         if (nextFilters.result) next.set('result', nextFilters.result);
-        if (nextFilters.hasAnalysis) next.set('hasAnalysis', nextFilters.hasAnalysis);
+        if (nextFilters.analysisState) {
+            next.set('analysisState', nextFilters.analysisState);
+        }
         if (nextFilters.since) next.set('since', nextFilters.since);
         if (nextFilters.until) next.set('until', nextFilters.until);
         if (nextFilters.q) next.set('q', nextFilters.q);
@@ -90,7 +92,12 @@ export function GamesFilter({
             {open ? (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <div className="space-y-2">
-                    <div className="text-sm font-medium">Provider</div>
+                    <div
+                        id="games-provider-label"
+                        className="text-sm font-medium"
+                    >
+                        Provider
+                    </div>
                     <Select
                         value={filters.provider || 'all'}
                         onValueChange={(v) => {
@@ -104,7 +111,7 @@ export function GamesFilter({
                             push(next);
                         }}
                     >
-                        <SelectTrigger>
+                        <SelectTrigger aria-labelledby="games-provider-label">
                             <SelectValue placeholder="All" />
                         </SelectTrigger>
                         <SelectContent>
@@ -116,7 +123,12 @@ export function GamesFilter({
                 </div>
 
                 <div className="space-y-2">
-                    <div className="text-sm font-medium">Time class</div>
+                    <div
+                        id="games-time-class-label"
+                        className="text-sm font-medium"
+                    >
+                        Time class
+                    </div>
                     <Select
                         value={filters.timeClass || 'all'}
                         onValueChange={(v) => {
@@ -130,7 +142,7 @@ export function GamesFilter({
                             push(next);
                         }}
                     >
-                        <SelectTrigger>
+                        <SelectTrigger aria-labelledby="games-time-class-label">
                             <SelectValue placeholder="All" />
                         </SelectTrigger>
                         <SelectContent>
@@ -145,7 +157,12 @@ export function GamesFilter({
                 </div>
 
                 <div className="space-y-2">
-                    <div className="text-sm font-medium">Result</div>
+                    <div
+                        id="games-result-label"
+                        className="text-sm font-medium"
+                    >
+                        Result
+                    </div>
                     <Select
                         value={filters.result || 'all'}
                         onValueChange={(v) => {
@@ -159,7 +176,7 @@ export function GamesFilter({
                             push(next);
                         }}
                     >
-                        <SelectTrigger>
+                        <SelectTrigger aria-labelledby="games-result-label">
                             <SelectValue placeholder="All" />
                         </SelectTrigger>
                         <SelectContent>
@@ -172,8 +189,14 @@ export function GamesFilter({
                 </div>
 
                 <div className="space-y-2">
-                    <div className="text-sm font-medium">Since</div>
+                    <label
+                        htmlFor="games-since"
+                        className="text-sm font-medium"
+                    >
+                        Since
+                    </label>
                     <Input
+                        id="games-since"
                         type="date"
                         value={filters.since}
                         onChange={(e) => {
@@ -185,8 +208,14 @@ export function GamesFilter({
                 </div>
 
                 <div className="space-y-2">
-                    <div className="text-sm font-medium">Until</div>
+                    <label
+                        htmlFor="games-until"
+                        className="text-sm font-medium"
+                    >
+                        Until
+                    </label>
                     <Input
+                        id="games-until"
                         type="date"
                         value={filters.until}
                         onChange={(e) => {
@@ -198,34 +227,47 @@ export function GamesFilter({
                 </div>
 
                 <div className="space-y-2">
-                    <div className="text-sm font-medium">Analysis</div>
+                    <div
+                        id="games-analysis-label"
+                        className="text-sm font-medium"
+                    >
+                        Analysis
+                    </div>
                     <Select
-                        value={filters.hasAnalysis || 'all'}
+                        value={filters.analysisState || 'all'}
                         onValueChange={(v) => {
                             const next = {
                                 ...filters,
-                                hasAnalysis: (v === 'all'
+                                analysisState: (v === 'all'
                                     ? ''
-                                    : (v as GamesFilters['hasAnalysis'])) as GamesFilters['hasAnalysis'],
+                                    : (v as GamesFilters['analysisState'])) as GamesFilters['analysisState'],
                             };
                             setFilters(next);
                             push(next);
                         }}
                     >
-                        <SelectTrigger>
+                        <SelectTrigger aria-labelledby="games-analysis-label">
                             <SelectValue placeholder="All" />
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value="all">All</SelectItem>
-                            <SelectItem value="true">Analyzed</SelectItem>
-                            <SelectItem value="false">Not analyzed</SelectItem>
+                            <SelectItem value="analyzed">Analyzed</SelectItem>
+                            <SelectItem value="needs-analysis">
+                                Needs analysis
+                            </SelectItem>
                         </SelectContent>
                     </Select>
                 </div>
 
                 <div className="space-y-2 sm:col-span-2 lg:col-span-3">
-                    <div className="text-sm font-medium">Search opponent</div>
+                    <label
+                        htmlFor="games-opponent"
+                        className="text-sm font-medium"
+                    >
+                        Search opponent
+                    </label>
                     <Input
+                        id="games-opponent"
                         value={filters.q}
                         onChange={(e) => {
                             const next = { ...filters, q: e.target.value };
@@ -241,5 +283,3 @@ export function GamesFilter({
         </section>
     );
 }
-
-

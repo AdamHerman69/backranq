@@ -7,6 +7,20 @@ export type NormalizedPlayer = {
     rating?: number;
 };
 
+export type NormalizedGameProvenance = {
+    /** Provider username requested for this import, snapshotted at fetch time. */
+    username: string;
+    /** Provider-owned stable account identifier, when the API exposes one. */
+    accountId?: string;
+    userSide: 'white' | 'black' | 'unknown';
+    /** Provider-native time-control value plus exact parsed clock fields. */
+    timeControl?: {
+        raw?: string;
+        initialSeconds?: number;
+        incrementSeconds?: number;
+    };
+};
+
 export type NormalizedGame = {
     id: string;
     provider: Provider;
@@ -26,4 +40,5 @@ export type NormalizedGame = {
      */
     termination?: string;
     pgn: string;
+    provenance?: NormalizedGameProvenance;
 };
