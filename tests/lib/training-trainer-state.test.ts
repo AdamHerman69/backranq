@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type {
-    SubmitTrainingAttemptResponse,
-    TrainingReviewDto,
-} from '@/lib/training/api';
+import type { TrainingReviewDto } from '@/lib/training/api';
 import {
     feedbackForTrainingState,
-    nextFenFromAuthoritativeResponse,
-    reviewFromAuthoritativeResponse,
+    reviewFromTrainingResponse,
 } from '@/lib/training/trainerState';
 
 const review = {
@@ -38,13 +34,12 @@ const review = {
 } satisfies TrainingReviewDto;
 
 describe('canonical training trainer state', () => {
-    it('treats only the authoritative response as a grade', () => {
+    it('describes local analysis and completed grades', () => {
         expect(
-            feedbackForTrainingState({ phase: 'PENDING_GRADING' })
+            feedbackForTrainingState({ phase: 'SUBMITTING' })
         ).toEqual({
-            tone: 'warning',
-            message:
-                'Move saved on this device. Waiting for authoritative grading.',
+            tone: 'neutral',
+            message: 'Checking this alternative on your device…',
         });
         expect(
             feedbackForTrainingState({
@@ -62,14 +57,14 @@ describe('canonical training trainer state', () => {
 
     it('keeps review metadata sealed for unresolved and continuation responses', () => {
         expect(
-            reviewFromAuthoritativeResponse({
+            reviewFromTrainingResponse({
                 attemptId: 'attempt',
                 status: 'UNRESOLVED',
                 reason: 'ENGINE_UNAVAILABLE',
             })
         ).toBeNull();
         expect(
-            reviewFromAuthoritativeResponse({
+            reviewFromTrainingResponse({
                 attemptId: 'attempt',
                 status: 'AWAITING_CONTINUATION',
                 nextStepIndex: 1,
@@ -80,7 +75,7 @@ describe('canonical training trainer state', () => {
             })
         ).toBeNull();
         expect(
-            reviewFromAuthoritativeResponse({
+            reviewFromTrainingResponse({
                 attemptId: 'attempt',
                 status: 'GRADED',
                 grade: 'GOOD',
@@ -90,18 +85,4 @@ describe('canonical training trainer state', () => {
         ).toBe(review);
     });
 
-    it('replays exactly the single opponent response supplied by the server', () => {
-        const response: SubmitTrainingAttemptResponse = {
-            attemptId: 'attempt',
-            status: 'AWAITING_CONTINUATION',
-            nextStepIndex: 1,
-            opponentMove: {
-                moveUci: 'e7e5',
-                fenAfter: 'server-fen-after-one-opponent-move',
-            },
-        };
-        expect(
-            nextFenFromAuthoritativeResponse('fen-after-user-move', response)
-        ).toBe('server-fen-after-one-opponent-move');
-    });
 });

@@ -75,14 +75,13 @@ verification gate pass. Checkboxes are intentionally conservative.
 
 ## Unified trainer and grading
 
-- [x] Return a spoiler-safe pre-attempt DTO.
+- [x] Return a self-contained local grading manifest with each position.
 - [x] Always show the same neutral “find the best move” prompt.
 - [x] Hide source, lesson, themes, original move, shape, and length until review.
-- [x] Make server grading authoritative.
+- [x] Grade known moves synchronously in the browser.
 - [x] Grade best, good, improved, repeated mistake, and different mistake.
 - [x] Treat multiple good moves as a normal solution shape.
-- [x] Dynamically grade unknown legal moves with bounds, cache, auth, and rate
-      limits.
+- [x] Dynamically grade unknown legal moves with bounded local Stockfish.
 - [x] Never show an unresolved move as automatically wrong.
 - [x] Support conditional continuations without revealing their length.
 - [x] Compare feedback with both the best outcome and the original move.
@@ -91,7 +90,7 @@ verification gate pass. Checkboxes are intentionally conservative.
       `TrainingMoment` only as the persisted domain name.
 - [x] Keep Practice continuous rather than introducing finite sessions, goals,
       rounds, or end summaries.
-- [x] Prefetch spoiler-safe cursor pages at a low-water mark with one in-flight
+- [x] Prefetch self-contained cursor pages at a low-water mark with one in-flight
       request, deduplication, filter-reset invalidation, and buffered fallback.
 
 ## Tests and rollout

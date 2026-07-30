@@ -1,7 +1,7 @@
 import type {
-    GradedTrainingAttemptResponse,
-    RevealTrainingMomentResponse,
-    SubmitTrainingAttemptResponse,
+    GradedPracticeResult,
+    PracticeResult,
+    RevealedPracticeResult,
     TrainingReviewDto,
 } from '@/lib/training/api';
 
@@ -9,9 +9,7 @@ export type TrainerAttemptPhase =
     | 'READY'
     | 'SUBMITTING'
     | 'AWAITING_MOVE'
-    | 'PENDING_GRADING'
     | 'GRADED'
-    | 'REVEALING'
     | 'REVEALED'
     | 'UNRESOLVED';
 
@@ -25,19 +23,12 @@ export function feedbackForTrainingState({
     grade,
 }: {
     phase: TrainerAttemptPhase;
-    grade?: GradedTrainingAttemptResponse['grade'] | null;
+    grade?: GradedPracticeResult['grade'] | null;
 }): TrainerFeedback {
     if (phase === 'SUBMITTING') {
-        return { tone: 'neutral', message: 'Checking your move…' };
-    }
-    if (phase === 'REVEALING') {
-        return { tone: 'neutral', message: 'Revealing the position…' };
-    }
-    if (phase === 'PENDING_GRADING') {
         return {
-            tone: 'warning',
-            message:
-                'Move saved on this device. Waiting for authoritative grading.',
+            tone: 'neutral',
+            message: 'Checking this alternative on your device…',
         };
     }
     if (phase === 'AWAITING_MOVE') {
@@ -96,10 +87,10 @@ export function feedbackForTrainingState({
     }
 }
 
-export function reviewFromAuthoritativeResponse(
+export function reviewFromTrainingResponse(
     response:
-        | SubmitTrainingAttemptResponse
-        | RevealTrainingMomentResponse
+        | PracticeResult
+        | RevealedPracticeResult
         | null
 ): TrainingReviewDto | null {
     if (!response) return null;
@@ -107,13 +98,4 @@ export function reviewFromAuthoritativeResponse(
         return response.review;
     }
     return null;
-}
-
-export function nextFenFromAuthoritativeResponse(
-    submittedFen: string,
-    response: SubmitTrainingAttemptResponse
-): string {
-    return response.status === 'AWAITING_CONTINUATION'
-        ? response.opponentMove.fenAfter
-        : submittedFen;
 }

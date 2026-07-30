@@ -1,5 +1,6 @@
 import type {
     AttemptGrade,
+    GradingPolicyV2,
     PovScore,
     TrainingLessonKind,
     TrainingSourceKind,
@@ -39,15 +40,58 @@ export type PracticeFeedRequest = {
 };
 
 /**
- * The complete pre-attempt disclosure boundary. Do not add source metadata,
- * original move, themes, lesson/source kinds, solution shape/length, engine
- * scores, best/accepted moves or PV data to this DTO.
+ * One fully self-contained practice position. The UI remains neutral before a
+ * move, but the downloaded payload intentionally includes local grading data:
+ * self-directed practice does not treat DevTools inspection as a threat.
  */
 export type TrainingPromptDto = {
     id: string;
     solutionRevisionId: string;
     fen: string;
     sideToMove: 'w' | 'b';
+    grading: TrainingGradingManifestDto;
+};
+
+export type TrainingSolutionTreeNodeDto = {
+    fen: string;
+    ply: number;
+    role: 'USER' | 'OPPONENT' | 'TERMINAL';
+    acceptedMovesUci: string[];
+    selectedMoveUci?: string;
+    alternativesComplete?: boolean;
+    stopReason?: string;
+    branches: Array<{
+        moveUci: string;
+        best: boolean;
+        child: TrainingSolutionTreeNodeDto;
+    }>;
+};
+
+export type TrainingMoveAssessmentDto = {
+    decisionIndex: number;
+    fen: string;
+    moveUci: string;
+    source: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE';
+    grade: AttemptGrade;
+    scoreAfter: PovScore | null;
+    evidence: unknown;
+};
+
+/**
+ * Everything needed to grade a position in the browser. This is deliberately
+ * shipped with the prompt: Practice is self-directed, so hiding solutions from
+ * DevTools is not a product or security boundary.
+ */
+export type TrainingGradingManifestDto = {
+    version: 1;
+    trainingSide: 'w' | 'b';
+    positionHistory: string[];
+    originalMoveUci: string;
+    originalScoreAfter: PovScore;
+    gradingPolicy: GradingPolicyV2;
+    solutionTree: TrainingSolutionTreeNodeDto;
+    moveAssessments: TrainingMoveAssessmentDto[];
+    review: TrainingReviewDto;
 };
 
 export type PracticeFeedResponse = {
@@ -65,35 +109,32 @@ export type TrainingMomentResponse = {
     moment: TrainingPromptDto;
 };
 
-export type StartTrainingAttemptRequest = {
-    kind: 'START';
+export type RecordedTrainingAttemptStepDto = {
+    stepIndex: number;
+    actor: 'USER' | 'ENGINE';
+    fenBefore: string;
+    moveUci: string;
+    grade?: AttemptGrade;
+    source?: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE';
+    comparison?: TrainingComparisonDto | null;
+    timeSpentMs?: number;
+};
+
+export type RecordTrainingAttemptRequest = {
+    kind: 'RECORD';
     clientAttemptId: string;
     solutionRevisionId: string;
-    moveUci: string;
-    timeSpentMs?: number;
+    status: 'GRADED' | 'REVEALED';
+    grade?: AttemptGrade;
+    gradingSource?: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE';
+    comparison?: TrainingComparisonDto | null;
+    steps: RecordedTrainingAttemptStepDto[];
 };
 
-export type ContinueTrainingAttemptRequest = {
-    kind: 'STEP';
-    clientAttemptId: string;
+export type RecordTrainingAttemptResponse = {
     attemptId: string;
-    stepIndex: number;
-    moveUci: string;
-    timeSpentMs?: number;
+    status: 'RECORDED';
 };
-
-export type RetryTrainingAttemptRequest = {
-    kind: 'RETRY';
-    clientAttemptId: string;
-    attemptId: string;
-    stepIndex: number;
-    retryId: string;
-};
-
-export type SubmitTrainingAttemptRequest =
-    | StartTrainingAttemptRequest
-    | ContinueTrainingAttemptRequest
-    | RetryTrainingAttemptRequest;
 
 export type TrainingOpponentMoveDto = {
     moveUci: string;
@@ -136,7 +177,7 @@ export type TrainingReviewDto = {
     };
 };
 
-export type GradedTrainingAttemptResponse = {
+export type GradedPracticeResult = {
     attemptId: string;
     status: 'GRADED';
     grade: AttemptGrade;
@@ -144,34 +185,28 @@ export type GradedTrainingAttemptResponse = {
     review: TrainingReviewDto;
 };
 
-export type UnresolvedTrainingAttemptResponse = {
+export type UnresolvedPracticeResult = {
     attemptId: string;
     status: 'UNRESOLVED';
     reason:
         | 'ENGINE_UNAVAILABLE'
         | 'UNSTABLE_EVIDENCE'
         | 'MISSING_OUTCOME_EVIDENCE';
-    retryAfterMs?: number;
 };
 
-export type ContinueTrainingAttemptResponse = {
+export type PracticeContinuation = {
     attemptId: string;
     status: 'AWAITING_CONTINUATION';
     nextStepIndex: number;
     opponentMove: TrainingOpponentMoveDto;
 };
 
-export type SubmitTrainingAttemptResponse =
-    | GradedTrainingAttemptResponse
-    | UnresolvedTrainingAttemptResponse
-    | ContinueTrainingAttemptResponse;
+export type PracticeResult =
+    | GradedPracticeResult
+    | UnresolvedPracticeResult
+    | PracticeContinuation;
 
-export type RevealTrainingMomentRequest = {
-    clientAttemptId: string;
-    solutionRevisionId: string;
-};
-
-export type RevealTrainingMomentResponse = {
+export type RevealedPracticeResult = {
     attemptId: string;
     status: 'REVEALED';
     review: TrainingReviewDto;
@@ -183,12 +218,9 @@ export type TrainingApiErrorCode =
     | 'INVALID_REQUEST'
     | 'ILLEGAL_MOVE'
     | 'IDEMPOTENCY_CONFLICT'
-    | 'STALE_REVISION'
-    | 'GRADING_BUSY'
-    | 'RATE_LIMITED';
+    | 'STALE_REVISION';
 
 export type TrainingApiErrorResponse = {
     error: string;
     code: TrainingApiErrorCode;
-    retryAfterMs?: number;
 };

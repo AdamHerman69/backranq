@@ -73,7 +73,7 @@ export type TrainingMomentExtractionOptions = {
     minWinningChanceLoss?: number; // default 0.03
     /** Used only if winning chance cannot be computed. */
     fallbackMinCpLoss?: number; // default 30
-    /** Versioned server-authoritative tolerance persisted with each solution. */
+    /** Versioned grading tolerance persisted with each solution. */
     gradingPolicy?: GradingPolicyV2;
     /** How many plies into the PV to look for tactical moves. Defaults to 4. */
     themeLookaheadPlies?: number;

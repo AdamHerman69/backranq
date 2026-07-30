@@ -4,18 +4,21 @@ import {
     PRACTICE_FEED_FOCUSES,
     type PracticeFeedFocus,
     type PracticeFeedRequest,
-    type RevealTrainingMomentRequest,
-    type SubmitTrainingAttemptRequest,
+    type RecordTrainingAttemptRequest,
+    type RecordedTrainingAttemptStepDto,
+    type TrainingComparisonDto,
     type TrainingPhase,
 } from '@/lib/training/api';
 import {
+    ATTEMPT_GRADES,
     TRAINING_LESSON_KINDS,
     TRAINING_SOURCE_KINDS,
     type TrainingLessonKind,
     type TrainingSourceKind,
 } from '@/lib/training/contracts';
+import { isPovScore } from '@/lib/training/apiMappers';
 
-export const MAX_TRAINING_API_BODY_BYTES = 8_192;
+export const MAX_TRAINING_API_BODY_BYTES = 65_536;
 export const MAX_TRAINING_ATTEMPT_TIME_MS = 24 * 60 * 60 * 1_000;
 export const MAX_TRAINING_CONTINUATION_STEPS = 64;
 
@@ -217,138 +220,21 @@ function parseTimeSpentMs(value: unknown): number | null | 'INVALID' {
     return value;
 }
 
-export function parseSubmitTrainingAttemptRequest(
+export function parseRecordTrainingAttemptRequest(
     value: unknown
-): SubmitTrainingAttemptRequest | null {
-    if (!isObject(value)) return null;
-    if (
-        value.kind === 'START' &&
-        !hasOnlyKeys(value, [
-            'kind',
-            'clientAttemptId',
-            'solutionRevisionId',
-            'moveUci',
-            'timeSpentMs',
-        ])
-    ) {
-        return null;
-    }
-    if (
-        value.kind === 'STEP' &&
-        !hasOnlyKeys(value, [
-            'kind',
-            'clientAttemptId',
-            'attemptId',
-            'stepIndex',
-            'moveUci',
-            'timeSpentMs',
-        ])
-    ) {
-        return null;
-    }
-    if (
-        value.kind === 'RETRY' &&
-        !hasOnlyKeys(value, [
-            'kind',
-            'clientAttemptId',
-            'attemptId',
-            'stepIndex',
-            'retryId',
-        ])
-    ) {
-        return null;
-    }
-    const clientAttemptId =
-        typeof value.clientAttemptId === 'string'
-            ? value.clientAttemptId.trim().toLowerCase()
-            : '';
-    if (!isTrainingApiUuid(clientAttemptId)) return null;
-    if (value.kind === 'RETRY') {
-        const attemptId =
-            typeof value.attemptId === 'string'
-                ? value.attemptId.trim().toLowerCase()
-                : '';
-        const retryId =
-            typeof value.retryId === 'string'
-                ? value.retryId.trim().toLowerCase()
-                : '';
-        if (
-            !isTrainingApiUuid(attemptId) ||
-            !isTrainingApiUuid(retryId) ||
-            !Number.isSafeInteger(value.stepIndex) ||
-            (value.stepIndex as number) < 0 ||
-            (value.stepIndex as number) >
-                MAX_TRAINING_CONTINUATION_STEPS
-        ) {
-            return null;
-        }
-        return {
-            kind: 'RETRY',
-            clientAttemptId,
-            attemptId,
-            stepIndex: value.stepIndex as number,
-            retryId,
-        };
-    }
-    const moveUci =
-        typeof value.moveUci === 'string'
-            ? value.moveUci.trim().toLowerCase()
-            : '';
-    const timeSpentMs = parseTimeSpentMs(value.timeSpentMs);
-    if (
-        !UCI_RE.test(moveUci) ||
-        timeSpentMs === 'INVALID'
-    ) {
-        return null;
-    }
-
-    if (value.kind === 'START') {
-        const solutionRevisionId =
-            typeof value.solutionRevisionId === 'string'
-                ? value.solutionRevisionId.trim().toLowerCase()
-                : '';
-        if (!isTrainingApiUuid(solutionRevisionId)) return null;
-        return {
-            kind: 'START',
-            clientAttemptId,
-            solutionRevisionId,
-            moveUci,
-            ...(timeSpentMs == null ? {} : { timeSpentMs }),
-        };
-    }
-    if (value.kind === 'STEP') {
-        const attemptId =
-            typeof value.attemptId === 'string'
-                ? value.attemptId.trim().toLowerCase()
-                : '';
-        if (
-            !isTrainingApiUuid(attemptId) ||
-            !Number.isSafeInteger(value.stepIndex) ||
-            (value.stepIndex as number) < 0 ||
-            (value.stepIndex as number) > MAX_TRAINING_CONTINUATION_STEPS
-        ) {
-            return null;
-        }
-        return {
-            kind: 'STEP',
-            clientAttemptId,
-            attemptId,
-            stepIndex: value.stepIndex as number,
-            moveUci,
-            ...(timeSpentMs == null ? {} : { timeSpentMs }),
-        };
-    }
-    return null;
-}
-
-export function parseRevealTrainingMomentRequest(
-    value: unknown
-): RevealTrainingMomentRequest | null {
+): RecordTrainingAttemptRequest | null {
     if (
         !isObject(value) ||
+        value.kind !== 'RECORD' ||
         !hasOnlyKeys(value, [
+            'kind',
             'clientAttemptId',
             'solutionRevisionId',
+            'status',
+            'grade',
+            'gradingSource',
+            'comparison',
+            'steps',
         ])
     ) {
         return null;
@@ -363,9 +249,156 @@ export function parseRevealTrainingMomentRequest(
             : '';
     if (
         !isTrainingApiUuid(clientAttemptId) ||
-        !isTrainingApiUuid(solutionRevisionId)
+        !isTrainingApiUuid(solutionRevisionId) ||
+        (value.status !== 'GRADED' &&
+            value.status !== 'REVEALED') ||
+        !Array.isArray(value.steps) ||
+        value.steps.length >
+            MAX_TRAINING_CONTINUATION_STEPS + 1
     ) {
         return null;
     }
-    return { clientAttemptId, solutionRevisionId };
+    const grade =
+        typeof value.grade === 'string' &&
+        (ATTEMPT_GRADES as readonly string[]).includes(value.grade)
+            ? (value.grade as RecordTrainingAttemptRequest['grade'])
+            : undefined;
+    if (value.grade !== undefined && !grade) return null;
+    const gradingSource =
+        value.gradingSource === 'PRECOMPUTED' ||
+        value.gradingSource === 'DYNAMIC' ||
+        value.gradingSource === 'TABLEBASE'
+            ? value.gradingSource
+            : undefined;
+    if (value.gradingSource !== undefined && !gradingSource) {
+        return null;
+    }
+    const comparison = parseComparison(value.comparison);
+    if (comparison === 'INVALID') return null;
+    const steps: RecordedTrainingAttemptStepDto[] = [];
+    for (const rawStep of value.steps) {
+        const step = parseRecordedStep(rawStep);
+        if (!step) return null;
+        steps.push(step);
+    }
+    return {
+        kind: 'RECORD',
+        clientAttemptId,
+        solutionRevisionId,
+        status: value.status,
+        ...(grade ? { grade } : {}),
+        ...(gradingSource ? { gradingSource } : {}),
+        ...(comparison === undefined ? {} : { comparison }),
+        steps,
+    };
+}
+
+function parseComparison(
+    value: unknown
+): TrainingComparisonDto | null | undefined | 'INVALID' {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (
+        !isObject(value) ||
+        !hasOnlyKeys(value, [
+            'submittedScoreAfter',
+            'bestGapCp',
+            'bestGapWinChance',
+            'recoveredCp',
+            'recoveredWinChance',
+            'preservesOutcome',
+        ])
+    ) {
+        return 'INVALID';
+    }
+    const numericKeys = [
+        'bestGapCp',
+        'bestGapWinChance',
+        'recoveredCp',
+        'recoveredWinChance',
+    ] as const;
+    for (const key of numericKeys) {
+        const item = value[key];
+        if (
+            item !== null &&
+            (typeof item !== 'number' ||
+                !Number.isFinite(item) ||
+                item < 0)
+        ) {
+            return 'INVALID';
+        }
+    }
+    if (
+        value.submittedScoreAfter !== null &&
+        !isPovScore(value.submittedScoreAfter)
+    ) {
+        return 'INVALID';
+    }
+    if (
+        value.preservesOutcome !== null &&
+        typeof value.preservesOutcome !== 'boolean'
+    ) {
+        return 'INVALID';
+    }
+    return value as TrainingComparisonDto;
+}
+
+function parseRecordedStep(
+    value: unknown
+): RecordedTrainingAttemptStepDto | null {
+    if (
+        !isObject(value) ||
+        !hasOnlyKeys(value, [
+            'stepIndex',
+            'actor',
+            'fenBefore',
+            'moveUci',
+            'grade',
+            'source',
+            'comparison',
+            'timeSpentMs',
+        ]) ||
+        !Number.isSafeInteger(value.stepIndex) ||
+        (value.stepIndex as number) < 0 ||
+        (value.stepIndex as number) >
+            MAX_TRAINING_CONTINUATION_STEPS ||
+        (value.actor !== 'USER' && value.actor !== 'ENGINE') ||
+        typeof value.fenBefore !== 'string' ||
+        value.fenBefore.length > 128
+    ) {
+        return null;
+    }
+    const moveUci =
+        typeof value.moveUci === 'string'
+            ? value.moveUci.trim().toLowerCase()
+            : '';
+    const timeSpentMs = parseTimeSpentMs(value.timeSpentMs);
+    if (!UCI_RE.test(moveUci) || timeSpentMs === 'INVALID') {
+        return null;
+    }
+    const grade =
+        typeof value.grade === 'string' &&
+        (ATTEMPT_GRADES as readonly string[]).includes(value.grade)
+            ? (value.grade as RecordedTrainingAttemptStepDto['grade'])
+            : undefined;
+    if (value.grade !== undefined && !grade) return null;
+    const source =
+        value.source === 'PRECOMPUTED' ||
+        value.source === 'DYNAMIC' ||
+        value.source === 'TABLEBASE'
+            ? value.source
+            : undefined;
+    if (value.source !== undefined && !source) return null;
+    const comparison = parseComparison(value.comparison);
+    if (comparison === 'INVALID') return null;
+    return {
+        stepIndex: value.stepIndex as number,
+        actor: value.actor,
+        fenBefore: value.fenBefore,
+        moveUci,
+        ...(grade ? { grade } : {}),
+        ...(source ? { source } : {}),
+        ...(comparison === undefined ? {} : { comparison }),
+        ...(timeSpentMs == null ? {} : { timeSpentMs }),
+    };
 }

@@ -288,7 +288,7 @@ describe('training moment contracts', () => {
 });
 
 describe('training config normalization', () => {
-    it('defaults to broad coverage with practical server-authoritative grading', () => {
+    it('defaults to broad coverage with practical outcome grading', () => {
         const config = resolveTrainingConfig();
 
         expect(config).toMatchObject({

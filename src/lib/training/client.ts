@@ -1,8 +1,6 @@
 import type {
-    RevealTrainingMomentRequest,
-    RevealTrainingMomentResponse,
-    SubmitTrainingAttemptRequest,
-    SubmitTrainingAttemptResponse,
+    RecordTrainingAttemptRequest,
+    RecordTrainingAttemptResponse,
     TrainingApiErrorResponse,
     TrainingMomentResponse,
     PracticeFeedRequest,
@@ -12,25 +10,20 @@ import type {
 export class TrainingClientError extends Error {
     readonly status: number;
     readonly code: TrainingApiErrorResponse['code'] | null;
-    readonly retryAfterMs: number | null;
 
     constructor({
         message,
         status,
         code,
-        retryAfterMs,
     }: {
         message: string;
         status: number;
         code?: TrainingApiErrorResponse['code'];
-        retryAfterMs?: number;
     }) {
         super(message);
         this.name = 'TrainingClientError';
         this.status = status;
         this.code = code ?? null;
-        this.retryAfterMs =
-            typeof retryAfterMs === 'number' ? retryAfterMs : null;
     }
 }
 
@@ -48,7 +41,6 @@ async function readJson<T>(response: Response): Promise<T> {
                 `Training request failed (${response.status}).`,
             status: response.status,
             code: apiError?.code,
-            retryAfterMs: apiError?.retryAfterMs,
         });
     }
 
@@ -124,11 +116,11 @@ export async function fetchTrainingMoment(
     return readJson<TrainingMomentResponse>(response);
 }
 
-export async function submitTrainingAttempt(
+export async function recordTrainingAttempt(
     momentId: string,
-    request: SubmitTrainingAttemptRequest,
+    request: RecordTrainingAttemptRequest,
     signal?: AbortSignal
-): Promise<SubmitTrainingAttemptResponse> {
+): Promise<RecordTrainingAttemptResponse> {
     const response = await fetch(
         `/api/training/moments/${encodeURIComponent(momentId)}/attempts`,
         {
@@ -138,22 +130,5 @@ export async function submitTrainingAttempt(
             signal,
         }
     );
-    return readJson<SubmitTrainingAttemptResponse>(response);
-}
-
-export async function revealTrainingMoment(
-    momentId: string,
-    request: RevealTrainingMomentRequest,
-    signal?: AbortSignal
-): Promise<RevealTrainingMomentResponse> {
-    const response = await fetch(
-        `/api/training/moments/${encodeURIComponent(momentId)}/reveal`,
-        {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(request),
-            signal,
-        }
-    );
-    return readJson<RevealTrainingMomentResponse>(response);
+    return readJson<RecordTrainingAttemptResponse>(response);
 }

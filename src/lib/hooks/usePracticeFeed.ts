@@ -9,18 +9,20 @@ import {
 import { useSession } from 'next-auth/react';
 
 import type {
-    GradedTrainingAttemptResponse,
+    GradedPracticeResult,
+    PracticeResult,
     PracticeFilters,
-    RevealTrainingMomentResponse,
-    SubmitTrainingAttemptRequest,
-    SubmitTrainingAttemptResponse,
+    RecordTrainingAttemptRequest,
+    RecordedTrainingAttemptStepDto,
+    RevealedPracticeResult,
     TrainingPromptDto,
+    TrainingSolutionTreeNodeDto,
 } from '@/lib/training/api';
+import { StockfishClient } from '@/lib/analysis/stockfishClient';
 import {
     fetchTrainingMoment,
     fetchPracticeFeed,
-    revealTrainingMoment,
-    submitTrainingAttempt,
+    recordTrainingAttempt,
     TrainingClientError,
 } from '@/lib/training/client';
 import {
@@ -30,10 +32,16 @@ import {
     type QueuedTrainingAttempt,
 } from '@/lib/training/offlineQueue';
 import {
-    nextFenFromAuthoritativeResponse,
-    reviewFromAuthoritativeResponse,
+    reviewFromTrainingResponse,
     type TrainerAttemptPhase,
 } from '@/lib/training/trainerState';
+import {
+    aggregateTrainingGrade,
+    gradeKnownLocalMove,
+    gradeUnknownLocalMove,
+    localContinuationForMove,
+    type LocalMoveEvaluation,
+} from '@/lib/training/localGrading';
 import {
     abortCoordinatedPracticeFeedRequest,
     startCoordinatedPracticeFeedRequest,
@@ -112,18 +120,13 @@ export function practiceFeedLoadErrorAfterEvent(
 
 type LastSubmission = {
     momentId: string;
-    request: SubmitTrainingAttemptRequest;
+    node: TrainingSolutionTreeNodeDto;
+    stepIndex: number;
+    moveUci: string;
+    timeSpentMs: number;
     fenBefore: string;
     fenAfterMove: string;
 };
-
-function phaseBeforeSubmission(
-    request: SubmitTrainingAttemptRequest
-): TrainerAttemptPhase {
-    if (request.kind === 'STEP') return 'AWAITING_MOVE';
-    if (request.kind === 'RETRY') return 'UNRESOLVED';
-    return 'READY';
-}
 
 function newClientAttemptId(): string {
     if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -161,11 +164,7 @@ function shouldQueue(error: unknown): boolean {
 
 function keepQueued(error: unknown): boolean {
     if (!(error instanceof TrainingClientError)) return true;
-    return (
-        error.status >= 500 ||
-        error.code === 'GRADING_BUSY' ||
-        error.code === 'RATE_LIMITED'
-    );
+    return error.status >= 500;
 }
 
 function readQueue(ownerId: string): QueuedTrainingAttempt[] {
@@ -222,10 +221,8 @@ export function usePracticeFeed(
     const [positionFen, setPositionFen] = useState<string | null>(null);
     const [phase, setPhase] = useState<TrainerAttemptPhase>('READY');
     const [response, setResponse] = useState<
-        SubmitTrainingAttemptResponse | RevealTrainingMomentResponse | null
+        PracticeResult | RevealedPracticeResult | null
     >(null);
-    const [attemptId, setAttemptId] = useState<string | null>(null);
-    const [nextStepIndex, setNextStepIndex] = useState<number | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [online, setOnline] = useState(navigatorIsOnline);
     const [queuedCount, setQueuedCount] = useState(0);
@@ -233,6 +230,11 @@ export function usePracticeFeed(
     const clientAttemptIdRef = useRef<string | null>(null);
     const promptStartedAtRef = useRef(Date.now());
     const lastSubmissionRef = useRef<LastSubmission | null>(null);
+    const currentNodeRef =
+        useRef<TrainingSolutionTreeNodeDto | null>(null);
+    const recordedStepsRef =
+        useRef<RecordedTrainingAttemptStepDto[]>([]);
+    const engineRef = useRef<StockfishClient | null>(null);
     const flushInFlightRef = useRef(false);
     const advanceInFlightRef = useRef(false);
     const bufferRef = useRef<TrainingPromptDto[]>([]);
@@ -264,17 +266,10 @@ export function usePracticeFeed(
 
     const activatePrompt = useCallback(
         (next: TrainingPromptDto) => {
-            const queued = ownerId
-                ? readQueue(ownerId).find(
-                      (entry) => entry.momentId === next.id
-                  ) ?? null
-                : null;
             setPrompt(next);
-            setPositionFen(queued?.fenAfterMove ?? next.fen);
-            setPhase(queued ? 'PENDING_GRADING' : 'READY');
+            setPositionFen(next.fen);
+            setPhase('READY');
             setResponse(null);
-            setAttemptId(null);
-            setNextStepIndex(null);
             setError(null);
             setLoadError((current) =>
                 practiceFeedLoadErrorAfterEvent(
@@ -282,19 +277,14 @@ export function usePracticeFeed(
                     'PROMPT_ACTIVATED'
                 )
             );
-            clientAttemptIdRef.current =
-                queued?.request.clientAttemptId ?? null;
-            lastSubmissionRef.current = queued
-                ? {
-                      momentId: queued.momentId,
-                      request: queued.request,
-                      fenBefore: queued.fenBefore,
-                      fenAfterMove: queued.fenAfterMove,
-                  }
-                : null;
+            clientAttemptIdRef.current = null;
+            lastSubmissionRef.current = null;
+            currentNodeRef.current =
+                next.grading.solutionTree;
+            recordedStepsRef.current = [];
             promptStartedAtRef.current = Date.now();
         },
-        [ownerId]
+        []
     );
 
     const appendFeedPage = useCallback(
@@ -553,6 +543,31 @@ export function usePracticeFeed(
     }, []);
 
     useEffect(() => {
+        if (!prompt || engineRef.current) return;
+        const timeoutId = window.setTimeout(() => {
+            try {
+                const engine = new StockfishClient();
+                engineRef.current = engine;
+                void engine.getIdentity().catch(() => {
+                    // The worker can still be retried lazily on an unknown move.
+                });
+            } catch {
+                // Known moves remain instant even when this device cannot start
+                // the optional local fallback engine.
+            }
+        }, 0);
+        return () => window.clearTimeout(timeoutId);
+    }, [prompt]);
+
+    useEffect(
+        () => () => {
+            engineRef.current?.terminate();
+            engineRef.current = null;
+        },
+        []
+    );
+
+    useEffect(() => {
         if (
             !shouldPrefetchPracticeFeed({
                 bufferedPositions: buffer.length,
@@ -581,79 +596,173 @@ export function usePracticeFeed(
         setQueuedCount(ownerId ? readQueue(ownerId).length : 0);
     }, [ownerId]);
 
-    const applyResponse = useCallback(
-        (
-            authoritative: SubmitTrainingAttemptResponse,
-            submittedFen: string
-        ) => {
-            setResponse(authoritative);
-            setPositionFen(
-                nextFenFromAuthoritativeResponse(
-                    submittedFen,
-                    authoritative
-                )
-            );
-            setError(null);
-
-            if (authoritative.status === 'GRADED') {
-                setAttemptId(authoritative.attemptId);
-                setNextStepIndex(null);
-                setPhase('GRADED');
-            } else if (
-                authoritative.status === 'AWAITING_CONTINUATION'
-            ) {
-                setAttemptId(authoritative.attemptId);
-                setNextStepIndex(authoritative.nextStepIndex);
-                setPhase('AWAITING_MOVE');
-                promptStartedAtRef.current = Date.now();
-            } else {
-                setAttemptId(authoritative.attemptId);
-                setNextStepIndex(null);
-                setPhase('UNRESOLVED');
-            }
-        },
-        []
-    );
-
-    const queueSubmission = useCallback(
-        (submission: LastSubmission) => {
-            if (!ownerId) {
-                setError('Sign in again before saving this move.');
-                setPositionFen(
-                    submission.request.kind === 'RETRY'
-                        ? submission.fenAfterMove
-                        : submission.fenBefore
-                );
-                setPhase(phaseBeforeSubmission(submission.request));
-                return;
-            }
+    const queueRecord = useCallback(
+        (momentId: string, request: RecordTrainingAttemptRequest) => {
+            if (!ownerId) return;
             const entry: QueuedTrainingAttempt = {
-                version: 1,
+                version: 2,
                 ownerId,
-                momentId: submission.momentId,
-                request: submission.request,
-                fenBefore: submission.fenBefore,
-                fenAfterMove: submission.fenAfterMove,
+                momentId,
+                request,
                 queuedAt: new Date().toISOString(),
             };
-            const next = enqueueTrainingAttempt(readQueue(ownerId), entry);
-            if (!writeQueue(ownerId, next)) {
+            const next = enqueueTrainingAttempt(
+                readQueue(ownerId),
+                entry
+            );
+            if (writeQueue(ownerId, next)) {
+                setQueuedCount(next.length);
+            } else {
                 setError(
-                    'This move could not be stored offline. Reconnect and try again.'
+                    'Your result is graded, but it could not be queued for history sync.'
                 );
-                setPositionFen(
-                    submission.request.kind === 'RETRY'
-                        ? submission.fenAfterMove
-                        : submission.fenBefore
-                );
-                setPhase(phaseBeforeSubmission(submission.request));
-                return;
             }
-            setQueuedCount(next.length);
-            setPhase('PENDING_GRADING');
-            setError(null);
         },
         [ownerId]
+    );
+
+    const persistRecord = useCallback(
+        async (
+            momentId: string,
+            request: RecordTrainingAttemptRequest
+        ) => {
+            if (!ownerId || !online) {
+                queueRecord(momentId, request);
+                return;
+            }
+            try {
+                await recordTrainingAttempt(momentId, request);
+            } catch (caught) {
+                queueRecord(momentId, request);
+                if (shouldQueue(caught)) setOnline(false);
+            }
+        },
+        [online, ownerId, queueRecord]
+    );
+
+    const applyLocalEvaluation = useCallback(
+        (
+            evaluation: LocalMoveEvaluation,
+            submission: LastSubmission
+        ) => {
+            if (!prompt || !clientAttemptIdRef.current) return;
+            const clientAttemptId = clientAttemptIdRef.current;
+            if (evaluation.result.status === 'UNRESOLVED') {
+                setResponse({
+                    attemptId: clientAttemptId,
+                    status: 'UNRESOLVED',
+                    reason: evaluation.result.reason,
+                });
+                setPositionFen(submission.fenAfterMove);
+                setPhase('UNRESOLVED');
+                return;
+            }
+
+            const userStep: RecordedTrainingAttemptStepDto = {
+                stepIndex: submission.stepIndex,
+                actor: 'USER',
+                fenBefore: submission.fenBefore,
+                moveUci: submission.moveUci,
+                grade: evaluation.result.grade,
+                source: evaluation.source,
+                comparison: evaluation.comparison,
+                timeSpentMs: submission.timeSpentMs,
+            };
+            const stepsWithUser = [
+                ...recordedStepsRef.current,
+                userStep,
+            ];
+            const continuation = evaluation.result.accepted
+                ? localContinuationForMove({
+                      node: submission.node,
+                      moveUci: submission.moveUci,
+                  })
+                : null;
+            if (continuation) {
+                const engineStep: RecordedTrainingAttemptStepDto = {
+                    stepIndex: submission.stepIndex + 1,
+                    actor: 'ENGINE',
+                    fenBefore: submission.fenAfterMove,
+                    moveUci: continuation.opponentMoveUci,
+                };
+                recordedStepsRef.current = [
+                    ...stepsWithUser,
+                    engineStep,
+                ];
+                currentNodeRef.current =
+                    continuation.nextUserNode;
+                setResponse({
+                    attemptId: clientAttemptId,
+                    status: 'AWAITING_CONTINUATION',
+                    nextStepIndex: submission.stepIndex + 2,
+                    opponentMove: {
+                        moveUci:
+                            continuation.opponentMoveUci,
+                        fenAfter:
+                            continuation.fenAfterOpponentMove,
+                    },
+                });
+                setPositionFen(
+                    continuation.fenAfterOpponentMove
+                );
+                setPhase('AWAITING_MOVE');
+                setError(null);
+                promptStartedAtRef.current = Date.now();
+                return;
+            }
+
+            recordedStepsRef.current = stepsWithUser;
+            const userSteps = stepsWithUser.filter(
+                (step) => step.actor === 'USER'
+            );
+            const aggregateGrade = aggregateTrainingGrade(
+                userSteps.flatMap((step) =>
+                    step.grade ? [step.grade] : []
+                )
+            );
+            const comparison =
+                userSteps.length === 1
+                    ? evaluation.comparison
+                    : null;
+            const review = {
+                ...prompt.grading.review,
+                submittedMoveUci:
+                    userSteps[0]?.moveUci ?? null,
+                comparison,
+            };
+            setResponse({
+                attemptId: clientAttemptId,
+                status: 'GRADED',
+                grade: aggregateGrade,
+                accepted:
+                    aggregateGrade === 'BEST' ||
+                    aggregateGrade === 'GOOD',
+                review,
+            });
+            setPositionFen(submission.fenAfterMove);
+            setPhase('GRADED');
+            setError(null);
+            const sources = userSteps.flatMap((step) =>
+                step.source ? [step.source] : []
+            );
+            const gradingSource = sources.includes('DYNAMIC')
+                ? 'DYNAMIC'
+                : sources.includes('TABLEBASE')
+                  ? 'TABLEBASE'
+                  : 'PRECOMPUTED';
+            void persistRecord(prompt.id, {
+                kind: 'RECORD',
+                clientAttemptId,
+                solutionRevisionId:
+                    prompt.solutionRevisionId,
+                status: 'GRADED',
+                grade: aggregateGrade,
+                gradingSource,
+                comparison,
+                steps: stepsWithUser,
+            });
+        },
+        [persistRecord, prompt]
     );
 
     const submitMove = useCallback(
@@ -664,141 +773,116 @@ export function usePracticeFeed(
             moveUci: string;
             fenAfterMove: string;
         }) => {
+            const node = currentNodeRef.current;
             if (
                 !prompt ||
                 !positionFen ||
+                !node ||
+                node.role !== 'USER' ||
                 (phase !== 'READY' && phase !== 'AWAITING_MOVE')
             ) {
                 return;
             }
-
-            const fenBefore = positionFen;
             const elapsed = Math.max(
                 0,
-                Math.min(Date.now() - promptStartedAtRef.current, 86_400_000)
+                Math.min(
+                    Date.now() - promptStartedAtRef.current,
+                    86_400_000
+                )
             );
-            if (!clientAttemptIdRef.current) {
-                clientAttemptIdRef.current = newClientAttemptId();
-            }
-            const clientAttemptId = clientAttemptIdRef.current;
-
-            const request: SubmitTrainingAttemptRequest =
-                phase === 'AWAITING_MOVE' &&
-                attemptId &&
-                nextStepIndex !== null
-                    ? {
-                          kind: 'STEP',
-                          clientAttemptId,
-                          attemptId,
-                          stepIndex: nextStepIndex,
-                          moveUci,
-                          timeSpentMs: elapsed,
-                      }
-                    : {
-                          kind: 'START',
-                          clientAttemptId,
-                          solutionRevisionId: prompt.solutionRevisionId,
-                          moveUci,
-                          timeSpentMs: elapsed,
-                      };
-
+            clientAttemptIdRef.current ??= newClientAttemptId();
             const submission: LastSubmission = {
                 momentId: prompt.id,
-                request,
-                fenBefore,
+                node,
+                stepIndex: recordedStepsRef.current.length,
+                moveUci,
+                timeSpentMs: elapsed,
+                fenBefore: positionFen,
                 fenAfterMove,
             };
             lastSubmissionRef.current = submission;
             setPositionFen(fenAfterMove);
-            setPhase('SUBMITTING');
             setResponse(null);
             setError(null);
 
-            if (!online) {
-                queueSubmission(submission);
+            const known = gradeKnownLocalMove({
+                manifest: prompt.grading,
+                node,
+                moveUci,
+            });
+            if (known) {
+                applyLocalEvaluation(known, submission);
                 return;
             }
 
+            setPhase('SUBMITTING');
             try {
-                const authoritative = await submitTrainingAttempt(
-                    prompt.id,
-                    request
-                );
-                applyResponse(authoritative, fenAfterMove);
-            } catch (caught) {
-                if (shouldQueue(caught)) {
-                    setOnline(false);
-                    queueSubmission(submission);
-                    return;
-                }
-                setPositionFen(fenBefore);
-                setPhase(phaseBeforeSubmission(request));
-                setError(errorMessage(caught));
+                const engine =
+                    engineRef.current ??
+                    (engineRef.current = new StockfishClient());
+                const evaluated = await gradeUnknownLocalMove({
+                    engine,
+                    manifest: prompt.grading,
+                    node,
+                    moveUci,
+                    positionHistory: [
+                        ...prompt.grading.positionHistory,
+                        ...recordedStepsRef.current.map(
+                            (step) => step.fenBefore
+                        ),
+                    ],
+                });
+                applyLocalEvaluation(evaluated, submission);
+            } catch {
+                setResponse({
+                    attemptId:
+                        clientAttemptIdRef.current!,
+                    status: 'UNRESOLVED',
+                    reason: 'ENGINE_UNAVAILABLE',
+                });
+                setPhase('UNRESOLVED');
             }
         },
         [
-            applyResponse,
-            attemptId,
-            nextStepIndex,
-            online,
+            applyLocalEvaluation,
             phase,
             positionFen,
             prompt,
-            queueSubmission,
         ]
     );
 
     const retryGrading = useCallback(async () => {
         const submission = lastSubmissionRef.current;
-        if (
-            !submission ||
-            !attemptId ||
-            phase !== 'UNRESOLVED'
-        ) {
+        if (!submission || !prompt || phase !== 'UNRESOLVED') {
             return;
         }
-        const stepIndex =
-            submission.request.kind === 'START'
-                ? 0
-                : submission.request.stepIndex;
-        const retrySubmission: LastSubmission = {
-            ...submission,
-            request: {
-                kind: 'RETRY',
-                clientAttemptId:
-                    submission.request.clientAttemptId,
-                attemptId,
-                stepIndex,
-                retryId: newClientAttemptId(),
-            },
-        };
-        lastSubmissionRef.current = retrySubmission;
         setPhase('SUBMITTING');
         setError(null);
         try {
-            const authoritative = await submitTrainingAttempt(
-                retrySubmission.momentId,
-                retrySubmission.request
-            );
-            applyResponse(
-                authoritative,
-                retrySubmission.fenAfterMove
-            );
-        } catch (caught) {
-            if (shouldQueue(caught)) {
-                setOnline(false);
-                queueSubmission(retrySubmission);
-                return;
-            }
+            const engine =
+                engineRef.current ??
+                (engineRef.current = new StockfishClient());
+            const evaluated = await gradeUnknownLocalMove({
+                engine,
+                manifest: prompt.grading,
+                node: submission.node,
+                moveUci: submission.moveUci,
+                positionHistory: [
+                    ...prompt.grading.positionHistory,
+                    ...recordedStepsRef.current.map(
+                        (step) => step.fenBefore
+                    ),
+                ],
+            });
+            applyLocalEvaluation(evaluated, submission);
+        } catch {
             setPhase('UNRESOLVED');
-            setError(errorMessage(caught));
         }
-    }, [applyResponse, attemptId, phase, queueSubmission]);
+    }, [applyLocalEvaluation, phase, prompt]);
 
-    const reveal = useCallback(async () => {
+    const reveal = useCallback(() => {
         if (
             !prompt ||
-            !online ||
             !(
                 phase === 'READY' ||
                 phase === 'AWAITING_MOVE' ||
@@ -807,23 +891,35 @@ export function usePracticeFeed(
         ) {
             return;
         }
-        const previousPhase = phase;
-        setPhase('REVEALING');
+        const clientAttemptId =
+            clientAttemptIdRef.current ?? newClientAttemptId();
+        clientAttemptIdRef.current = clientAttemptId;
+        const firstSubmittedMove =
+            recordedStepsRef.current.find(
+                (step) => step.actor === 'USER'
+            )?.moveUci ??
+            lastSubmissionRef.current?.moveUci ??
+            null;
+        const revealed: RevealedPracticeResult = {
+            attemptId: clientAttemptId,
+            status: 'REVEALED',
+            review: {
+                ...prompt.grading.review,
+                submittedMoveUci: firstSubmittedMove,
+                comparison: null,
+            },
+        };
+        setResponse(revealed);
+        setPhase('REVEALED');
         setError(null);
-        try {
-            const revealed = await revealTrainingMoment(prompt.id, {
-                clientAttemptId: newClientAttemptId(),
-                solutionRevisionId: prompt.solutionRevisionId,
-            });
-            setResponse(revealed);
-            setAttemptId(revealed.attemptId);
-            setNextStepIndex(null);
-            setPhase('REVEALED');
-        } catch (caught) {
-            setPhase(previousPhase);
-            setError(errorMessage(caught));
-        }
-    }, [online, phase, prompt]);
+        void persistRecord(prompt.id, {
+            kind: 'RECORD',
+            clientAttemptId,
+            solutionRevisionId: prompt.solutionRevisionId,
+            status: 'REVEALED',
+            steps: recordedStepsRef.current,
+        });
+    }, [persistRecord, phase, prompt]);
 
     const flushQueue = useCallback(async () => {
         if (!ownerId || !online || flushInFlightRef.current) return;
@@ -832,61 +928,32 @@ export function usePracticeFeed(
             const queued = readQueue(ownerId);
             const remainingEntries: QueuedTrainingAttempt[] = [];
             for (let index = 0; index < queued.length; index += 1) {
-                const entry = queued[index];
-                // A conditional response must be shown in the matching board
-                // state. Never consume another moment's queued move in the
-                // background and strand its continuation.
-                if (entry.momentId !== prompt?.id) {
-                    remainingEntries.push(entry);
-                    continue;
-                }
+                const entry = queued[index]!;
                 try {
-                    const authoritative = await submitTrainingAttempt(
+                    await recordTrainingAttempt(
                         entry.momentId,
                         entry.request
                     );
-                    const isCurrent =
-                        phase === 'PENDING_GRADING' &&
-                        clientAttemptIdRef.current ===
-                            entry.request.clientAttemptId;
-                    if (isCurrent) {
-                        applyResponse(
-                            authoritative,
-                            entry.fenAfterMove
-                        );
-                    }
                 } catch (caught) {
                     if (keepQueued(caught)) {
-                        remainingEntries.push(...queued.slice(index));
+                        remainingEntries.push(
+                            ...queued.slice(index)
+                        );
                         if (shouldQueue(caught)) setOnline(false);
                         break;
-                    }
-                    if (
-                        prompt?.id === entry.momentId &&
-                        phase === 'PENDING_GRADING'
-                    ) {
-                        setPositionFen(
-                            entry.request.kind === 'RETRY'
-                                ? entry.fenAfterMove
-                                : entry.fenBefore
-                        );
-                        setPhase(
-                            phaseBeforeSubmission(entry.request)
-                        );
-                        setError(errorMessage(caught));
                     }
                 }
             }
             if (!writeQueue(ownerId, remainingEntries)) {
                 setError(
-                    'Pending moves were graded, but local queue cleanup failed.'
+                    'Practice history synced, but local queue cleanup failed.'
                 );
             }
             setQueuedCount(remainingEntries.length);
         } finally {
             flushInFlightRef.current = false;
         }
-    }, [applyResponse, online, ownerId, phase, prompt?.id]);
+    }, [online, ownerId]);
 
     useEffect(() => {
         if (online && queuedCount > 0) void flushQueue();
@@ -899,8 +966,6 @@ export function usePracticeFeed(
             if (
                 loading ||
                 phase === 'SUBMITTING' ||
-                phase === 'REVEALING' ||
-                phase === 'PENDING_GRADING' ||
                 phase === 'AWAITING_MOVE'
             ) {
                 return;
@@ -993,11 +1058,11 @@ export function usePracticeFeed(
             setFeedExhausted(false);
             setFeedHadPositions(false);
             setResponse(null);
-            setAttemptId(null);
-            setNextStepIndex(null);
             setError(null);
             clientAttemptIdRef.current = null;
             lastSubmissionRef.current = null;
+            currentNodeRef.current = null;
+            recordedStepsRef.current = [];
             setFeedRequest((current) => ({
                 filters,
                 revision: current.revision + 1,
@@ -1020,13 +1085,12 @@ export function usePracticeFeed(
 
     const grade =
         response?.status === 'GRADED'
-            ? (response as GradedTrainingAttemptResponse).grade
+            ? (response as GradedPracticeResult).grade
             : null;
     const unresolved =
         response?.status === 'UNRESOLVED'
             ? {
                   reason: response.reason,
-                  retryAfterMs: response.retryAfterMs ?? null,
               }
             : null;
 
@@ -1036,7 +1100,7 @@ export function usePracticeFeed(
         phase,
         grade,
         unresolved,
-        review: reviewFromAuthoritativeResponse(response),
+        review: reviewFromTrainingResponse(response),
         loading,
         feedExhausted,
         feedHadPositions,
@@ -1047,7 +1111,6 @@ export function usePracticeFeed(
         queuedCount,
         canMove: phase === 'READY' || phase === 'AWAITING_MOVE',
         canReveal:
-            online &&
             (phase === 'READY' ||
                 phase === 'AWAITING_MOVE' ||
                 phase === 'UNRESOLVED'),

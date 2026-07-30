@@ -1,15 +1,13 @@
-import type { SubmitTrainingAttemptRequest } from '@/lib/training/api';
+import type { RecordTrainingAttemptRequest } from '@/lib/training/api';
 
-export const TRAINING_QUEUE_VERSION = 1 as const;
+export const TRAINING_QUEUE_VERSION = 2 as const;
 export const TRAINING_QUEUE_MAX_ENTRIES = 100;
 
 export type QueuedTrainingAttempt = {
     version: typeof TRAINING_QUEUE_VERSION;
     ownerId: string;
     momentId: string;
-    request: SubmitTrainingAttemptRequest;
-    fenBefore: string;
-    fenAfterMove: string;
+    request: RecordTrainingAttemptRequest;
     queuedAt: string;
 };
 
@@ -17,28 +15,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isAttemptRequest(value: unknown): value is SubmitTrainingAttemptRequest {
+function isAttemptRequest(value: unknown): value is RecordTrainingAttemptRequest {
     if (!isRecord(value)) return false;
-    if (typeof value.clientAttemptId !== 'string') {
-        return false;
-    }
-    if (value.kind === 'RETRY') {
-        return (
-            typeof value.attemptId === 'string' &&
-            typeof value.retryId === 'string' &&
-            Number.isSafeInteger(value.stepIndex) &&
-            Number(value.stepIndex) >= 0
-        );
-    }
-    if (typeof value.moveUci !== 'string') return false;
-    if (value.kind === 'START') {
-        return typeof value.solutionRevisionId === 'string';
-    }
     return (
-        value.kind === 'STEP' &&
-        typeof value.attemptId === 'string' &&
-        Number.isSafeInteger(value.stepIndex) &&
-        Number(value.stepIndex) >= 0
+        value.kind === 'RECORD' &&
+        typeof value.clientAttemptId === 'string' &&
+        typeof value.solutionRevisionId === 'string' &&
+        (value.status === 'GRADED' || value.status === 'REVEALED') &&
+        Array.isArray(value.steps)
     );
 }
 
@@ -63,8 +47,6 @@ export function parseTrainingAttemptQueue(raw: string | null): QueuedTrainingAtt
             value.version !== TRAINING_QUEUE_VERSION ||
             typeof value.ownerId !== 'string' ||
             typeof value.momentId !== 'string' ||
-            typeof value.fenBefore !== 'string' ||
-            typeof value.fenAfterMove !== 'string' ||
             typeof value.queuedAt !== 'string' ||
             !isAttemptRequest(value.request)
         ) {
@@ -83,13 +65,7 @@ export function enqueueTrainingAttempt(
         (entry) =>
             entry.momentId === next.momentId &&
             entry.request.clientAttemptId === next.request.clientAttemptId &&
-            entry.request.kind === next.request.kind &&
-            (entry.request.kind !== 'STEP' ||
-                next.request.kind !== 'STEP' ||
-                entry.request.stepIndex === next.request.stepIndex) &&
-            (entry.request.kind !== 'RETRY' ||
-                next.request.kind !== 'RETRY' ||
-                entry.request.retryId === next.request.retryId)
+            entry.request.kind === next.request.kind
     );
     if (duplicate) return [...entries];
     return [...entries, next].slice(-TRAINING_QUEUE_MAX_ENTRIES);
