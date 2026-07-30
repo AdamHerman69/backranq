@@ -21,5 +21,19 @@ export default function manifest(): MetadataRoute.Manifest {
                 type: 'image/png',
             },
         ],
+        shortcuts: [
+            {
+                name: 'Play with a coach',
+                short_name: 'Coach',
+                url: '/play',
+                icons: [
+                    {
+                        src: '/web-app-manifest-192x192.png',
+                        sizes: '192x192',
+                        type: 'image/png',
+                    },
+                ],
+            },
+        ],
     };
 }

@@ -16,6 +16,7 @@ const eslintConfig = defineConfig([
         '.playwright/**',
         'next-env.d.ts',
         'public/vendor/stockfish/**',
+        'public/vendor/maia/**',
     ]),
 ]);
 

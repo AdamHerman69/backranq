@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { signOut, useSession } from "next-auth/react";
+import { useSession } from "next-auth/react";
 import { LogOut, Menu, Settings, User2 } from "lucide-react";
+import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -17,6 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { signOutAndClearCoachSession } from "@/lib/coach/signOut";
 
 type NavItem = {
   href: string;
@@ -34,6 +36,11 @@ export const appNavItems: NavItem[] = [
     href: "/practice",
     label: "Practice",
     active: (p) => p === "/practice" || p.startsWith("/practice/"),
+  },
+  {
+    href: "/play",
+    label: "Play",
+    active: (p) => p === "/play" || p.startsWith("/play/"),
   },
   {
     href: "/games",
@@ -89,6 +96,13 @@ export function AppNav() {
   const authed = !!data?.user?.id;
   const user = data?.user;
   const label = user?.name ?? user?.email ?? "User";
+  const signOutFromDevice = async () => {
+    try {
+      await signOutAndClearCoachSession(data?.user?.id);
+    } catch {
+      toast.error("Could not sign out. Your local coach game was left intact.");
+    }
+  };
 
   return (
     <>
@@ -132,7 +146,7 @@ export function AppNav() {
                   <Button
                     variant="outline"
                     className="w-full justify-start"
-                    onClick={() => signOut({ callbackUrl: "/" })}
+                    onClick={() => void signOutFromDevice()}
                   >
                     <LogOut className="mr-2" />
                     Sign out
@@ -180,7 +194,11 @@ export function AppNav() {
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-9 px-2">
               <Avatar className="h-7 w-7">
-                <AvatarImage src={user?.image ?? undefined} alt={label} />
+                <AvatarImage
+                  src={user?.image ?? undefined}
+                  alt={label}
+                  crossOrigin="anonymous"
+                />
                 <AvatarFallback>{initials(label)}</AvatarFallback>
               </Avatar>
               <span className="ml-2 hidden text-sm font-medium md:inline">{label}</span>
@@ -210,7 +228,7 @@ export function AppNav() {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             {authed ? (
-              <DropdownMenuItem onSelect={() => signOut({ callbackUrl: "/" })}>
+              <DropdownMenuItem onSelect={() => void signOutFromDevice()}>
                 <LogOut className="mr-2" />
                 Sign out
               </DropdownMenuItem>

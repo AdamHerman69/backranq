@@ -21,9 +21,12 @@ export function UserAvatar() {
 
     return (
         <Avatar className="h-8 w-8" aria-label={label}>
-            <AvatarImage src={img} alt={label} />
+            <AvatarImage
+                src={img}
+                alt={label}
+                crossOrigin="anonymous"
+            />
             <AvatarFallback>{initials(label)}</AvatarFallback>
         </Avatar>
     );
 }
-

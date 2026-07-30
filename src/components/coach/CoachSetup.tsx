@@ -1,0 +1,778 @@
+'use client';
+
+import { useState } from 'react';
+import {
+    AlertTriangle,
+    Download,
+    HardDrive,
+    Loader2,
+    ShieldCheck,
+    Sparkles,
+} from 'lucide-react';
+
+import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+import {
+    COACH_CONFIRMATION_NODES,
+    MAIA_OPPONENT_ELO_STEP,
+    MAIA_OPPONENT_MAX_ELO,
+    MAIA_OPPONENT_MIN_ELO,
+    COACH_THRESHOLD_MAX_CP,
+    COACH_THRESHOLD_MIN_CP,
+    OPPONENT_PROFILES,
+    getOpponentProfile,
+    normalizeMaiaOpponentElo,
+    type CoachOpponentModelId,
+    type OpponentProfileId,
+} from '@/lib/coach';
+import type {
+    CoachColorChoice,
+    CoachEngineWarmupStatus,
+    CoachSessionSnapshot,
+} from '@/lib/coach/types';
+
+const COACH_STEPS = [
+    [
+        '1',
+        'Play naturally',
+        'Stockfish checks each decision locally after you make it.',
+    ],
+    [
+        '2',
+        'Pause at the turning point',
+        'The bot does not reply until you retry, analyze, or accept the move.',
+    ],
+    [
+        '3',
+        'Explore the why',
+        'Use the same move tree, live lines and threat view as Practice.',
+    ],
+] as const;
+
+type CoachSetupProps = {
+    colorChoice: CoachColorChoice;
+    engineError: string | null;
+    engineWarmup: CoachEngineWarmupStatus;
+    maiaElo: number;
+    maiaError: string | null;
+    maiaModelBytes: number;
+    maiaDownloadMiB: number;
+    maiaModelLabel: string;
+    maiaModelLicenseStatus: string;
+    maiaModelProjectUrl: string;
+    maiaModelProvenance: string;
+    maiaModelSourceUrl: string;
+    maiaHasStoredData: boolean;
+    maiaInstalled: boolean;
+    maiaInstallChecking: boolean;
+    maiaOfflineReady: boolean;
+    maiaPhase:
+        | 'idle'
+        | 'checking-cache'
+        | 'downloading'
+        | 'verifying'
+        | 'loading'
+        | 'ready'
+        | 'error'
+        | 'terminated';
+    maiaProgress: number | null;
+    normalizedThresholdCp: number;
+    offlineAssetsReady: boolean;
+    opponentId: OpponentProfileId;
+    opponentModel: CoachOpponentModelId;
+    resumableSession: CoachSessionSnapshot | null;
+    sessionLoaded: boolean;
+    thresholdCp: number;
+    onColorChoiceChange: (value: CoachColorChoice) => void;
+    onDiscardSession: () => void;
+    onMaiaEloChange: (value: number) => void;
+    onOpponentChange: (value: OpponentProfileId) => void;
+    onOpponentModelChange: (value: CoachOpponentModelId) => void;
+    onResume: (snapshot: CoachSessionSnapshot) => void;
+    onRetryEngine: () => void;
+    onPrepareMaia: (allowDownload: boolean) => void;
+    onRemoveMaia: () => Promise<string | null>;
+    onStart: () => void;
+    onThresholdChange: (value: number) => void;
+};
+
+export function CoachSetup({
+    colorChoice,
+    engineError,
+    engineWarmup,
+    maiaElo,
+    maiaError,
+    maiaModelBytes,
+    maiaDownloadMiB,
+    maiaModelLabel,
+    maiaModelLicenseStatus,
+    maiaModelProjectUrl,
+    maiaModelProvenance,
+    maiaModelSourceUrl,
+    maiaHasStoredData,
+    maiaInstalled,
+    maiaInstallChecking,
+    maiaOfflineReady,
+    maiaPhase,
+    maiaProgress,
+    normalizedThresholdCp,
+    offlineAssetsReady,
+    opponentId,
+    opponentModel,
+    resumableSession,
+    sessionLoaded,
+    thresholdCp,
+    onColorChoiceChange,
+    onDiscardSession,
+    onMaiaEloChange,
+    onOpponentChange,
+    onOpponentModelChange,
+    onResume,
+    onRetryEngine,
+    onPrepareMaia,
+    onRemoveMaia,
+    onStart,
+    onThresholdChange,
+}: CoachSetupProps) {
+    const [removeMaiaDialogOpen, setRemoveMaiaDialogOpen] =
+        useState(false);
+    const [removingMaia, setRemovingMaia] = useState(false);
+    const [removeMaiaError, setRemoveMaiaError] =
+        useState<string | null>(null);
+    const selectedOpponent = getOpponentProfile(opponentId);
+    const engineLoading =
+        engineWarmup === 'loading' || engineWarmup === 'idle';
+    const maiaLoading =
+        opponentModel === 'maia3' &&
+        maiaPhase !== 'idle' &&
+        maiaPhase !== 'ready' &&
+        maiaPhase !== 'error';
+    const selectedOpponentReady =
+        opponentModel === 'stockfish' || maiaPhase === 'ready';
+    const startReady =
+        engineWarmup === 'ready' && selectedOpponentReady;
+    const resumableOpponentReady =
+        !resumableSession ||
+        resumableSession.opponentModel !== 'maia3' ||
+        maiaPhase === 'ready';
+    const modelSizeMiB = (
+        maiaModelBytes /
+        (1024 * 1024)
+    ).toFixed(1);
+    const announcedMaiaProgress =
+        maiaProgress == null
+            ? null
+            : Math.floor((maiaProgress * 100) / 10) * 10;
+    const maiaStatusAnnouncement =
+        maiaPhase === 'ready'
+            ? maiaOfflineReady
+                ? 'Maia opponent is ready offline.'
+                : 'Maia opponent is ready for this session but was not saved offline.'
+            : maiaPhase === 'error'
+              ? `Maia opponent failed to load. ${maiaError ?? ''}`
+              : maiaPhase === 'idle'
+                ? maiaInstalled
+                    ? 'Maia is saved on this device. Choose Load Maia to prepare it.'
+                    : 'Maia is not saved on this device. Choose Download Maia to install it.'
+              : maiaPhase === 'downloading' &&
+                  announcedMaiaProgress != null
+                ? `Downloading Maia opponent: ${announcedMaiaProgress} percent.`
+                : 'Preparing Maia opponent.';
+
+    return (
+        <section
+            className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(300px,0.7fr)]"
+            aria-label="Coach game setup"
+        >
+            {sessionLoaded && resumableSession ? (
+                <Card className="border-primary/30 lg:col-span-2">
+                    <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                            <div className="font-medium">
+                                Continue your saved game
+                            </div>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                                {resumableSession.moves.length} moves ·{' '}
+                                {resumableSession.opponentModel ===
+                                'maia3'
+                                    ? `Maia 3 · ${resumableSession.opponentElo} Elo`
+                                    : `Stockfish · ${getOpponentProfile(
+                                          resumableSession.opponentId
+                                      ).label}`}{' '}
+                                · {resumableSession.thresholdCp} cp threshold ·
+                                saved on this device
+                            </p>
+                            {!resumableOpponentReady &&
+                            !maiaInstallChecking ? (
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                    The saved game is intact. Load Maia below,
+                                    or explicitly download it again if this
+                                    browser evicted the files.
+                                </p>
+                            ) : null}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <Button
+                                type="button"
+                                disabled={!resumableOpponentReady}
+                                onClick={() => onResume(resumableSession)}
+                            >
+                                {resumableOpponentReady
+                                    ? 'Continue game'
+                                    : maiaInstallChecking
+                                      ? 'Checking saved Maia…'
+                                      : 'Prepare Maia below to continue'}
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={onDiscardSession}
+                            >
+                                Discard local game
+                            </Button>
+                        </div>
+                    </CardContent>
+                </Card>
+            ) : null}
+
+            <Card>
+                <CardHeader>
+                    <div className="flex items-start justify-between gap-3">
+                        <div>
+                            <CardTitle>Set up your game</CardTitle>
+                            <CardDescription className="mt-2">
+                                Choose how the opponent plays and when the
+                                coach should interrupt.
+                            </CardDescription>
+                        </div>
+                        <Badge
+                            variant={
+                                engineWarmup === 'ready'
+                                    ? 'secondary'
+                                    : 'outline'
+                            }
+                            className="shrink-0 whitespace-nowrap"
+                        >
+                            {engineLoading ? (
+                                <Loader2
+                                    className="mr-1 h-3.5 w-3.5 animate-spin"
+                                    aria-hidden="true"
+                                />
+                            ) : engineWarmup === 'ready' ? (
+                                <ShieldCheck
+                                    className="mr-1 h-3.5 w-3.5"
+                                    aria-hidden="true"
+                                />
+                            ) : (
+                                <AlertTriangle
+                                    className="mr-1 h-3.5 w-3.5"
+                                    aria-hidden="true"
+                                />
+                            )}
+                            {engineWarmup === 'ready'
+                                ? offlineAssetsReady
+                                    ? 'Offline assets saved'
+                                    : 'Engine ready'
+                                : engineWarmup === 'error'
+                                  ? 'Engine unavailable'
+                                  : 'Loading engine'}
+                        </Badge>
+                    </div>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                    <div className="grid gap-4 sm:grid-cols-2">
+                        <label className="space-y-2 text-sm">
+                            <span className="font-medium">Your color</span>
+                            <Select
+                                value={colorChoice}
+                                onValueChange={(value) =>
+                                    onColorChoiceChange(
+                                        value as CoachColorChoice
+                                    )
+                                }
+                            >
+                                <SelectTrigger aria-label="Your color">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="white">
+                                        White
+                                    </SelectItem>
+                                    <SelectItem value="black">
+                                        Black
+                                    </SelectItem>
+                                    <SelectItem value="random">
+                                        Random
+                                    </SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </label>
+
+                        <label className="space-y-2 text-sm">
+                            <span className="font-medium">
+                                Opponent model
+                            </span>
+                            <Select
+                                value={opponentModel}
+                                onValueChange={(value) =>
+                                    onOpponentModelChange(
+                                        value as CoachOpponentModelId
+                                    )
+                                }
+                            >
+                                <SelectTrigger aria-label="Opponent model">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="stockfish">
+                                        Stockfish · engine-like
+                                    </SelectItem>
+                                    <SelectItem value="maia3">
+                                        Maia 3 · human-like ·{' '}
+                                        {maiaInstalled
+                                            ? 'saved on device'
+                                            : `${maiaDownloadMiB.toFixed(1)} MiB download`}
+                                    </SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </label>
+
+                        <label className="space-y-2 text-sm">
+                            {opponentModel === 'stockfish' ? (
+                                <>
+                                    <span className="font-medium">
+                                        Stockfish strength
+                                    </span>
+                                    <Select
+                                        value={opponentId}
+                                        onValueChange={(value) =>
+                                            onOpponentChange(
+                                                value as OpponentProfileId
+                                            )
+                                        }
+                                    >
+                                        <SelectTrigger aria-label="Stockfish strength">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {OPPONENT_PROFILES.map(
+                                                (profile) => (
+                                                    <SelectItem
+                                                        key={profile.id}
+                                                        value={profile.id}
+                                                    >
+                                                        {profile.label}
+                                                    </SelectItem>
+                                                )
+                                            )}
+                                        </SelectContent>
+                                    </Select>
+                                </>
+                            ) : (
+                                <>
+                                    <span className="font-medium">
+                                        Maia playing strength
+                                    </span>
+                                    <div className="relative">
+                                        <Input
+                                            type="number"
+                                            min={MAIA_OPPONENT_MIN_ELO}
+                                            max={MAIA_OPPONENT_MAX_ELO}
+                                            step={MAIA_OPPONENT_ELO_STEP}
+                                            inputMode="numeric"
+                                            value={maiaElo}
+                                            onChange={(event) =>
+                                                onMaiaEloChange(
+                                                    Number(
+                                                        event.currentTarget
+                                                            .value
+                                                    ) || 0
+                                                )
+                                            }
+                                            onBlur={() =>
+                                                onMaiaEloChange(
+                                                    normalizeMaiaOpponentElo(
+                                                        maiaElo
+                                                    )
+                                                )
+                                            }
+                                            aria-label="Maia opponent Elo"
+                                            className="pr-12 font-mono"
+                                        />
+                                        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                                            Elo
+                                        </span>
+                                    </div>
+                                </>
+                            )}
+                        </label>
+
+                        <label className="space-y-2 text-sm sm:col-span-2">
+                            <span className="font-medium">
+                                Stop threshold
+                            </span>
+                            <div className="relative">
+                                <Input
+                                    type="number"
+                                    min={COACH_THRESHOLD_MIN_CP}
+                                    max={COACH_THRESHOLD_MAX_CP}
+                                    step={10}
+                                    inputMode="numeric"
+                                    value={thresholdCp}
+                                    onChange={(event) =>
+                                        onThresholdChange(
+                                            Number(
+                                                event.currentTarget.value
+                                            ) || 0
+                                        )
+                                    }
+                                    onBlur={() =>
+                                        onThresholdChange(
+                                            normalizedThresholdCp
+                                        )
+                                    }
+                                    aria-label="Centipawn loss threshold"
+                                    className="pr-10 font-mono"
+                                />
+                                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                                    cp
+                                </span>
+                            </div>
+                        </label>
+                    </div>
+
+                    <div className="grid gap-3 rounded-lg border bg-muted/25 p-4 sm:grid-cols-2">
+                        <div>
+                            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                {opponentModel === 'maia3'
+                                    ? `Maia 3 · ${maiaElo} Elo`
+                                    : `${selectedOpponent.label} Stockfish`}
+                            </div>
+                            <p className="mt-1 text-sm">
+                                {opponentModel === 'maia3'
+                                    ? 'Predicts moves people at this rating actually play. Stockfish remains the independent coach and judge.'
+                                    : selectedOpponent.description}
+                            </p>
+                        </div>
+                        <div>
+                            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                Stop at ≥ {normalizedThresholdCp} cp loss
+                            </div>
+                            <p className="mt-1 text-sm">
+                                Near-threshold decisions are confirmed at{' '}
+                                {Math.round(
+                                    COACH_CONFIRMATION_NODES / 1_000
+                                )}
+                                k nodes before the game pauses.
+                            </p>
+                        </div>
+                    </div>
+
+                    {opponentModel === 'maia3' ? (
+                        <div
+                            className="rounded-lg border p-4"
+                            data-maia-phase={maiaPhase}
+                        >
+                            <div className="flex items-start gap-3">
+                                {maiaPhase === 'ready' ? (
+                                    <HardDrive
+                                        className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600"
+                                        aria-hidden="true"
+                                    />
+                                ) : maiaPhase === 'error' ? (
+                                    <AlertTriangle
+                                        className="mt-0.5 h-4 w-4 shrink-0 text-destructive"
+                                        aria-hidden="true"
+                                    />
+                                ) : (
+                                    <Download
+                                        className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
+                                        aria-hidden="true"
+                                    />
+                                )}
+                                <div className="min-w-0 flex-1">
+                                    <span
+                                        className="sr-only"
+                                        role="status"
+                                        aria-live="polite"
+                                        aria-atomic="true"
+                                    >
+                                        {maiaStatusAnnouncement}
+                                    </span>
+                                    <div className="text-sm font-medium">
+                                        {maiaPhase === 'ready'
+                                            ? maiaOfflineReady
+                                                ? 'Human-like opponent saved offline'
+                                                : 'Human-like opponent ready for this session'
+                                            : maiaPhase === 'error'
+                                              ? 'Maia model unavailable'
+                                              : maiaPhase === 'idle'
+                                                ? maiaInstalled
+                                                    ? 'Maia is saved on this device'
+                                                    : 'Download Maia to use this opponent'
+                                              : maiaPhase === 'downloading'
+                                                ? `Downloading human-like opponent${maiaProgress == null ? '…' : ` · ${Math.round(maiaProgress * 100)}%`}`
+                                                : 'Preparing human-like opponent…'}
+                                    </div>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                        {maiaModelLabel} · {modelSizeMiB} MiB ·{' '}
+                                        {maiaModelBytes.toLocaleString(
+                                            'en-US'
+                                        )}{' '}
+                                        bytes · {maiaModelProvenance}
+                                    </p>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                        <a
+                                            className="underline underline-offset-2"
+                                            href={maiaModelSourceUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                        >
+                                            Immutable model source
+                                        </a>{' '}
+                                        ·{' '}
+                                        <a
+                                            className="underline underline-offset-2"
+                                            href={maiaModelProjectUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                        >
+                                            Maia upstream
+                                        </a>{' '}
+                                        · license status:{' '}
+                                        {maiaModelLicenseStatus.replaceAll(
+                                            '-',
+                                            ' '
+                                        )}
+                                    </p>
+                                    {maiaPhase === 'idle' ? (
+                                        <div className="mt-3 space-y-2">
+                                            <p className="text-xs text-muted-foreground">
+                                                {maiaInstalled
+                                                    ? 'The verified model and runtime are already on this device. Loading them does not require a network download.'
+                                                    : `This explicit one-time download comes from GitHub: ${modelSizeMiB} MiB for the model plus about 13.0 MiB for its local runtime. After both are verified and saved, Maia can play offline.`}
+                                            </p>
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() =>
+                                                    onPrepareMaia(
+                                                        !maiaInstalled
+                                                    )
+                                                }
+                                            >
+                                                <Download
+                                                    className="mr-2 h-4 w-4"
+                                                    aria-hidden="true"
+                                                />
+                                                {maiaInstalled
+                                                    ? 'Load Maia from this device'
+                                                    : `Download Maia · ${maiaDownloadMiB.toFixed(1)} MiB`}
+                                            </Button>
+                                        </div>
+                                    ) : null}
+                                    {maiaProgress != null &&
+                                    maiaPhase !== 'ready' &&
+                                    maiaPhase !== 'error' ? (
+                                        <div
+                                            className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"
+                                            role="progressbar"
+                                            aria-label="Maia model download"
+                                            aria-valuemin={0}
+                                            aria-valuemax={100}
+                                            aria-valuenow={Math.round(
+                                                maiaProgress * 100
+                                            )}
+                                        >
+                                            <div
+                                                className="h-full rounded-full bg-primary transition-[width]"
+                                                style={{
+                                                    width: `${Math.round(
+                                                        maiaProgress * 100
+                                                    )}%`,
+                                                }}
+                                            />
+                                        </div>
+                                    ) : null}
+                                    {maiaPhase === 'error' ? (
+                                        <div
+                                            className="mt-3 flex flex-wrap items-center gap-3"
+                                            role="alert"
+                                        >
+                                            <p className="text-xs text-destructive">
+                                                {maiaError}
+                                            </p>
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() =>
+                                                    onPrepareMaia(true)
+                                                }
+                                            >
+                                                Download Maia again ·{' '}
+                                                {maiaDownloadMiB.toFixed(1)} MiB
+                                            </Button>
+                                        </div>
+                                    ) : null}
+                                    {maiaHasStoredData ||
+                                    maiaPhase === 'ready' ||
+                                    maiaPhase === 'error' ? (
+                                        <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="ghost"
+                                            className="mt-3"
+                                            onClick={() => {
+                                                setRemoveMaiaError(null);
+                                                setRemoveMaiaDialogOpen(
+                                                    true
+                                                );
+                                            }}
+                                        >
+                                            Remove Maia data
+                                        </Button>
+                                    ) : null}
+                                </div>
+                            </div>
+                        </div>
+                    ) : null}
+
+                    <Button
+                        type="button"
+                        size="lg"
+                        className="w-full sm:w-auto"
+                        disabled={!startReady}
+                        onClick={onStart}
+                    >
+                        {engineLoading || maiaLoading ? (
+                            <Loader2
+                                className="mr-2 h-4 w-4 animate-spin"
+                                aria-hidden="true"
+                            />
+                        ) : (
+                            <Sparkles
+                                className="mr-2 h-4 w-4"
+                                aria-hidden="true"
+                            />
+                        )}
+                        {engineLoading
+                            ? 'Preparing Stockfish judge…'
+                            : maiaLoading
+                              ? 'Preparing Maia opponent…'
+                              : opponentModel === 'maia3' &&
+                                  maiaPhase !== 'ready'
+                                ? maiaInstalled
+                                    ? 'Load Maia to start'
+                                    : 'Download Maia to start'
+                              : 'Start coach game'}
+                    </Button>
+
+                    {engineWarmup === 'error' ? (
+                        <div
+                            className="flex flex-wrap items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"
+                            role="alert"
+                        >
+                            <p className="text-sm text-destructive">
+                                {engineError}
+                            </p>
+                            <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={onRetryEngine}
+                            >
+                                Retry Stockfish judge
+                            </Button>
+                        </div>
+                    ) : null}
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle className="text-base">
+                        How coaching works
+                    </CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <ol className="space-y-4 text-sm">
+                        {COACH_STEPS.map(([number, title, detail]) => (
+                            <li
+                                key={number}
+                                className="flex items-start gap-3"
+                            >
+                                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
+                                    {number}
+                                </span>
+                                <span>
+                                    <span className="font-medium">
+                                        {title}
+                                    </span>
+                                    <span className="mt-0.5 block text-muted-foreground">
+                                        {detail}
+                                    </span>
+                                </span>
+                            </li>
+                        ))}
+                    </ol>
+                    <div className="mt-5 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3 text-xs text-muted-foreground">
+                        {offlineAssetsReady
+                            ? opponentModel === 'maia3' &&
+                              (!maiaOfflineReady ||
+                                  maiaPhase !== 'ready')
+                                ? maiaPhase === 'idle'
+                                    ? `The coach shell and Stockfish judge are saved offline. Maia is downloaded only after you explicitly request its approximately ${maiaDownloadMiB.toFixed(1)} MiB model and runtime.`
+                                    : 'The coach shell and Stockfish judge are saved offline. Maia will also be available offline once this model download is saved successfully.'
+                                : 'The coach shell, Stockfish judge, selected opponent and analysis workspace are saved for a cold offline start.'
+                            : engineWarmup === 'ready'
+                              ? 'The Stockfish judge is loaded, so this open session can continue offline. The production app also saves a cold-start offline shell.'
+                              : 'The Stockfish judge and analysis workspace are prepared locally before a game can start.'}
+                    </div>
+                </CardContent>
+            </Card>
+            <ActionConfirmDialog
+                open={removeMaiaDialogOpen}
+                onOpenChange={setRemoveMaiaDialogOpen}
+                title="Remove Maia from this device?"
+                description={`This removes the verified model and local runtime (about ${maiaDownloadMiB.toFixed(1)} MiB total). To use Maia again, you will need to download them again.`}
+                confirmLabel="Remove Maia data"
+                variant="destructive"
+                busy={removingMaia}
+                onConfirm={async () => {
+                    setRemovingMaia(true);
+                    const error = await onRemoveMaia();
+                    setRemovingMaia(false);
+                    if (error) {
+                        setRemoveMaiaError(error);
+                    } else {
+                        setRemoveMaiaDialogOpen(false);
+                    }
+                }}
+            >
+                {removeMaiaError ? (
+                    <p className="text-sm text-destructive" role="alert">
+                        {removeMaiaError}
+                    </p>
+                ) : null}
+            </ActionConfirmDialog>
+        </section>
+    );
+}

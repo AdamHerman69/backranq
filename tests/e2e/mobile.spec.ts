@@ -6,6 +6,32 @@ import {
     practicePath,
 } from './support/fixtures';
 
+test('mobile coach setup stays readable and reachable without overflow', async ({
+    page,
+}) => {
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.goto('/play');
+
+    await expect(
+        page.getByRole('heading', { level: 1, name: 'Play with a coach' })
+    ).toBeVisible();
+    await expect(
+        page.getByRole('button', { name: 'Start coach game' })
+    ).toBeVisible();
+    expect(
+        await page.evaluate(
+            () =>
+                document.documentElement.scrollWidth >
+                document.documentElement.clientWidth + 1
+        )
+    ).toBe(false);
+
+    await page.getByRole('button', { name: 'Open menu' }).click();
+    await expect(
+        page.getByRole('link', { name: 'Play', exact: true })
+    ).toHaveAttribute('aria-current', 'page');
+});
+
 test('mobile trainer keeps one reachable navigation surface without overflow', async ({
     page,
 }) => {

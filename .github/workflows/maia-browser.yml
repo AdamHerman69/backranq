@@ -1,0 +1,63 @@
+name: Maia browser model
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/maia-browser.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'playwright.offline.config.ts'
+      - 'next.config.ts'
+      - 'scripts/build-maia-browser.mjs'
+      - 'src/app/~offline/coach/**'
+      - 'src/app/manifest.ts'
+      - 'src/app/play/**'
+      - 'src/app/serwist/**'
+      - 'src/app/sw.ts'
+      - 'src/components/coach/**'
+      - 'src/lib/coach/**'
+      - 'tests/e2e/coach-maia-model.live.spec.ts'
+      - 'tests/lib/coach-maia-**'
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maia-browser-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pinned-model-and-cold-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Verify the pinned Maia model directly
+        run: pnpm test:maia-model
+
+      - name: Verify first-visit download and cold offline inference
+        run: pnpm test:e2e:maia-model

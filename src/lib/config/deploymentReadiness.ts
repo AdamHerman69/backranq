@@ -1,5 +1,4 @@
-import fs from 'node:fs';
-import path from 'node:path';
+import vercelConfiguration from '../../../vercel.json';
 import { BACKRANQ_QUEUE_TOPIC } from '@/lib/queues/backranq';
 
 export type DeploymentReadinessCheck = {
@@ -19,17 +18,15 @@ export type DeploymentReadiness = {
 type ReadinessEnv = Record<string, string | undefined>;
 
 export function getDeploymentReadiness(
-    env: ReadinessEnv = process.env,
-    cwd = process.cwd()
+    env: ReadinessEnv = process.env
 ): DeploymentReadiness {
-    const vercel = readVercelJson(cwd);
+    const vercel = readVercelConfiguration(vercelConfiguration);
     const checks = [
         databaseReadiness(env),
         stripeReadiness(env),
         adminOpsReadiness(env),
         cronReadiness(env, vercel),
         queueReadiness(env, vercel),
-        reconciliationReadiness(cwd),
     ];
 
     return {
@@ -96,15 +93,6 @@ function queueReadiness(
     return check('queues', true, [], warnings);
 }
 
-function reconciliationReadiness(cwd: string): DeploymentReadinessCheck {
-    const scripts = [
-        'scripts/reconcile-credit-ledger.mjs',
-        'scripts/smoke-stripe-billing.mjs',
-    ];
-    const missing = scripts.filter((script) => !fs.existsSync(path.join(cwd, script)));
-    return check('reconciliation', true, missing, []);
-}
-
 function check(
     group: string,
     required: boolean,
@@ -129,16 +117,14 @@ function hasAnyEnv(env: ReadinessEnv, names: string[]) {
     return names.some((name) => Boolean(env[name]?.trim()));
 }
 
-function readVercelJson(cwd: string) {
+function readVercelConfiguration(json: {
+    crons?: Array<{ path?: string }>;
+    functions?: Record<
+        string,
+        { experimentalTriggers?: Array<{ topic?: string }> }
+    >;
+}) {
     try {
-        const file = path.join(cwd, 'vercel.json');
-        const json = JSON.parse(fs.readFileSync(file, 'utf8')) as {
-            crons?: Array<{ path?: string }>;
-            functions?: Record<
-                string,
-                { experimentalTriggers?: Array<{ topic?: string }> }
-            >;
-        };
         const trigger = Object.values(json.functions ?? {})
             .flatMap((value) => value.experimentalTriggers ?? [])
             .find((value) => value.topic);
