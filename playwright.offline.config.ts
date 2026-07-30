@@ -31,6 +31,9 @@ export default defineConfig({
             ...process.env,
             NODE_ENV: 'production',
             NEXTAUTH_URL: baseURL,
+            NEXTAUTH_SECRET:
+                process.env.NEXTAUTH_SECRET ??
+                'backranq-offline-e2e-secret',
             BACKRANQ_APP_URL: baseURL,
         },
     },
