@@ -1,11 +1,13 @@
 import { expect, type Page } from '@playwright/test';
 
 export function square(page: Page, name: string) {
-    return page.locator(`[data-square="${name}"]`);
+    return page.locator(`[data-square="${name}"]`).filter({ visible: true });
 }
 
 export async function waitForBoard(page: Page) {
-    await expect(square(page, 'e4')).toBeVisible();
+    await expect(square(page, 'e4')).toBeVisible({
+        timeout: 15_000,
+    });
 }
 
 export async function clickMove(page: Page, from: string, to: string) {

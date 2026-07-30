@@ -27,6 +27,33 @@ test('mobile trainer keeps one reachable navigation surface without overflow', a
     );
     expect(hasHorizontalOverflow).toBe(false);
 
+    await page.getByRole('tab', { name: 'Analyze' }).click();
+    await page
+        .getByRole('dialog', {
+            name: 'Analyze this position?',
+        })
+        .getByRole('button', {
+            name: 'Reveal and analyze',
+        })
+        .click();
+    await expect(
+        page.getByRole('heading', {
+            name: 'Analyze the position',
+        })
+    ).toBeVisible();
+    await expect(
+        page.getByRole('button', {
+            name: 'Decision position',
+        })
+    ).toBeVisible();
+    expect(
+        await page.evaluate(
+            () =>
+                document.documentElement.scrollWidth >
+                window.innerWidth + 1
+        )
+    ).toBe(false);
+
     await page.getByRole('button', { name: 'Open menu' }).click();
     await expect(
         page.getByRole('link', { name: 'Practice', exact: true })

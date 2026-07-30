@@ -18,9 +18,13 @@ export default async function PracticePage({
             ? rawMomentId
             : undefined;
     const entry = sp.entry === 'progress' ? 'progress' : undefined;
+    const initialViewMode = sp.view === 'analyze' ? 'analyze' : 'solve';
     const callbackSearchParams = new URLSearchParams();
     if (momentId) callbackSearchParams.set('momentId', momentId);
     if (entry) callbackSearchParams.set('entry', entry);
+    if (initialViewMode === 'analyze') {
+        callbackSearchParams.set('view', 'analyze');
+    }
     const practiceCallbackUrl = safeAuthCallbackUrl(
         callbackSearchParams.size > 0
             ? `/practice?${callbackSearchParams.toString()}`
@@ -47,6 +51,7 @@ export default async function PracticePage({
                 initialMomentId={momentId}
                 ownerId={userId}
                 entry={entry}
+                initialViewMode={initialViewMode}
             />
         </div>
     );

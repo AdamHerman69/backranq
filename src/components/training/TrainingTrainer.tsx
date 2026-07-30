@@ -8,6 +8,7 @@ import {
     useState,
 } from 'react';
 import { Chess, type Square } from 'chess.js';
+import dynamic from 'next/dynamic';
 import {
     ChevronRight,
     FlipHorizontal2,
@@ -27,6 +28,12 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import {
+    Tabs,
+    TabsContent,
+    TabsList,
+    TabsTrigger,
+} from '@/components/ui/tabs';
 import { usePracticeFeed } from '@/lib/hooks/usePracticeFeed';
 import type { TrainingReviewDto } from '@/lib/training/api';
 import {
@@ -46,6 +53,30 @@ import {
 import { cn } from '@/lib/utils';
 
 type PromotionPiece = 'q' | 'r' | 'b' | 'n';
+type TrainerViewMode = 'solve' | 'analyze';
+type RevealIntent = 'solution' | 'analysis' | null;
+
+const TrainingAnalysisWorkspace = dynamic(
+    () =>
+        import(
+            '@/components/training/TrainingAnalysisWorkspace'
+        ).then((module) => module.TrainingAnalysisWorkspace),
+    {
+        ssr: false,
+        loading: () => (
+            <div
+                className="flex min-h-56 items-center justify-center gap-2 text-sm text-muted-foreground"
+                role="status"
+            >
+                <Loader2
+                    className="h-4 w-4 animate-spin"
+                    aria-hidden="true"
+                />
+                Preparing analysis…
+            </div>
+        ),
+    }
+);
 
 type PendingPromotion = {
     from: Square;
@@ -276,11 +307,13 @@ export function TrainingTrainer({
     initialMomentId,
     ownerId,
     entry,
+    initialViewMode = 'solve',
     compact = false,
 }: {
     initialMomentId?: string;
     ownerId?: string;
     entry?: 'progress';
+    initialViewMode?: TrainerViewMode;
     compact?: boolean;
 }) {
     const training = usePracticeFeed(
@@ -288,11 +321,19 @@ export function TrainingTrainer({
         ownerId,
         entry
     );
+    const nextPosition = training.next;
     const [flipped, setFlipped] = useState(false);
     const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
     const [pendingPromotion, setPendingPromotion] =
         useState<PendingPromotion | null>(null);
-    const [revealOpen, setRevealOpen] = useState(false);
+    const [viewMode, setViewMode] =
+        useState<TrainerViewMode>('solve');
+    const [revealIntent, setRevealIntent] =
+        useState<RevealIntent>(null);
+    const [analysisSession, setAnalysisSession] = useState<{
+        promptId: string;
+        initialFen: string;
+    } | null>(null);
     const [reducedMotion, setReducedMotion] = useState(false);
     const [keyboardMove, setKeyboardMove] = useState('');
     const [keyboardMoveError, setKeyboardMoveError] = useState<
@@ -303,6 +344,85 @@ export function TrainingTrainer({
     const previousPromptIdRef = useRef<string | null>(null);
     const previousPhaseRef =
         useRef<TrainerAttemptPhase>('READY');
+    const initialAnalysisHandledRef = useRef(
+        initialViewMode !== 'analyze'
+    );
+
+    const replaceViewInUrl = useCallback(
+        (mode: TrainerViewMode) => {
+            if (typeof window === 'undefined') return;
+            const url = new URL(window.location.href);
+            if (mode === 'analyze') {
+                url.searchParams.set('view', 'analyze');
+            } else {
+                url.searchParams.delete('view');
+            }
+            window.history.replaceState(
+                window.history.state,
+                '',
+                `${url.pathname}${url.search}${url.hash}`
+            );
+        },
+        []
+    );
+
+    const enterAnalysis = useCallback(() => {
+        const prompt = training.prompt;
+        const positionFen = training.positionFen;
+        if (!prompt || !positionFen) return;
+        setSelectedSquare(null);
+        setPendingPromotion(null);
+        setKeyboardMove('');
+        setKeyboardMoveError(null);
+        setAnalysisSession((current) =>
+            current?.promptId === prompt.id
+                ? current
+                : {
+                      promptId: prompt.id,
+                      initialFen: positionFen,
+                  }
+        );
+        setViewMode('analyze');
+        replaceViewInUrl('analyze');
+    }, [
+        replaceViewInUrl,
+        training.positionFen,
+        training.prompt,
+    ]);
+
+    const returnToSolve = useCallback(() => {
+        setViewMode('solve');
+        setSelectedSquare(null);
+        setPendingPromotion(null);
+        replaceViewInUrl('solve');
+    }, [replaceViewInUrl]);
+
+    const requestAnalysis = useCallback(() => {
+        if (viewMode === 'analyze') return;
+        if (training.canReveal) {
+            setSelectedSquare(null);
+            setPendingPromotion(null);
+            setRevealIntent('analysis');
+            return;
+        }
+        if (
+            training.phase === 'GRADED' ||
+            training.phase === 'REVEALED'
+        ) {
+            enterAnalysis();
+        }
+    }, [
+        enterAnalysis,
+        training.canReveal,
+        training.phase,
+        viewMode,
+    ]);
+
+    const goToNextPosition = useCallback(() => {
+        returnToSolve();
+        setAnalysisSession(null);
+        void nextPosition();
+    }, [nextPosition, returnToSolve]);
 
     useEffect(() => {
         const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -494,6 +614,8 @@ export function TrainingTrainer({
                 }
                 filters={training.practiceFilters}
                 onApply={(filters) => {
+                    returnToSolve();
+                    setAnalysisSession(null);
                     setSelectedSquare(null);
                     setPendingPromotion(null);
                     setKeyboardMove('');
@@ -510,12 +632,39 @@ export function TrainingTrainer({
             previousPromptIdRef.current &&
             promptId !== previousPromptIdRef.current
         ) {
+            returnToSolve();
+            setAnalysisSession(null);
             promptHeadingRef.current?.focus();
         }
         previousPromptIdRef.current = promptId;
         setKeyboardMove('');
         setKeyboardMoveError(null);
-    }, [training.prompt?.id]);
+    }, [returnToSolve, training.prompt?.id]);
+
+    useEffect(() => {
+        if (
+            initialAnalysisHandledRef.current ||
+            !training.prompt ||
+            !training.positionFen
+        ) {
+            return;
+        }
+        initialAnalysisHandledRef.current = true;
+        if (training.canReveal) {
+            setRevealIntent('analysis');
+        } else if (
+            training.phase === 'GRADED' ||
+            training.phase === 'REVEALED'
+        ) {
+            enterAnalysis();
+        }
+    }, [
+        enterAnalysis,
+        training.canReveal,
+        training.phase,
+        training.positionFen,
+        training.prompt,
+    ]);
 
     useEffect(() => {
         const wasTerminal =
@@ -524,11 +673,11 @@ export function TrainingTrainer({
         const isReviewed =
             training.phase === 'GRADED' ||
             training.phase === 'REVEALED';
-        if (isReviewed && !wasTerminal) {
+        if (viewMode === 'solve' && isReviewed && !wasTerminal) {
             feedbackRef.current?.focus();
         }
         previousPhaseRef.current = training.phase;
-    }, [training.phase]);
+    }, [training.phase, viewMode]);
 
     if (training.loading && !training.prompt) {
         return (
@@ -610,363 +759,426 @@ export function TrainingTrainer({
             className="space-y-4"
             aria-label="Personal chess practice"
         >
-            {focusControls}
-            <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                    <h2
-                        ref={promptHeadingRef}
-                        tabIndex={-1}
-                        className={cn(
-                            'font-semibold outline-none',
-                            compact ? 'text-lg' : 'text-xl'
-                        )}
-                    >
-                        {promptText}
-                    </h2>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                        Choose the move you would play in a real game.
-                    </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                    {!training.online ? (
-                        <Badge variant="outline">
-                            <WifiOff className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
-                            Offline
-                        </Badge>
-                    ) : null}
-                    {training.queuedCount > 0 ? (
-                        <Badge variant="secondary">
-                            {training.queuedCount}{' '}
-                            {training.queuedCount === 1 ? 'result' : 'results'} waiting to sync
-                        </Badge>
-                    ) : null}
-                    <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setFlipped((value) => !value)}
-                        aria-label="Flip board"
-                    >
-                        <FlipHorizontal2 className="mr-2 h-4 w-4" aria-hidden="true" />
-                        Flip
-                    </Button>
-                </div>
-            </div>
-
-            <div
-                className={cn(
-                    'grid gap-4',
-                    compact
-                        ? 'xl:grid-cols-[minmax(0,560px)_minmax(260px,1fr)]'
-                        : 'lg:grid-cols-[minmax(0,560px)_minmax(280px,1fr)]'
-                )}
+            <Tabs
+                value={viewMode}
+                onValueChange={(value) => {
+                    if (value === 'solve') {
+                        returnToSolve();
+                    } else if (value === 'analyze') {
+                        requestAnalysis();
+                    }
+                }}
+                aria-label="Practice mode"
+                className="space-y-4"
             >
-                <div className="min-w-0">
-                    <div
-                        className="rounded-xl border bg-card p-1 shadow-sm sm:p-2"
-                        role="group"
-                        aria-label={promptText ?? 'Chess practice board'}
+                <TabsList className="grid w-full grid-cols-2 sm:max-w-sm">
+                    <TabsTrigger value="solve">Solve</TabsTrigger>
+                    <TabsTrigger
+                        value="analyze"
+                        disabled={training.phase === 'SUBMITTING'}
                     >
-                        <Chessboard
-                            options={{
-                                position:
-                                    boardFen ?? training.positionFen,
-                                boardOrientation:
-                                    (training.prompt.sideToMove === 'w') !==
-                                    flipped
-                                        ? 'white'
-                                        : 'black',
-                                allowDragging: training.canMove,
-                                allowDrawingArrows: false,
-                                arrows: reviewArrows,
-                                showAnimations: !reducedMotion,
-                                animationDurationInMs: reducedMotion ? 0 : 180,
-                                squareStyles,
-                                canDragPiece: ({ square }) => {
-                                    if (
-                                        !training.canMove ||
-                                        !square ||
-                                        !training.positionFen
-                                    ) {
-                                        return false;
-                                    }
-                                    try {
-                                        const chess = new Chess(
-                                            training.positionFen
-                                        );
-                                        const piece = chess.get(
-                                            square as Square
-                                        );
-                                        return Boolean(
-                                            piece &&
-                                                piece.color === chess.turn()
-                                        );
-                                    } catch {
-                                        return false;
-                                    }
-                                },
-                                onSquareClick: ({ square }) => {
-                                    if (!square) return;
-                                    const target = square as Square;
-                                    if (
-                                        selectedSquare &&
-                                        legalTargets.has(target)
-                                    ) {
-                                        playOrChoosePromotion(
-                                            selectedSquare,
-                                            target
-                                        );
-                                        return;
-                                    }
-                                    selectSquare(target);
-                                },
-                                onPieceDrop: training.canMove
-                                    ? ({ sourceSquare, targetSquare }) => {
-                                          if (!targetSquare) return false;
-                                          return playOrChoosePromotion(
-                                              sourceSquare as Square,
-                                              targetSquare as Square
-                                          );
-                                      }
-                                    : undefined,
-                            }}
-                        />
-                    </div>
+                        Analyze
+                    </TabsTrigger>
+                </TabsList>
 
-                    <div
-                        ref={feedbackRef}
-                        tabIndex={-1}
-                        className={cn(
-                            'mt-3 min-h-11 rounded-lg border px-3 py-2.5 text-sm',
-                            feedbackClass(training.phase, training.grade)
-                        )}
-                        role="status"
-                        aria-live="polite"
-                        aria-atomic="true"
-                    >
-                        <div className="flex items-center gap-2">
-                            {training.grade ? (
+                <TabsContent
+                    value="solve"
+                    className="mt-0 space-y-4"
+                >
+                    {focusControls}
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <h2
+                                ref={promptHeadingRef}
+                                tabIndex={-1}
+                                className={cn(
+                                    'font-semibold outline-none',
+                                    compact ? 'text-lg' : 'text-xl'
+                                )}
+                            >
+                                {promptText}
+                            </h2>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                                Choose the move you would play in a real game.
+                            </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                            {!training.online ? (
                                 <Badge variant="outline">
-                                    {gradeLabel(training.grade)}
+                                    <WifiOff className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                                    Offline
                                 </Badge>
                             ) : null}
-                            <span>{feedback.message}</span>
-                        </div>
-                    </div>
-
-                    {training.error ? (
-                        <div
-                            className="mt-2 flex flex-wrap items-center justify-between gap-2"
-                            role="alert"
-                        >
-                            <p className="text-sm text-destructive">
-                                {training.error}
-                            </p>
+                            {training.queuedCount > 0 ? (
+                                <Badge variant="secondary">
+                                    {training.queuedCount}{' '}
+                                    {training.queuedCount === 1 ? 'result' : 'results'} waiting to sync
+                                </Badge>
+                            ) : null}
                             <Button
                                 type="button"
                                 size="sm"
                                 variant="outline"
-                                onClick={() => void training.retryFeed()}
+                                onClick={() => setFlipped((value) => !value)}
+                                aria-label="Flip board"
                             >
-                                Reload position
+                                <FlipHorizontal2 className="mr-2 h-4 w-4" aria-hidden="true" />
+                                Flip
                             </Button>
                         </div>
-                    ) : null}
-                </div>
+                    </div>
 
-                <div className="space-y-4">
-                    <Card>
-                        <CardHeader className="pb-3">
-                            <CardTitle className="text-base">
-                                Your decision
-                            </CardTitle>
-                        </CardHeader>
-                        <CardContent className="space-y-3">
-                            <p className="text-sm text-muted-foreground">
-                                Every legal move is graded on this device against
-                                the position and your original game.
-                            </p>
-                            <div className="flex flex-wrap gap-2">
-                                {training.phase === 'UNRESOLVED' ? (
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        className="min-h-11"
-                                        onClick={() =>
-                                            void training.retryGrading()
-                                        }
-                                    >
-                                        Retry local analysis
-                                    </Button>
-                                ) : null}
-                                {training.queuedCount > 0 &&
-                                training.online ? (
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        className="min-h-11"
-                                        onClick={() =>
-                                            void training.flushQueue()
-                                        }
-                                    >
-                                        Sync saved progress
-                                    </Button>
-                                ) : null}
-                                {training.canReveal ? (
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        className="min-h-11"
-                                        onClick={() => {
-                                            setSelectedSquare(null);
-                                            setPendingPromotion(null);
-                                            setRevealOpen(true);
-                                        }}
-                                    >
-                                        Reveal
-                                    </Button>
-                                ) : null}
-                                {terminal ? (
-                                    <Button
-                                        type="button"
-                                        className="min-h-11"
-                                        disabled={training.loading}
-                                        onClick={() => void training.next()}
-                                    >
-                                        {training.loading ? (
-                                            <>
-                                                <Loader2
-                                                    className="mr-2 h-4 w-4 animate-spin"
-                                                    aria-hidden="true"
-                                                />
-                                                Loading next…
-                                            </>
-                                        ) : (
-                                            <>
-                                                Next position
-                                                <ChevronRight
-                                                    className="ml-2 h-4 w-4"
-                                                    aria-hidden="true"
-                                                />
-                                            </>
-                                        )}
-                                    </Button>
-                                ) : null}
+                    <div
+                        className={cn(
+                            'grid gap-4',
+                            compact
+                                ? 'xl:grid-cols-[minmax(0,560px)_minmax(260px,1fr)]'
+                                : 'lg:grid-cols-[minmax(0,560px)_minmax(280px,1fr)]'
+                        )}
+                    >
+                        <div className="min-w-0">
+                            <div
+                                className="rounded-xl border bg-card p-1 shadow-sm sm:p-2"
+                                role="group"
+                                aria-label={promptText ?? 'Chess practice board'}
+                            >
+                                <Chessboard
+                                    options={{
+                                        position:
+                                            boardFen ?? training.positionFen,
+                                        boardOrientation:
+                                            (training.prompt.sideToMove === 'w') !==
+                                            flipped
+                                                ? 'white'
+                                                : 'black',
+                                        allowDragging: training.canMove,
+                                        allowDrawingArrows: false,
+                                        arrows: reviewArrows,
+                                        showAnimations: !reducedMotion,
+                                        animationDurationInMs: reducedMotion ? 0 : 180,
+                                        squareStyles,
+                                        canDragPiece: ({ square }) => {
+                                            if (
+                                                !training.canMove ||
+                                                !square ||
+                                                !training.positionFen
+                                            ) {
+                                                return false;
+                                            }
+                                            try {
+                                                const chess = new Chess(
+                                                    training.positionFen
+                                                );
+                                                const piece = chess.get(
+                                                    square as Square
+                                                );
+                                                return Boolean(
+                                                    piece &&
+                                                        piece.color === chess.turn()
+                                                );
+                                            } catch {
+                                                return false;
+                                            }
+                                        },
+                                        onSquareClick: ({ square }) => {
+                                            if (!square) return;
+                                            const target = square as Square;
+                                            if (
+                                                selectedSquare &&
+                                                legalTargets.has(target)
+                                            ) {
+                                                playOrChoosePromotion(
+                                                    selectedSquare,
+                                                    target
+                                                );
+                                                return;
+                                            }
+                                            selectSquare(target);
+                                        },
+                                        onPieceDrop: training.canMove
+                                            ? ({ sourceSquare, targetSquare }) => {
+                                                  if (!targetSquare) return false;
+                                                  return playOrChoosePromotion(
+                                                      sourceSquare as Square,
+                                                      targetSquare as Square
+                                                  );
+                                              }
+                                            : undefined,
+                                    }}
+                                />
                             </div>
 
-                            {training.unresolved ? (
-                                <p className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
-                                    {unresolvedExplanation(
-                                        training.unresolved.reason
-                                    )}
-                                </p>
-                            ) : null}
+                            <div
+                                ref={feedbackRef}
+                                tabIndex={-1}
+                                className={cn(
+                                    'mt-3 min-h-11 rounded-lg border px-3 py-2.5 text-sm',
+                                    feedbackClass(training.phase, training.grade)
+                                )}
+                                role="status"
+                                aria-live="polite"
+                                aria-atomic="true"
+                            >
+                                <div className="flex items-center gap-2">
+                                    {training.grade ? (
+                                        <Badge variant="outline">
+                                            {gradeLabel(training.grade)}
+                                        </Badge>
+                                    ) : null}
+                                    <span>{feedback.message}</span>
+                                </div>
+                            </div>
 
-                            {training.loadError && training.prompt ? (
+                            {training.error ? (
                                 <div
-                                    className="rounded-md border border-destructive/30 p-3 text-sm"
+                                    className="mt-2 flex flex-wrap items-center justify-between gap-2"
                                     role="alert"
                                 >
-                                    <p className="text-destructive">
-                                        {training.loadError}
+                                    <p className="text-sm text-destructive">
+                                        {training.error}
                                     </p>
                                     <Button
                                         type="button"
                                         size="sm"
                                         variant="outline"
-                                        className="mt-2"
-                                        disabled={training.loading}
-                                        onClick={() =>
-                                            void training.next()
-                                        }
+                                        onClick={() => void training.retryFeed()}
                                     >
-                                        Try next position again
+                                        Reload position
                                     </Button>
                                 </div>
                             ) : null}
+                        </div>
 
-                            {training.canMove ? (
-                                <details className="rounded-lg border px-3 py-2 text-sm">
-                                    <summary className="cursor-pointer select-none font-medium">
-                                        Enter a move with the keyboard
-                                    </summary>
-                                    <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                                        <div className="flex-1">
-                                            <label
-                                                htmlFor="training-keyboard-move"
-                                                className="sr-only"
+                        <div className="space-y-4">
+                            <Card>
+                                <CardHeader className="pb-3">
+                                    <CardTitle className="text-base">
+                                        Your decision
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent className="space-y-3">
+                                    <p className="text-sm text-muted-foreground">
+                                        Every legal move is graded on this device against
+                                        the position and your original game.
+                                    </p>
+                                    <div className="flex flex-wrap gap-2">
+                                        {training.phase === 'UNRESOLVED' ? (
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                className="min-h-11"
+                                                onClick={() =>
+                                                    void training.retryGrading()
+                                                }
                                             >
-                                                Chess move in SAN or
-                                                coordinate notation
-                                            </label>
-                                            <Input
-                                                id="training-keyboard-move"
-                                                value={keyboardMove}
-                                                placeholder="Nf3 or g1f3"
-                                                aria-invalid={
-                                                    keyboardMoveError
-                                                        ? true
-                                                        : undefined
+                                                Retry local analysis
+                                            </Button>
+                                        ) : null}
+                                        {training.queuedCount > 0 &&
+                                        training.online ? (
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                className="min-h-11"
+                                                onClick={() =>
+                                                    void training.flushQueue()
                                                 }
-                                                aria-describedby={
-                                                    keyboardMoveError
-                                                        ? 'training-keyboard-move-error'
-                                                        : undefined
-                                                }
-                                                onChange={(event) => {
-                                                    setKeyboardMove(
-                                                        event.target.value
-                                                    );
-                                                    setKeyboardMoveError(
-                                                        null
-                                                    );
+                                            >
+                                                Sync saved progress
+                                            </Button>
+                                        ) : null}
+                                        {training.canReveal ? (
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                className="min-h-11"
+                                                onClick={() => {
+                                                    setSelectedSquare(null);
+                                                    setPendingPromotion(null);
+                                                    setRevealIntent('solution');
                                                 }}
-                                                onKeyDown={(event) => {
-                                                    if (
-                                                        event.key ===
-                                                        'Enter'
-                                                    ) {
-                                                        event.preventDefault();
-                                                        submitKeyboardMove();
-                                                    }
-                                                }}
-                                            />
-                                        </div>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            className="min-h-11"
-                                            disabled={
-                                                !keyboardMove.trim()
-                                            }
-                                            onClick={submitKeyboardMove}
-                                        >
-                                            Play move
-                                        </Button>
+                                            >
+                                                Reveal
+                                            </Button>
+                                        ) : null}
+                                        {terminal ? (
+                                            <Button
+                                                type="button"
+                                                className="min-h-11"
+                                                disabled={training.loading}
+                                                onClick={goToNextPosition}
+                                            >
+                                                {training.loading ? (
+                                                    <>
+                                                        <Loader2
+                                                            className="mr-2 h-4 w-4 animate-spin"
+                                                            aria-hidden="true"
+                                                        />
+                                                        Loading next…
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        Next position
+                                                        <ChevronRight
+                                                            className="ml-2 h-4 w-4"
+                                                            aria-hidden="true"
+                                                        />
+                                                    </>
+                                                )}
+                                            </Button>
+                                        ) : null}
                                     </div>
-                                    {keyboardMoveError ? (
-                                        <p
-                                            id="training-keyboard-move-error"
-                                            className="mt-2 text-xs text-destructive"
-                                            role="alert"
-                                        >
-                                            {keyboardMoveError}
+
+                                    {training.unresolved ? (
+                                        <p className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+                                            {unresolvedExplanation(
+                                                training.unresolved.reason
+                                            )}
                                         </p>
                                     ) : null}
-                                </details>
-                            ) : null}
-                        </CardContent>
-                    </Card>
 
-                    {training.review ? (
-                        <ReviewPanel
-                            review={training.review}
-                            rootFen={training.prompt.fen}
-                            grade={training.grade}
-                        />
+                                    {training.loadError && training.prompt ? (
+                                        <div
+                                            className="rounded-md border border-destructive/30 p-3 text-sm"
+                                            role="alert"
+                                        >
+                                            <p className="text-destructive">
+                                                {training.loadError}
+                                            </p>
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                className="mt-2"
+                                                disabled={training.loading}
+                                                onClick={goToNextPosition}
+                                            >
+                                                Try next position again
+                                            </Button>
+                                        </div>
+                                    ) : null}
+
+                                    {training.canMove ? (
+                                        <details className="rounded-lg border px-3 py-2 text-sm">
+                                            <summary className="cursor-pointer select-none font-medium">
+                                                Enter a move with the keyboard
+                                            </summary>
+                                            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                                                <div className="flex-1">
+                                                    <label
+                                                        htmlFor="training-keyboard-move"
+                                                        className="sr-only"
+                                                    >
+                                                        Chess move in SAN or
+                                                        coordinate notation
+                                                    </label>
+                                                    <Input
+                                                        id="training-keyboard-move"
+                                                        value={keyboardMove}
+                                                        placeholder="Nf3 or g1f3"
+                                                        aria-invalid={
+                                                            keyboardMoveError
+                                                                ? true
+                                                                : undefined
+                                                        }
+                                                        aria-describedby={
+                                                            keyboardMoveError
+                                                                ? 'training-keyboard-move-error'
+                                                                : undefined
+                                                        }
+                                                        onChange={(event) => {
+                                                            setKeyboardMove(
+                                                                event.target.value
+                                                            );
+                                                            setKeyboardMoveError(
+                                                                null
+                                                            );
+                                                        }}
+                                                        onKeyDown={(event) => {
+                                                            if (
+                                                                event.key ===
+                                                                'Enter'
+                                                            ) {
+                                                                event.preventDefault();
+                                                                submitKeyboardMove();
+                                                            }
+                                                        }}
+                                                    />
+                                                </div>
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    className="min-h-11"
+                                                    disabled={
+                                                        !keyboardMove.trim()
+                                                    }
+                                                    onClick={submitKeyboardMove}
+                                                >
+                                                    Play move
+                                                </Button>
+                                            </div>
+                                            {keyboardMoveError ? (
+                                                <p
+                                                    id="training-keyboard-move-error"
+                                                    className="mt-2 text-xs text-destructive"
+                                                    role="alert"
+                                                >
+                                                    {keyboardMoveError}
+                                                </p>
+                                            ) : null}
+                                        </details>
+                                    ) : null}
+                                </CardContent>
+                            </Card>
+
+                            {training.review ? (
+                                <ReviewPanel
+                                    review={training.review}
+                                    rootFen={training.prompt.fen}
+                                    grade={training.grade}
+                                />
+                            ) : null}
+                        </div>
+                    </div>
+                </TabsContent>
+
+                <TabsContent
+                    value="analyze"
+                    forceMount
+                    className="mt-0 data-[state=inactive]:hidden"
+                >
+                    {analysisSession?.promptId === training.prompt.id ? (
+                        <TrainingAnalysisWorkspace
+                            key={`${training.prompt.id}:${training.prompt.solutionRevisionId}`}
+                            active={viewMode === 'analyze'}
+                            prompt={training.prompt}
+                            initialFen={analysisSession.initialFen}
+                            review={
+                                training.review ??
+                                training.prompt.grading.review
+                            }
+                            engineClient={training.engineClient}
+                            onRequestEngine={
+                                training.getOrCreateEngine
+                            }
+                            flipped={flipped}
+                            onFlip={() =>
+                                setFlipped((value) => !value)
+                            }
+                            loadingNext={training.loading}
+                            onNext={goToNextPosition}
+                        >
+                            {training.review ? (
+                                <ReviewPanel
+                                    review={training.review}
+                                    rootFen={training.prompt.fen}
+                                    grade={training.grade}
+                                />
+                            ) : null}
+                        </TrainingAnalysisWorkspace>
                     ) : null}
-                </div>
-            </div>
+                </TabsContent>
+            </Tabs>
 
             <ModalDialog
                 open={pendingPromotion !== null}
@@ -1010,27 +1222,52 @@ export function TrainingTrainer({
             </ModalDialog>
 
             <ModalDialog
-                open={revealOpen}
-                onOpenChange={setRevealOpen}
-                title="Reveal this position?"
-                description="The answer and game context stay hidden until you confirm. This will be recorded as revealed."
+                open={revealIntent !== null}
+                onOpenChange={(open) => {
+                    if (open) return;
+                    const wasAnalysis = revealIntent === 'analysis';
+                    setRevealIntent(null);
+                    if (wasAnalysis) returnToSolve();
+                }}
+                title={
+                    revealIntent === 'analysis'
+                        ? 'Analyze this position?'
+                        : 'Reveal this position?'
+                }
+                description={
+                    revealIntent === 'analysis'
+                        ? 'Analysis can expose the answer. Opening it now will record this position as revealed.'
+                        : 'The answer and game context stay hidden until you confirm. This will be recorded as revealed.'
+                }
             >
                 <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                     <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setRevealOpen(false)}
+                        onClick={() => {
+                            const wasAnalysis =
+                                revealIntent === 'analysis';
+                            setRevealIntent(null);
+                            if (wasAnalysis) returnToSolve();
+                        }}
                     >
                         Keep solving
                     </Button>
                     <Button
                         type="button"
                         onClick={() => {
-                            setRevealOpen(false);
+                            const shouldEnterAnalysis =
+                                revealIntent === 'analysis';
+                            setRevealIntent(null);
                             void training.reveal();
+                            if (shouldEnterAnalysis) {
+                                enterAnalysis();
+                            }
                         }}
                     >
-                        Reveal solution
+                        {revealIntent === 'analysis'
+                            ? 'Reveal and analyze'
+                            : 'Reveal solution'}
                     </Button>
                 </div>
             </ModalDialog>
