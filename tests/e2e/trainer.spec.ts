@@ -50,45 +50,32 @@ test.describe('authenticated personal decision practice', () => {
         ).toBeVisible();
     });
 
-    test('accepts a correct drag move only after the server grades it', async ({
+    test('grades a downloaded move before background history sync completes', async ({
         page,
     }) => {
-        const momentId = E2E_TRAINING_MOMENTS.dragMove;
-        let releaseResponse!: () => void;
-        let markUpstreamComplete!: () => void;
-        const responseReleased = new Promise<void>((resolve) => {
-            releaseResponse = resolve;
-        });
-        const upstreamComplete = new Promise<void>((resolve) => {
-            markUpstreamComplete = resolve;
+        const momentId = E2E_TRAINING_MOMENTS.wrongMove;
+        let releaseRequest!: () => void;
+        const requestReleased = new Promise<void>((resolve) => {
+            releaseRequest = resolve;
         });
         await page.route(
             `**/api/training/moments/${momentId}/attempts`,
             async (route) => {
-                const response = await route.fetch();
-                markUpstreamComplete();
-                await responseReleased;
-                await route.fulfill({ response });
+                await requestReleased;
+                await route.continue();
             }
         );
         await page.goto(practicePath(momentId));
-        const graded = page.waitForResponse(
-            (response) =>
-                response.url().includes(
-                    `/api/training/moments/${momentId}/attempts`
-                ) && response.request().method() === 'POST'
-        );
 
         await dragMove(page, 'g1', 'f3');
 
-        await upstreamComplete;
-        await expect(page.getByText('Checking your move…')).toBeVisible();
-        releaseResponse();
-        await expect((await graded).ok()).toBe(true);
-        await expect(page.getByText('Best move — well found.')).toBeVisible();
+        await expect(
+            page.getByText('Best move — well found.')
+        ).toBeVisible();
+        releaseRequest();
     });
 
-    test('replays one server-provided opponent move and asks for another decision without a length hint', async ({
+    test('replays a downloaded opponent move and finishes the line locally', async ({
         page,
     }) => {
         const momentId = E2E_TRAINING_MOMENTS.dragMove;
@@ -97,39 +84,7 @@ test.describe('authenticated personal decision practice', () => {
             `**/api/training/moments/${momentId}/attempts`,
             async (route) => {
                 requestCount += 1;
-                const request = route.request().postDataJSON() as {
-                    kind: 'START' | 'STEP';
-                };
-                if (request.kind === 'START') {
-                    await route.fulfill({
-                        status: 200,
-                        contentType: 'application/json',
-                        body: JSON.stringify({
-                            attemptId:
-                                '50000000-0000-4000-8000-00000000e2e1',
-                            status: 'AWAITING_CONTINUATION',
-                            nextStepIndex: 1,
-                            opponentMove: {
-                                moveUci: 'b8c6',
-                                fenAfter:
-                                    'r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3',
-                            },
-                        }),
-                    });
-                    return;
-                }
-                await route.fulfill({
-                    status: 200,
-                    contentType: 'application/json',
-                    body: JSON.stringify({
-                        attemptId:
-                            '50000000-0000-4000-8000-00000000e2e1',
-                        status: 'GRADED',
-                        grade: 'GOOD',
-                        accepted: true,
-                        review: reviewFixture('f1b5'),
-                    }),
-                });
+                await route.continue();
             }
         );
 
@@ -140,12 +95,13 @@ test.describe('authenticated personal decision practice', () => {
         ).toBeVisible();
         await expect(page.getByText(/step \d+ \/ \d+/i)).toHaveCount(0);
         await expect(page.getByText(/moves? remaining/i)).toHaveCount(0);
+        expect(requestCount).toBe(0);
 
         await dragMove(page, 'f1', 'b5');
         await expect(
-            page.getByText('Good move — this solution is accepted.')
+            page.getByText('Best move — well found.')
         ).toBeVisible();
-        expect(requestCount).toBe(2);
+        await expect.poll(() => requestCount).toBe(1);
     });
 
     test('requires confirmation before reveal', async ({ page }) => {
@@ -162,24 +118,24 @@ test.describe('authenticated personal decision practice', () => {
             0
         );
 
-        const revealed = page.waitForResponse(
+        const recorded = page.waitForResponse(
             (response) =>
                 response.url().includes(
-                    `/api/training/moments/${momentId}/reveal`
+                    `/api/training/moments/${momentId}/attempts`
                 ) && response.request().method() === 'POST'
         );
         await dialog
             .getByRole('button', { name: 'Reveal solution' })
             .click();
 
-        await expect((await revealed).ok()).toBe(true);
         await expect(
             page.getByText('Solution revealed. Review the decision below.')
         ).toBeVisible();
         await expect(page.getByText('Best move', { exact: true })).toBeVisible();
+        await expect((await recorded).ok()).toBe(true);
     });
 
-    test('queues an offline move as pending without claiming it is correct', async ({
+    test('grades offline and queues only the history sync', async ({
         page,
         context,
     }) => {
@@ -190,11 +146,11 @@ test.describe('authenticated personal decision practice', () => {
 
         await dragMove(page, 'g1', 'f3');
         await expect(
-            page.getByText(
-                'Move saved on this device. Waiting for authoritative grading.'
-            )
+            page.getByText('Best move — well found.')
         ).toBeVisible();
-        await expect(page.getByText('Best move — well found.')).toHaveCount(0);
+        await expect(
+            page.getByText('1 result waiting to sync')
+        ).toBeVisible();
 
         const graded = page.waitForResponse(
             (response) =>
@@ -205,7 +161,9 @@ test.describe('authenticated personal decision practice', () => {
         await context.setOffline(false);
         await page.evaluate(() => window.dispatchEvent(new Event('online')));
         await expect((await graded).ok()).toBe(true);
-        await expect(page.getByText('Best move — well found.')).toBeVisible();
+        await expect(
+            page.getByText('1 result waiting to sync')
+        ).toHaveCount(0);
     });
 
     test('offers every legal promotion choice before submitting', async ({
@@ -273,32 +231,3 @@ test.describe('authenticated personal decision practice', () => {
         ).toHaveCount(0);
     });
 });
-
-function reviewFixture(submittedMoveUci: string) {
-    return {
-        trainingSide: 'w',
-        originalMoveUci: 'f1c4',
-        submittedMoveUci,
-        bestMoveUci: 'g1f3',
-        acceptedMovesUci: ['g1f3', 'f1b5'],
-        acceptedMovesComplete: true,
-        bestLineUci: ['g1f3', 'b8c6', 'f1b5'],
-        scoreAtStart: { kind: 'cp', cp: 85, pov: 'WHITE' },
-        originalDecision: {
-            scoreBefore: { kind: 'cp', cp: 85, pov: 'WHITE' },
-            scoreAfter: { kind: 'cp', cp: -45, pov: 'WHITE' },
-            cpLoss: 130,
-            winChanceLoss: 0.22,
-        },
-        comparison: null,
-        sourceKinds: ['MY_MISTAKE'],
-        lessonKinds: ['IMPROVE_POSITION'],
-        themes: ['development'],
-        source: {
-            gameId: '10000000-0000-4000-8000-00000000e2e1',
-            provider: 'lichess',
-            playedAt: '2026-07-20T12:00:00.000Z',
-            decisionPly: 2,
-        },
-    };
-}

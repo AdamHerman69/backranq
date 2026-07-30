@@ -1,9 +1,14 @@
 import type {
     TrainingComparisonDto,
+    TrainingGradingManifestDto,
+    TrainingMoveAssessmentDto,
     TrainingPromptDto,
     TrainingReviewDto,
+    TrainingSolutionTreeNodeDto,
 } from '@/lib/training/api';
 import type {
+    AttemptGrade,
+    GradingPolicyV2,
     PovScore,
     TrainingLessonKind,
     TrainingSourceKind,
@@ -14,18 +19,185 @@ export function toTrainingPromptDto(row: {
     currentSolutionRevisionId: string | null;
     fen: string;
     sideToMove: string;
+    positionHistory: string[];
+    originalMoveUci: string;
+    scoreBefore: unknown;
+    scoreAfter: unknown;
+    cpLoss: number | null;
+    winChanceLoss: number | null;
+    sourceKinds: TrainingSourceKind[];
+    lessonKinds: TrainingLessonKind[];
+    themes: string[];
+    gameId: string;
+    decisionPly: number;
+    game: {
+        provider: 'LICHESS' | 'CHESSCOM';
+        playedAt: Date;
+    };
+    currentSolutionRevision: {
+        bestMoveUci: string;
+        acceptedMovesUci: string[];
+        solutionShape: 'UNIQUE' | 'MULTIPLE' | 'OPEN';
+        bestLine: unknown;
+        scoreAtStart: unknown;
+        gradingPolicy: unknown;
+        solutionTree: unknown;
+        moveAssessments: Array<{
+            decisionIndex: number;
+            fen: string;
+            moveUci: string;
+            source: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE';
+            status: 'PENDING' | 'VERIFIED' | 'FAILED';
+            grade: AttemptGrade | null;
+            scoreAfter: unknown;
+            evidence: unknown;
+        }>;
+    } | null;
 }): TrainingPromptDto {
     if (
         !row.currentSolutionRevisionId ||
+        !row.currentSolutionRevision ||
         (row.sideToMove !== 'w' && row.sideToMove !== 'b')
     ) {
         throw new Error('Training prompt is missing canonical state');
     }
+    const originalScoreAfter = nullablePovScore(row.scoreAfter);
+    const gradingPolicy = gradingPolicyV2(
+        row.currentSolutionRevision.gradingPolicy
+    );
+    if (!originalScoreAfter || !gradingPolicy) {
+        throw new Error('Training prompt has invalid grading evidence');
+    }
+    const revision = row.currentSolutionRevision;
+    const review = toTrainingReviewDto({
+        moment: row,
+        revision,
+        submittedMoveUci: null,
+        comparison: null,
+    });
+    const grading: TrainingGradingManifestDto = {
+        version: 1,
+        trainingSide: row.sideToMove,
+        positionHistory: row.positionHistory,
+        originalMoveUci: row.originalMoveUci,
+        originalScoreAfter,
+        gradingPolicy,
+        solutionTree: trainingSolutionTreeDto(revision.solutionTree),
+        moveAssessments: revision.moveAssessments
+            .filter(
+                (
+                    assessment
+                ): assessment is typeof assessment & {
+                    status: 'VERIFIED';
+                    grade: AttemptGrade;
+                } =>
+                    assessment.status === 'VERIFIED' &&
+                    assessment.grade != null
+            )
+            .map(
+                (assessment): TrainingMoveAssessmentDto => ({
+                    decisionIndex: assessment.decisionIndex,
+                    fen: assessment.fen,
+                    moveUci: assessment.moveUci,
+                    source: assessment.source,
+                    grade: assessment.grade,
+                    scoreAfter: nullablePovScore(
+                        assessment.scoreAfter
+                    ),
+                    evidence: assessment.evidence,
+                })
+            ),
+        review,
+    };
     return {
         id: row.id,
         solutionRevisionId: row.currentSolutionRevisionId,
         fen: row.fen,
         sideToMove: row.sideToMove,
+        grading,
+    };
+}
+
+function gradingPolicyV2(value: unknown): GradingPolicyV2 | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null;
+    }
+    const policy = value as Partial<GradingPolicyV2>;
+    return policy.version === 2 &&
+        policy.pov === 'TRAINING_SIDE' &&
+        policy.unknownMove === 'DYNAMIC' &&
+        policy.matePolicy === 'EXACT' &&
+        policy.tablebasePolicy === 'EXACT' &&
+        !!policy.best &&
+        !!policy.success &&
+        !!policy.improvement
+        ? (policy as GradingPolicyV2)
+        : null;
+}
+
+function trainingSolutionTreeDto(
+    value: unknown
+): TrainingSolutionTreeNodeDto {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('Training prompt has an invalid solution tree');
+    }
+    const node = value as Record<string, unknown>;
+    if (
+        typeof node.fen !== 'string' ||
+        !Number.isSafeInteger(node.ply) ||
+        (node.role !== 'USER' &&
+            node.role !== 'OPPONENT' &&
+            node.role !== 'TERMINAL') ||
+        !Array.isArray(node.branches)
+    ) {
+        throw new Error('Training prompt has an invalid solution tree');
+    }
+    return {
+        fen: node.fen,
+        ply: node.ply as number,
+        role: node.role,
+        acceptedMovesUci: Array.isArray(node.acceptedMovesUci)
+            ? node.acceptedMovesUci.filter(
+                  (move): move is string => typeof move === 'string'
+              )
+            : [],
+        ...(typeof node.selectedMoveUci === 'string'
+            ? { selectedMoveUci: node.selectedMoveUci }
+            : {}),
+        ...(typeof node.alternativesComplete === 'boolean'
+            ? {
+                  alternativesComplete:
+                      node.alternativesComplete,
+              }
+            : {}),
+        ...(typeof node.stopReason === 'string'
+            ? { stopReason: node.stopReason }
+            : {}),
+        branches: node.branches.map((rawBranch) => {
+            if (
+                !rawBranch ||
+                typeof rawBranch !== 'object' ||
+                Array.isArray(rawBranch)
+            ) {
+                throw new Error(
+                    'Training prompt has an invalid solution branch'
+                );
+            }
+            const branch = rawBranch as Record<string, unknown>;
+            if (
+                typeof branch.moveUci !== 'string' ||
+                typeof branch.best !== 'boolean'
+            ) {
+                throw new Error(
+                    'Training prompt has an invalid solution branch'
+                );
+            }
+            return {
+                moveUci: branch.moveUci,
+                best: branch.best,
+                child: trainingSolutionTreeDto(branch.child),
+            };
+        }),
     };
 }
 

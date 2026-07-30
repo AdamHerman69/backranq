@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
 import type { FullConfig } from '@playwright/test';
+import { Chess } from 'chess.js';
 
 import { assertSafeE2eDatabaseConfig } from '../../scripts/lib/e2e-database-safety.mjs';
 import { assessmentPositionKey } from '../../src/lib/training/assessmentIdentity';
@@ -141,6 +142,92 @@ async function seedTrainingMoment(
 ) {
     const scoreBefore = { kind: 'cp', cp: 85, pov: 'WHITE' };
     const scoreAfter = { kind: 'cp', cp: -45, pov: 'WHITE' };
+    const applyMove = (fen: string, moveUci: string) => {
+        const chess = new Chess(fen);
+        chess.move({
+            from: moveUci.slice(0, 2),
+            to: moveUci.slice(2, 4),
+            promotion: moveUci.slice(4, 5) || undefined,
+        });
+        return chess.fen();
+    };
+    const fenAfterBest = applyMove(
+        fixture.fen,
+        fixture.bestMoveUci
+    );
+    const isConditional =
+        fixture.id === E2E_TRAINING_MOMENTS.dragMove;
+    const fenAfterOpponent = isConditional
+        ? applyMove(fenAfterBest, 'b8c6')
+        : null;
+    const conditionalMove = 'f1b5';
+    const solutionTree = isConditional
+        ? {
+              fen: fixture.fen,
+              ply: 0,
+              role: 'USER',
+              acceptedMovesUci: fixture.acceptedMovesUci,
+              branches: [
+                  {
+                      moveUci: fixture.bestMoveUci,
+                      best: true,
+                      child: {
+                          fen: fenAfterBest,
+                          ply: 1,
+                          role: 'OPPONENT',
+                          selectedMoveUci: 'b8c6',
+                          branches: [
+                              {
+                                  moveUci: 'b8c6',
+                                  best: true,
+                                  child: {
+                                      fen: fenAfterOpponent!,
+                                      ply: 2,
+                                      role: 'USER',
+                                      acceptedMovesUci: [
+                                          conditionalMove,
+                                      ],
+                                      branches: [
+                                          {
+                                              moveUci:
+                                                  conditionalMove,
+                                              best: true,
+                                              child: {
+                                                  fen: applyMove(
+                                                      fenAfterOpponent!,
+                                                      conditionalMove
+                                                  ),
+                                                  ply: 3,
+                                                  role: 'TERMINAL',
+                                                  branches: [],
+                                              },
+                                          },
+                                      ],
+                                  },
+                              },
+                          ],
+                      },
+                  },
+              ],
+          }
+        : {
+              fen: fixture.fen,
+              ply: 0,
+              role: 'USER',
+              acceptedMovesUci: fixture.acceptedMovesUci,
+              branches: [
+                  {
+                      moveUci: fixture.bestMoveUci,
+                      best: true,
+                      child: {
+                          fen: fenAfterBest,
+                          ply: 1,
+                          role: 'TERMINAL',
+                          branches: [],
+                      },
+                  },
+              ],
+          };
     await prisma.trainingMoment.create({
         data: {
             id: fixture.id,
@@ -185,7 +272,7 @@ async function seedTrainingMoment(
             bestMoveUci: fixture.bestMoveUci,
             acceptedMovesUci: fixture.acceptedMovesUci,
             bestLine: fixture.bestLineUci,
-            solutionTree: {},
+            solutionTree,
             scoreAtStart: scoreBefore,
             playedMoveScore: scoreAfter,
             targetOutcome: {},
@@ -223,6 +310,31 @@ async function seedTrainingMoment(
                         scoreAfter,
                         evidence: { fixture: true },
                     },
+                    ...(isConditional
+                        ? [
+                              {
+                                  positionKey:
+                                      assessmentPositionKey(
+                                          fenAfterOpponent!,
+                                          [
+                                              fixture.fen,
+                                              fenAfterBest,
+                                          ]
+                                      ),
+                                  decisionIndex: 1,
+                                  fen: fenAfterOpponent!,
+                                  moveUci: conditionalMove,
+                                  source:
+                                      'PRECOMPUTED' as const,
+                                  status: 'VERIFIED' as const,
+                                  grade: 'BEST' as const,
+                                  scoreAfter: scoreBefore,
+                                  evidence: {
+                                      fixture: true,
+                                  },
+                              },
+                          ]
+                        : []),
                 ],
             },
         },

@@ -8,26 +8,17 @@ import { TrainingAttemptError } from '@/lib/training/attemptService';
 export function trainingErrorResponse(
     error: string,
     code: TrainingApiErrorCode,
-    status: number,
-    retryAfterMs?: number
+    status: number
 ) {
     return NextResponse.json<TrainingApiErrorResponse>(
         {
             error,
             code,
-            ...(retryAfterMs == null ? {} : { retryAfterMs }),
         },
         {
             status,
             headers: {
                 'Cache-Control': 'private, no-store',
-                ...(retryAfterMs == null
-                    ? {}
-                    : {
-                          'Retry-After': String(
-                              Math.max(1, Math.ceil(retryAfterMs / 1_000))
-                          ),
-                      }),
             },
         }
     );
@@ -38,8 +29,7 @@ export function trainingAttemptErrorResponse(error: unknown) {
         ? trainingErrorResponse(
               error.message,
               error.code,
-              error.status,
-              error.retryAfterMs
+              error.status
           )
         : null;
 }

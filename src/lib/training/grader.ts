@@ -86,7 +86,8 @@ function hasRequiredPreservationEvidence(
 }
 
 /**
- * Server-authoritative grading for one user decision.
+ * Shared grading policy for one user decision. Practice runs this in the
+ * browser; extraction and verification can use the same deterministic rules.
  *
  * The result compares the move with both the best known outcome and the
  * original game mistake. It never treats missing or unstable evidence as an

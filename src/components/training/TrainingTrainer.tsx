@@ -264,12 +264,12 @@ function unresolvedExplanation(
         | 'MISSING_OUTCOME_EVIDENCE'
 ): string {
     if (reason === 'UNSTABLE_EVIDENCE') {
-        return 'The analysis was not stable enough to judge this move fairly.';
+        return 'Local analysis was not stable enough to judge this alternative fairly.';
     }
     if (reason === 'MISSING_OUTCOME_EVIDENCE') {
-        return 'This position needs stronger outcome evidence before it can be judged.';
+        return 'This device needs stronger outcome evidence before it can judge the alternative.';
     }
-    return 'The analysis engine is temporarily unavailable.';
+    return 'Local Stockfish is temporarily unavailable on this device.';
 }
 
 export function TrainingTrainer({
@@ -484,8 +484,6 @@ export function TrainingTrainer({
                 disabled={
                     training.loading ||
                     training.phase === 'SUBMITTING' ||
-                    training.phase === 'REVEALING' ||
-                    training.phase === 'PENDING_GRADING' ||
                     training.phase === 'AWAITING_MOVE'
                 }
                 filters={training.practiceFilters}
@@ -633,7 +631,7 @@ export function TrainingTrainer({
                     {training.queuedCount > 0 ? (
                         <Badge variant="secondary">
                             {training.queuedCount}{' '}
-                            {training.queuedCount === 1 ? 'move' : 'moves'} awaiting grading
+                            {training.queuedCount === 1 ? 'result' : 'results'} waiting to sync
                         </Badge>
                     ) : null}
                     <Button
@@ -779,8 +777,8 @@ export function TrainingTrainer({
                         </CardHeader>
                         <CardContent className="space-y-3">
                             <p className="text-sm text-muted-foreground">
-                                Any legal move can be submitted. Backranq grades
-                                it against the position and your original game.
+                                Every legal move is graded on this device against
+                                the position and your original game.
                             </p>
                             <div className="flex flex-wrap gap-2">
                                 {training.phase === 'UNRESOLVED' ? (
@@ -792,7 +790,7 @@ export function TrainingTrainer({
                                             void training.retryGrading()
                                         }
                                     >
-                                        Retry grading
+                                        Retry local analysis
                                     </Button>
                                 ) : null}
                                 {training.queuedCount > 0 &&
@@ -805,7 +803,7 @@ export function TrainingTrainer({
                                             void training.flushQueue()
                                         }
                                     >
-                                        Retry pending move
+                                        Sync saved progress
                                     </Button>
                                 ) : null}
                                 {training.canReveal ? (
@@ -855,12 +853,6 @@ export function TrainingTrainer({
                                     {unresolvedExplanation(
                                         training.unresolved.reason
                                     )}
-                                    {training.unresolved.retryAfterMs ? (
-                                        <span className="block text-xs text-muted-foreground">
-                                            Try again in a moment, reveal the
-                                            answer, or move on without a grade.
-                                        </span>
-                                    ) : null}
                                 </p>
                             ) : null}
 
@@ -976,7 +968,7 @@ export function TrainingTrainer({
                     if (!open) setPendingPromotion(null);
                 }}
                 title="Promote pawn to"
-                description="Choose the piece before the move is sent for grading."
+                description="Choose the piece before the move is checked."
             >
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {(

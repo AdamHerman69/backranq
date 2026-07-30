@@ -11,6 +11,87 @@ const momentId = '11111111-1111-4111-8111-111111111111';
 const revisionId = '22222222-2222-4222-8222-222222222222';
 const clientAttemptId =
     '33333333-3333-4333-8333-333333333333';
+const feedRow = {
+    id: momentId,
+    currentSolutionRevisionId: revisionId,
+    fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
+    sideToMove: 'w',
+    positionHistory: [],
+    gameId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    decisionPly: 0,
+    originalMoveUci: 'e2f2',
+    scoreBefore: { kind: 'cp', cp: 80, pov: 'WHITE' },
+    scoreAfter: { kind: 'cp', cp: 0, pov: 'WHITE' },
+    cpLoss: 80,
+    winChanceLoss: 0.1,
+    sourceKinds: ['MY_MISTAKE'],
+    lessonKinds: ['AVOID_MISTAKE'],
+    themes: ['quiet-move'],
+    game: {
+        provider: 'LICHESS',
+        playedAt: new Date('2026-01-01T00:00:00.000Z'),
+    },
+    currentSolutionRevision: {
+        bestMoveUci: 'e2e3',
+        acceptedMovesUci: ['e2e3'],
+        solutionShape: 'OPEN',
+        bestLine: ['e2e3'],
+        scoreAtStart: { kind: 'cp', cp: 80, pov: 'WHITE' },
+        gradingPolicy: {
+            version: 2,
+            pov: 'TRAINING_SIDE',
+            best: { maxCpLoss: 20, maxWinChanceLoss: 0.03 },
+            success: {
+                maxCpLoss: 80,
+                maxWinChanceLoss: 0.08,
+                preserveOutcome: true,
+            },
+            improvement: {
+                minRecoveredCp: 40,
+                minRecoveredWinChance: 0.05,
+            },
+            unknownMove: 'DYNAMIC',
+            matePolicy: 'EXACT',
+            tablebasePolicy: 'EXACT',
+        },
+        solutionTree: {
+            fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
+            ply: 0,
+            role: 'USER',
+            acceptedMovesUci: ['e2e3'],
+            branches: [
+                {
+                    moveUci: 'e2e3',
+                    best: true,
+                    child: {
+                        fen: '8/8/8/8/8/4K3/8/6k1 b - - 1 1',
+                        ply: 1,
+                        role: 'TERMINAL',
+                        branches: [],
+                    },
+                },
+            ],
+        },
+        moveAssessments: [
+            {
+                decisionIndex: 0,
+                fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
+                moveUci: 'e2e3',
+                source: 'PRECOMPUTED',
+                status: 'VERIFIED',
+                grade: 'BEST',
+                scoreAfter: {
+                    kind: 'cp',
+                    cp: 80,
+                    pov: 'WHITE',
+                },
+                evidence: { bestGapCp: 0 },
+            },
+        ],
+    },
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    lastTrainedAt: null,
+};
 
 function prepareRouteModules() {
     vi.resetModules();
@@ -27,12 +108,11 @@ describe('canonical training routes', () => {
     it('requires authentication on every pre-attempt and write endpoint', async () => {
         prepareRouteModules();
         setMockUserId(null);
-        const [feedRoute, detailRoute, attemptRoute, revealRoute] =
+        const [feedRoute, detailRoute, attemptRoute] =
             await Promise.all([
                 import('@/app/api/training/feed/route'),
                 import('@/app/api/training/moments/[id]/route'),
                 import('@/app/api/training/moments/[id]/attempts/route'),
-                import('@/app/api/training/moments/[id]/reveal/route'),
             ]);
 
         const responses = await Promise.all([
@@ -44,24 +124,18 @@ describe('canonical training routes', () => {
             }),
             attemptRoute.POST(
                 createJsonRequest('http://localhost', {
-                    kind: 'START',
+                    kind: 'RECORD',
                     clientAttemptId,
                     solutionRevisionId: revisionId,
-                    moveUci: 'e2e4',
-                }),
-                { params: Promise.resolve({ id: momentId }) }
-            ),
-            revealRoute.POST(
-                createJsonRequest('http://localhost', {
-                    clientAttemptId,
-                    solutionRevisionId: revisionId,
+                    status: 'REVEALED',
+                    steps: [],
                 }),
                 { params: Promise.resolve({ id: momentId }) }
             ),
         ]);
 
         expect(responses.map((response) => response.status)).toEqual([
-            401, 401, 401, 401,
+            401, 401, 401,
         ]);
         for (const response of responses) {
             await expect(readJson(response)).resolves.toEqual({
@@ -73,20 +147,9 @@ describe('canonical training routes', () => {
         expect(prismaMock.trainingAttempt.create).not.toHaveBeenCalled();
     });
 
-    it('keeps the feed response spoiler-free and scopes reads to the user', async () => {
+    it('returns local grading data and scopes reads to the user', async () => {
         prepareRouteModules();
-        prismaMock.trainingMoment.findMany.mockResolvedValue([
-            {
-                id: momentId,
-                currentSolutionRevisionId: revisionId,
-                fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
-                sideToMove: 'w',
-                createdAt: new Date('2026-01-01T00:00:00.000Z'),
-                originalMoveUci: 'e2f2',
-                bestMoveUci: 'e2e3',
-                themes: ['quiet-move'],
-            },
-        ]);
+        prismaMock.trainingMoment.findMany.mockResolvedValue([feedRow]);
         const route = await import('@/app/api/training/feed/route');
 
         const response = await route.GET(
@@ -99,17 +162,22 @@ describe('canonical training routes', () => {
             nextCursor: string | null;
             appliedFilters: Record<string, unknown>;
         }>(response);
-        expect(body).toEqual({
+        expect(body).toMatchObject({
             items: [
                 {
                     id: momentId,
                     solutionRevisionId: revisionId,
-                    fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
-                    sideToMove: 'w',
+                    grading: {
+                        originalMoveUci: 'e2f2',
+                        moveAssessments: [
+                            expect.objectContaining({
+                                moveUci: 'e2e3',
+                                grade: 'BEST',
+                            }),
+                        ],
+                    },
                 },
             ],
-            nextCursor: null,
-            appliedFilters: {},
         });
         expect(prismaMock.trainingMoment.findMany).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -156,20 +224,12 @@ describe('canonical training routes', () => {
         });
         prismaMock.trainingMoment.findMany.mockResolvedValueOnce([
             {
-                id: momentId,
-                currentSolutionRevisionId: revisionId,
-                fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
-                sideToMove: 'w',
-                createdAt: new Date('2026-01-01T00:00:00.000Z'),
-                lastTrainedAt: null,
+                ...feedRow,
             },
             {
+                ...feedRow,
                 id: '44444444-4444-4444-8444-444444444444',
-                currentSolutionRevisionId: revisionId,
-                fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
-                sideToMove: 'w',
                 createdAt: new Date('2026-01-02T00:00:00.000Z'),
-                lastTrainedAt: null,
             },
         ]);
         const route = await import('@/app/api/training/feed/route');
@@ -212,9 +272,11 @@ describe('canonical training routes', () => {
 
         const response = await route.POST(
             createJsonRequest('http://localhost', {
-                kind: 'START',
+                kind: 'RECORD',
                 clientAttemptId,
-                moveUci: 'e2e4',
+                solutionRevisionId: revisionId,
+                status: 'GRADED',
+                grade: 'BEST',
             }),
             { params: Promise.resolve({ id: momentId }) }
         );

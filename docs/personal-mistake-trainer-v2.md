@@ -86,8 +86,10 @@ An attempt is graded by outcome, not only by UCI equality. The result can be:
 
 `SKIPPED` and `REVEALED` are attempt lifecycle statuses, not grades.
 
-Known alternatives are graded immediately. A legal move outside the
-precomputed set may be evaluated on demand before it is rejected.
+Known alternatives are graded immediately in the browser. A legal move outside
+the precomputed set is evaluated by local Stockfish before it is rejected.
+Attempt persistence and analytics are asynchronous and never block feedback or
+the next position.
 
 ## Extraction contract
 
@@ -196,27 +198,33 @@ implementation details instead of user intent.
 - Feedback compares the new move with both the best outcome and the original
   mistake.
 
-### Public practice boundary
+### Local practice boundary
 
-Before an attempt, the server returns only the moment ID, pinned revision ID,
-FEN, side to move, neutral prompt, and non-spoiling progress state. It never
-returns the original move, source/lesson kinds, themes, solution shape,
-accepted moves, best move, line, target outcome, or evaluation evidence.
+Each fetched position is self-contained: it includes the pinned solution
+revision, grading policy, known move assessments, continuation tree, original
+decision evidence, and review metadata. The interface still presents the same
+neutral prompt and withholds explanation/review UI until the player moves or
+reveals, but inspecting one's own downloaded practice data is not treated as a
+security threat.
 
-An authenticated attempt is idempotent and server-authoritative. The server
-validates legality, uses a cached verified assessment when available, and
-dynamically evaluates an otherwise unknown legal move. Missing, timed-out, or
-unstable evidence produces `UNRESOLVED`, never an automatic wrong answer.
-Only a graded/revealed response may contain the review DTO and solution
-evidence. Conditional continuations disclose at most the next opponent move;
-they never disclose the remaining line length.
+Known moves, including the original game move, are graded synchronously without
+a request. An otherwise unknown legal move is evaluated by the browser
+Stockfish worker using the pinned policy. Missing, timed-out, or unstable local
+evidence produces `UNRESOLVED`, never an automatic wrong answer. Conditional
+continuations advance from the downloaded tree and never display the remaining
+line length.
+
+After a terminal grade or reveal, the client sends an idempotent record-only
+write in the background. The server validates ownership, revision, line
+legality, and payload consistency, but does not re-grade or run an engine.
+Offline writes queue as history synchronization and never block solving.
 
 ### Practice feed
 
 - Practice is continuous: there are no implicit goals, rounds, summaries, or
   finite sessions.
-- The client keeps a spoiler-safe position buffer and proactively fetches the
-  next cursor page at a low-water mark.
+- The client keeps a self-contained position buffer and proactively fetches
+  the next cursor page at a low-water mark.
 - Only one page request may be in flight. Position identity is deduplicated by
   moment ID plus pinned solution revision.
 - Changing Focus aborts or invalidates older requests so results from different

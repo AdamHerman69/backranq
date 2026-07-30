@@ -8,17 +8,27 @@ import {
 } from '@/lib/training/offlineQueue';
 
 const queued: QueuedTrainingAttempt = {
-    version: 1,
+    version: 2,
     ownerId: 'owner-a',
     momentId: 'moment-a',
     request: {
-        kind: 'START',
+        kind: 'RECORD',
         clientAttemptId: 'client-a',
         solutionRevisionId: 'revision-a',
-        moveUci: 'e2e4',
+        status: 'GRADED',
+        grade: 'BEST',
+        gradingSource: 'PRECOMPUTED',
+        steps: [
+            {
+                stepIndex: 0,
+                actor: 'USER',
+                fenBefore: 'before',
+                moveUci: 'e2e4',
+                grade: 'BEST',
+                source: 'PRECOMPUTED',
+            },
+        ],
     },
-    fenBefore: 'before',
-    fenAfterMove: 'after',
     queuedAt: '2026-07-29T00:00:00.000Z',
 };
 
@@ -29,12 +39,10 @@ describe('canonical training offline queue', () => {
         );
     });
 
-    it('deduplicates an idempotent submission without adding correctness', () => {
+    it('deduplicates an idempotent result record', () => {
         const result = enqueueTrainingAttempt([queued], queued);
         expect(result).toEqual([queued]);
-        expect(result[0]).not.toHaveProperty('correct');
-        expect(result[0]).not.toHaveProperty('grade');
-        expect(result[0]).not.toHaveProperty('accepted');
+        expect(result[0]?.request.grade).toBe('BEST');
     });
 
     it('drops malformed or unversioned persisted entries', () => {

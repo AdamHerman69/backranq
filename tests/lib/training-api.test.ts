@@ -5,7 +5,7 @@ import {
     listPracticeFeed,
 } from '@/lib/training/readService';
 import {
-    parseSubmitTrainingAttemptRequest,
+    parseRecordTrainingAttemptRequest,
     parsePracticeFeedRequest,
 } from '@/lib/training/apiValidation';
 
@@ -15,12 +15,88 @@ const promptRow = {
         '22222222-2222-4222-8222-222222222222',
     fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
     sideToMove: 'w',
+    positionHistory: [],
+    gameId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    decisionPly: 0,
+    originalMoveUci: 'e2f2',
+    scoreBefore: { kind: 'cp', cp: 80, pov: 'WHITE' },
+    scoreAfter: { kind: 'cp', cp: 0, pov: 'WHITE' },
+    cpLoss: 80,
+    winChanceLoss: 0.1,
+    sourceKinds: ['MY_MISTAKE'],
+    lessonKinds: ['AVOID_MISTAKE'],
+    themes: ['quiet-move'],
+    game: {
+        provider: 'LICHESS',
+        playedAt: new Date('2026-01-01T00:00:00.000Z'),
+    },
+    currentSolutionRevision: {
+        bestMoveUci: 'e2e3',
+        acceptedMovesUci: ['e2e3'],
+        solutionShape: 'OPEN',
+        bestLine: ['e2e3'],
+        scoreAtStart: { kind: 'cp', cp: 80, pov: 'WHITE' },
+        gradingPolicy: {
+            version: 2,
+            pov: 'TRAINING_SIDE',
+            best: { maxCpLoss: 20, maxWinChanceLoss: 0.03 },
+            success: {
+                maxCpLoss: 80,
+                maxWinChanceLoss: 0.08,
+                preserveOutcome: true,
+            },
+            improvement: {
+                minRecoveredCp: 40,
+                minRecoveredWinChance: 0.05,
+            },
+            unknownMove: 'DYNAMIC',
+            matePolicy: 'EXACT',
+            tablebasePolicy: 'EXACT',
+        },
+        solutionTree: {
+            fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
+            ply: 0,
+            role: 'USER',
+            acceptedMovesUci: ['e2e3'],
+            branches: [
+                {
+                    moveUci: 'e2e3',
+                    best: true,
+                    child: {
+                        fen: '8/8/8/8/8/4K3/8/6k1 b - - 1 1',
+                        ply: 1,
+                        role: 'TERMINAL',
+                        branches: [],
+                    },
+                },
+            ],
+        },
+        moveAssessments: [
+            {
+                decisionIndex: 0,
+                fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
+                moveUci: 'e2e3',
+                source: 'PRECOMPUTED',
+                status: 'VERIFIED',
+                grade: 'BEST',
+                scoreAfter: {
+                    kind: 'cp',
+                    cp: 80,
+                    pov: 'WHITE',
+                },
+                evidence: {
+                    bestGapCp: 0,
+                    preservesOutcome: true,
+                },
+            },
+        ],
+    },
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     lastTrainedAt: null,
 };
 
 describe('canonical training API boundary', () => {
-    it('returns exactly the four spoiler-safe prompt fields', async () => {
+    it('returns the complete local grading manifest with each prompt', async () => {
         const db = {
             trainingMoment: {
                 findMany: vi.fn().mockResolvedValue([
@@ -51,32 +127,37 @@ describe('canonical training API boundary', () => {
             momentId: promptRow.id,
         });
 
-        const expected = {
+        const expected = expect.objectContaining({
             id: promptRow.id,
             solutionRevisionId:
                 promptRow.currentSolutionRevisionId,
             fen: promptRow.fen,
             sideToMove: 'w',
-        };
+            grading: expect.objectContaining({
+                originalMoveUci: 'e2f2',
+                moveAssessments: [
+                    expect.objectContaining({
+                        moveUci: 'e2e3',
+                        grade: 'BEST',
+                    }),
+                ],
+            }),
+        });
         expect(feed).toEqual({
             items: [expected],
             nextCursor: null,
             appliedFilters: {},
         });
         expect(detail).toEqual({ moment: expected });
-        expect(Object.keys(feed.items[0]!).sort()).toEqual(
-            ['fen', 'id', 'sideToMove', 'solutionRevisionId'].sort()
+        expect(feed.items[0]?.grading.review.bestMoveUci).toBe(
+            'e2e3'
         );
         expect(db.trainingMoment.findMany).toHaveBeenCalledWith(
             expect.objectContaining({
-                select: {
-                    id: true,
-                    currentSolutionRevisionId: true,
-                    fen: true,
-                    sideToMove: true,
-                    createdAt: true,
-                    lastTrainedAt: true,
-                },
+                select: expect.objectContaining({
+                    currentSolutionRevision:
+                        expect.any(Object),
+                }),
             })
         );
     });
@@ -385,9 +466,9 @@ describe('canonical training API boundary', () => {
         ).toBeNull();
     });
 
-    it('requires a solution revision for START and pins STEP to an attempt', () => {
+    it('parses only bounded record-only history payloads', () => {
         expect(
-            parseSubmitTrainingAttemptRequest({
+            parseRecordTrainingAttemptRequest({
                 kind: 'START',
                 clientAttemptId:
                     '33333333-3333-4333-8333-333333333333',
@@ -395,65 +476,89 @@ describe('canonical training API boundary', () => {
             })
         ).toBeNull();
         expect(
-            parseSubmitTrainingAttemptRequest({
-                kind: 'STEP',
-                clientAttemptId:
-                    '33333333-3333-4333-8333-333333333333',
-                attemptId:
-                    '44444444-4444-4444-8444-444444444444',
-                stepIndex: 2,
-                moveUci: 'G1F3',
-            })
-        ).toEqual({
-            kind: 'STEP',
-            clientAttemptId:
-                '33333333-3333-4333-8333-333333333333',
-            attemptId: '44444444-4444-4444-8444-444444444444',
-            stepIndex: 2,
-            moveUci: 'g1f3',
-        });
-        expect(
-            parseSubmitTrainingAttemptRequest({
-                kind: 'START',
+            parseRecordTrainingAttemptRequest({
+                kind: 'RECORD',
                 clientAttemptId:
                     '33333333-3333-4333-8333-333333333333',
                 solutionRevisionId:
                     '22222222-2222-4222-8222-222222222222',
-                moveUci: 'e2e4',
-                timeSpentMs: 12.5,
+                status: 'GRADED',
+                grade: 'BEST',
+                gradingSource: 'PRECOMPUTED',
+                comparison: null,
+                steps: [
+                    {
+                        stepIndex: 0,
+                        actor: 'USER',
+                        fenBefore: promptRow.fen,
+                        moveUci: 'E2E3',
+                        grade: 'BEST',
+                        source: 'PRECOMPUTED',
+                        timeSpentMs: 12,
+                    },
+                ],
+            })
+        ).toEqual({
+            kind: 'RECORD',
+            clientAttemptId:
+                '33333333-3333-4333-8333-333333333333',
+            solutionRevisionId:
+                '22222222-2222-4222-8222-222222222222',
+            status: 'GRADED',
+            grade: 'BEST',
+            gradingSource: 'PRECOMPUTED',
+            comparison: null,
+            steps: [
+                {
+                    stepIndex: 0,
+                    actor: 'USER',
+                    fenBefore: promptRow.fen,
+                    moveUci: 'e2e3',
+                    grade: 'BEST',
+                    source: 'PRECOMPUTED',
+                    timeSpentMs: 12,
+                },
+            ],
+        });
+        expect(
+            parseRecordTrainingAttemptRequest({
+                kind: 'RECORD',
+                clientAttemptId:
+                    '33333333-3333-4333-8333-333333333333',
+                solutionRevisionId:
+                    '22222222-2222-4222-8222-222222222222',
+                status: 'GRADED',
+                grade: 'BEST',
+                steps: [
+                    {
+                        stepIndex: 0,
+                        actor: 'USER',
+                        fenBefore: promptRow.fen,
+                        moveUci: 'e2e3',
+                        grade: 'BEST',
+                        timeSpentMs: 12.5,
+                    },
+                ],
             })
         ).toBeNull();
         expect(
-            parseSubmitTrainingAttemptRequest({
-                kind: 'START',
+            parseRecordTrainingAttemptRequest({
+                kind: 'RECORD',
                 clientAttemptId:
                     '33333333-3333-4333-8333-333333333333',
                 solutionRevisionId:
                     '22222222-2222-4222-8222-222222222222',
-                moveUci: 'e2e4',
-                timeSpentMs: 12,
-            })
-        ).toMatchObject({ timeSpentMs: 12 });
-        expect(
-            parseSubmitTrainingAttemptRequest({
-                kind: 'RETRY',
-                clientAttemptId:
-                    '33333333-3333-4333-8333-333333333333',
-                attemptId:
-                    '44444444-4444-4444-8444-444444444444',
-                stepIndex: 2,
-                retryId:
-                    '55555555-5555-4555-8555-555555555555',
+                status: 'REVEALED',
+                steps: [],
             })
         ).toEqual({
-            kind: 'RETRY',
+            kind: 'RECORD',
             clientAttemptId:
                 '33333333-3333-4333-8333-333333333333',
-            attemptId:
-                '44444444-4444-4444-8444-444444444444',
-            stepIndex: 2,
-            retryId:
-                '55555555-5555-4555-8555-555555555555',
+            solutionRevisionId:
+                '22222222-2222-4222-8222-222222222222',
+            status: 'REVEALED',
+            steps: [],
         });
     });
 });
