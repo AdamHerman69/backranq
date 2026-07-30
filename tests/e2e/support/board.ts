@@ -21,12 +21,8 @@ export async function dragMove(page: Page, from: string, to: string) {
     await expect(source).toBeVisible();
     await expect(target).toBeVisible();
 
-    // The seeded app header grows when its inventory request finishes. Wait
-    // for that deterministic layout state before taking pointer coordinates
-    // so the board cannot shift by one rank during the drag.
-    await expect(
-        page.getByText(/imported games not analyzed yet/i)
-    ).toBeVisible();
+    // Authenticated E2E runs disable unrelated background-analysis polling, so
+    // the board remains stable while we use real pointer events for dnd-kit.
     await source.hover();
     await page.mouse.down();
     const targetBox = await target.boundingBox();

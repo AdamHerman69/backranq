@@ -107,6 +107,11 @@ const env = {
     NEXTAUTH_SECRET:
         process.env.NEXTAUTH_SECRET ??
         'backranq-local-e2e-secret-not-for-production',
+    // The global analysis bar performs independent polling and can resize the
+    // sticky header while pointer-based board tests are in progress. Dedicated
+    // unit/integration coverage owns that feature; keep authenticated browser
+    // journeys deterministic and free of external queue traffic.
+    BACKRANQ_E2E_AUTH: 'true',
     BACKRANQ_E2E_DATABASE_MODE: useExternalDatabase ? 'external' : 'local',
 };
 
