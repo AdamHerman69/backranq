@@ -11,7 +11,10 @@ import {
     publishAnalysisCompletion,
     type ServerAnalysisObservation,
 } from '@/lib/analysis/analysisCompletion';
-import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
+import {
+    backgroundAnalysis,
+    formatAnalysisSaveError,
+} from '@/lib/analysis/backgroundAnalysisManager';
 
 function observation(
     overrides: Partial<ServerAnalysisObservation> = {}
@@ -27,6 +30,25 @@ function observation(
 }
 
 describe('analysis completion summaries', () => {
+    it('formats save failures without exposing raw response details', () => {
+        expect(
+            formatAnalysisSaveError(500, {
+                unexpected: '{"database":"internal"}',
+            })
+        ).toBe(
+            "We couldn't save this analysis. No changes were written. Retry the analysis."
+        );
+        expect(
+            formatAnalysisSaveError(503, {
+                error:
+                    'Saving the analysis took too long. No changes were written. Retry the analysis.',
+                retryable: true,
+            })
+        ).toBe(
+            'Saving the analysis took too long. No changes were written. Retry the analysis.'
+        );
+    });
+
     it('does not complete a fallback server batch while work remains active', () => {
         const batch = createServerAnalysisBatch({
             ownerId: 'user-a',

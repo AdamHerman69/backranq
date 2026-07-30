@@ -201,6 +201,39 @@ function hasBoundedJsonSize(value: unknown, maxBytes: number): boolean {
     }
 }
 
+function persistenceErrorCode(error: unknown): string | null {
+    if (!isObject(error)) return null;
+    return typeof error.code === 'string' ? error.code : null;
+}
+
+function logPersistenceFailure(args: {
+    error: unknown;
+    gameId: string;
+    requestId: string | null;
+    durationMs: number;
+}) {
+    const errorMessage =
+        args.error instanceof Error
+            ? args.error.message
+            : String(args.error);
+    console.error(
+        JSON.stringify({
+            level: 'error',
+            event: 'analysis_persistence_failed',
+            route: '/api/games/[id]/analysis',
+            gameId: args.gameId,
+            requestId: args.requestId,
+            durationMs: args.durationMs,
+            errorName:
+                args.error instanceof Error
+                    ? args.error.name
+                    : typeof args.error,
+            errorCode: persistenceErrorCode(args.error),
+            errorMessage: errorMessage.slice(0, 1_000),
+        })
+    );
+}
+
 export async function PUT(
     req: Request,
     { params }: { params: Promise<{ id: string }> }
@@ -362,6 +395,7 @@ export async function PUT(
         );
     }
 
+    const persistenceStartedAt = Date.now();
     try {
         const engine = isObject(bodyRecord.engine) ? bodyRecord.engine : {};
         const result = await createAndCompleteLocalAnalysisRun({
@@ -429,8 +463,31 @@ export async function PUT(
                 { status: 400 }
             );
         }
+        const errorCode = persistenceErrorCode(error);
+        logPersistenceFailure({
+            error,
+            gameId: id,
+            requestId:
+                req.headers.get('x-vercel-id') ??
+                req.headers.get('x-request-id'),
+            durationMs: Date.now() - persistenceStartedAt,
+        });
+        if (errorCode === 'P2028') {
+            return NextResponse.json(
+                {
+                    error:
+                        'Saving the analysis took too long. No changes were written. Retry the analysis.',
+                    retryable: true,
+                },
+                { status: 503 }
+            );
+        }
         return NextResponse.json(
-            { error: 'Failed to save analysis' },
+            {
+                error:
+                    "We couldn't save this analysis. No changes were written. Retry the analysis.",
+                retryable: true,
+            },
             { status: 500 }
         );
     }

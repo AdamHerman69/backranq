@@ -64,6 +64,23 @@ function isRecord(x: unknown): x is Record<string, unknown> {
     return !!x && typeof x === 'object';
 }
 
+export function formatAnalysisSaveError(
+    status: number,
+    payload: unknown
+): string {
+    if (
+        isRecord(payload) &&
+        typeof payload.error === 'string' &&
+        payload.error.trim()
+    ) {
+        return payload.error.trim().slice(0, 300);
+    }
+    if (status === 503) {
+        return 'Saving the analysis took too long. No changes were written. Retry the analysis.';
+    }
+    return "We couldn't save this analysis. No changes were written. Retry the analysis.";
+}
+
 function isApiAnalyzedGame(x: unknown): x is ApiAnalyzedGame {
     if (!isRecord(x)) return false;
     return (
@@ -500,12 +517,11 @@ class BackgroundAnalysisManager {
                 }
             );
             if (!saveRes.ok) {
-                const txt = await saveRes.text().catch(() => '');
+                const payload = (await saveRes
+                    .json()
+                    .catch(() => null)) as unknown;
                 throw new Error(
-                    `Failed to save analysis (${saveRes.status}): ${txt.slice(
-                        0,
-                        200
-                    )}`
+                    formatAnalysisSaveError(saveRes.status, payload)
                 );
             }
             const savedJson = (await saveRes.json().catch(() => ({}))) as {

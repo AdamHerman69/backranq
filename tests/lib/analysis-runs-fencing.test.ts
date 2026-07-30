@@ -64,6 +64,10 @@ describe('analysis completion fencing', () => {
 
         expect(prismaMock.analyzedGame.updateMany).not.toHaveBeenCalled();
         expect(replaceTrainingMomentsMock).not.toHaveBeenCalled();
+        expect(prismaMock.$transaction).toHaveBeenCalledWith(
+            expect.any(Function),
+            runs.ANALYSIS_PERSISTENCE_TRANSACTION_OPTIONS
+        );
     });
 
     it('rejects completion when the stored PGN changed after the run started', async () => {

@@ -1,7 +1,10 @@
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainingMoments';
 import { hashSourcePgn } from '@/lib/chess/pgn';
-import { hashAnalysisConfig } from '@/lib/services/analysisRuns';
+import {
+    ANALYSIS_PERSISTENCE_TRANSACTION_OPTIONS,
+    hashAnalysisConfig,
+} from '@/lib/services/analysisRuns';
 import {
     solutionSemanticsHash,
     type SolutionRevisionInput,
@@ -578,6 +581,12 @@ describe('PUT /api/games/[id]/analysis', () => {
             },
         });
         expect(response.status).toBe(200);
+        expect(
+            (prismaMock as PrismaMockWithTransaction).$transaction
+        ).toHaveBeenCalledWith(
+            expect.any(Function),
+            ANALYSIS_PERSISTENCE_TRANSACTION_OPTIONS
+        );
         expect(tx.analysisRun.create).toHaveBeenCalledWith({
             data: expect.objectContaining({
                 userId: 'user-1',
@@ -620,6 +629,9 @@ describe('PUT /api/games/[id]/analysis', () => {
 
     it('rolls back run creation with completion failure in one transaction', async () => {
         const route = await importRoute();
+        const consoleError = vi
+            .spyOn(console, 'error')
+            .mockImplementation(() => undefined);
         const runningRun = {
             id: 'run-1',
             userId: 'user-1',
@@ -671,7 +683,9 @@ describe('PUT /api/games/[id]/analysis', () => {
         );
 
         await expect(readJson(response)).resolves.toEqual({
-            error: 'Failed to save analysis',
+            error:
+                "We couldn't save this analysis. No changes were written. Retry the analysis.",
+            retryable: true,
         });
         expect(response.status).toBe(500);
         expect(
@@ -686,5 +700,45 @@ describe('PUT /api/games/[id]/analysis', () => {
         expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
         expect(prismaMock.analysisRun.updateMany).not.toHaveBeenCalled();
         expect(prismaMock.analysisRun.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(consoleError).toHaveBeenCalledWith(
+            expect.stringContaining('"event":"analysis_persistence_failed"')
+        );
+        consoleError.mockRestore();
+    });
+
+    it('reports an expired persistence transaction as safely retryable', async () => {
+        const route = await importRoute();
+        const consoleError = vi
+            .spyOn(console, 'error')
+            .mockImplementation(() => undefined);
+        const timeoutError = Object.assign(
+            new Error('Transaction not found. Internal database details.'),
+            { code: 'P2028' }
+        );
+
+        prismaMock.analyzedGame.findFirst.mockResolvedValue(ownedGame);
+        (prismaMock as PrismaMockWithTransaction).$transaction = vi
+            .fn()
+            .mockRejectedValue(timeoutError);
+
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: validAnalysis,
+                trainingMoments: [],
+                extractionManifest: validManifest,
+            }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(503);
+        await expect(readJson(response)).resolves.toEqual({
+            error:
+                'Saving the analysis took too long. No changes were written. Retry the analysis.',
+            retryable: true,
+        });
+        expect(consoleError).toHaveBeenCalledWith(
+            expect.stringContaining('"errorCode":"P2028"')
+        );
+        consoleError.mockRestore();
     });
 });

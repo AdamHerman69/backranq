@@ -87,6 +87,11 @@ export type CreateAndCompleteLocalAnalysisRunArgs = {
     >;
 };
 
+export const ANALYSIS_PERSISTENCE_TRANSACTION_OPTIONS = {
+    maxWait: 5_000,
+    timeout: 30_000,
+} as const;
+
 export class SourcePgnChangedError extends Error {
     constructor(message = 'Source PGN changed during analysis') {
         super(message);
@@ -309,8 +314,13 @@ export async function createAnalysisRunInTransaction(
 export async function completeAnalysisRunWithGameAnalysis(
     args: CompleteAnalysisRunArgs
 ): Promise<CompleteAnalysisRunResult> {
-    return prisma.$transaction((tx) =>
-        completeAnalysisRunWithGameAnalysisInTransaction({ tx, ...args })
+    return prisma.$transaction(
+        (tx) =>
+            completeAnalysisRunWithGameAnalysisInTransaction({
+                tx,
+                ...args,
+            }),
+        ANALYSIS_PERSISTENCE_TRANSACTION_OPTIONS
     );
 }
 
@@ -323,18 +333,21 @@ export async function completeAnalysisRunWithGameAnalysis(
 export async function createAndCompleteLocalAnalysisRun(
     args: CreateAndCompleteLocalAnalysisRunArgs
 ): Promise<CompleteAnalysisRunResult> {
-    return prisma.$transaction(async (tx) => {
-        const run = await createAnalysisRunInTransaction({
-            tx,
-            ...args.run,
-            status: 'RUNNING',
-        });
-        return completeAnalysisRunWithGameAnalysisInTransaction({
-            tx,
-            ...args.completion,
-            runId: run.id,
-        });
-    });
+    return prisma.$transaction(
+        async (tx) => {
+            const run = await createAnalysisRunInTransaction({
+                tx,
+                ...args.run,
+                status: 'RUNNING',
+            });
+            return completeAnalysisRunWithGameAnalysisInTransaction({
+                tx,
+                ...args.completion,
+                runId: run.id,
+            });
+        },
+        ANALYSIS_PERSISTENCE_TRANSACTION_OPTIONS
+    );
 }
 
 export async function completeAnalysisRunWithGameAnalysisInTransaction(
