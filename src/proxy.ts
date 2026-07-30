@@ -29,6 +29,7 @@ export const config = {
         '/progress/:path*',
         '/games/:path*',
         '/practice/:path*',
+        '/play/:path*',
         '/settings/:path*',
         '/profile/:path*',
     ],

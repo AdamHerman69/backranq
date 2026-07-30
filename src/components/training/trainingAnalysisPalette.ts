@@ -26,7 +26,7 @@ export const TRAINING_ANALYSIS_CONTEXT_PALETTE: Record<
     },
     decision: {
         label: 'Decision position',
-        detail: 'Puzzle starts here',
+        detail: 'Explore from here',
         saturation: 38,
         borderAlpha: 0.44,
         backgroundAlpha: 0.045,

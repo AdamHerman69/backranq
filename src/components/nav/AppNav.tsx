@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { clearCoachSessionOnSignOut } from "@/lib/coach/sessionCleanup";
 
 type NavItem = {
   href: string;
@@ -34,6 +35,11 @@ export const appNavItems: NavItem[] = [
     href: "/practice",
     label: "Practice",
     active: (p) => p === "/practice" || p.startsWith("/practice/"),
+  },
+  {
+    href: "/play",
+    label: "Play",
+    active: (p) => p === "/play" || p.startsWith("/play/"),
   },
   {
     href: "/games",
@@ -89,6 +95,10 @@ export function AppNav() {
   const authed = !!data?.user?.id;
   const user = data?.user;
   const label = user?.name ?? user?.email ?? "User";
+  const signOutFromDevice = async () => {
+    await clearCoachSessionOnSignOut();
+    await signOut({ callbackUrl: "/" });
+  };
 
   return (
     <>
@@ -132,7 +142,7 @@ export function AppNav() {
                   <Button
                     variant="outline"
                     className="w-full justify-start"
-                    onClick={() => signOut({ callbackUrl: "/" })}
+                    onClick={() => void signOutFromDevice()}
                   >
                     <LogOut className="mr-2" />
                     Sign out
@@ -210,7 +220,7 @@ export function AppNav() {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             {authed ? (
-              <DropdownMenuItem onSelect={() => signOut({ callbackUrl: "/" })}>
+              <DropdownMenuItem onSelect={() => void signOutFromDevice()}>
                 <LogOut className="mr-2" />
                 Sign out
               </DropdownMenuItem>

@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next';
+import { withSerwist } from '@serwist/turbopack';
 
 const stockfishLiteRuntime = [
     './node_modules/stockfish/bin/stockfish-18-lite-single.wasm',
@@ -30,6 +31,13 @@ const nextConfig: NextConfig = {
     async headers() {
         return [
             {
+                source: '/serwist/sw.js',
+                headers: [
+                    { key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' },
+                    { key: 'Service-Worker-Allowed', value: '/' },
+                ],
+            },
+            {
                 source: '/:path*',
                 headers: [
                     { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
@@ -43,4 +51,4 @@ const nextConfig: NextConfig = {
     },
 };
 
-export default nextConfig;
+export default withSerwist(nextConfig);

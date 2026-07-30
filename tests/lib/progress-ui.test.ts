@@ -78,6 +78,7 @@ describe('Progress information architecture', () => {
         ).toEqual([
             { label: 'Home', href: '/home' },
             { label: 'Practice', href: '/practice' },
+            { label: 'Play', href: '/play' },
             { label: 'Games', href: '/games' },
             { label: 'Progress', href: '/progress' },
             { label: 'Settings', href: '/settings' },

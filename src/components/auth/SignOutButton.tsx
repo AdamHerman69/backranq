@@ -4,6 +4,7 @@ import { signOut } from 'next-auth/react';
 import type { ReactNode } from 'react';
 
 import { Button, type ButtonProps } from '@/components/ui/button';
+import { clearCoachSessionOnSignOut } from '@/lib/coach/sessionCleanup';
 
 type Props = {
     callbackUrl?: string;
@@ -23,7 +24,11 @@ export function SignOutButton({
     return (
         <Button
             type="button"
-            onClick={() => signOut({ callbackUrl })}
+            onClick={() => {
+                void clearCoachSessionOnSignOut().then(() =>
+                    signOut({ callbackUrl })
+                );
+            }}
             variant={variant}
             size={size}
             className={className}
@@ -32,4 +37,3 @@ export function SignOutButton({
         </Button>
     );
 }
-

@@ -91,6 +91,17 @@ type PendingPromotion = {
 
 type DraftStatus = 'loading' | 'saving' | 'saved' | 'unavailable';
 
+export type PositionAnalysisSeed = {
+    sessionKey: string;
+    revisionKey: string;
+    decisionFen: string;
+    sideToMove: 'w' | 'b';
+    positionHistory: string[];
+    originalMoveUci?: string | null;
+    submittedMoveUci?: string | null;
+    bestLineUci?: string[];
+};
+
 const LINE_COLORS = [
     'rgba(59,130,246,0.82)',
     'rgba(16,185,129,0.78)',
@@ -189,44 +200,69 @@ export function TrainingAnalysisWorkspace({
     prompt,
     initialFen,
     review,
+    positionSeed,
     engineClient,
     onRequestEngine,
     flipped,
     onFlip,
     loadingNext,
     onNext,
+    heading = 'Analyze the position',
+    description = 'Explore legal moves freely. Your variations stay on this device and never change the practice result.',
+    primaryActionLabel = 'Next position',
+    primaryActionLoadingLabel = 'Loading next…',
+    primaryActionShortcut = 'N',
+    primaryActionHint = 'next',
     children,
 }: {
     active: boolean;
-    prompt: TrainingPromptDto;
+    prompt?: TrainingPromptDto;
     initialFen: string;
-    review: TrainingReviewDto;
+    review?: TrainingReviewDto;
+    positionSeed?: PositionAnalysisSeed;
     engineClient: StockfishClient | null;
     onRequestEngine: () => StockfishClient | null;
     flipped: boolean;
     onFlip: () => void;
     loadingNext: boolean;
     onNext: () => void;
+    heading?: string;
+    description?: string;
+    primaryActionLabel?: string;
+    primaryActionLoadingLabel?: string;
+    primaryActionShortcut?: string | null;
+    primaryActionHint?: string;
     children?: ReactNode;
 }) {
+    const resolvedSeed = useMemo<PositionAnalysisSeed>(() => {
+        if (positionSeed) return positionSeed;
+        if (!prompt || !review) {
+            throw new Error(
+                'Position analysis requires either a training prompt and review or an explicit position seed.'
+            );
+        }
+        return {
+            sessionKey: prompt.id,
+            revisionKey: prompt.solutionRevisionId,
+            decisionFen: prompt.fen,
+            sideToMove: prompt.sideToMove,
+            positionHistory: prompt.grading.positionHistory,
+            originalMoveUci: review.originalMoveUci,
+            submittedMoveUci: review.submittedMoveUci,
+            bestLineUci: review.bestLineUci,
+        };
+    }, [positionSeed, prompt, review]);
     const seedTree = useMemo(
         () =>
             createTrainingAnalysisTree({
-                decisionFen: prompt.fen,
-                positionHistory: prompt.grading.positionHistory,
-                originalMoveUci: review.originalMoveUci,
-                submittedMoveUci: review.submittedMoveUci,
-                bestLineUci: review.bestLineUci,
+                decisionFen: resolvedSeed.decisionFen,
+                positionHistory: resolvedSeed.positionHistory,
+                originalMoveUci: resolvedSeed.originalMoveUci,
+                submittedMoveUci: resolvedSeed.submittedMoveUci,
+                bestLineUci: resolvedSeed.bestLineUci,
                 initialFen,
             }),
-        [
-            initialFen,
-            prompt.fen,
-            prompt.grading.positionHistory,
-            review.bestLineUci,
-            review.originalMoveUci,
-            review.submittedMoveUci,
-        ]
+        [initialFen, resolvedSeed]
     );
     const [tree, setTree] = useState<TrainingAnalysisTree>(() => seedTree);
     const [draftReady, setDraftReady] = useState(false);
@@ -274,9 +310,9 @@ export function TrainingAnalysisWorkspace({
     useEffect(() => {
         let cancelled = false;
         void loadTrainingAnalysisDraft({
-            promptId: prompt.id,
-            solutionRevisionId: prompt.solutionRevisionId,
-            decisionFen: prompt.fen,
+            promptId: resolvedSeed.sessionKey,
+            solutionRevisionId: resolvedSeed.revisionKey,
+            decisionFen: resolvedSeed.decisionFen,
         }).then((restored) => {
             if (cancelled) return;
             if (restored) setTree(restored);
@@ -286,15 +322,19 @@ export function TrainingAnalysisWorkspace({
         return () => {
             cancelled = true;
         };
-    }, [prompt.fen, prompt.id, prompt.solutionRevisionId]);
+    }, [
+        resolvedSeed.decisionFen,
+        resolvedSeed.revisionKey,
+        resolvedSeed.sessionKey,
+    ]);
 
     useEffect(() => {
         if (!draftReady) return;
         let cancelled = false;
         const timeoutId = window.setTimeout(() => {
             void saveTrainingAnalysisDraft({
-                promptId: prompt.id,
-                solutionRevisionId: prompt.solutionRevisionId,
+                promptId: resolvedSeed.sessionKey,
+                solutionRevisionId: resolvedSeed.revisionKey,
                 tree,
             }).then((saved) => {
                 if (!cancelled) {
@@ -308,8 +348,8 @@ export function TrainingAnalysisWorkspace({
         };
     }, [
         draftReady,
-        prompt.id,
-        prompt.solutionRevisionId,
+        resolvedSeed.revisionKey,
+        resolvedSeed.sessionKey,
         tree,
     ]);
 
@@ -535,7 +575,11 @@ export function TrainingAnalysisWorkspace({
                 setThreatCursorId((current) =>
                     current === tree.cursorId ? null : tree.cursorId
                 );
-            } else if (event.key.toLowerCase() === 'n') {
+            } else if (
+                primaryActionShortcut &&
+                event.key.toLowerCase() ===
+                    primaryActionShortcut.toLowerCase()
+            ) {
                 if (loadingNext) return;
                 event.preventDefault();
                 onNext();
@@ -553,6 +597,7 @@ export function TrainingAnalysisWorkspace({
         navigateTree,
         onNext,
         pendingPromotion,
+        primaryActionShortcut,
         threatFen,
         tree.cursorId,
         tree.decisionNodeId,
@@ -668,11 +713,10 @@ export function TrainingAnalysisWorkspace({
                         tabIndex={-1}
                         className="text-xl font-semibold outline-none"
                     >
-                        Analyze the position
+                        {heading}
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
-                        Explore legal moves freely. Your variations stay on
-                        this device and never change the practice result.
+                        {description}
                     </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -740,7 +784,7 @@ export function TrainingAnalysisWorkspace({
                             options={{
                                 position: cursorFen,
                                 boardOrientation:
-                                    (prompt.sideToMove === 'w') !== flipped
+                                    (resolvedSeed.sideToMove === 'w') !== flipped
                                         ? 'white'
                                         : 'black',
                                 allowDragging: active && draftReady,
@@ -1213,15 +1257,18 @@ export function TrainingAnalysisWorkspace({
                                 onClick={onNext}
                             >
                                 {loadingNext
-                                    ? 'Loading next…'
-                                    : 'Next position'}
+                                    ? primaryActionLoadingLabel
+                                    : primaryActionLabel}
                                 {!loadingNext ? (
                                     <ChevronRight className="ml-2 h-4 w-4" />
                                 ) : null}
                             </Button>
                             <p className="text-center text-xs text-muted-foreground">
                                 ←/→ moves · ↑/↓ variations · Home/End line · R
-                                decision · X threats · N next
+                                decision · X threats
+                                {primaryActionShortcut
+                                    ? ` · ${primaryActionShortcut.toUpperCase()} ${primaryActionHint}`
+                                    : ''}
                             </p>
                         </CardContent>
                     </Card>
