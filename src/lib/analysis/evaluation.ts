@@ -22,6 +22,68 @@ export function reverseWdl(wdl?: EngineWdl): EngineWdl | undefined {
         : undefined;
 }
 
+/**
+ * Stockfish reports score/WDL for the side to move. User-facing numeric
+ * evaluation throughout Backranq is always White POV: positive means White is
+ * better and negative means Black is better, regardless of board orientation.
+ */
+export function engineScoreForWhite(
+    score: Score | null,
+    fen: string
+): Score | null {
+    return fen.split(' ')[1] === 'b' ? negateScore(score) : score;
+}
+
+export function engineWdlForWhite(
+    wdl: EngineWdl | undefined,
+    fen: string
+): EngineWdl | undefined {
+    return fen.split(' ')[1] === 'b' ? reverseWdl(wdl) : wdl;
+}
+
+export function formatEngineScoreForWhite(
+    score: Score | null,
+    fen: string
+): string {
+    const whiteScore = engineScoreForWhite(score, fen);
+    if (!whiteScore) return '—';
+    if (whiteScore.type === 'mate') {
+        if (whiteScore.value === 0) return '#0';
+        const sign = whiteScore.value > 0 ? '' : '−';
+        return `#${sign}${Math.abs(whiteScore.value)}`;
+    }
+    const pawns = whiteScore.value / 100;
+    if (Math.abs(pawns) < 0.005) return '0.00';
+    return `${pawns > 0 ? '+' : '−'}${Math.abs(pawns).toFixed(2)}`;
+}
+
+export function whiteExpectedScore(args: {
+    score: Score | null;
+    wdl?: EngineWdl;
+    fen: string;
+}): number {
+    const value = winningChance(
+        engineScoreForWhite(args.score, args.fen),
+        engineWdlForWhite(args.wdl, args.fen)
+    );
+    return value == null || !Number.isFinite(value)
+        ? 0.5
+        : Math.max(0, Math.min(1, value));
+}
+
+export function formatEngineWdlForWhite(
+    wdl: EngineWdl | undefined,
+    fen: string
+): string | null {
+    const whiteWdl = engineWdlForWhite(wdl, fen);
+    if (!whiteWdl) return null;
+    const total = whiteWdl.win + whiteWdl.draw + whiteWdl.loss;
+    if (total <= 0) return null;
+    const percent = (value: number) =>
+        Math.round((Math.max(0, value) / total) * 100);
+    return `W ${percent(whiteWdl.win)}% · D ${percent(whiteWdl.draw)}% · L ${percent(whiteWdl.loss)}%`;
+}
+
 export function scoreToOrderingCp(score: Score | null): number | null {
     if (!score) return null;
     if (score.type === 'cp') return score.value;

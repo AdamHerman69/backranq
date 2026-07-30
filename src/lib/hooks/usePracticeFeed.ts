@@ -238,6 +238,8 @@ export function usePracticeFeed(
     const [error, setError] = useState<string | null>(null);
     const [online, setOnline] = useState(navigatorIsOnline);
     const [queuedCount, setQueuedCount] = useState(0);
+    const [engineClient, setEngineClient] =
+        useState<StockfishClient | null>(null);
 
     const clientAttemptIdRef = useRef<string | null>(null);
     const promptStartedAtRef = useRef(Date.now());
@@ -264,6 +266,14 @@ export function usePracticeFeed(
         >(null);
     const activeExposureRef = useRef<ActiveExposure | null>(null);
     const progressStartRecordedRef = useRef(false);
+
+    const getOrCreateEngine = useCallback(() => {
+        if (engineRef.current) return engineRef.current;
+        const engine = new StockfishClient();
+        engineRef.current = engine;
+        setEngineClient(engine);
+        return engine;
+    }, []);
 
     const recommendationKey =
         entry === 'progress'
@@ -688,8 +698,7 @@ export function usePracticeFeed(
         if (!prompt || engineRef.current) return;
         const timeoutId = window.setTimeout(() => {
             try {
-                const engine = new StockfishClient();
-                engineRef.current = engine;
+                const engine = getOrCreateEngine();
                 void engine.getIdentity().catch(() => {
                     // The worker can still be retried lazily on an unknown move.
                 });
@@ -699,7 +708,7 @@ export function usePracticeFeed(
             }
         }, 0);
         return () => window.clearTimeout(timeoutId);
-    }, [prompt]);
+    }, [getOrCreateEngine, prompt]);
 
     useEffect(
         () => () => {
@@ -972,9 +981,7 @@ export function usePracticeFeed(
 
             setPhase('SUBMITTING');
             try {
-                const engine =
-                    engineRef.current ??
-                    (engineRef.current = new StockfishClient());
+                const engine = getOrCreateEngine();
                 const evaluated = await gradeUnknownLocalMove({
                     engine,
                     manifest: prompt.grading,
@@ -1000,6 +1007,7 @@ export function usePracticeFeed(
         },
         [
             applyLocalEvaluation,
+            getOrCreateEngine,
             phase,
             positionFen,
             prompt,
@@ -1014,9 +1022,7 @@ export function usePracticeFeed(
         setPhase('SUBMITTING');
         setError(null);
         try {
-            const engine =
-                engineRef.current ??
-                (engineRef.current = new StockfishClient());
+            const engine = getOrCreateEngine();
             const evaluated = await gradeUnknownLocalMove({
                 engine,
                 manifest: prompt.grading,
@@ -1033,7 +1039,12 @@ export function usePracticeFeed(
         } catch {
             setPhase('UNRESOLVED');
         }
-    }, [applyLocalEvaluation, phase, prompt]);
+    }, [
+        applyLocalEvaluation,
+        getOrCreateEngine,
+        phase,
+        prompt,
+    ]);
 
     const reveal = useCallback(() => {
         if (
@@ -1276,6 +1287,8 @@ export function usePracticeFeed(
         error,
         online,
         queuedCount,
+        engineClient,
+        getOrCreateEngine,
         canMove: phase === 'READY' || phase === 'AWAITING_MOVE',
         canReveal:
             (phase === 'READY' ||

@@ -135,6 +135,221 @@ test.describe('authenticated personal decision practice', () => {
         await expect((await recorded).ok()).toBe(true);
     });
 
+    test('marks pre-move analysis as revealed and keeps sandbox moves out of the attempt', async ({
+        page,
+    }) => {
+        const momentId = E2E_TRAINING_MOMENTS.reveal;
+        await page.goto(practicePath(momentId));
+        await waitForBoard(page);
+
+        const analyzeTab = page.getByRole('tab', {
+            name: 'Analyze',
+        });
+        await analyzeTab.click();
+
+        const dialog = page.getByRole('dialog', {
+            name: 'Analyze this position?',
+        });
+        await expect(dialog).toBeVisible();
+        await expect(
+            page.getByRole('heading', {
+                name: 'Analyze the position',
+            })
+        ).toHaveCount(0);
+
+        await dialog
+            .getByRole('button', { name: 'Keep solving' })
+            .click();
+        await expect(dialog).toHaveCount(0);
+        await expect(
+            page.getByRole('tab', { name: 'Solve' })
+        ).toHaveAttribute('data-state', 'active');
+
+        await analyzeTab.click();
+        const recordedRequest = page.waitForRequest(
+            (request) =>
+                request.url().includes(
+                    `/api/training/moments/${momentId}/attempts`
+                ) && request.method() === 'POST'
+        );
+        const recordedResponse = page.waitForResponse(
+            (response) =>
+                response.url().includes(
+                    `/api/training/moments/${momentId}/attempts`
+                ) && response.request().method() === 'POST'
+        );
+        await dialog
+            .getByRole('button', {
+                name: 'Reveal and analyze',
+            })
+            .click();
+
+        const request = await recordedRequest;
+        expect(request.postDataJSON()).toMatchObject({
+            status: 'REVEALED',
+            steps: [],
+        });
+        expect((await recordedResponse).ok()).toBe(true);
+        await expect(
+            page.getByRole('heading', {
+                name: 'Analyze the position',
+            })
+        ).toBeVisible();
+        await expect(
+            page.getByRole('region', {
+                name: 'Position review',
+            })
+        ).toBeVisible();
+        await expect(
+            page.getByRole('heading', { name: 'Live engine' })
+        ).toBeVisible();
+        await expect(
+            page.getByText(
+                /^(Engine (loading|starting)…|Analyzing|Analysis complete)/
+            )
+        ).toBeVisible();
+        await expect(page).toHaveURL(/view=analyze/);
+
+        const analysisBoard = page.getByRole('group', {
+            name: 'Interactive analysis board',
+        });
+        await expect(analysisBoard).toHaveAttribute(
+            'data-analysis-position-context',
+            'decision'
+        );
+        await expect(
+            analysisBoard.getByText('Decision position')
+        ).toBeVisible();
+
+        await page.locator('[data-analysis-move-uci="f1c4"]').click();
+        await expect(analysisBoard).toHaveAttribute(
+            'data-analysis-position-context',
+            'source'
+        );
+        await expect(
+            analysisBoard.getByText('Original game')
+        ).toBeVisible();
+        await analysisBoard
+            .getByRole('button', { name: 'Back to decision' })
+            .click();
+        await expect(analysisBoard).toHaveAttribute(
+            'data-analysis-position-context',
+            'decision'
+        );
+
+        await clickMove(page, 'd2', 'd4');
+        await expect(analysisBoard).toHaveAttribute(
+            'data-analysis-position-context',
+            'analysis'
+        );
+        await expect(
+            analysisBoard.getByText('Analysis variation')
+        ).toBeVisible();
+        await expect(
+            page.locator('[data-analysis-move-uci="d2d4"]')
+        ).toBeVisible();
+        await expect(
+            page.getByRole('button', { name: 'Previous move' })
+        ).toBeEnabled();
+
+        await page.getByRole('button', { name: 'Previous move' }).click();
+        await clickMove(page, 'c2', 'c4');
+        await expect(
+            page.locator('[data-analysis-move-uci="d2d4"]')
+        ).toBeVisible();
+        await expect(
+            page.locator('[data-analysis-move-uci="c2c4"]')
+        ).toBeVisible();
+
+        await page.locator('[data-analysis-move-uci="d2d4"]').click();
+        await page.getByRole('button', { name: 'Previous move' }).click();
+        await page.getByRole('button', { name: 'Next move' }).click();
+        await expect(
+            page.locator('[data-analysis-move-uci="d2d4"]')
+        ).toHaveAttribute('aria-current', 'step');
+
+        const threats = page.getByRole('button', { name: 'Threats' });
+        await threats.click();
+        await expect(threats).toHaveAttribute('aria-pressed', 'true');
+        await expect(
+            page.getByRole('heading', { name: 'Opponent threats' })
+        ).toBeVisible();
+        await expect(
+            page.getByText(
+                /^(Finding threats|Threat scan complete)/
+            )
+        ).toBeVisible({ timeout: 15_000 });
+        await page.getByRole('button', { name: 'Previous move' }).click();
+        await expect(threats).toHaveAttribute('aria-pressed', 'false');
+        await expect(
+            page.getByRole('heading', { name: 'Live engine' })
+        ).toBeVisible();
+
+        await page.getByRole('tab', { name: 'Solve' }).click();
+        await expect(
+            page.getByText(
+                'Solution revealed. Review the decision below.'
+            )
+        ).toBeVisible();
+        await page.getByRole('tab', { name: 'Analyze' }).click();
+        await expect(dialog).toHaveCount(0);
+        await expect(
+            page.getByRole('heading', {
+                name: 'Analyze the position',
+            })
+        ).toBeVisible();
+        await expect(
+            page.locator('[data-analysis-move-uci="d2d4"]')
+        ).toBeVisible();
+        await expect(
+            page.locator('[data-analysis-move-uci="c2c4"]')
+        ).toBeVisible();
+
+        await expect(
+            page.getByText('Saved on this device')
+        ).toBeVisible();
+        await page.reload();
+        await page
+            .getByRole('dialog', {
+                name: 'Analyze this position?',
+            })
+            .getByRole('button', {
+                name: 'Reveal and analyze',
+            })
+            .click();
+        await expect(
+            page.getByRole('heading', {
+                name: 'Analyze the position',
+            })
+        ).toBeVisible();
+        await expect(
+            page.locator('[data-analysis-move-uci="d2d4"]')
+        ).toBeVisible();
+        await expect(
+            page.locator('[data-analysis-move-uci="c2c4"]')
+        ).toBeVisible();
+    });
+
+    test('honors a direct analysis link without bypassing reveal confirmation', async ({
+        page,
+    }) => {
+        const momentId = E2E_TRAINING_MOMENTS.reveal;
+        await page.goto(
+            `${practicePath(momentId)}&view=analyze`
+        );
+
+        await expect(
+            page.getByRole('dialog', {
+                name: 'Analyze this position?',
+            })
+        ).toBeVisible();
+        await expect(
+            page.getByRole('heading', {
+                name: 'Analyze the position',
+            })
+        ).toHaveCount(0);
+    });
+
     test('grades offline and queues only the history sync', async ({
         page,
         context,

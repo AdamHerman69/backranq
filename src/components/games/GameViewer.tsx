@@ -11,8 +11,11 @@ import {
 } from '@/lib/analysis/classification';
 import {
     StockfishClient,
-    type Score,
 } from '@/lib/analysis/stockfishClient';
+import {
+    formatEngineScoreForWhite,
+    whiteExpectedScore,
+} from '@/lib/analysis/evaluation';
 import { useStockfishLiveMultiPvAnalysis } from '@/lib/hooks/useStockfishLiveMultiPvAnalysis';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -90,33 +93,6 @@ function createStockfishClientStore() {
             notify();
         },
     };
-}
-
-function formatEval(score: Score | null, fen: string): string {
-    if (!score) return '—';
-    const turn = fen.split(' ')[1] === 'b' ? 'b' : 'w';
-    const sign = turn === 'w' ? 1 : -1; // convert to White POV
-    if (score.type === 'cp') {
-        const v = (score.value / 100) * sign;
-        return v >= 0 ? `+${v.toFixed(1)}` : v.toFixed(1);
-    }
-    const mv = score.value * sign;
-    return `#${mv}`;
-}
-
-function scoreToUnit(score: Score | null, fen: string): number {
-    if (!score) return 0.5;
-    const turn = fen.split(' ')[1] === 'b' ? 'b' : 'w';
-    const sign = turn === 'w' ? 1 : -1; // to White POV
-
-    if (score.type === 'mate') {
-        const mv = score.value * sign;
-        return mv > 0 ? 1 : 0;
-    }
-    const cp = score.value * sign;
-    const x = cp / 600;
-    const t = Math.tanh(x);
-    return 0.5 + 0.5 * t;
 }
 
 function isEditableTarget(el: EventTarget | null) {
@@ -443,12 +419,17 @@ export function GameViewer({
     }, [live.lines, selectedLine]);
 
     const analysisEvalText = useMemo(() => {
-        return formatEval(analysisEvalScore, fen);
+        return formatEngineScoreForWhite(analysisEvalScore, fen);
     }, [analysisEvalScore, fen]);
 
     const analysisEvalUnit = useMemo(() => {
-        return scoreToUnit(analysisEvalScore, fen);
-    }, [analysisEvalScore, fen]);
+        const line = live.lines?.[selectedLine] ?? live.lines?.[0];
+        return whiteExpectedScore({
+            score: line?.score ?? null,
+            wdl: line?.wdl,
+            fen,
+        });
+    }, [fen, live.lines, selectedLine]);
 
     const analysisArrows = useMemo(() => {
         const byKey = new Map<
@@ -634,7 +615,7 @@ export function GameViewer({
                     <CardContent className="space-y-3">
                         <div className="flex items-center justify-between gap-3">
                             <div className="font-mono text-sm text-muted-foreground">
-                                {analysisEvalText}
+                                White {analysisEvalText}
                             </div>
                             <div className="h-2 w-40 overflow-hidden rounded-full bg-muted">
                                 <div
@@ -644,6 +625,9 @@ export function GameViewer({
                                     }}
                                 />
                             </div>
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                            + favors White · − favors Black
                         </div>
 
                         {/* Fixed-height status row to avoid layout shift while scrubbing */}
@@ -694,7 +678,10 @@ export function GameViewer({
                                     <div className="flex items-center justify-between gap-2">
                                         <div className="font-medium">#{i + 1}</div>
                                         <div className="font-mono text-xs text-muted-foreground">
-                                            {formatEval(l.score, fen)}
+                                            {formatEngineScoreForWhite(
+                                                l.score,
+                                                fen
+                                            )}
                                             {typeof live.depth === 'number'
                                                 ? ` d${live.depth}`
                                                 : ''}
