@@ -5,7 +5,10 @@ import type {
     EngineEvaluation,
     UserMoveAssessment,
 } from '@/lib/coach/assessment';
-import type { OpponentProfileId } from '@/lib/coach/profiles';
+import type {
+    CoachOpponentModelId,
+    OpponentProfileId,
+} from '@/lib/coach/profiles';
 import type { CoachVerificationEvidence } from '@/lib/coach/verification';
 
 export type CoachGamePhase =
@@ -72,13 +75,16 @@ export type CoachResumablePhase =
     | 'mistake';
 
 export type CoachSessionSnapshot = {
-    version: 1;
+    version: 2;
     sessionKey: string;
     ownerId: string;
     savedAt: number;
     phase: CoachResumablePhase;
     userColor: 'w' | 'b';
+    opponentModel: CoachOpponentModelId;
     opponentId: OpponentProfileId;
+    opponentElo: number | null;
+    opponentEngineRevision: string;
     thresholdCp: number;
     gameFen: string;
     moves: CoachPlayedMove[];

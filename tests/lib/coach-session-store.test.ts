@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 import type { MultiPvResult } from '@/lib/analysis/stockfishClient';
 import { moveToUci } from '@/lib/chess/utils';
 import { assessUserMove } from '@/lib/coach/assessment';
-import { sanitizeCoachSessionSnapshot } from '@/lib/coach/sessionStore';
+import {
+    sanitizeCoachSessionSnapshot,
+} from '@/lib/coach/sessionStore';
 import type {
     CoachMistake,
     CoachPlayedMove,
@@ -14,6 +16,10 @@ import {
     COACH_FIRST_PASS_NODES,
     COACH_THRESHOLD_DEFAULT_CP,
 } from '@/lib/coach/verification';
+import {
+    MAIA_OPPONENT_DEFAULT_ELO,
+    STOCKFISH_OPPONENT_REVISION,
+} from '@/lib/coach/profiles';
 
 const NOW = Date.UTC(2026, 6, 31, 0, 0, 0);
 const START_FEN = new Chess().fen();
@@ -79,13 +85,16 @@ function snapshot(
     overrides: Partial<CoachSessionSnapshot> = {}
 ): CoachSessionSnapshot {
     return {
-        version: 1,
+        version: 2,
         sessionKey: 'coach-session-1',
         ownerId: 'user-1',
         savedAt: NOW,
         phase: 'player',
         userColor: 'w',
+        opponentModel: 'stockfish',
         opponentId: 'club',
+        opponentElo: null,
+        opponentEngineRevision: STOCKFISH_OPPONENT_REVISION,
         thresholdCp: 100,
         gameFen: START_FEN,
         moves: [],
@@ -179,6 +188,71 @@ describe('coach session snapshot sanitization', () => {
         expect(
             sanitizeCoachSessionSnapshot(snapshot(), NOW)?.ownerId
         ).toBe('user-1');
+    });
+
+    it('never restores a session into a different or anonymous owner namespace', () => {
+        expect(
+            sanitizeCoachSessionSnapshot(
+                snapshot(),
+                NOW,
+                'user-2'
+            )
+        ).toBeNull();
+        expect(
+            sanitizeCoachSessionSnapshot(
+                snapshot(),
+                NOW,
+                'local'
+            )
+        ).toBeNull();
+        expect(
+            sanitizeCoachSessionSnapshot(
+                snapshot(),
+                NOW,
+                'user-1'
+            )?.ownerId
+        ).toBe('user-1');
+    });
+
+    it('migrates a legacy v1 checkpoint to a locked Stockfish opponent', () => {
+        const legacy: Record<string, unknown> = {
+            ...snapshot(),
+            version: 1,
+        };
+        delete legacy.opponentModel;
+        delete legacy.opponentElo;
+        delete legacy.opponentEngineRevision;
+        const restored = sanitizeCoachSessionSnapshot(
+            legacy,
+            NOW
+        );
+
+        expect(restored).toMatchObject({
+            version: 2,
+            opponentModel: 'stockfish',
+            opponentId: 'club',
+            opponentElo: null,
+            opponentEngineRevision: STOCKFISH_OPPONENT_REVISION,
+        });
+    });
+
+    it('normalizes and locks Maia opponent metadata', () => {
+        const restored = sanitizeCoachSessionSnapshot(
+            {
+                ...snapshot(),
+                opponentModel: 'maia3',
+                opponentElo: 1524,
+                opponentEngineRevision: ' maia3-engine-v1 ',
+            },
+            NOW
+        );
+
+        expect(restored).toMatchObject({
+            opponentModel: 'maia3',
+            opponentElo: 1500,
+            opponentEngineRevision: 'maia3-engine-v1',
+        });
+        expect(restored?.opponentElo).toBe(MAIA_OPPONENT_DEFAULT_ELO);
     });
 
     it('restores a valid player checkpoint and normalizes untrusted preferences', () => {
@@ -374,7 +448,7 @@ describe('coach session snapshot sanitization', () => {
     it('rejects unsupported, stale, future, oversized, and invalid-profile snapshots', () => {
         expect(
             sanitizeCoachSessionSnapshot(
-                { ...snapshot(), version: 2 },
+                { ...snapshot(), version: 3 },
                 NOW
             )
         ).toBeNull();

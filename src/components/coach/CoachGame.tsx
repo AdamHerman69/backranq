@@ -25,6 +25,7 @@ import { CoachMistakeReviewCard } from '@/components/coach/CoachMistakeReviewCar
 import { COACH_OFFLINE_READY_EVENT } from '@/components/coach/CoachOfflineRegistration';
 import { CoachSetup } from '@/components/coach/CoachSetup';
 import { useCoachEngine } from '@/components/coach/useCoachEngine';
+import { useMaiaOpponent } from '@/components/coach/useMaiaOpponent';
 import type { PositionAnalysisSeed } from '@/components/training/TrainingAnalysisWorkspace';
 import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import { Badge } from '@/components/ui/badge';
@@ -48,17 +49,25 @@ import {
     COACH_OPPONENT_MULTIPV,
     COACH_OPPONENT_NODES,
     COACH_THRESHOLD_DEFAULT_CP,
+    MAIA_OPPONENT_DEFAULT_ELO,
+    STOCKFISH_OPPONENT_REVISION,
+    deriveMaiaOpponentSeed,
     firstEvaluation,
     getCoachGameOutcome,
     getOpponentProfile,
+    normalizeMaiaOpponentElo,
     normalizeCoachThresholdCp,
     selectOpponentMove,
     shouldConfirmCoachAssessment,
     terminalEvaluation,
+    type CoachOpponentModelId,
     type CoachGameOutcome,
     type OpponentProfileId,
 } from '@/lib/coach';
+import { MAIA_MODEL } from '@/lib/coach/maia';
+import { resolveCoachOwnerId } from '@/lib/coach/offlineOwner';
 import {
+    allowCoachSessionPersistence,
     clearCoachSession,
     loadCoachSession,
     saveCoachSession,
@@ -128,19 +137,37 @@ function moveRows(moves: PlayedMove[]) {
     return rows;
 }
 
-function phaseMessage(phase: GamePhase, userColor: 'w' | 'b') {
-    if (phase === 'starting') return 'Starting local Stockfish…';
-    if (phase === 'preparing') return 'Coach is reading the position…';
-    if (phase === 'checking') return 'Checking your decision…';
+function phaseMessage(
+    phase: GamePhase,
+    userColor: 'w' | 'b',
+    opponentModel: CoachOpponentModelId
+) {
+    if (phase === 'starting') {
+        return opponentModel === 'maia3'
+            ? 'Starting the Stockfish judge and Maia opponent…'
+            : 'Starting local Stockfish…';
+    }
+    if (phase === 'preparing') {
+        return 'Stockfish judge is reading the position…';
+    }
+    if (phase === 'checking') return 'Stockfish is checking your decision…';
     if (phase === 'confirming') {
         return `Confirming the evaluation at ${Math.round(COACH_CONFIRMATION_NODES / 1_000)}k nodes…`;
     }
-    if (phase === 'bot') return 'Opponent is choosing a move…';
+    if (phase === 'bot') {
+        return opponentModel === 'maia3'
+            ? 'Maia is choosing a human-like move…'
+            : 'Stockfish opponent is choosing a move…';
+    }
     if (phase === 'mistake') return 'The coach paused the game.';
     if (phase === 'analysis') return 'Exploring the decision.';
     if (phase === 'gameover') return 'Game complete.';
-    if (phase === 'recovering') return 'Restarting the local engine…';
-    if (phase === 'error') return 'The local engine needs attention.';
+    if (phase === 'recovering') {
+        return 'Restarting the local judge and opponent…';
+    }
+    if (phase === 'error') {
+        return 'The local judge or opponent needs attention.';
+    }
     return userColor === 'w' ? 'Your move as White.' : 'Your move as Black.';
 }
 
@@ -157,8 +184,13 @@ export function CoachGame({
     }, []);
     const [colorChoice, setColorChoice] =
         useState<ColorChoice>('white');
+    const [opponentModel, setOpponentModel] =
+        useState<CoachOpponentModelId>('stockfish');
     const [opponentId, setOpponentId] =
         useState<OpponentProfileId>('club');
+    const [maiaElo, setMaiaElo] = useState(
+        MAIA_OPPONENT_DEFAULT_ELO
+    );
     const [thresholdCp, setThresholdCp] = useState(
         COACH_THRESHOLD_DEFAULT_CP
     );
@@ -183,6 +215,8 @@ export function CoachGame({
     const [resumableSession, setResumableSession] =
         useState<CoachSessionSnapshot | null>(null);
     const [sessionLoaded, setSessionLoaded] = useState(false);
+    const [loadedOwnerKey, setLoadedOwnerKey] =
+        useState<string | null>(null);
     const [offlineAssetsReady, setOfflineAssetsReady] = useState(false);
 
     const gameRef = useRef(new Chess());
@@ -192,6 +226,12 @@ export function CoachGame({
     const sessionKeyRef = useRef(sessionKey());
     const ownerIdRef = useRef(ownerId ?? 'local');
     const activeOpponentRef = useRef<OpponentProfileId>('club');
+    const activeOpponentModelRef =
+        useRef<CoachOpponentModelId>('stockfish');
+    const activeOpponentEloRef = useRef<number | null>(null);
+    const activeOpponentEngineRevisionRef = useRef(
+        STOCKFISH_OPPONENT_REVISION
+    );
     const activeThresholdCpRef = useRef(COACH_THRESHOLD_DEFAULT_CP);
     const userColorRef = useRef<'w' | 'b'>('w');
     const pendingDecisionRef = useRef<CoachPendingDecision | null>(null);
@@ -205,6 +245,14 @@ export function CoachGame({
         cancelSearch,
         terminate: terminateEngine,
     } = useCoachEngine();
+    const {
+        status: maiaStatus,
+        initialize: initializeMaia,
+        selectMove: selectMaiaMove,
+        reset: resetMaia,
+        removeOfflineData: removeMaiaOfflineData,
+        installStatus: maiaInstallStatus,
+    } = useMaiaOpponent();
 
     const canMove =
         phase === 'player' &&
@@ -223,11 +271,28 @@ export function CoachGame({
 
     useEffect(() => {
         let cancelled = false;
-        void loadCoachSession(ownerId ?? undefined).then((snapshot) => {
-            if (cancelled) return;
-            setResumableSession(snapshot);
-            setSessionLoaded(true);
-        });
+        const resolvedOwnerId = resolveCoachOwnerId(ownerId);
+        ownerIdRef.current = resolvedOwnerId;
+        const ownerKey = ownerId ?? '__offline__';
+        const persistenceReady = ownerId
+            ? allowCoachSessionPersistence(resolvedOwnerId)
+            : Promise.resolve();
+        void persistenceReady
+            .then(() => loadCoachSession(resolvedOwnerId))
+            .then((snapshot) => {
+                if (cancelled) return;
+                setResumableSession(snapshot);
+                setSessionLoaded(true);
+                setLoadedOwnerKey(ownerKey);
+                if (snapshot) {
+                    setOpponentModel(snapshot.opponentModel);
+                    setOpponentId(snapshot.opponentId);
+                    setThresholdCp(snapshot.thresholdCp);
+                    if (snapshot.opponentElo != null) {
+                        setMaiaElo(snapshot.opponentElo);
+                    }
+                }
+            });
         try {
             const saved = window.localStorage.getItem(
                 'backranq.coach.thresholdCp'
@@ -306,18 +371,22 @@ export function CoachGame({
         if (!resumablePhase) {
             if (phase === 'gameover') {
                 lastSnapshotRef.current = null;
-                void clearCoachSession();
+                void clearCoachSession(ownerIdRef.current);
             }
             return;
         }
         const snapshot: CoachSessionSnapshot = {
-            version: 1,
+            version: 2,
             sessionKey: sessionKeyRef.current,
             ownerId: ownerIdRef.current,
             savedAt: Date.now(),
             phase: resumablePhase,
             userColor: userColorRef.current,
+            opponentModel: activeOpponentModelRef.current,
             opponentId: activeOpponentRef.current,
+            opponentElo: activeOpponentEloRef.current,
+            opponentEngineRevision:
+                activeOpponentEngineRevisionRef.current,
             thresholdCp: activeThresholdCpRef.current,
             gameFen: gameRef.current.fen(),
             moves: movesRef.current,
@@ -329,7 +398,14 @@ export function CoachGame({
             flipped,
         };
         lastSnapshotRef.current = snapshot;
+        const generation = generationRef.current;
         const timeout = window.setTimeout(() => {
+            if (
+                generationRef.current !== generation ||
+                sessionKeyRef.current !== snapshot.sessionKey
+            ) {
+                return;
+            }
             void saveCoachSession(snapshot);
         }, 80);
         return () => window.clearTimeout(timeout);
@@ -440,13 +516,45 @@ export function CoachGame({
                     multiPv: 1,
                 });
                 if (generationRef.current !== generation) return;
+                const checkpoint: CoachSessionSnapshot = {
+                    version: 2,
+                    sessionKey: sessionKeyRef.current,
+                    ownerId: ownerIdRef.current,
+                    savedAt: Date.now(),
+                    phase: 'player',
+                    userColor: userColorRef.current,
+                    opponentModel: activeOpponentModelRef.current,
+                    opponentId: activeOpponentRef.current,
+                    opponentElo: activeOpponentEloRef.current,
+                    opponentEngineRevision:
+                        activeOpponentEngineRevisionRef.current,
+                    thresholdCp: activeThresholdCpRef.current,
+                    gameFen: gameRef.current.fen(),
+                    moves: movesRef.current,
+                    positionFens: positionFensRef.current,
+                    baseline: analysis,
+                    pendingDecision: null,
+                    mistake: null,
+                    mistakes,
+                    flipped,
+                };
+                lastSnapshotRef.current = checkpoint;
+                await saveCoachSession(checkpoint);
+                if (generationRef.current !== generation) return;
                 setBaseline(analysis);
                 setPhase('player');
             } catch (error) {
                 failEngine(error, generation);
             }
         },
-        [analyzePosition, failEngine, finishGame, setPhase]
+        [
+            analyzePosition,
+            failEngine,
+            finishGame,
+            flipped,
+            mistakes,
+            setPhase,
+        ]
     );
 
     const playOpponentFromAnalysis = useCallback(
@@ -489,6 +597,71 @@ export function CoachGame({
         async (fen: string, generation: number) => {
             if (generationRef.current !== generation) return;
             setPhase('bot');
+            if (activeOpponentModelRef.current === 'maia3') {
+                try {
+                    const seed = deriveMaiaOpponentSeed(
+                        sessionKeyRef.current,
+                        movesRef.current.length
+                    );
+                    const selected = await selectMaiaMove({
+                        fen,
+                        selfElo:
+                            activeOpponentEloRef.current ??
+                            MAIA_OPPONENT_DEFAULT_ELO,
+                        opponentElo:
+                            activeOpponentEloRef.current ??
+                            MAIA_OPPONENT_DEFAULT_ELO,
+                        seed,
+                    });
+                    if (generationRef.current !== generation) return;
+                    if (
+                        selected.engineRevision !==
+                            activeOpponentEngineRevisionRef.current ||
+                        selected.modelId !== MAIA_MODEL.id ||
+                        selected.samplerVersion !==
+                            MAIA_MODEL.samplerVersion ||
+                        selected.seed !== seed
+                    ) {
+                        throw new Error(
+                            'The loaded Maia model or sampler does not match this game.'
+                        );
+                    }
+                    const parsed = parseUci(selected.moveUci);
+                    if (!parsed) {
+                        throw new Error(
+                            'Maia returned an invalid move.'
+                        );
+                    }
+                    const fenBefore = gameRef.current.fen();
+                    const move = gameRef.current.move({
+                        from: parsed.from,
+                        to: parsed.to,
+                        promotion: parsed.promotion,
+                    });
+                    if (!move) {
+                        throw new Error(
+                            'Maia returned an illegal move.'
+                        );
+                    }
+                    appendMove(move, 'bot', fenBefore);
+                    if (finishGame()) return;
+                    await preparePlayerTurn(
+                        gameRef.current.fen(),
+                        generation
+                    );
+                } catch (error) {
+                    if (generationRef.current !== generation) return;
+                    const message =
+                        error instanceof Error
+                            ? error.message
+                            : String(error);
+                    setEngineError(
+                        `The Maia opponent could not finish its move. ${message}`
+                    );
+                    setPhase('error');
+                }
+                return;
+            }
             try {
                 const analysis = await analyzePosition(fen, generation, {
                     nodes: COACH_OPPONENT_NODES,
@@ -499,21 +672,50 @@ export function CoachGame({
                 failEngine(error, generation);
             }
         },
-        [analyzePosition, failEngine, playOpponentFromAnalysis, setPhase]
+        [
+            analyzePosition,
+            appendMove,
+            failEngine,
+            finishGame,
+            playOpponentFromAnalysis,
+            preparePlayerTurn,
+            selectMaiaMove,
+            setPhase,
+        ]
     );
 
-    const startGame = useCallback(() => {
+    const startGame = useCallback(async () => {
+        if (engineWarmup !== 'ready') {
+            void warmUpEngine();
+            return;
+        }
+        if (
+            opponentModel === 'maia3' &&
+            maiaStatus.phase !== 'ready'
+        ) {
+            void initializeMaia(false);
+            return;
+        }
         const generation = generationRef.current + 1;
         generationRef.current = generation;
         cancelSearch();
         lastSnapshotRef.current = null;
         sessionKeyRef.current = sessionKey();
-        ownerIdRef.current = ownerId ?? 'local';
+        ownerIdRef.current =
+            ownerId ?? ownerIdRef.current;
+        activeOpponentModelRef.current = opponentModel;
         activeOpponentRef.current = opponentId;
+        activeOpponentEloRef.current =
+            opponentModel === 'maia3'
+                ? normalizeMaiaOpponentElo(maiaElo)
+                : null;
+        activeOpponentEngineRevisionRef.current =
+            opponentModel === 'maia3'
+                ? MAIA_MODEL.engineRevision
+                : STOCKFISH_OPPONENT_REVISION;
         activeThresholdCpRef.current =
             normalizeCoachThresholdCp(thresholdCp);
         pendingDecisionRef.current = null;
-        void clearCoachSession();
         setResumableSession(null);
         const resolvedColor =
             colorChoice === 'random'
@@ -541,6 +743,8 @@ export function CoachGame({
         setKeyboardMoveError(null);
         setFlipped(false);
         setPhase('starting');
+        await clearCoachSession(ownerIdRef.current);
+        if (generationRef.current !== generation) return;
         try {
             ensureEngine();
             if (resolvedColor === 'w') {
@@ -554,14 +758,20 @@ export function CoachGame({
     }, [
         colorChoice,
         cancelSearch,
+        engineWarmup,
         ensureEngine,
         failEngine,
+        initializeMaia,
+        maiaElo,
+        maiaStatus.phase,
         opponentId,
+        opponentModel,
         ownerId,
         playOpponentTurn,
         preparePlayerTurn,
         setPhase,
         thresholdCp,
+        warmUpEngine,
     ]);
 
     const checkPlayerMove = useCallback(
@@ -721,13 +931,17 @@ export function CoachGame({
                 beforeAnalysis,
             };
             const checkpoint: CoachSessionSnapshot = {
-                version: 1,
+                version: 2,
                 sessionKey: sessionKeyRef.current,
                 ownerId: ownerIdRef.current,
                 savedAt: Date.now(),
                 phase: 'checking',
                 userColor: userColorRef.current,
+                opponentModel: activeOpponentModelRef.current,
                 opponentId: activeOpponentRef.current,
+                opponentElo: activeOpponentEloRef.current,
+                opponentEngineRevision:
+                    activeOpponentEngineRevisionRef.current,
                 thresholdCp: activeThresholdCpRef.current,
                 gameFen: record.fenAfter,
                 moves: movesRef.current,
@@ -847,7 +1061,23 @@ export function CoachGame({
     }, [finishGame, mistake, playOpponentTurn]);
 
     const resumeCoachSession = useCallback(
-        async (snapshot: CoachSessionSnapshot) => {
+        async (
+            snapshot: CoachSessionSnapshot,
+            maiaReadyOverride?: boolean
+        ) => {
+            const maiaReady =
+                maiaReadyOverride ?? maiaStatus.phase === 'ready';
+            if (
+                snapshot.opponentModel === 'maia3' &&
+                !maiaReady
+            ) {
+                setEngineError(
+                    maiaInstallStatus.installed
+                        ? 'Load the saved Maia opponent before continuing this game.'
+                        : 'Download the Maia opponent explicitly before continuing this game.'
+                );
+                return;
+            }
             const generation = generationRef.current + 1;
             generationRef.current = generation;
             cancelSearch();
@@ -874,6 +1104,11 @@ export function CoachGame({
             sessionKeyRef.current = snapshot.sessionKey;
             ownerIdRef.current = snapshot.ownerId;
             activeOpponentRef.current = snapshot.opponentId;
+            activeOpponentModelRef.current =
+                snapshot.opponentModel;
+            activeOpponentEloRef.current = snapshot.opponentElo;
+            activeOpponentEngineRevisionRef.current =
+                snapshot.opponentEngineRevision;
             activeThresholdCpRef.current = snapshot.thresholdCp;
             userColorRef.current = snapshot.userColor;
             pendingDecisionRef.current = snapshot.pendingDecision;
@@ -882,7 +1117,14 @@ export function CoachGame({
             positionFensRef.current = snapshot.positionFens;
             lastSnapshotRef.current = snapshot;
             setUserColor(snapshot.userColor);
+            if (snapshot.opponentModel !== 'maia3') {
+                resetMaia();
+            }
+            setOpponentModel(snapshot.opponentModel);
             setOpponentId(snapshot.opponentId);
+            if (snapshot.opponentElo != null) {
+                setMaiaElo(snapshot.opponentElo);
+            }
             setThresholdCp(snapshot.thresholdCp);
             setGameFen(restored.fen());
             setMoves(snapshot.moves);
@@ -898,8 +1140,35 @@ export function CoachGame({
             setResumableSession(null);
 
             try {
-                const ready = await prepareEngine();
-                if (!ready) throw new Error('Engine restart failed');
+                const expectedOpponentRevision =
+                    snapshot.opponentModel === 'maia3'
+                        ? MAIA_MODEL.engineRevision
+                        : STOCKFISH_OPPONENT_REVISION;
+                if (
+                    snapshot.opponentEngineRevision !==
+                    expectedOpponentRevision
+                ) {
+                    throw new Error(
+                        `This game requires ${snapshot.opponentEngineRevision}, but this app provides ${expectedOpponentRevision}. The opponent cannot be changed during a game.`
+                    );
+                }
+                const [judgeReady, opponentReady] =
+                    await Promise.all([
+                        prepareEngine(),
+                        snapshot.opponentModel === 'maia3'
+                            ? Promise.resolve(maiaReady)
+                            : Promise.resolve(true),
+                    ]);
+                if (!judgeReady) {
+                    throw new Error(
+                        'The Stockfish judge could not restart.'
+                    );
+                }
+                if (!opponentReady) {
+                    throw new Error(
+                        'The saved Maia opponent could not be loaded.'
+                    );
+                }
                 if (generationRef.current !== generation) return;
                 if (
                     snapshot.phase === 'mistake' &&
@@ -928,10 +1197,14 @@ export function CoachGame({
                     return;
                 }
                 void preparePlayerTurn(restored.fen(), generation);
-            } catch {
+            } catch (error) {
                 terminateEngine('error');
                 setEngineError(
-                    'The local engine could not be restarted. Your game remains saved on this device.'
+                    `${
+                        error instanceof Error
+                            ? error.message
+                            : 'The local game components could not be restarted.'
+                    } Your game remains saved on this device.`
                 );
                 setPhase('error');
             }
@@ -939,15 +1212,18 @@ export function CoachGame({
         [
             checkPlayerMove,
             cancelSearch,
+            maiaInstallStatus.installed,
+            maiaStatus.phase,
             playOpponentTurn,
             prepareEngine,
             preparePlayerTurn,
+            resetMaia,
             setPhase,
             terminateEngine,
         ]
     );
 
-    const recoverEngine = useCallback(() => {
+    const recoverEngine = useCallback(async () => {
         const snapshot =
             lastSnapshotRef.current ?? resumableSession;
         if (!snapshot) {
@@ -956,9 +1232,56 @@ export function CoachGame({
             );
             return;
         }
+        const recoveryGeneration = generationRef.current;
         terminateEngine('idle');
-        void resumeCoachSession(snapshot);
-    }, [resumableSession, resumeCoachSession, terminateEngine]);
+        if (snapshot.opponentModel === 'maia3') {
+            resetMaia();
+            setEngineError(null);
+            setPhase('recovering');
+            const ready = await initializeMaia(false);
+            if (
+                generationRef.current !== recoveryGeneration
+            ) {
+                return;
+            }
+            if (!ready) {
+                setEngineError(
+                    'The saved Maia opponent could not be restarted from local data. Return to setup to load it again or explicitly download a replacement.'
+                );
+                setPhase('error');
+                return;
+            }
+        }
+        if (generationRef.current !== recoveryGeneration) {
+            return;
+        }
+        await resumeCoachSession(
+            snapshot,
+            snapshot.opponentModel === 'maia3'
+                ? true
+                : undefined
+        );
+    }, [
+        initializeMaia,
+        resetMaia,
+        resumableSession,
+        resumeCoachSession,
+        setPhase,
+        terminateEngine,
+    ]);
+
+    const changeOpponentModel = useCallback(
+        (nextModel: CoachOpponentModelId) => {
+            if (
+                nextModel !== 'maia3' &&
+                opponentModel === 'maia3'
+            ) {
+                resetMaia();
+            }
+            setOpponentModel(nextModel);
+        },
+        [opponentModel, resetMaia]
+    );
 
     const returnToSetupKeepingSession = useCallback(() => {
         generationRef.current += 1;
@@ -989,7 +1312,7 @@ export function CoachGame({
         setOutcome(null);
         pendingDecisionRef.current = null;
         lastSnapshotRef.current = null;
-        void clearCoachSession();
+        void clearCoachSession(ownerIdRef.current);
         setResumableSession(null);
         setPhase('setup');
         setRestartDialogOpen(false);
@@ -1039,6 +1362,8 @@ export function CoachGame({
     const rows = useMemo(() => moveRows(moves), [moves]);
     const normalizedThresholdCp =
         normalizeCoachThresholdCp(thresholdCp);
+    const ownerSessionIsCurrent =
+        loadedOwnerKey === (ownerId ?? '__offline__');
 
     if (phase === 'setup') {
         return (
@@ -1046,20 +1371,64 @@ export function CoachGame({
                 colorChoice={colorChoice}
                 engineError={engineError}
                 engineWarmup={engineWarmup}
+                maiaElo={maiaElo}
+                maiaError={
+                    maiaStatus.phase === 'error'
+                        ? maiaStatus.message
+                        : null
+                }
+                maiaModelBytes={MAIA_MODEL.byteLength}
+                maiaDownloadMiB={MAIA_MODEL.estimatedDownloadMiB}
+                maiaModelLabel={`${MAIA_MODEL.displayName} · simplified browser model · ${MAIA_MODEL.version}`}
+                maiaModelLicenseStatus={MAIA_MODEL.licenseStatus}
+                maiaModelProjectUrl={MAIA_MODEL.upstreamProject}
+                maiaModelProvenance={`CSSLab · source ${MAIA_MODEL.sourceCommit.slice(
+                    0,
+                    8
+                )}`}
+                maiaModelSourceUrl={MAIA_MODEL.sourceUrl}
+                maiaHasStoredData={
+                    maiaInstallStatus.hasStoredData
+                }
+                maiaInstalled={maiaInstallStatus.installed}
+                maiaInstallChecking={
+                    maiaInstallStatus.checking
+                }
+                maiaOfflineReady={
+                    maiaStatus.offlineReady === true
+                }
+                maiaPhase={maiaStatus.phase}
+                maiaProgress={maiaStatus.progress}
                 normalizedThresholdCp={normalizedThresholdCp}
                 offlineAssetsReady={offlineAssetsReady}
                 opponentId={opponentId}
-                resumableSession={resumableSession}
-                sessionLoaded={sessionLoaded}
+                opponentModel={opponentModel}
+                resumableSession={
+                    ownerSessionIsCurrent
+                        ? resumableSession
+                        : null
+                }
+                sessionLoaded={
+                    ownerSessionIsCurrent && sessionLoaded
+                }
                 thresholdCp={thresholdCp}
                 onColorChoiceChange={setColorChoice}
                 onDiscardSession={() => {
-                    void clearCoachSession();
+                    void clearCoachSession(
+                        resumableSession?.ownerId ??
+                            ownerIdRef.current
+                    );
                     setResumableSession(null);
                 }}
+                onMaiaEloChange={setMaiaElo}
                 onOpponentChange={setOpponentId}
+                onOpponentModelChange={changeOpponentModel}
                 onResume={(snapshot) => void resumeCoachSession(snapshot)}
                 onRetryEngine={() => void warmUpEngine()}
+                onPrepareMaia={(allowDownload) =>
+                    void initializeMaia(allowDownload)
+                }
+                onRemoveMaia={removeMaiaOfflineData}
                 onStart={startGame}
                 onThresholdChange={setThresholdCp}
             />
@@ -1085,6 +1454,7 @@ export function CoachGame({
             >
                 <PositionAnalysisWorkspace
                     active
+                    persistDraft={false}
                     initialFen={mistake.decisionFen}
                     positionSeed={analysisSeed}
                     engineClient={engineClient}
@@ -1126,7 +1496,11 @@ export function CoachGame({
                         You are playing {userColor === 'w' ? 'White' : 'Black'}
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
-                        {phaseMessage(phase, userColor)}
+                        {phaseMessage(
+                            phase,
+                            userColor,
+                            activeOpponentModelRef.current
+                        )}
                     </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -1142,7 +1516,9 @@ export function CoachGame({
                                 aria-hidden="true"
                             />
                         )}
-                        {online ? 'Local engine' : 'Offline · local engine'}
+                        {online
+                            ? 'Local judge · local opponent'
+                            : 'Offline · local judge and opponent'}
                     </Badge>
                     <Button
                         type="button"
@@ -1271,7 +1647,13 @@ export function CoachGame({
                                 aria-hidden="true"
                             />
                         )}
-                        <span>{phaseMessage(phase, userColor)}</span>
+                        <span>
+                            {phaseMessage(
+                                phase,
+                                userColor,
+                                activeOpponentModelRef.current
+                            )}
+                        </span>
                     </div>
                 </div>
 
@@ -1320,7 +1702,7 @@ export function CoachGame({
                         <Card className="border-destructive/35">
                             <CardHeader>
                                 <CardTitle className="text-base">
-                                    Local engine interrupted
+                                    Local game component interrupted
                                 </CardTitle>
                             <CardDescription role="alert">
                                 {engineError}
@@ -1331,7 +1713,7 @@ export function CoachGame({
                                     type="button"
                                     onClick={recoverEngine}
                                 >
-                                    Restart engine and resume
+                                    Restart and resume
                                 </Button>
                                 <Button
                                     type="button"
@@ -1348,9 +1730,10 @@ export function CoachGame({
                                     Abandon game
                                 </Button>
                                 <p className="w-full text-xs text-muted-foreground">
-                                    Recovery replays the saved UCI moves and
-                                    reruns the interrupted engine task. No move
-                                    is applied twice.
+                                    Recovery reloads the locked opponent,
+                                    replays the saved UCI moves and reruns the
+                                    interrupted local task. No move is applied
+                                    twice.
                                 </p>
                             </CardContent>
                         </Card>
@@ -1376,10 +1759,15 @@ export function CoachGame({
                                 </Button>
                             </div>
                             <CardDescription>
-                                {getOpponentProfile(
-                                    activeOpponentRef.current
-                                ).label}{' '}
-                                opponent · stop at ≥{' '}
+                                {activeOpponentModelRef.current ===
+                                'maia3'
+                                    ? `Maia 3 · ${activeOpponentEloRef.current} Elo`
+                                    : `Stockfish · ${
+                                          getOpponentProfile(
+                                              activeOpponentRef.current
+                                          ).label
+                                      }`}{' '}
+                                · stop at ≥{' '}
                                 {activeThresholdCpRef.current} cp
                             </CardDescription>
                         </CardHeader>

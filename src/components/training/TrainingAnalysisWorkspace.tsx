@@ -89,7 +89,12 @@ type PendingPromotion = {
     choices: PromotionPiece[];
 };
 
-type DraftStatus = 'loading' | 'saving' | 'saved' | 'unavailable';
+type DraftStatus =
+    | 'loading'
+    | 'saving'
+    | 'saved'
+    | 'session'
+    | 'unavailable';
 
 export type PositionAnalysisSeed = {
     sessionKey: string;
@@ -145,6 +150,7 @@ function draftStatusLabel(status: DraftStatus): string {
     if (status === 'loading') return 'Restoring local draft…';
     if (status === 'saving') return 'Saving locally…';
     if (status === 'saved') return 'Saved on this device';
+    if (status === 'session') return 'Session only';
     return 'Local saving unavailable';
 }
 
@@ -201,6 +207,7 @@ export function TrainingAnalysisWorkspace({
     initialFen,
     review,
     positionSeed,
+    persistDraft = true,
     engineClient,
     onRequestEngine,
     flipped,
@@ -220,6 +227,7 @@ export function TrainingAnalysisWorkspace({
     initialFen: string;
     review?: TrainingReviewDto;
     positionSeed?: PositionAnalysisSeed;
+    persistDraft?: boolean;
     engineClient: StockfishClient | null;
     onRequestEngine: () => StockfishClient | null;
     flipped: boolean;
@@ -265,9 +273,11 @@ export function TrainingAnalysisWorkspace({
         [initialFen, resolvedSeed]
     );
     const [tree, setTree] = useState<TrainingAnalysisTree>(() => seedTree);
-    const [draftReady, setDraftReady] = useState(false);
+    const [draftReady, setDraftReady] = useState(!persistDraft);
     const [draftStatus, setDraftStatus] =
-        useState<DraftStatus>('loading');
+        useState<DraftStatus>(
+            persistDraft ? 'loading' : 'session'
+        );
     const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
     const [pendingPromotion, setPendingPromotion] =
         useState<PendingPromotion | null>(null);
@@ -308,6 +318,7 @@ export function TrainingAnalysisWorkspace({
     );
 
     useEffect(() => {
+        if (!persistDraft) return;
         let cancelled = false;
         void loadTrainingAnalysisDraft({
             promptId: resolvedSeed.sessionKey,
@@ -326,10 +337,11 @@ export function TrainingAnalysisWorkspace({
         resolvedSeed.decisionFen,
         resolvedSeed.revisionKey,
         resolvedSeed.sessionKey,
+        persistDraft,
     ]);
 
     useEffect(() => {
-        if (!draftReady) return;
+        if (!draftReady || !persistDraft) return;
         let cancelled = false;
         const timeoutId = window.setTimeout(() => {
             void saveTrainingAnalysisDraft({
@@ -350,6 +362,7 @@ export function TrainingAnalysisWorkspace({
         draftReady,
         resolvedSeed.revisionKey,
         resolvedSeed.sessionKey,
+        persistDraft,
         tree,
     ]);
 
@@ -1322,7 +1335,11 @@ export function TrainingAnalysisWorkspace({
                 open={clearDialogOpen}
                 onOpenChange={setClearDialogOpen}
                 title="Clear your analysis?"
-                description="This removes every variation you added for this position from this device. The source game, your move, and the best line remain."
+                description={
+                    persistDraft
+                        ? 'This removes every variation you added for this position from this device. The source game, your move, and the best line remain.'
+                        : 'This removes every variation you added from this analysis session. The source game, your move, and the best line remain.'
+                }
                 confirmLabel="Clear analysis"
                 variant="destructive"
                 onConfirm={resetWorkspace}

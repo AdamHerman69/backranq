@@ -11,6 +11,7 @@ import {
     NetworkOnly,
     Serwist,
 } from 'serwist';
+import { MAIA_MODEL } from '@/lib/coach/maia/metadata';
 
 declare global {
     interface WorkerGlobalScope extends SerwistGlobalConfig {
@@ -36,6 +37,15 @@ const runtimeCaching: RuntimeCaching[] = [
             sameOrigin &&
             url.pathname.startsWith('/vendor/stockfish/'),
         handler: new CacheFirst({ cacheName: 'coach-engine-v1' }),
+    },
+    {
+        matcher: ({ sameOrigin, url }) =>
+            sameOrigin &&
+            url.pathname.startsWith('/vendor/maia/') &&
+            !url.searchParams.has('maia-refresh'),
+        handler: new CacheFirst({
+            cacheName: MAIA_MODEL.runtimeCacheName,
+        }),
     },
     {
         matcher: ({ sameOrigin, url }) =>
@@ -79,7 +89,9 @@ const serwist = new Serwist({
                 matcher({ request }) {
                     return (
                         request.destination === 'document' &&
-                        new URL(request.url).pathname === '/play'
+                        ['/home', '/play'].includes(
+                            new URL(request.url).pathname
+                        )
                     );
                 },
             },
@@ -88,3 +100,22 @@ const serwist = new Serwist({
 });
 
 serwist.addEventListeners();
+
+self.addEventListener('activate', (event) => {
+    event.waitUntil(
+        caches.keys().then((cacheNames) =>
+            Promise.all(
+                cacheNames
+                    .filter(
+                        (cacheName) =>
+                            cacheName.startsWith(
+                                'coach-maia-runtime-'
+                            ) &&
+                            cacheName !==
+                                MAIA_MODEL.runtimeCacheName
+                    )
+                    .map((cacheName) => caches.delete(cacheName))
+            )
+        )
+    );
+});

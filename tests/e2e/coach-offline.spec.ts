@@ -1,5 +1,8 @@
 import { expect, test } from '@playwright/test';
 
+import { COACH_OFFLINE_ACCESS_STORAGE_KEY } from '@/lib/coach/offlineAccess';
+import { COACH_OFFLINE_OWNER_STORAGE_KEY } from '@/lib/coach/offlineOwner';
+
 test('cold-starts the saved coach game offline with the real Stockfish runtime', async ({
     page,
     context,
@@ -12,6 +15,24 @@ test('cold-starts the saved coach game offline with the real Stockfish runtime',
             )
         )
         .toBe(0);
+    await page.evaluate(
+        ([ownerKey, accessKey, ownerId]) => {
+            window.localStorage.setItem(ownerKey, ownerId);
+            window.localStorage.setItem(
+                accessKey,
+                JSON.stringify({
+                    version: 1,
+                    ownerId,
+                    grantedAt: Date.now(),
+                })
+            );
+        },
+        [
+            COACH_OFFLINE_OWNER_STORAGE_KEY,
+            COACH_OFFLINE_ACCESS_STORAGE_KEY,
+            'e2e-authenticated-user',
+        ]
+    );
 
     await page.goto('/~offline/coach');
     await page.evaluate(async () => {
@@ -50,4 +71,79 @@ test('cold-starts the saved coach game offline with the real Stockfish runtime',
     await expect(page.locator('[data-coach-move-ply="0"]')).toHaveText(
         'e4'
     );
+
+    await page.goto('/home');
+    await expect(page.getByText('Continue your saved game')).toBeVisible();
+});
+
+test('does not expose the static coach shell before authenticated enrollment', async ({
+    page,
+}) => {
+    await page.goto('/~offline/coach');
+    await expect(
+        page.getByRole('heading', {
+            name: 'Open Coach online first',
+        })
+    ).toBeVisible();
+    await expect(
+        page.getByRole('button', { name: 'Start coach game' })
+    ).toHaveCount(0);
+    await expect
+        .poll(() =>
+            page.evaluate(async () =>
+                (await navigator.serviceWorker.getRegistrations()).length
+            )
+        )
+        .toBe(0);
+});
+
+test('locks an open offline coach when another tab revokes enrollment', async ({
+    context,
+    page,
+}) => {
+    await page.goto('/');
+    await page.evaluate(
+        ([ownerKey, accessKey, ownerId]) => {
+            localStorage.setItem(ownerKey, ownerId);
+            localStorage.setItem(
+                accessKey,
+                JSON.stringify({
+                    version: 1,
+                    ownerId,
+                    grantedAt: Date.now(),
+                })
+            );
+        },
+        [
+            COACH_OFFLINE_OWNER_STORAGE_KEY,
+            COACH_OFFLINE_ACCESS_STORAGE_KEY,
+            'e2e-authenticated-user',
+        ]
+    );
+    await page.goto('/~offline/coach');
+    await expect(
+        page.getByRole('button', { name: 'Start coach game' })
+    ).toBeVisible();
+
+    const signOutTab = await context.newPage();
+    await signOutTab.goto('/');
+    await signOutTab.evaluate(
+        ([ownerKey, accessKey]) => {
+            localStorage.removeItem(accessKey);
+            localStorage.removeItem(ownerKey);
+        },
+        [
+            COACH_OFFLINE_OWNER_STORAGE_KEY,
+            COACH_OFFLINE_ACCESS_STORAGE_KEY,
+        ]
+    );
+
+    await expect(
+        page.getByRole('heading', {
+            name: 'Open Coach online first',
+        })
+    ).toBeVisible();
+    await expect(
+        page.getByRole('button', { name: 'Start coach game' })
+    ).toHaveCount(0);
 });

@@ -1,8 +1,7 @@
 import { redirect } from 'next/navigation';
 
 import { PageHeader } from '@/components/app/PageHeader';
-import { CoachGame } from '@/components/coach/CoachGame';
-import { CoachOfflineRegistration } from '@/components/coach/CoachOfflineRegistration';
+import { CoachOnlineShell } from '@/components/coach/CoachOnlineShell';
 import { auth } from '@/lib/auth';
 
 export default async function PlayPage() {
@@ -17,8 +16,7 @@ export default async function PlayPage() {
                 title="Play with a coach"
                 subtitle="Face a local chess opponent and pause on the decisions worth understanding."
             />
-            <CoachOfflineRegistration />
-            <CoachGame ownerId={session.user.id} />
+            <CoachOnlineShell ownerId={session.user.id} />
         </div>
     );
 }

@@ -1,6 +1,5 @@
 import { PageHeader } from '@/components/app/PageHeader';
-import { CoachGame } from '@/components/coach/CoachGame';
-import { CoachOfflineRegistration } from '@/components/coach/CoachOfflineRegistration';
+import { CoachOfflineShell } from '@/components/coach/CoachOfflineShell';
 
 export const dynamic = 'force-static';
 
@@ -11,8 +10,7 @@ export default function OfflineCoachPage() {
                 title="Play with a coach"
                 subtitle="Offline coach shell · your active game is saved only on this device."
             />
-            <CoachOfflineRegistration />
-            <CoachGame />
+            <CoachOfflineShell />
         </div>
     );
 }

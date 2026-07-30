@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 import { getDeploymentReadiness } from '@/lib/config/deploymentReadiness';
 
@@ -15,6 +17,25 @@ const completeEnv = {
 };
 
 describe('deployment readiness', () => {
+    it('keeps operator reconciliation scripts in source control', () => {
+        expect(
+            existsSync(
+                new URL(
+                    '../../scripts/reconcile-credit-ledger.mjs',
+                    import.meta.url
+                )
+            )
+        ).toBe(true);
+        expect(
+            existsSync(
+                new URL(
+                    '../../scripts/smoke-stripe-billing.mjs',
+                    import.meta.url
+                )
+            )
+        ).toBe(true);
+    });
+
     it('passes when required runtime settings are present', () => {
         const readiness = getDeploymentReadiness(completeEnv);
 

@@ -1,10 +1,11 @@
 'use client';
 
-import { signOut } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
 import type { ReactNode } from 'react';
+import { toast } from 'sonner';
 
 import { Button, type ButtonProps } from '@/components/ui/button';
-import { clearCoachSessionOnSignOut } from '@/lib/coach/sessionCleanup';
+import { signOutAndClearCoachSession } from '@/lib/coach/signOut';
 
 type Props = {
     callbackUrl?: string;
@@ -21,13 +22,19 @@ export function SignOutButton({
     size = 'default',
     className,
 }: Props) {
+    const { data } = useSession();
     return (
         <Button
             type="button"
             onClick={() => {
-                void clearCoachSessionOnSignOut().then(() =>
-                    signOut({ callbackUrl })
-                );
+                void signOutAndClearCoachSession(
+                    data?.user?.id,
+                    callbackUrl
+                ).catch(() => {
+                    toast.error(
+                        'Could not sign out. Your local coach game was left intact.'
+                    );
+                });
             }}
             variant={variant}
             size={size}

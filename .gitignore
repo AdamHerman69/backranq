@@ -14,6 +14,7 @@
 /coverage
 /playwright-report/
 /test-results/
+/.playwright-mcp/
 /.playwright/
 
 # next.js
@@ -25,6 +26,9 @@
 /public/vendor/stockfish/stockfish-18-lite-single.js
 /public/vendor/stockfish/stockfish-18-lite-single.wasm
 /public/vendor/stockfish/COPYING.txt
+/public/vendor/maia/backranq-maia.worker.js
+/public/vendor/maia/ort-wasm-simd-threaded.mjs
+/public/vendor/maia/ort-wasm-simd-threaded.wasm
 
 # misc
 .DS_Store

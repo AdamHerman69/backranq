@@ -2,11 +2,15 @@ import { defineConfig, devices } from '@playwright/test';
 
 const port = Number(process.env.BACKRANQ_E2E_PORT ?? '3100');
 const baseURL =
-    process.env.BACKRANQ_E2E_BASE_URL ?? `http://127.0.0.1:${port}`;
+    process.env.BACKRANQ_E2E_BASE_URL ?? `http://localhost:${port}`;
 
 export default defineConfig({
     testDir: './tests/e2e',
-    testMatch: ['coach.spec.ts', 'coach-offline.spec.ts'],
+    testMatch: [
+        'coach.spec.ts',
+        'coach-offline.spec.ts',
+        'coach-maia-model.live.spec.ts',
+    ],
     fullyParallel: false,
     workers: 1,
     timeout: 90_000,
@@ -19,7 +23,7 @@ export default defineConfig({
         trace: 'retain-on-failure',
     },
     webServer: {
-        command: `pnpm start --hostname 127.0.0.1 --port ${port}`,
+        command: `pnpm start --hostname localhost --port ${port}`,
         url: baseURL,
         reuseExistingServer: false,
         timeout: 120_000,
