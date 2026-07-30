@@ -90,6 +90,7 @@ function multi(
     return {
         fen,
         bestMoveUci: lines[0]?.move ?? '',
+        alternativesComplete: true,
         lines: lines.map((line, index) => ({
             multipv: index + 1,
             pvUci: line.pv ?? [line.move],
@@ -181,6 +182,61 @@ describe('canonical training-moment extraction v2', () => {
                 JSON.parse(JSON.stringify(output.moments))
             ).ok
         ).toBe(true);
+    });
+
+    it('emits one assessment per root move when MultiPV repeats its best move', async () => {
+        const start = new Chess().fen();
+        const after = new Chess();
+        after.move('e4');
+        const engine = new FixtureEngine(
+            ({ fen }) =>
+                fen === start
+                    ? result({
+                          fen,
+                          bestMove: 'e2e3',
+                          pv: ['e2e3', 'e7e5'],
+                          cp: 100,
+                      })
+                    : result({
+                          fen,
+                          bestMove: 'e7e5',
+                          pv: ['e7e5', 'g1f3'],
+                          cp: 200,
+                      }),
+            ({ fen }) =>
+                multi(fen, [
+                    { move: 'e2e3', cp: 100 },
+                    { move: 'e2e3', cp: 100 },
+                    { move: 'd2d3', cp: 95 },
+                ])
+        );
+
+        const output = await extractTrainingMomentsFromGames({
+            games: [game({ id: 'duplicate-root', pgn: '1. e4 *' })],
+            selectedGameIds: new Set(['duplicate-root']),
+            usernameByProvider: { lichess: 'adam' },
+            engine,
+            options: {
+                ...baseOptions,
+                verifyContinuations: true,
+                verificationMaxPlies: 1,
+                multiPv: 3,
+            },
+        });
+
+        expect(output.moments).toHaveLength(1);
+        expect(output.moments[0]?.solution.moveAssessments).toMatchObject([
+            { decisionIndex: 0, moveUci: 'e2e3', grade: 'BEST' },
+            { decisionIndex: 0, moveUci: 'd2d3', grade: 'GOOD' },
+        ]);
+        expect(
+            new Set(
+                output.moments[0]?.solution.moveAssessments.map(
+                    (assessment) =>
+                        `${assessment.decisionIndex}:${assessment.positionKey}:${assessment.moveUci}`
+                )
+            ).size
+        ).toBe(output.moments[0]?.solution.moveAssessments.length);
     });
 
     it('keeps a move that completes the third source-game occurrence as an exact draw through confirmation', async () => {

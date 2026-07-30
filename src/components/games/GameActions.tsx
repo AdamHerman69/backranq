@@ -114,7 +114,7 @@ export function GameActions({
                 (manifest) => manifest.sourceGameId === dbGameId
             );
             if (!extractionManifest?.complete) {
-                throw new Error('Training extraction did not complete');
+                throw new Error('Practice position extraction did not complete');
             }
             const engineIdentity = await engine.getIdentity();
 
@@ -270,8 +270,8 @@ export function GameActions({
                     {actionLabel} on server
                 </Button>
 
-                <Button asChild variant="ghost" title="Open your training session">
-                    <Link href="/training">Train personal decisions →</Link>
+                <Button asChild variant="ghost" title="Open practice">
+                    <Link href="/practice">Practice your positions →</Link>
                 </Button>
 
                 <Button type="button" variant="outline" onClick={exportPgn}>
@@ -304,7 +304,7 @@ export function GameActions({
                 open={browserReviewOpen}
                 onOpenChange={setBrowserReviewOpen}
                 title="Re-analyze this game in the browser?"
-                description="This tab must remain open until analysis and training extraction finish."
+                description="This tab must remain open until analysis and position extraction finish."
                 confirmLabel="Start free re-analysis"
                 onConfirm={() => analyze('reanalyze')}
                 busy={busy}
@@ -316,18 +316,18 @@ export function GameActions({
                     </div>
                     <div>
                         <dt className="text-muted-foreground">
-                            Current training set
+                            Your positions
                         </dt>
                         <dd className="font-semibold">
-                            {trainingMomentCount} active training{' '}
-                            {trainingMomentCount === 1 ? 'moment' : 'moments'}
+                            {trainingMomentCount} active practice{' '}
+                            {trainingMomentCount === 1 ? 'position' : 'positions'}
                         </dd>
                     </div>
                     <div className="sm:col-span-2">
-                        <dt className="text-muted-foreground">Training impact</dt>
+                        <dt className="text-muted-foreground">Effect on your positions</dt>
                         <dd>
-                            Matching moments receive a new immutable solution
-                            revision. Stale moments are archived and newly found
+                            Matching positions receive a new immutable solution
+                            revision. Stale positions are archived and newly found
                             decisions are added.
                         </dd>
                     </div>
@@ -414,11 +414,12 @@ export function GameActions({
                             <dt className="text-muted-foreground">Impact</dt>
                             <dd>
                                 The completed re-analysis replaces the current
-                                evaluation. Of {trainingMomentCount} currently active
-                                training{' '}
-                                {trainingMomentCount === 1 ? 'moment' : 'moments'},
-                                matching moments receive new revisions, stale moments
-                                are archived, and new moments are added. Attempt
+                                evaluation. Of {trainingMomentCount} currently active{' '}
+                                {trainingMomentCount === 1
+                                    ? 'practice position'
+                                    : 'practice positions'}
+                                , matching positions receive new revisions, stale
+                                positions are archived, and new positions are added. Attempt
                                 history is preserved.
                             </dd>
                         </div>
@@ -456,7 +457,7 @@ export function GameActions({
             >
                 <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm">
                     Deleting this game also permanently removes every associated
-                    training moment, including archived moments, and their attempt
+                    practice position, including archived positions, and their attempt
                     history.
                 </div>
             </ActionConfirmDialog>

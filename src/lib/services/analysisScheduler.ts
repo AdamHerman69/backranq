@@ -74,6 +74,7 @@ export type AnalysisDispatchPlan = {
 export type ClaimNextAnalysisJobsOptions = AnalysisDispatchPlanOptions & {
     candidateLimit?: number;
     userScanLimit?: number;
+    userIds?: string[];
 };
 
 export type ClaimNextAnalysisJobsResult = AnalysisDispatchPlan & {
@@ -326,9 +327,15 @@ export async function claimNextAnalysisJobs(
         options.candidateLimit,
         Math.max(DEFAULT_ANALYSIS_DISPATCH_SCAN_LIMIT, globalLimit * 100)
     );
+    const requestedUserIds = Array.from(
+        new Set((options.userIds ?? []).filter(Boolean))
+    );
     const queuedWhere = {
         status: 'QUEUED' as const,
         OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
+        ...(requestedUserIds.length > 0
+            ? { userId: { in: requestedUserIds } }
+            : {}),
     };
 
     const candidateUsers = await prisma.analysisJob.findMany({

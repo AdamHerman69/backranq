@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AnalyzedGame } from '@prisma/client';
-import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import type { TrainingMomentCandidate } from '@/lib/training/contracts';
 
@@ -11,7 +10,6 @@ type GamesResponse = ApiError & {
     page?: number;
     totalPages?: number;
 };
-type SaveGamesResponse = ApiError & { saved?: number; skipped?: number };
 type GameResponse = ApiError & {
     game?: { analysis?: unknown };
 };
@@ -81,48 +79,6 @@ export function useGames(query: GamesQuery) {
     }, [refetch]);
 
     return { data, error, loading, refetch };
-}
-
-export function useSaveGames() {
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-
-    const save = useCallback(
-        async (args: {
-            games: NormalizedGame[];
-            analyses?: Record<string, GameAnalysis>;
-        }) => {
-            setLoading(true);
-            setError(null);
-            try {
-                const res = await fetch('/api/games', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(args),
-                });
-                const json = (await res.json().catch(
-                    () => ({})
-                )) as SaveGamesResponse;
-                if (!res.ok)
-                    throw new Error(json?.error ?? 'Failed to save games');
-                return {
-                    saved: typeof json.saved === 'number' ? json.saved : 0,
-                    skipped:
-                        typeof json.skipped === 'number' ? json.skipped : 0,
-                };
-            } catch (e) {
-                const msg =
-                    e instanceof Error ? e.message : 'Failed to save games';
-                setError(msg);
-                throw new Error(msg);
-            } finally {
-                setLoading(false);
-            }
-        },
-        []
-    );
-
-    return { save, loading, error };
 }
 
 export function useGameAnalysis(gameId: string | null) {

@@ -5,6 +5,11 @@ const dispatchQueuedAnalysisJobsMock = vi.fn();
 const publishMock = vi.fn();
 const getAnalysisJobWakeupAtMock = vi.fn();
 const getNextQueuedAnalysisRetryMock = vi.fn();
+const reconcileAutoAnalysisMock = vi.fn();
+const requestAutoAnalysisContinuationAfterTerminalJobMock = vi.fn();
+const dispatchAutoAnalysisPolicySweepMock = vi.fn();
+const dispatchPlannedSyncJobsMock = vi.fn();
+const processSyncJobMock = vi.fn();
 
 class StaleAnalysisDeliveryError extends Error {}
 
@@ -24,6 +29,18 @@ async function importProcessor() {
     vi.doMock('@/lib/queues/backranq', () => ({
         publishBackranqQueueMessage: publishMock,
     }));
+    vi.doMock('@/lib/services/autoAnalysisBacklog', () => ({
+        dispatchAutoAnalysisPolicySweep:
+            dispatchAutoAnalysisPolicySweepMock,
+        reconcileAndDispatchAutoAnalysisBacklog:
+            reconcileAutoAnalysisMock,
+        requestAutoAnalysisContinuationAfterTerminalJob:
+            requestAutoAnalysisContinuationAfterTerminalJobMock,
+    }));
+    vi.doMock('@/lib/services/syncJobs', () => ({
+        dispatchPlannedSyncJobs: dispatchPlannedSyncJobsMock,
+        processSyncJob: processSyncJobMock,
+    }));
     return import('@/lib/services/backranqQueueProcessor');
 }
 
@@ -31,7 +48,24 @@ describe('Backranq analysis queue processor', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         publishMock.mockResolvedValue({ queued: true, messageId: 'wake-1' });
+        requestAutoAnalysisContinuationAfterTerminalJobMock.mockResolvedValue(
+            null
+        );
         getNextQueuedAnalysisRetryMock.mockResolvedValue(null);
+        dispatchAutoAnalysisPolicySweepMock.mockResolvedValue({
+            scanned: 0,
+            enabled: 0,
+            published: [],
+            nextCursor: null,
+            continuation: null,
+        });
+        dispatchPlannedSyncJobsMock.mockResolvedValue({
+            usersScanned: 0,
+            jobsCreated: 0,
+            jobsExisting: 0,
+            providers: [],
+            published: [],
+        });
     });
 
     it('self-drains a 25-job single-user batch one completion at a time', async () => {
@@ -111,6 +145,40 @@ describe('Backranq analysis queue processor', () => {
         );
     });
 
+    it('checks for an idempotent auto-analysis continuation after each delivery', async () => {
+        const processor = await importProcessor();
+        analyzeGameJobMock.mockResolvedValue({
+            jobId: 'job-1',
+            gameId: 'game-1',
+            status: 'SUCCEEDED',
+            trainingMoments: 1,
+        });
+        dispatchQueuedAnalysisJobsMock.mockResolvedValue({
+            claimedJobIds: [],
+            published: [],
+        });
+        requestAutoAnalysisContinuationAfterTerminalJobMock.mockResolvedValue({
+            queued: true,
+            messageId: 'continuation-1',
+        });
+
+        const result = await processor.processBackranqQueueMessage({
+            type: 'analysis-job',
+            jobId: 'job-1',
+            dispatchToken: 'delivery-1',
+        });
+
+        expect(
+            requestAutoAnalysisContinuationAfterTerminalJobMock
+        ).toHaveBeenCalledWith('job-1');
+        expect(result).toMatchObject({
+            autoAnalysisContinuation: {
+                queued: true,
+                messageId: 'continuation-1',
+            },
+        });
+    });
+
     it('schedules a durable wakeup at lease expiry after a hard-crash redelivery', async () => {
         const processor = await importProcessor();
         const lockedUntil = new Date(Date.now() + 300_000);
@@ -169,5 +237,63 @@ describe('Backranq analysis queue processor', () => {
                 delaySeconds: expect.any(Number),
             })
         );
+    });
+
+    it('processes a durable per-user auto-analysis reconciliation wakeup', async () => {
+        const processor = await importProcessor();
+        reconcileAutoAnalysisMock.mockResolvedValue({
+            reconciliation: { queued: 2 },
+            dispatch: { published: [{ jobId: 'job-1' }] },
+        });
+
+        const result = await processor.processBackranqQueueMessage({
+            type: 'reconcile-auto-analysis',
+            userId: 'user-1',
+            requestedAt: new Date().toISOString(),
+            reason: 'billing',
+        });
+
+        expect(reconcileAutoAnalysisMock).toHaveBeenCalledWith('user-1', {
+            cursor: undefined,
+        });
+        expect(result).toMatchObject({
+            reconciliation: { queued: 2 },
+        });
+    });
+
+    it('continues a bounded daily auto-analysis policy sweep', async () => {
+        const processor = await importProcessor();
+        dispatchAutoAnalysisPolicySweepMock.mockResolvedValue({
+            scanned: 100,
+            enabled: 40,
+            nextCursor: 'user-100',
+        });
+        const requestedAt = '2026-07-21T03:00:00.000Z';
+
+        await processor.processBackranqQueueMessage({
+            type: 'reconcile-auto-analysis-sweep',
+            requestedAt,
+            cursor: 'user-050',
+        });
+
+        expect(dispatchAutoAnalysisPolicySweepMock).toHaveBeenCalledWith({
+            requestedAt,
+            cursor: 'user-050',
+        });
+    });
+
+    it('starts the daily policy sweep even when provider sync has no work', async () => {
+        const processor = await importProcessor();
+        const requestedAt = '2026-07-21T03:00:00.000Z';
+
+        await processor.processBackranqQueueMessage({
+            type: 'sync-all',
+            requestedAt,
+        });
+
+        expect(dispatchPlannedSyncJobsMock).toHaveBeenCalledTimes(1);
+        expect(dispatchAutoAnalysisPolicySweepMock).toHaveBeenCalledWith({
+            requestedAt,
+        });
     });
 });

@@ -4,18 +4,28 @@ import { clickMove, dragMove, waitForBoard } from './support/board';
 import { resetE2eTrainingAttempts } from './support/database';
 import {
     E2E_TRAINING_MOMENTS,
-    trainingPath,
+    practicePath,
 } from './support/fixtures';
 
-test.describe('authenticated personal decision trainer', () => {
+test.describe('authenticated personal decision practice', () => {
     test.beforeEach(async () => {
         await resetE2eTrainingAttempts();
+    });
+
+    test('does not retain the legacy training route', async ({ page }) => {
+        const response = await page.goto('/training');
+
+        expect(response?.status()).toBe(404);
+        expect(new URL(page.url()).pathname).toBe('/training');
     });
 
     test('keeps every training prompt neutral and discloses context only after grading', async ({
         page,
     }) => {
-        await page.goto(trainingPath(E2E_TRAINING_MOMENTS.wrongMove));
+        await page.goto(practicePath(E2E_TRAINING_MOMENTS.wrongMove));
+        await expect(
+            page.getByRole('heading', { name: 'Practice', exact: true })
+        ).toBeVisible();
         await expect(
             page.getByText('White to move — find the best move')
         ).toBeVisible();
@@ -29,12 +39,12 @@ test.describe('authenticated personal decision trainer', () => {
             page.getByText('That repeats the mistake from the game.')
         ).toBeVisible();
         await expect(
-            page.getByRole('region', { name: 'Training review' })
+            page.getByRole('region', { name: 'Position review' })
         ).toBeVisible();
         await expect(page.getByText('Your game mistake')).toBeVisible();
         await expect(
             page
-                .getByRole('region', { name: 'Training review' })
+                .getByRole('region', { name: 'Position review' })
                 .getByText('Nf3', { exact: true })
                 .first()
         ).toBeVisible();
@@ -44,7 +54,24 @@ test.describe('authenticated personal decision trainer', () => {
         page,
     }) => {
         const momentId = E2E_TRAINING_MOMENTS.dragMove;
-        await page.goto(trainingPath(momentId));
+        let releaseResponse!: () => void;
+        let markUpstreamComplete!: () => void;
+        const responseReleased = new Promise<void>((resolve) => {
+            releaseResponse = resolve;
+        });
+        const upstreamComplete = new Promise<void>((resolve) => {
+            markUpstreamComplete = resolve;
+        });
+        await page.route(
+            `**/api/training/moments/${momentId}/attempts`,
+            async (route) => {
+                const response = await route.fetch();
+                markUpstreamComplete();
+                await responseReleased;
+                await route.fulfill({ response });
+            }
+        );
+        await page.goto(practicePath(momentId));
         const graded = page.waitForResponse(
             (response) =>
                 response.url().includes(
@@ -54,7 +81,9 @@ test.describe('authenticated personal decision trainer', () => {
 
         await dragMove(page, 'g1', 'f3');
 
+        await upstreamComplete;
         await expect(page.getByText('Checking your move…')).toBeVisible();
+        releaseResponse();
         await expect((await graded).ok()).toBe(true);
         await expect(page.getByText('Best move — well found.')).toBeVisible();
     });
@@ -104,7 +133,7 @@ test.describe('authenticated personal decision trainer', () => {
             }
         );
 
-        await page.goto(trainingPath(momentId));
+        await page.goto(practicePath(momentId));
         await dragMove(page, 'g1', 'f3');
         await expect(
             page.getByText('Opponent replied. Find the best move.')
@@ -121,7 +150,7 @@ test.describe('authenticated personal decision trainer', () => {
 
     test('requires confirmation before reveal', async ({ page }) => {
         const momentId = E2E_TRAINING_MOMENTS.reveal;
-        await page.goto(trainingPath(momentId));
+        await page.goto(practicePath(momentId));
         await waitForBoard(page);
 
         await page.getByRole('button', { name: 'Reveal', exact: true }).click();
@@ -155,7 +184,7 @@ test.describe('authenticated personal decision trainer', () => {
         context,
     }) => {
         const momentId = E2E_TRAINING_MOMENTS.offline;
-        await page.goto(trainingPath(momentId));
+        await page.goto(practicePath(momentId));
         await waitForBoard(page);
         await context.setOffline(true);
 
@@ -183,7 +212,7 @@ test.describe('authenticated personal decision trainer', () => {
         page,
     }) => {
         await page.goto(
-            trainingPath(E2E_TRAINING_MOMENTS.promotion)
+            practicePath(E2E_TRAINING_MOMENTS.promotion)
         );
         await dragMove(page, 'a7', 'a8');
 
@@ -202,39 +231,45 @@ test.describe('authenticated personal decision trainer', () => {
         await expect(page.getByText('Best move — well found.')).toBeVisible();
     });
 
-    test('starts a focused session without changing extraction settings', async ({
+    test('applies a practice focus without changing extraction settings', async ({
         page,
     }) => {
-        await page.goto('/training');
+        await page.goto('/practice');
         await page
-            .getByRole('combobox', { name: 'Training source' })
+            .getByRole('combobox', { name: 'Position source' })
             .click();
         await page
             .getByRole('option', { name: 'Missed chances' })
             .click();
         await page
-            .getByRole('combobox', { name: 'Training impact' })
+            .getByRole('combobox', { name: 'Position impact' })
             .click();
         await page
-            .getByRole('option', { name: 'Major moments' })
+            .getByRole('option', { name: 'Major positions' })
             .click();
 
         const focusedRequest = page.waitForRequest((request) => {
             const url = new URL(request.url());
             return (
-                url.pathname === '/api/training/session' &&
+                url.pathname === '/api/training/feed' &&
                 url.searchParams.get('sourceKind') ===
                     'MISSED_OPPORTUNITY' &&
                 url.searchParams.get('focus') === 'major'
             );
         });
         await page
-            .getByRole('button', { name: 'Start focused session' })
+            .getByRole('button', { name: 'Apply focus' })
             .click();
 
         await focusedRequest;
         await expect(
-            page.getByText('No moments match this focus')
+            page.getByRole('combobox', { name: 'Position source' })
+        ).toContainText('Missed chances');
+        await expect(
+            page.getByRole('combobox', { name: 'Position impact' })
+        ).toContainText('Major positions');
+        await expect(
+            page.getByText('No positions match this focus')
         ).toHaveCount(0);
     });
 });

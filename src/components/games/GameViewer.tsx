@@ -786,7 +786,7 @@ export function GameViewer({
                                         }
                                         if (trainingMoment)
                                             tooltipParts.push(
-                                                '📋 Personal training moment'
+                                                '📋 Personal practice position'
                                             );
 
                                         const accent = analyzedMove

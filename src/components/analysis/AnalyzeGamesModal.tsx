@@ -3,6 +3,7 @@
 import * as React from "react";
 import { toast } from "sonner";
 import { useSession } from "next-auth/react";
+import { EXPECTED_OWNER_HEADER } from "@/lib/auth/ownerContract";
 
 import { providerToUi, timeClassToUi } from "@/lib/api/games";
 import { backgroundAnalysis } from "@/lib/analysis/backgroundAnalysisManager";
@@ -120,11 +121,18 @@ export function AnalyzeGamesModal({
   }
 
   async function saveAsDefaults() {
+    if (!ownerId) {
+      toast.error("Your session changed. Reopen analysis and try again.");
+      return;
+    }
     const id = toast.loading("Saving defaults…");
     try {
       const res = await fetch("/api/user/preferences", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          [EXPECTED_OWNER_HEADER]: ownerId,
+        },
         body: JSON.stringify(analysisDefaults),
       });
       const json = (await res.json().catch(() => ({}))) as {
@@ -230,7 +238,7 @@ export function AnalyzeGamesModal({
         <div className="mt-4 flex-1 overflow-auto">
           <div className="rounded-xl border p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm font-semibold">Training analysis settings</div>
+              <div className="text-sm font-semibold">Practice position settings</div>
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"

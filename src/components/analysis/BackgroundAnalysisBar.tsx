@@ -64,7 +64,7 @@ function writeDismissedCount(ownerId: string, n: number) {
 
 async function fetchTrainingMomentCount(): Promise<number | null> {
   try {
-    const response = await fetch("/api/training/session?limit=50", {
+    const response = await fetch("/api/training/feed?limit=50", {
       cache: "no-store",
     });
     if (!response.ok) return null;
@@ -83,7 +83,7 @@ function completionMessage(summary: AnalysisCompletionSummary) {
   const trainingMoments =
     summary.trainingMomentsGenerated == null
       ? ""
-      : `, ${summary.trainingMomentsGenerated} training moment${summary.trainingMomentsGenerated === 1 ? "" : "s"}`;
+      : `, ${summary.trainingMomentsGenerated} practice position${summary.trainingMomentsGenerated === 1 ? "" : "s"}`;
   if (summary.status === "cancelled") return `Analysis cancelled after ${analyzed}${trainingMoments}.`;
   return `${analyzed}${failed}${trainingMoments}.`;
 }
@@ -117,7 +117,7 @@ export function BackgroundAnalysisBar() {
       const options = {
         action:
           (summary.trainingMomentsGenerated ?? 0) > 0
-            ? { label: "Train", onClick: () => router.push("/training") }
+            ? { label: "Practice", onClick: () => router.push("/practice") }
             : { label: "Details", onClick: () => router.push("/games") },
       };
       if (summary.status === "failed") toast.error(completionMessage(summary), options);
@@ -319,9 +319,6 @@ export function BackgroundAnalysisBar() {
 
   const currentSyncStatus =
     activeOwnerId.current === ownerId ? syncStatus : null;
-  const hasLinkedAccount =
-    !!currentSyncStatus?.linked.lichessUsername ||
-    !!currentSyncStatus?.linked.chesscomUsername;
   const serverQueued = currentSyncStatus?.analysisJobs?.queued ?? 0;
   const serverRunning = currentSyncStatus?.analysisJobs?.running ?? 0;
   const isRunning = snap.ownerId === ownerId && snap.state === "running";
@@ -330,7 +327,6 @@ export function BackgroundAnalysisBar() {
     if (!shouldPollAnalysis({
       authenticated: sessionStatus === "authenticated",
       ownerId,
-      hasLinkedAccount,
       hasTrackedServerBatch,
       serverQueued,
       serverRunning,
@@ -341,7 +337,6 @@ export function BackgroundAnalysisBar() {
     const timer = window.setInterval(() => void refreshAll(), 30_000);
     return () => window.clearInterval(timer);
   }, [
-    hasLinkedAccount,
     hasTrackedServerBatch,
     isRunning,
     ownerId,
@@ -571,8 +566,8 @@ export function BackgroundAnalysisBar() {
 
               {currentCompletion && !isRunning && !hasServerWork ? (
                 <>
-                  <Button size="sm" onClick={() => router.push(completionHasTrainingMoments ? "/training" : "/games")}>
-                    {completionHasTrainingMoments ? "Train decisions" : "View games"}
+                  <Button size="sm" onClick={() => router.push(completionHasTrainingMoments ? "/practice" : "/games")}>
+                    {completionHasTrainingMoments ? "Practice positions" : "View games"}
                   </Button>
                   <Button size="sm" variant="ghost" onClick={dismissCompletion}>
                     Dismiss
@@ -638,7 +633,7 @@ export function BackgroundAnalysisBar() {
             </div>
           )}
           <div>
-            Server analysis continues after you close this tab. Each accepted game reserves one credit and stores its generated training moments.
+            Server analysis continues after you close this tab. Each accepted game reserves one credit and saves the practice positions it finds.
           </div>
         </div>
       </ActionConfirmDialog>

@@ -10,6 +10,42 @@ import {
 import type { TrainingSourceKind } from '@/lib/training/contracts';
 
 export type RatedFilter = 'any' | 'rated' | 'casual';
+export const AUTO_ANALYSIS_RESULT_SCOPES = ['losses', 'draws', 'all'] as const;
+export const AUTO_ANALYSIS_BACKLOG_MODES = ['all', 'new'] as const;
+export const AUTO_ANALYSIS_PROVIDER_KEYS = ['lichess', 'chesscom'] as const;
+export const AUTO_ANALYSIS_TIME_CONTROL_KEYS = [
+    'bullet',
+    'blitz',
+    'rapid',
+    'classical',
+    'unknown',
+] as const;
+export type AutoAnalysisResultScope =
+    (typeof AUTO_ANALYSIS_RESULT_SCOPES)[number];
+export type AutoAnalysisBacklogMode =
+    (typeof AUTO_ANALYSIS_BACKLOG_MODES)[number];
+export type AutoAnalysisProviderKey =
+    (typeof AUTO_ANALYSIS_PROVIDER_KEYS)[number];
+export type AutoAnalysisTimeControlKey =
+    (typeof AUTO_ANALYSIS_TIME_CONTROL_KEYS)[number];
+
+export type AutoAnalysisPolicy = {
+    enabled: boolean;
+    providers: Record<AutoAnalysisProviderKey, boolean>;
+    timeControls: Record<AutoAnalysisTimeControlKey, boolean>;
+    ratedOnly: boolean;
+    resultScope: AutoAnalysisResultScope;
+    minPlies: number;
+    dailyCap: number | null;
+    monthlyCap: number | null;
+    reserveCredits: number;
+    backlogMode: AutoAnalysisBacklogMode;
+    /**
+     * Controlled by the preferences route. For `backlogMode: "new"`, only
+     * games imported at or after this instant are eligible.
+     */
+    enabledAt: string | null;
+};
 export const TRAINING_SESSION_MIXES = [
     'ALL',
     'MY_MISTAKES',
@@ -34,30 +70,11 @@ export type PreferencesSchema = {
 
     // server-side automation
     autoSyncEnabled: boolean;
-    autoAnalyzeEnabled: boolean;
     autoSyncProviders: {
         lichess: boolean;
         chesscom: boolean;
     };
-    autoAnalysis?: {
-        enabled?: boolean;
-        providers?: {
-            lichess?: boolean;
-            chesscom?: boolean;
-        };
-        resultScope?: 'losses' | 'draws' | 'all';
-        timeControls?: {
-            bullet?: boolean;
-            blitz?: boolean;
-            rapid?: boolean;
-            classical?: boolean;
-            unknown?: boolean;
-        };
-        ratedOnly?: boolean;
-        minPlies?: number | string;
-        dailyCap?: number | string | null;
-        monthlyCap?: number | string | null;
-    };
+    autoAnalysis: AutoAnalysisPolicy;
 
     // Deterministic extraction work budgets and metadata lookahead. Coverage
     // and grading policy live in the canonical training configuration.
@@ -71,11 +88,17 @@ export type PreferencesSchema = {
 
 export type PartialPreferences = Omit<
     Partial<PreferencesSchema>,
-    'filters' | 'autoSyncProviders'
+    'filters' | 'autoSyncProviders' | 'autoAnalysis'
 > & {
     filters?: Partial<Filters>;
     autoSyncProviders?: Partial<PreferencesSchema['autoSyncProviders']>;
-    autoAnalysis?: Partial<NonNullable<PreferencesSchema['autoAnalysis']>>;
+    autoAnalysis?: Omit<
+        Partial<AutoAnalysisPolicy>,
+        'providers' | 'timeControls'
+    > & {
+        providers?: Partial<AutoAnalysisPolicy['providers']>;
+        timeControls?: Partial<AutoAnalysisPolicy['timeControls']>;
+    };
 };
 
 export type AnalysisDefaults = Pick<
@@ -141,7 +164,6 @@ export function defaultPreferences(): PreferencesSchema {
             max: '100',
         },
         autoSyncEnabled: true,
-        autoAnalyzeEnabled: false,
         autoSyncProviders: {
             lichess: true,
             chesscom: true,
@@ -164,6 +186,9 @@ export function defaultPreferences(): PreferencesSchema {
             minPlies: 20,
             dailyCap: 10,
             monthlyCap: 50,
+            reserveCredits: 10,
+            backlogMode: 'new',
+            enabledAt: null,
         },
         trainingCoveragePreset: 'ALL_CONFIRMED',
         trainingGradingTolerance: 'PRACTICAL',
@@ -172,6 +197,94 @@ export function defaultPreferences(): PreferencesSchema {
         confirmationNodes: '200000',
         themeLookaheadPlies: '4',
     };
+}
+
+/**
+ * Single defensive reader for persisted preference JSON. Write-time validation
+ * remains strict and only the current nested policy is recognized.
+ */
+export function canonicalPreferences(rawPreferences: unknown): PreferencesSchema {
+    const raw = preferenceRecord(rawPreferences);
+    const currentTopLevelKeys = new Set([
+        'filters',
+        'autoSyncEnabled',
+        'autoSyncProviders',
+        'trainingCoveragePreset',
+        'trainingGradingTolerance',
+        'trainingSessionMix',
+        'analysisNodesPerPosition',
+        'confirmationNodes',
+        'themeLookaheadPlies',
+    ]);
+    const withoutAutomation = Object.fromEntries(
+        Object.entries(raw).filter(([key]) => currentTopLevelKeys.has(key))
+    );
+    const base = mergePreferences(
+        defaultPreferences(),
+        withoutAutomation as PartialPreferences
+    );
+    const nested = optionalPreferenceRecord(raw.autoAnalysis) ?? {};
+    const defaults = defaultPreferences().autoAnalysis;
+    const enabled =
+        typeof nested.enabled === 'boolean'
+            ? nested.enabled
+            : defaults.enabled;
+    const providerSource = optionalPreferenceRecord(nested.providers) ?? {};
+    const timeControlSource = nested.timeControls;
+
+    const autoAnalysis: AutoAnalysisPolicy = {
+        enabled,
+        providers: canonicalBooleanRecord(
+            defaults.providers,
+            providerSource
+        ),
+        timeControls: canonicalSelectionRecord(
+            defaults.timeControls,
+            timeControlSource,
+            AUTO_ANALYSIS_TIME_CONTROL_KEYS
+        ),
+        ratedOnly: canonicalBoolean(
+            nested.ratedOnly,
+            defaults.ratedOnly
+        ),
+        resultScope: AUTO_ANALYSIS_RESULT_SCOPES.includes(
+            nested.resultScope as AutoAnalysisResultScope
+        )
+            ? (nested.resultScope as AutoAnalysisResultScope)
+            : defaults.resultScope,
+        minPlies: canonicalInteger(
+            nested.minPlies,
+            defaults.minPlies,
+            0,
+            1_000
+        ),
+        dailyCap: canonicalNullablePositiveInteger(
+            nested.dailyCap,
+            defaults.dailyCap,
+            10_000
+        ),
+        monthlyCap: canonicalNullablePositiveInteger(
+            nested.monthlyCap,
+            defaults.monthlyCap,
+            100_000
+        ),
+        reserveCredits: canonicalInteger(
+            nested.reserveCredits,
+            defaults.reserveCredits,
+            0,
+            100_000
+        ),
+        backlogMode: AUTO_ANALYSIS_BACKLOG_MODES.includes(
+            nested.backlogMode as AutoAnalysisBacklogMode
+        )
+            ? (nested.backlogMode as AutoAnalysisBacklogMode)
+            : defaults.backlogMode,
+        enabledAt: canonicalIsoTimestamp(nested.enabledAt),
+    };
+
+    return mergePreferences(base, {
+        autoAnalysis,
+    });
 }
 
 export function pickAnalysisDefaults(
@@ -258,6 +371,12 @@ export function mergePreferences(
     base: PreferencesSchema,
     patch: PartialPreferences
 ): PreferencesSchema {
+    const patchHasCanonicalEnabled =
+        patch.autoAnalysis != null &&
+        Object.prototype.hasOwnProperty.call(patch.autoAnalysis, 'enabled');
+    const enabled = patchHasCanonicalEnabled
+        ? patch.autoAnalysis?.enabled === true
+        : base.autoAnalysis.enabled;
     const merged: PreferencesSchema = {
         ...base,
         ...patch,
@@ -267,18 +386,103 @@ export function mergePreferences(
             ...(patch.autoSyncProviders ?? {}),
         },
         autoAnalysis: {
-            ...(base.autoAnalysis ?? {}),
+            ...base.autoAnalysis,
             ...(patch.autoAnalysis ?? {}),
+            enabled,
             providers: {
-                ...(base.autoAnalysis?.providers ?? {}),
+                ...base.autoAnalysis.providers,
                 ...(patch.autoAnalysis?.providers ?? {}),
             },
             timeControls: {
-                ...(base.autoAnalysis?.timeControls ?? {}),
+                ...base.autoAnalysis.timeControls,
                 ...(patch.autoAnalysis?.timeControls ?? {}),
             },
         },
     };
 
     return merged;
+}
+
+function preferenceRecord(value: unknown): Record<string, unknown> {
+    return optionalPreferenceRecord(value) ?? {};
+}
+
+function optionalPreferenceRecord(
+    value: unknown
+): Record<string, unknown> | null {
+    return value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
+}
+
+function canonicalBoolean(value: unknown, fallback: boolean) {
+    return typeof value === 'boolean' ? value : fallback;
+}
+
+function canonicalBooleanRecord<K extends string>(
+    defaults: Record<K, boolean>,
+    raw: Record<string, unknown>
+) {
+    return Object.fromEntries(
+        (Object.keys(defaults) as K[]).map((key) => [
+            key,
+            canonicalBoolean(raw[key], defaults[key]),
+        ])
+    ) as Record<K, boolean>;
+}
+
+function canonicalSelectionRecord<K extends string>(
+    defaults: Record<K, boolean>,
+    raw: unknown,
+    keys: readonly K[]
+) {
+    if (Array.isArray(raw)) {
+        const selected = new Set(
+            raw.filter(
+                (value): value is K =>
+                    typeof value === 'string' && keys.includes(value as K)
+            )
+        );
+        return Object.fromEntries(
+            keys.map((key) => [key, selected.has(key)])
+        ) as Record<K, boolean>;
+    }
+    return canonicalBooleanRecord(defaults, preferenceRecord(raw));
+}
+
+function canonicalInteger(
+    value: unknown,
+    fallback: number,
+    min: number,
+    max: number
+) {
+    const number =
+        typeof value === 'string' && value.trim()
+            ? Number(value)
+            : value;
+    return typeof number === 'number' &&
+        Number.isSafeInteger(number) &&
+        number >= min &&
+        number <= max
+        ? number
+        : fallback;
+}
+
+function canonicalNullablePositiveInteger(
+    value: unknown,
+    fallback: number | null,
+    max: number
+) {
+    if (value === null) return null;
+    const defaultValue = fallback ?? 1;
+    const parsed = canonicalInteger(value, defaultValue, 1, max);
+    return parsed;
+}
+
+function canonicalIsoTimestamp(value: unknown) {
+    if (typeof value !== 'string') return null;
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
 }

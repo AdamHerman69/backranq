@@ -299,13 +299,37 @@ function stopNode(
 
 function exactEngineLines(lines: MultiPvLine[]): MultiPvLine[] {
     return lines
-        .filter(
-            (line) =>
-                line.score != null &&
-                typeof line.pvUci?.[0] === 'string' &&
-                parseUci(line.pvUci[0]!) != null
-        )
+        .filter(isExactEngineLine)
         .sort((left, right) => left.multipv - right.multipv);
+}
+
+function isExactEngineLine(line: MultiPvLine): boolean {
+    return (
+        line.score != null &&
+        typeof line.pvUci?.[0] === 'string' &&
+        parseUci(line.pvUci[0]!) != null
+    );
+}
+
+function hasContiguousMultiPvSlots(lines: MultiPvLine[]): boolean {
+    return lines.every(
+        (line, index) =>
+            Number.isSafeInteger(line.multipv) &&
+            line.multipv === index + 1
+    );
+}
+
+function canonicalRootMoveLines(lines: MultiPvLine[]): MultiPvLine[] {
+    const byMove = new Map<string, MultiPvLine>();
+    for (const line of lines) {
+        const move = line.pvUci[0]?.trim().toLowerCase();
+        if (!move || byMove.has(move)) continue;
+        // Lines arrive in ascending MultiPV order. The lowest slot is the
+        // canonical ranking when Stockfish repeats one root move in later
+        // slots with different cumulative search metadata.
+        byMove.set(move, line);
+    }
+    return Array.from(byMove.values());
 }
 
 function acceptedEngineLines(
@@ -753,11 +777,13 @@ export async function verifyConditionalContinuation(args: {
             }
         }
 
+        const requestedMultiPv =
+            role === 'USER' ? options.multiPv : 1;
         let analyzed;
         try {
             analyzed = await args.engine.analyzeMultiPv({
                 fen,
-                multiPv: role === 'USER' ? options.multiPv : 1,
+                multiPv: requestedMultiPv,
                 ...analysisLimit(options),
             });
         } catch (error) {
@@ -771,7 +797,54 @@ export async function verifyConditionalContinuation(args: {
             );
             return stopNode(fen, ply, 'NO_STABLE_LINE', 'ENGINE');
         }
-        const lines = exactEngineLines(analyzed.lines);
+        const rejectedEngineLines = analyzed.lines.filter(
+            (line) => !isExactEngineLine(line)
+        );
+        for (const line of rejectedEngineLines) {
+            worsenStatus(
+                state,
+                'INVALID',
+                `Malformed engine line in MultiPV slot ${String(line.multipv)} at ply ${ply}`
+            );
+        }
+        const returnedExactLines = exactEngineLines(analyzed.lines);
+        const validMultiPvSlots =
+            hasContiguousMultiPvSlots(returnedExactLines) &&
+            returnedExactLines.length <= requestedMultiPv;
+        if (!validMultiPvSlots && returnedExactLines.length > 0) {
+            worsenStatus(
+                state,
+                'INVALID',
+                `Non-contiguous MultiPV slots at ply ${ply}`
+            );
+        }
+        const illegalExactLines = returnedExactLines.filter(
+            (line) =>
+                applyUci(
+                    fen,
+                    line.pvUci[0]!.trim().toLowerCase()
+                ) == null
+        );
+        for (const line of illegalExactLines) {
+            worsenStatus(
+                state,
+                'INVALID',
+                `Illegal engine move ${line.pvUci[0]!.trim().toLowerCase()} at ply ${ply}`
+            );
+        }
+        const rawExactLines = returnedExactLines.filter(
+            (line) => !illegalExactLines.includes(line)
+        );
+        const lines = canonicalRootMoveLines(rawExactLines);
+        const duplicateRootMoves =
+            rawExactLines.length !== lines.length;
+        if (duplicateRootMoves) {
+            worsenStatus(
+                state,
+                'AMBIGUOUS',
+                `Duplicate MultiPV root move at ply ${ply}`
+            );
+        }
         if (lines.length === 0) {
             worsenStatus(
                 state,
@@ -859,7 +932,7 @@ export async function verifyConditionalContinuation(args: {
             role === 'USER'
                 ? selected.slice(0, options.maxUserBranches)
                 : selected.slice(0, 1);
-        const frontierLine = lines[lines.length - 1];
+        const frontierLine = rawExactLines[rawExactLines.length - 1];
         const frontierIsExactRuleDraw =
             !!frontierLine &&
             repetitionMoves.some(
@@ -887,11 +960,21 @@ export async function verifyConditionalContinuation(args: {
                         frontierLine,
                         options
                     ));
+        const shortFrontier =
+            rawExactLines.length < requestedMultiPv;
+        const frontierExhausted =
+            shortFrontier
+                ? analyzed.alternativesComplete === true
+                : !frontierWithinTolerance;
         const alternativesComplete =
-            role === 'OPPONENT' ||
-            (selected.length <= options.maxUserBranches &&
-                (lines.length < options.multiPv ||
-                    !frontierWithinTolerance));
+            rejectedEngineLines.length === 0 &&
+            validMultiPvSlots &&
+            illegalExactLines.length === 0 &&
+            !duplicateRootMoves &&
+            analyzed.alternativesComplete !== false &&
+            (role === 'OPPONENT' ||
+                (selected.length <= options.maxUserBranches &&
+                    frontierExhausted));
         if (!alternativesComplete) {
             worsenStatus(
                 state,

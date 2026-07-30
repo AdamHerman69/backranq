@@ -3,6 +3,7 @@ import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
 import { dispatchQueuedAnalysisJobs } from '@/lib/services/analysisScheduler';
 import { planAndProcessDueSyncJobsInline } from '@/lib/services/syncJobs';
 import { reconcileAnalysisCreditSettlements } from '@/lib/services/analysisOps';
+import { dispatchAutoAnalysisPolicySweep } from '@/lib/services/autoAnalysisBacklog';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -33,12 +34,16 @@ export async function GET(req: Request) {
         });
     }
 
-    const result = await planAndProcessDueSyncJobsInline();
+    const [result, automation] = await Promise.all([
+        planAndProcessDueSyncJobsInline(),
+        dispatchAutoAnalysisPolicySweep(),
+    ]);
     const dispatch = await dispatchQueuedAnalysisJobs();
     return NextResponse.json({
         ok: true,
         queued: false,
         result,
+        automation,
         dispatch,
         settlements,
     });

@@ -1,30 +1,30 @@
 import { createHash } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import type {
+    PracticeFeedFocus,
+    PracticeFeedRequest,
+    PracticeFeedResponse,
+    PracticeFilters,
     TrainingMomentResponse,
-    TrainingSessionFilters,
-    TrainingSessionFocus,
-    TrainingSessionRequest,
-    TrainingSessionResponse,
 } from '@/lib/training/api';
 import { toTrainingPromptDto } from '@/lib/training/apiMappers';
 
 type TrainingReadClient = Pick<Prisma.TransactionClient, 'trainingMoment'>;
 
-type SessionCursor = {
-    sessionStartedAt: string;
+type PracticeFeedCursor = {
+    feedStartedAt: string;
     filterHash: string;
     lastTrainedAt: string | null;
     createdAt: string;
     id: string;
 };
 
-function encodeCursor(cursor: SessionCursor): string {
+function encodeCursor(cursor: PracticeFeedCursor): string {
     return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
 }
 
 function decodeCursor(value: string): {
-    sessionStartedAt: Date;
+    feedStartedAt: Date;
     filterHash: string;
     lastTrainedAt: Date | null;
     createdAt: Date;
@@ -33,10 +33,10 @@ function decodeCursor(value: string): {
     try {
         const decoded = JSON.parse(
             Buffer.from(value, 'base64url').toString('utf8')
-        ) as Partial<SessionCursor>;
+        ) as Partial<PracticeFeedCursor>;
         if (
             typeof decoded.createdAt !== 'string' ||
-            typeof decoded.sessionStartedAt !== 'string' ||
+            typeof decoded.feedStartedAt !== 'string' ||
             typeof decoded.filterHash !== 'string' ||
             !/^[a-f0-9]{64}$/.test(decoded.filterHash) ||
             (decoded.lastTrainedAt !== null &&
@@ -47,21 +47,21 @@ function decodeCursor(value: string): {
             return null;
         }
         const createdAt = new Date(decoded.createdAt);
-        const sessionStartedAt = new Date(decoded.sessionStartedAt);
+        const feedStartedAt = new Date(decoded.feedStartedAt);
         const lastTrainedAt =
             decoded.lastTrainedAt == null
                 ? null
                 : new Date(decoded.lastTrainedAt);
         if (
             !Number.isFinite(createdAt.getTime()) ||
-            !Number.isFinite(sessionStartedAt.getTime()) ||
+            !Number.isFinite(feedStartedAt.getTime()) ||
             (lastTrainedAt &&
                 !Number.isFinite(lastTrainedAt.getTime()))
         ) {
             return null;
         }
         return {
-            sessionStartedAt,
+            feedStartedAt,
             filterHash: decoded.filterHash,
             lastTrainedAt,
             createdAt,
@@ -72,8 +72,8 @@ function decodeCursor(value: string): {
     }
 }
 
-const SESSION_FOCUS_THRESHOLDS: Record<
-    Exclude<TrainingSessionFocus, 'ALL'>,
+const PRACTICE_FOCUS_THRESHOLDS: Record<
+    Exclude<PracticeFeedFocus, 'ALL'>,
     {
         minWinChanceLoss: number;
         fallbackMinCpLoss: number;
@@ -93,8 +93,8 @@ function sorted(values: readonly string[] | undefined): string[] {
     return Array.from(new Set(values ?? [])).sort();
 }
 
-function sessionFilterHash(
-    filters: TrainingSessionFilters
+function practiceFilterHash(
+    filters: PracticeFilters
 ): string {
     return createHash('sha256')
         .update(
@@ -114,10 +114,10 @@ function sessionFilterHash(
 }
 
 function severityWhere(
-    focus: TrainingSessionFocus | undefined
+    focus: PracticeFeedFocus | undefined
 ): Prisma.TrainingMomentWhereInput | null {
     if (!focus || focus === 'ALL') return null;
-    const threshold = SESSION_FOCUS_THRESHOLDS[focus];
+    const threshold = PRACTICE_FOCUS_THRESHOLDS[focus];
     return {
         OR: [
             {
@@ -144,7 +144,7 @@ const promptSelect = {
     lastTrainedAt: true,
 } satisfies Prisma.TrainingMomentSelect;
 
-function afterSessionCursor(
+function afterPracticeFeedCursor(
     cursor: NonNullable<ReturnType<typeof decodeCursor>>
 ): Prisma.TrainingMomentWhereInput {
     if (cursor.lastTrainedAt === null) {
@@ -181,35 +181,35 @@ function afterSessionCursor(
     };
 }
 
-export class InvalidTrainingCursorError extends Error {
+export class InvalidPracticeFeedCursorError extends Error {
     constructor() {
-        super('Invalid training session cursor');
-        this.name = 'InvalidTrainingCursorError';
+        super('Invalid practice feed cursor');
+        this.name = 'InvalidPracticeFeedCursorError';
     }
 }
 
-export async function listTrainingSession(args: {
+export async function listPracticeFeed(args: {
     db: TrainingReadClient;
     userId: string;
-    request: TrainingSessionRequest;
-}): Promise<TrainingSessionResponse> {
+    request: PracticeFeedRequest;
+}): Promise<PracticeFeedResponse> {
     const limit = args.request.limit ?? 10;
     const filters = args.request.filters ?? {};
-    const filterHash = sessionFilterHash(filters);
+    const filterHash = practiceFilterHash(filters);
     const cursor = args.request.cursor
         ? decodeCursor(args.request.cursor)
         : null;
     if (args.request.cursor && !cursor) {
-        throw new InvalidTrainingCursorError();
+        throw new InvalidPracticeFeedCursorError();
     }
     if (cursor && cursor.filterHash !== filterHash) {
-        throw new InvalidTrainingCursorError();
+        throw new InvalidPracticeFeedCursorError();
     }
     const requestTime = new Date();
-    const sessionStartedAt =
-        cursor?.sessionStartedAt ?? requestTime;
-    if (sessionStartedAt.getTime() > requestTime.getTime()) {
-        throw new InvalidTrainingCursorError();
+    const feedStartedAt =
+        cursor?.feedStartedAt ?? requestTime;
+    if (feedStartedAt.getTime() > requestTime.getTime()) {
+        throw new InvalidPracticeFeedCursorError();
     }
 
     const severityFilter = severityWhere(filters.focus);
@@ -253,18 +253,18 @@ export async function listTrainingSession(args: {
             : {}),
         AND: [
             ...(severityFilter ? [severityFilter] : []),
-            { createdAt: { lte: sessionStartedAt } },
+            { createdAt: { lte: feedStartedAt } },
             {
                 OR: [
                     { lastTrainedAt: null },
                     {
                         lastTrainedAt: {
-                            lt: sessionStartedAt,
+                            lt: feedStartedAt,
                         },
                     },
                 ],
             },
-            ...(cursor ? [afterSessionCursor(cursor)] : []),
+            ...(cursor ? [afterPracticeFeedCursor(cursor)] : []),
         ],
     };
 
@@ -293,8 +293,8 @@ export async function listTrainingSession(args: {
             hasMore && last
                 ? encodeCursor({
                       createdAt: last.createdAt.toISOString(),
-                      sessionStartedAt:
-                          sessionStartedAt.toISOString(),
+                      feedStartedAt:
+                          feedStartedAt.toISOString(),
                       filterHash,
                       lastTrainedAt:
                           last.lastTrainedAt?.toISOString() ??

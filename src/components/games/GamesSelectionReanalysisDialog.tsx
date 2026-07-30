@@ -125,13 +125,13 @@ export function GamesSelectionReanalysisDialog({
                     <dt className="text-muted-foreground">Impact</dt>
                     <dd>
                         Each completed re-analysis replaces that game&apos;s current
-                        evaluation. Matching moments receive new revisions, stale
-                        moments are archived, and new moments are added. The
+                        evaluation. Matching positions receive new revisions, stale
+                        positions are archived, and new positions are added. The
                         selection currently contains{' '}
-                        {selectedSummary.trainingMoments} visible training{' '}
+                        {selectedSummary.trainingMoments} visible practice{' '}
                         {selectedSummary.trainingMoments === 1
-                            ? 'moment'
-                            : 'moments'}. Attempt history is preserved. Already queued games may be
+                            ? 'position'
+                            : 'positions'}. Attempt history is preserved. Already queued games may be
                         skipped and do not add another charge.
                     </dd>
                 </div>

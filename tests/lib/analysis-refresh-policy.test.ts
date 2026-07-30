@@ -7,7 +7,6 @@ describe('analysis refresh policy', () => {
             shouldPollAnalysis({
                 authenticated: true,
                 ownerId: 'owner-a',
-                hasLinkedAccount: false,
                 hasTrackedServerBatch: true,
                 serverQueued: 0,
                 serverRunning: 0,
@@ -21,9 +20,21 @@ describe('analysis refresh policy', () => {
             shouldPollAnalysis({
                 authenticated: false,
                 ownerId: null,
-                hasLinkedAccount: false,
                 hasTrackedServerBatch: true,
                 serverQueued: 1,
+                serverRunning: 0,
+                browserRunning: false,
+            })
+        ).toBe(false);
+    });
+
+    it('does not poll forever for an idle linked user', () => {
+        expect(
+            shouldPollAnalysis({
+                authenticated: true,
+                ownerId: 'owner-a',
+                hasTrackedServerBatch: false,
+                serverQueued: 0,
                 serverRunning: 0,
                 browserRunning: false,
             })

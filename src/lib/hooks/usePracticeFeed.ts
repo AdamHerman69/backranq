@@ -10,15 +10,15 @@ import { useSession } from 'next-auth/react';
 
 import type {
     GradedTrainingAttemptResponse,
+    PracticeFilters,
     RevealTrainingMomentResponse,
     SubmitTrainingAttemptRequest,
     SubmitTrainingAttemptResponse,
     TrainingPromptDto,
-    TrainingSessionFilters,
 } from '@/lib/training/api';
 import {
     fetchTrainingMoment,
-    fetchTrainingSession,
+    fetchPracticeFeed,
     revealTrainingMoment,
     submitTrainingAttempt,
     TrainingClientError,
@@ -34,8 +34,81 @@ import {
     reviewFromAuthoritativeResponse,
     type TrainerAttemptPhase,
 } from '@/lib/training/trainerState';
+import {
+    abortCoordinatedPracticeFeedRequest,
+    startCoordinatedPracticeFeedRequest,
+    type CoordinatedPracticeFeedRequest,
+} from '@/lib/training/practiceFeedCoordinator';
 
-const SESSION_BATCH_SIZE = 12;
+export const PRACTICE_FEED_BATCH_SIZE = 12;
+export const PRACTICE_FEED_LOW_WATER_MARK = 4;
+
+export function practicePromptKey(prompt: TrainingPromptDto): string {
+    return `${prompt.id}:${prompt.solutionRevisionId}`;
+}
+
+export function unseenPracticePrompts(
+    prompts: readonly TrainingPromptDto[],
+    seenKeys: ReadonlySet<string>
+): TrainingPromptDto[] {
+    const pageKeys = new Set<string>();
+    return prompts.filter((prompt) => {
+        const key = practicePromptKey(prompt);
+        if (seenKeys.has(key) || pageKeys.has(key)) return false;
+        pageKeys.add(key);
+        return true;
+    });
+}
+
+export function shouldPrefetchPracticeFeed({
+    bufferedPositions,
+    feedStarted,
+    feedExhausted,
+    online,
+}: {
+    bufferedPositions: number;
+    feedStarted: boolean;
+    feedExhausted: boolean;
+    online: boolean;
+}): boolean {
+    return (
+        online &&
+        feedStarted &&
+        !feedExhausted &&
+        bufferedPositions <= PRACTICE_FEED_LOW_WATER_MARK
+    );
+}
+
+type PracticeFeedReadOutcome =
+    | { status: 'SUCCESS' }
+    | { status: 'FAILURE'; error: unknown };
+
+export function practiceFeedOnlineAfterRead({
+    currentOnline,
+    navigatorOnline,
+    outcome,
+}: {
+    currentOnline: boolean;
+    navigatorOnline: boolean;
+    outcome: PracticeFeedReadOutcome;
+}): boolean {
+    if (!navigatorOnline) return false;
+    return outcome.status === 'SUCCESS' ? true : currentOnline;
+}
+
+export function practiceFeedLoadErrorAfterEvent(
+    currentError: string | null,
+    event: 'ADVANCE_STARTED' | 'PAGE_SUCCEEDED' | 'PROMPT_ACTIVATED'
+): string | null {
+    if (
+        event === 'ADVANCE_STARTED' ||
+        event === 'PAGE_SUCCEEDED' ||
+        event === 'PROMPT_ACTIVATED'
+    ) {
+        return null;
+    }
+    return currentError;
+}
 
 type LastSubmission = {
     momentId: string;
@@ -71,6 +144,12 @@ function errorMessage(error: unknown): string {
     return error instanceof Error
         ? error.message
         : 'The training service is unavailable.';
+}
+
+function navigatorIsOnline(): boolean {
+    return (
+        typeof navigator === 'undefined' || navigator.onLine !== false
+    );
 }
 
 function shouldQueue(error: unknown): boolean {
@@ -118,7 +197,7 @@ function writeQueue(
     }
 }
 
-export function useTrainingSession(
+export function usePracticeFeed(
     initialMomentId?: string,
     ownerIdOverride?: string
 ) {
@@ -126,18 +205,18 @@ export function useTrainingSession(
     const ownerId = ownerIdOverride ?? session?.user?.id ?? null;
 
     const [prompt, setPrompt] = useState<TrainingPromptDto | null>(null);
-    const [remaining, setRemaining] = useState<TrainingPromptDto[]>([]);
+    const [buffer, setBuffer] = useState<TrainingPromptDto[]>([]);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
-    const [sessionStarted, setSessionStarted] = useState(false);
-    const [paginationFilters, setPaginationFilters] =
-        useState<TrainingSessionFilters>({});
-    const [sessionRequest, setSessionRequest] = useState<{
-        filters: TrainingSessionFilters;
+    const [feedStarted, setFeedStarted] = useState(false);
+    const [appliedFilters, setAppliedFilters] =
+        useState<PracticeFilters>({});
+    const [feedRequest, setFeedRequest] = useState<{
+        filters: PracticeFilters;
         revision: number;
     }>({ filters: {}, revision: 0 });
     const [loading, setLoading] = useState(true);
-    const [sessionComplete, setSessionComplete] = useState(false);
-    const [sessionHadItems, setSessionHadItems] = useState(false);
+    const [feedExhausted, setFeedExhausted] = useState(false);
+    const [feedHadPositions, setFeedHadPositions] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
 
     const [positionFen, setPositionFen] = useState<string | null>(null);
@@ -148,15 +227,40 @@ export function useTrainingSession(
     const [attemptId, setAttemptId] = useState<string | null>(null);
     const [nextStepIndex, setNextStepIndex] = useState<number | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const [online, setOnline] = useState(
-        () => typeof navigator === 'undefined' || navigator.onLine
-    );
+    const [online, setOnline] = useState(navigatorIsOnline);
     const [queuedCount, setQueuedCount] = useState(0);
 
     const clientAttemptIdRef = useRef<string | null>(null);
     const promptStartedAtRef = useRef(Date.now());
     const lastSubmissionRef = useRef<LastSubmission | null>(null);
     const flushInFlightRef = useRef(false);
+    const advanceInFlightRef = useRef(false);
+    const bufferRef = useRef<TrainingPromptDto[]>([]);
+    const nextCursorRef = useRef<string | null>(null);
+    const feedStartedRef = useRef(false);
+    const feedExhaustedRef = useRef(false);
+    const appliedFiltersRef = useRef<PracticeFilters>({});
+    const requestedFiltersRef = useRef<PracticeFilters>({});
+    const feedGenerationRef = useRef(0);
+    const initialLoadControllerRef = useRef<AbortController | null>(null);
+    const seenPromptKeysRef = useRef(new Set<string>());
+    const pageRequestRef =
+        useRef<
+            CoordinatedPracticeFeedRequest<TrainingPromptDto[]> | null
+        >(null);
+
+    const replaceBuffer = useCallback((positions: TrainingPromptDto[]) => {
+        bufferRef.current = positions;
+        setBuffer(positions);
+    }, []);
+
+    const updateCursor = useCallback((cursor: string | null) => {
+        nextCursorRef.current = cursor;
+        setNextCursor(cursor);
+        const exhausted = cursor === null;
+        feedExhaustedRef.current = exhausted;
+        setFeedExhausted(exhausted);
+    }, []);
 
     const activatePrompt = useCallback(
         (next: TrainingPromptDto) => {
@@ -172,7 +276,12 @@ export function useTrainingSession(
             setAttemptId(null);
             setNextStepIndex(null);
             setError(null);
-            setSessionComplete(false);
+            setLoadError((current) =>
+                practiceFeedLoadErrorAfterEvent(
+                    current,
+                    'PROMPT_ACTIVATED'
+                )
+            );
             clientAttemptIdRef.current =
                 queued?.request.clientAttemptId ?? null;
             lastSubmissionRef.current = queued
@@ -188,8 +297,94 @@ export function useTrainingSession(
         [ownerId]
     );
 
+    const appendFeedPage = useCallback(
+        (
+            items: readonly TrainingPromptDto[],
+            cursor: string | null,
+            filters: PracticeFilters
+        ): TrainingPromptDto[] => {
+            const unseen = unseenPracticePrompts(
+                items,
+                seenPromptKeysRef.current
+            );
+            for (const item of unseen) {
+                seenPromptKeysRef.current.add(practicePromptKey(item));
+            }
+            if (unseen.length > 0) {
+                replaceBuffer([...bufferRef.current, ...unseen]);
+                setFeedHadPositions(true);
+            }
+            appliedFiltersRef.current = filters;
+            setAppliedFilters(filters);
+            feedStartedRef.current = true;
+            setFeedStarted(true);
+            updateCursor(cursor);
+            setOnline((current) =>
+                practiceFeedOnlineAfterRead({
+                    currentOnline: current,
+                    navigatorOnline: navigatorIsOnline(),
+                    outcome: { status: 'SUCCESS' },
+                })
+            );
+            setLoadError((current) =>
+                practiceFeedLoadErrorAfterEvent(
+                    current,
+                    'PAGE_SUCCEEDED'
+                )
+            );
+            return unseen;
+        },
+        [replaceBuffer, updateCursor]
+    );
+
+    const startFeedPageRequest = useCallback(() => {
+        if (feedStartedRef.current && feedExhaustedRef.current) {
+            return Promise.resolve([]);
+        }
+
+        const generation = feedGenerationRef.current;
+        const cursor = feedStartedRef.current
+            ? nextCursorRef.current ?? undefined
+            : undefined;
+        const filters = feedStartedRef.current
+            ? appliedFiltersRef.current
+            : requestedFiltersRef.current;
+
+        return startCoordinatedPracticeFeedRequest({
+            slot: pageRequestRef,
+            generation,
+            isGenerationCurrent: (requestGeneration) =>
+                requestGeneration === feedGenerationRef.current,
+            request: (signal) =>
+                fetchPracticeFeed(
+                    {
+                        limit: PRACTICE_FEED_BATCH_SIZE,
+                        cursor,
+                        filters,
+                    },
+                    signal
+                ),
+            onSuccess: (result) =>
+                appendFeedPage(
+                    result.items,
+                    result.nextCursor,
+                    result.appliedFilters
+                ),
+            onFailure: (caught) => {
+                setOnline((current) =>
+                    practiceFeedOnlineAfterRead({
+                        currentOnline: current,
+                        navigatorOnline: navigatorIsOnline(),
+                        outcome: { status: 'FAILURE', error: caught },
+                    })
+                );
+            },
+            staleResult: () => [],
+        });
+    }, [appendFeedPage]);
+
     const loadInitial = useCallback(
-        async (signal?: AbortSignal) => {
+        async (generation: number, signal: AbortSignal) => {
             setLoading(true);
             setLoadError(null);
             try {
@@ -198,54 +393,153 @@ export function useTrainingSession(
                         initialMomentId,
                         signal
                     );
-                    if (signal?.aborted) return;
-                    setRemaining([]);
+                    if (
+                        signal.aborted ||
+                        generation !== feedGenerationRef.current
+                    ) {
+                        return;
+                    }
+                    seenPromptKeysRef.current.add(
+                        practicePromptKey(detail.moment)
+                    );
+                    replaceBuffer([]);
+                    nextCursorRef.current = null;
                     setNextCursor(null);
-                    setPaginationFilters({});
-                    setSessionStarted(false);
-                    setSessionHadItems(true);
+                    appliedFiltersRef.current = {};
+                    setAppliedFilters({});
+                    feedStartedRef.current = false;
+                    setFeedStarted(false);
+                    feedExhaustedRef.current = false;
+                    setFeedExhausted(false);
+                    setFeedHadPositions(true);
+                    setOnline((current) =>
+                        practiceFeedOnlineAfterRead({
+                            currentOnline: current,
+                            navigatorOnline: navigatorIsOnline(),
+                            outcome: { status: 'SUCCESS' },
+                        })
+                    );
                     activatePrompt(detail.moment);
+                    void startFeedPageRequest().catch(() => {
+                        // The deep-linked position remains fully usable even if
+                        // the next practice page cannot be prepared yet.
+                    });
                     return;
                 }
 
-                const result = await fetchTrainingSession(
+                const result = await fetchPracticeFeed(
                     {
-                        limit: SESSION_BATCH_SIZE,
-                        filters: sessionRequest.filters,
+                        limit: PRACTICE_FEED_BATCH_SIZE,
+                        filters: feedRequest.filters,
                     },
                     signal
                 );
-                if (signal?.aborted) return;
-                setSessionStarted(true);
-                setNextCursor(result.nextCursor);
-                setPaginationFilters(result.appliedFilters);
-                const [first, ...rest] = result.items;
-                setSessionHadItems(Boolean(first));
-                setRemaining(rest);
+                if (
+                    signal.aborted ||
+                    generation !== feedGenerationRef.current
+                ) {
+                    return;
+                }
+                const unseen = unseenPracticePrompts(
+                    result.items,
+                    seenPromptKeysRef.current
+                );
+                for (const item of unseen) {
+                    seenPromptKeysRef.current.add(practicePromptKey(item));
+                }
+                feedStartedRef.current = true;
+                setFeedStarted(true);
+                setOnline((current) =>
+                    practiceFeedOnlineAfterRead({
+                        currentOnline: current,
+                        navigatorOnline: navigatorIsOnline(),
+                        outcome: { status: 'SUCCESS' },
+                    })
+                );
+                appliedFiltersRef.current = result.appliedFilters;
+                setAppliedFilters(result.appliedFilters);
+                updateCursor(result.nextCursor);
+                const [first, ...rest] = unseen;
+                setFeedHadPositions(Boolean(first));
+                replaceBuffer(rest);
                 if (first) {
                     activatePrompt(first);
                 } else {
                     setPrompt(null);
                     setPositionFen(null);
-                    setSessionComplete(true);
                 }
             } catch (caught) {
-                if (signal?.aborted) return;
+                if (
+                    signal.aborted ||
+                    generation !== feedGenerationRef.current
+                ) {
+                    return;
+                }
+                setOnline((current) =>
+                    practiceFeedOnlineAfterRead({
+                        currentOnline: current,
+                        navigatorOnline: navigatorIsOnline(),
+                        outcome: { status: 'FAILURE', error: caught },
+                    })
+                );
                 setLoadError(errorMessage(caught));
                 setPrompt(null);
                 setPositionFen(null);
             } finally {
-                if (!signal?.aborted) setLoading(false);
+                if (
+                    !signal.aborted &&
+                    generation === feedGenerationRef.current
+                ) {
+                    setLoading(false);
+                }
             }
         },
-        [activatePrompt, initialMomentId, sessionRequest]
+        [
+            activatePrompt,
+            feedRequest,
+            initialMomentId,
+            replaceBuffer,
+            startFeedPageRequest,
+            updateCursor,
+        ]
     );
 
     useEffect(() => {
+        const generation = feedGenerationRef.current + 1;
+        feedGenerationRef.current = generation;
+        initialLoadControllerRef.current?.abort();
+        abortCoordinatedPracticeFeedRequest(pageRequestRef);
         const controller = new AbortController();
-        void loadInitial(controller.signal);
-        return () => controller.abort();
-    }, [loadInitial]);
+        initialLoadControllerRef.current = controller;
+        seenPromptKeysRef.current = new Set();
+        bufferRef.current = [];
+        nextCursorRef.current = null;
+        feedStartedRef.current = false;
+        feedExhaustedRef.current = false;
+        appliedFiltersRef.current = {};
+        requestedFiltersRef.current = feedRequest.filters;
+        setPrompt(null);
+        replaceBuffer([]);
+        setNextCursor(null);
+        setFeedStarted(false);
+        setFeedExhausted(false);
+        setFeedHadPositions(false);
+        setAppliedFilters({});
+        void loadInitial(generation, controller.signal);
+        return () => {
+            controller.abort();
+            abortCoordinatedPracticeFeedRequest(
+                pageRequestRef,
+                generation
+            );
+            if (initialLoadControllerRef.current === controller) {
+                initialLoadControllerRef.current = null;
+            }
+            if (generation === feedGenerationRef.current) {
+                feedGenerationRef.current += 1;
+            }
+        };
+    }, [feedRequest.filters, loadInitial, replaceBuffer]);
 
     useEffect(() => {
         const onOnline = () => setOnline(true);
@@ -257,6 +551,31 @@ export function useTrainingSession(
             window.removeEventListener('offline', onOffline);
         };
     }, []);
+
+    useEffect(() => {
+        if (
+            !shouldPrefetchPracticeFeed({
+                bufferedPositions: buffer.length,
+                feedStarted,
+                feedExhausted,
+                online,
+            })
+        ) {
+            return;
+        }
+        void startFeedPageRequest().catch(() => {
+            // Keep already-buffered prompts playable. Moving closer to an empty
+            // buffer, reconnecting, or an explicit retry will start a new page
+            // request without replacing the current position.
+        });
+    }, [
+        buffer.length,
+        feedExhausted,
+        feedStarted,
+        nextCursor,
+        online,
+        startFeedPageRequest,
+    ]);
 
     useEffect(() => {
         setQueuedCount(ownerId ? readQueue(ownerId).length : 0);
@@ -574,96 +893,130 @@ export function useTrainingSession(
     }, [flushQueue, online, queuedCount]);
 
     const next = useCallback(async () => {
-        if (
-            loading ||
-            phase === 'SUBMITTING' ||
-            phase === 'REVEALING' ||
-            phase === 'PENDING_GRADING' ||
-            phase === 'AWAITING_MOVE'
-        ) {
-            return;
-        }
-
-        const [first, ...rest] = remaining;
-        if (first) {
-            setRemaining(rest);
-            activatePrompt(first);
-            return;
-        }
-
-        if (sessionStarted && nextCursor === null) {
-            setPrompt(null);
-            setPositionFen(null);
-            setSessionComplete(true);
-            return;
-        }
-
-        setLoading(true);
-        setLoadError(null);
+        if (advanceInFlightRef.current) return;
+        advanceInFlightRef.current = true;
         try {
-            const result = await fetchTrainingSession({
-                limit: SESSION_BATCH_SIZE,
-                cursor: sessionStarted ? nextCursor ?? undefined : undefined,
-                filters: paginationFilters,
-            });
-            setSessionStarted(true);
-            setNextCursor(result.nextCursor);
-            setPaginationFilters(result.appliedFilters);
-            const filtered = result.items.filter(
-                (item) => item.id !== prompt?.id
+            if (
+                loading ||
+                phase === 'SUBMITTING' ||
+                phase === 'REVEALING' ||
+                phase === 'PENDING_GRADING' ||
+                phase === 'AWAITING_MOVE'
+            ) {
+                return;
+            }
+
+            setLoadError((current) =>
+                practiceFeedLoadErrorAfterEvent(
+                    current,
+                    'ADVANCE_STARTED'
+                )
             );
-            const [nextPrompt, ...restPrompts] = filtered;
-            setRemaining(restPrompts);
-            if (nextPrompt) {
-                setSessionHadItems(true);
-                activatePrompt(nextPrompt);
-            } else {
+            const [first, ...rest] = bufferRef.current;
+            if (first) {
+                replaceBuffer(rest);
+                activatePrompt(first);
+                return;
+            }
+
+            if (feedStartedRef.current && feedExhaustedRef.current) {
                 setPrompt(null);
                 setPositionFen(null);
-                setSessionComplete(true);
+                return;
             }
-        } catch (caught) {
-            setLoadError(errorMessage(caught));
+
+            const generation = feedGenerationRef.current;
+            setLoading(true);
+            try {
+                while (
+                    generation === feedGenerationRef.current &&
+                    bufferRef.current.length === 0 &&
+                    !(
+                        feedStartedRef.current &&
+                        feedExhaustedRef.current
+                    )
+                ) {
+                    await startFeedPageRequest();
+                }
+                if (generation !== feedGenerationRef.current) return;
+
+                const [nextPrompt, ...restPrompts] =
+                    bufferRef.current;
+                if (nextPrompt) {
+                    replaceBuffer(restPrompts);
+                    setFeedHadPositions(true);
+                    activatePrompt(nextPrompt);
+                } else {
+                    setPrompt(null);
+                    setPositionFen(null);
+                }
+            } catch (caught) {
+                if (generation !== feedGenerationRef.current) return;
+                setLoadError(errorMessage(caught));
+            } finally {
+                if (generation === feedGenerationRef.current) {
+                    setLoading(false);
+                }
+            }
         } finally {
-            setLoading(false);
+            advanceInFlightRef.current = false;
         }
     }, [
         activatePrompt,
         loading,
-        nextCursor,
         phase,
-        paginationFilters,
-        prompt?.id,
-        remaining,
-        sessionStarted,
+        replaceBuffer,
+        startFeedPageRequest,
     ]);
 
-    const restartSession = useCallback(
-        (filters: TrainingSessionFilters) => {
+    const resetFeed = useCallback(
+        (filters: PracticeFilters) => {
             if (initialMomentId) return;
+            feedGenerationRef.current += 1;
+            initialLoadControllerRef.current?.abort();
+            abortCoordinatedPracticeFeedRequest(pageRequestRef);
+            requestedFiltersRef.current = filters;
+            bufferRef.current = [];
+            nextCursorRef.current = null;
+            feedStartedRef.current = false;
+            feedExhaustedRef.current = false;
+            appliedFiltersRef.current = {};
+            seenPromptKeysRef.current = new Set();
             setLoading(true);
             setLoadError(null);
             setPrompt(null);
             setPositionFen(null);
-            setRemaining([]);
+            replaceBuffer([]);
             setNextCursor(null);
-            setSessionStarted(false);
-            setPaginationFilters({});
-            setSessionComplete(false);
-            setSessionHadItems(false);
+            setFeedStarted(false);
+            setAppliedFilters({});
+            setFeedExhausted(false);
+            setFeedHadPositions(false);
             setResponse(null);
             setAttemptId(null);
             setNextStepIndex(null);
             setError(null);
             clientAttemptIdRef.current = null;
             lastSubmissionRef.current = null;
-            setSessionRequest((current) => ({
+            setFeedRequest((current) => ({
                 filters,
                 revision: current.revision + 1,
             }));
         },
-        [initialMomentId]
+        [initialMomentId, replaceBuffer]
     );
+
+    const retryFeed = useCallback(() => {
+        feedGenerationRef.current += 1;
+        initialLoadControllerRef.current?.abort();
+        abortCoordinatedPracticeFeedRequest(pageRequestRef);
+        setLoading(true);
+        setLoadError(null);
+        setFeedRequest((current) => ({
+            ...current,
+            revision: current.revision + 1,
+        }));
+    }, []);
 
     const grade =
         response?.status === 'GRADED'
@@ -685,8 +1038,9 @@ export function useTrainingSession(
         unresolved,
         review: reviewFromAuthoritativeResponse(response),
         loading,
-        sessionComplete,
-        sessionHadItems,
+        feedExhausted,
+        feedHadPositions,
+        bufferedPositions: buffer.length,
         loadError,
         error,
         online,
@@ -702,8 +1056,9 @@ export function useTrainingSession(
         retryGrading,
         flushQueue,
         next,
-        restartSession,
-        sessionFilters: sessionRequest.filters,
-        retryLoad: () => loadInitial(),
+        resetFeed,
+        practiceFilters: feedRequest.filters,
+        appliedPracticeFilters: appliedFilters,
+        retryFeed,
     };
 }

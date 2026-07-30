@@ -27,6 +27,6 @@ export const E2E_AUTH_STATE_PATH = path.join(
     'e2e-user.json'
 );
 
-export function trainingPath(id: string) {
-    return `/training?momentId=${encodeURIComponent(id)}`;
+export function practicePath(id: string) {
+    return `/practice?momentId=${encodeURIComponent(id)}`;
 }

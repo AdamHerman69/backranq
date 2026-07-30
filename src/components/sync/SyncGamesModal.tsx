@@ -8,12 +8,13 @@ import type { NormalizedGame, TimeClass } from '@/lib/types/game';
 import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
 import {
     enqueueServerAnalysisJobs,
-    fetchGamesFromProvider,
-    getExistingExternalIds,
+    fetchHistoricalGames,
     getSyncStatus,
-    saveGamesToLibrary,
-    splitNewVsExisting,
-    type SyncFilters,
+    saveHistoricalGamesToLibrary,
+    unresolvedHistoryPageGameCount,
+    type HistoryImportAllowance,
+    type HistoryImportTruncatedReason,
+    type HistoricalGameFilters,
     type SyncProvider,
     type SyncStatus,
 } from '@/lib/services/gameSync';
@@ -37,9 +38,15 @@ import {
 } from '@/lib/auth/ownerRun';
 
 type Step = 'config' | 'review' | 'saving' | 'done';
+type OperationPhase =
+    | 'idle'
+    | 'fetching'
+    | 'preparing-save'
+    | 'committing';
 
 type FetchedRow = {
     game: NormalizedGame;
+    ticket: string;
     provider: SyncProvider;
     externalId: string;
     isNew: boolean;
@@ -48,31 +55,16 @@ type FetchedRow = {
 
 type SyncRunSummary = {
     selected: number;
-    saved: number;
-    skipped: number;
-    importErrors: number;
+    imported: number;
+    duplicates: number;
+    failed: number;
+    capRejected: number;
     browserRequested: number;
     serverQueued: number;
     serverSkipped: number;
     analysisError: string | null;
     providerErrors: Array<{ provider: SyncProvider; error: string }>;
 };
-
-const NEW_SYNC_GAMES_MODAL_STORAGE_PREFIX = 'backranq.syncGamesModal.v2';
-
-function modalStorageKey(ownerId: string) {
-    return `${NEW_SYNC_GAMES_MODAL_STORAGE_PREFIX}:${encodeURIComponent(ownerId)}`;
-}
-
-function defaultSinceUntilRange(): { since: string; until: string } {
-    // Default: last ~30 days, inclusive through end-of-today (UTC).
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const sinceStr = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    return {
-        since: new Date(sinceStr).toISOString(),
-        until: new Date(`${todayStr}T23:59:59.999Z`).toISOString(),
-    };
-}
 
 export function SyncGamesModal({
     open,
@@ -99,6 +91,9 @@ export function SyncGamesModal({
     );
     const [step, setStep] = useState<Step>('config');
     const [busy, setBusy] = useState(false);
+    const [operationPhase, setOperationPhase] =
+        useState<OperationPhase>('idle');
+    const operationControllerRef = useRef<AbortController | null>(null);
     const [status, setStatus] = useState<SyncStatus | null>(null);
     const [statusOwnerId, setStatusOwnerId] = useState<string | null>(null);
     const [statusLoading, setStatusLoading] = useState(true);
@@ -107,20 +102,36 @@ export function SyncGamesModal({
     const [providers, setProviders] = useState<{ lichess: boolean; chesscom: boolean }>(
         { lichess: true, chesscom: true }
     );
-    const [filters, setFilters] = useState<SyncFilters>({
+    const [filters, setFilters] = useState<HistoricalGameFilters>({
         timeClasses: [],
         rated: 'any',
-        max: 50,
         since: undefined,
         until: undefined,
     });
-
-    const timeClassOptions: MultiSelectOption[] = useMemo(() => [
-        { value: 'bullet', label: 'Bullet' },
-        { value: 'blitz', label: 'Blitz' },
-        { value: 'rapid', label: 'Rapid' },
-        { value: 'classical', label: 'Classical' },
-    ], []);
+    const timeClassOptions: MultiSelectOption[] = useMemo(
+        () => [
+            { value: 'bullet', label: 'Bullet' },
+            { value: 'blitz', label: 'Blitz' },
+            { value: 'rapid', label: 'Rapid' },
+            { value: 'classical', label: 'Classical' },
+        ],
+        []
+    );
+    const [allowances, setAllowances] = useState<
+        Record<SyncProvider, HistoryImportAllowance | null>
+    >({ lichess: null, chesscom: null });
+    const [existingCounts, setExistingCounts] = useState<
+        Record<SyncProvider, number>
+    >({ lichess: 0, chesscom: 0 });
+    const [truncatedReasons, setTruncatedReasons] = useState<
+        Record<SyncProvider, HistoryImportTruncatedReason>
+    >({ lichess: null, chesscom: null });
+    const [historyCursors, setHistoryCursors] = useState<
+        Record<SyncProvider, string | null>
+    >({ lichess: null, chesscom: null });
+    const [historyPages, setHistoryPages] = useState<
+        Record<SyncProvider, number>
+    >({ lichess: 1, chesscom: 1 });
     const [analyzeInBrowserAfter, setAnalyzeInBrowserAfter] = useState(false);
     const [queueServerAnalysisAfter, setQueueServerAnalysisAfter] = useState(false);
     const [rows, setRows] = useState<FetchedRow[]>([]);
@@ -129,45 +140,41 @@ export function SyncGamesModal({
     >([]);
     const [runSummary, setRunSummary] = useState<SyncRunSummary | null>(null);
     const [serverReviewOpen, setServerReviewOpen] = useState(false);
+    const [continueReviewOpen, setContinueReviewOpen] = useState(false);
 
     useEffect(() => {
         if (!open || !ownerId) return;
         let cancelled = false;
+        const statusController = new AbortController();
         backgroundAnalysis.setOwner(ownerId);
         setStep('config');
         setRows([]);
         setAnalyzeInBrowserAfter(false);
         setQueueServerAnalysisAfter(false);
         setBusy(false);
+        operationControllerRef.current?.abort();
+        operationControllerRef.current = null;
+        setOperationPhase('idle');
         setProviderErrors([]);
+        setAllowances({ lichess: null, chesscom: null });
+        setExistingCounts({ lichess: 0, chesscom: 0 });
+        setTruncatedReasons({ lichess: null, chesscom: null });
+        setHistoryCursors({ lichess: null, chesscom: null });
+        setHistoryPages({ lichess: 1, chesscom: 1 });
         setRunSummary(null);
         setServerReviewOpen(false);
+        setContinueReviewOpen(false);
         setStatusLoading(true);
         setStatusError(null);
 
-        // Restore last-used date inputs (or default to last month).
-        const defaults = defaultSinceUntilRange();
-        try {
-            const raw = localStorage.getItem(modalStorageKey(ownerId));
-            const parsed = raw
-                ? (JSON.parse(raw) as { since?: string; until?: string })
-                : null;
-            setFilters((f) => ({
-                ...f,
-                since: parsed?.since ?? f.since ?? defaults.since,
-                until: parsed?.until ?? f.until ?? defaults.until,
-            }));
-        } catch {
-            setFilters((f) => ({
-                ...f,
-                since: f.since ?? defaults.since,
-                until: f.until ?? defaults.until,
-            }));
-        }
-
-        getSyncStatus()
+        getSyncStatus({ signal: statusController.signal })
             .then((s) => {
                 if (cancelled) return;
+                if (s.ownerId !== ownerId) {
+                    throw new Error(
+                        'The server returned source status for a different account.'
+                    );
+                }
                 setStatus(s);
                 setStatusOwnerId(ownerId);
                 setStatusLoading(false);
@@ -189,21 +196,11 @@ export function SyncGamesModal({
             });
         return () => {
             cancelled = true;
+            statusController.abort();
+            operationControllerRef.current?.abort();
+            operationControllerRef.current = null;
         };
     }, [open, ownerId]);
-
-    useEffect(() => {
-        if (!open || !ownerId) return;
-        // Persist date filters so reopening the modal restores them.
-        try {
-            localStorage.setItem(
-                modalStorageKey(ownerId),
-                JSON.stringify({ since: filters.since, until: filters.until })
-            );
-        } catch {
-            // ignore
-        }
-    }, [open, filters.since, filters.until, ownerId]);
 
     const enabledProviders = useMemo(() => {
         const list: SyncProvider[] = [];
@@ -223,7 +220,7 @@ export function SyncGamesModal({
         [rows]
     );
     const newCount = useMemo(() => rows.filter((r) => r.isNew).length, [rows]);
-    const dupCount = useMemo(() => rows.filter((r) => !r.isNew).length, [rows]);
+    const dupCount = existingCounts.lichess + existingCounts.chesscom;
 
     if (!open || !ownerId) return null;
 
@@ -231,12 +228,41 @@ export function SyncGamesModal({
         return isOwnerRunCurrent(run, ownerEpochRef.current);
     }
 
+    function beginAbortableOperation(
+        phase: Extract<OperationPhase, 'fetching' | 'preparing-save'>
+    ) {
+        operationControllerRef.current?.abort();
+        const controller = new AbortController();
+        operationControllerRef.current = controller;
+        setOperationPhase(phase);
+        return controller;
+    }
+
+    function finishAbortableOperation(controller: AbortController) {
+        if (operationControllerRef.current === controller) {
+            operationControllerRef.current = null;
+            setOperationPhase('idle');
+        }
+    }
+
+    const operationCanCancel =
+        operationPhase === 'fetching' ||
+        operationPhase === 'preparing-save';
+    const closeProtected = busy && !operationCanCancel;
+
     function close() {
-        if (busy) return;
+        if (closeProtected) return;
+        if (operationCanCancel) {
+            operationControllerRef.current?.abort();
+            operationControllerRef.current = null;
+            setOperationPhase('idle');
+        }
         onClose();
     }
 
-    async function fetchStep() {
+    async function fetchStep(
+        cursorOverrides?: Partial<Record<SyncProvider, string | null>>
+    ) {
         const run = captureOwnerRun(ownerEpochRef.current);
         if (!run || !runIsCurrent(run)) {
             toast.error('Your session changed. Reopen sync and try again.');
@@ -246,13 +272,19 @@ export function SyncGamesModal({
             toast.error('Missing sync status');
             return;
         }
-        if (enabledProviders.length === 0) {
+        const continuing = cursorOverrides !== undefined;
+        const providersToFetch = continuing
+            ? enabledProviders.filter(
+                  (provider) => !!cursorOverrides[provider]
+              )
+            : enabledProviders;
+        if (providersToFetch.length === 0) {
             toast.error('Select at least one provider');
             return;
         }
 
         // need linked usernames for each provider
-        for (const p of enabledProviders) {
+        for (const p of providersToFetch) {
             const u =
                 p === 'lichess'
                     ? currentStatus.linked.lichessUsername
@@ -264,55 +296,66 @@ export function SyncGamesModal({
         }
 
         setBusy(true);
+        const controller = beginAbortableOperation('fetching');
         const toastId = toast.loading('Fetching games…');
         try {
             const nextRows: FetchedRow[] = [];
             const failures: Array<{ provider: SyncProvider; error: string }> = [];
-            for (const p of enabledProviders) {
+            const nextAllowances: Record<
+                SyncProvider,
+                HistoryImportAllowance | null
+            > = continuing
+                ? { ...allowances }
+                : { lichess: null, chesscom: null };
+            const nextExistingCounts: Record<SyncProvider, number> = {
+                lichess: 0,
+                chesscom: 0,
+            };
+            const nextTruncatedReasons: Record<
+                SyncProvider,
+                HistoryImportTruncatedReason
+            > = { lichess: null, chesscom: null };
+            const nextCursors: Record<SyncProvider, string | null> =
+                continuing
+                    ? { ...historyCursors }
+                    : { lichess: null, chesscom: null };
+            const nextPages: Record<SyncProvider, number> = continuing
+                ? { ...historyPages }
+                : { lichess: 1, chesscom: 1 };
+            for (const p of providersToFetch) {
                 try {
-                    const username =
-                        p === 'lichess'
-                            ? (currentStatus.linked.lichessUsername as string)
-                            : (currentStatus.linked.chesscomUsername as string);
-                    const providerGames = await fetchGamesFromProvider({
+                    const snapshot = await fetchHistoricalGames({
+                        ownerId: run.ownerId,
                         provider: p,
-                        username,
                         filters,
+                        cursor: cursorOverrides?.[p] ?? undefined,
+                        signal: controller.signal,
                     });
                     if (!runIsCurrent(run)) return;
-                    const externalIds = providerGames.map((game) =>
-                        parseExternalId(game)
-                    );
-                    const existing = await getExistingExternalIds({
-                        provider: p,
-                        externalIds,
-                    });
-                    if (!runIsCurrent(run)) return;
-                    const { newGames, existingGames } = splitNewVsExisting(
-                        p,
-                        providerGames,
-                        existing
-                    );
-
-                    for (const game of newGames) {
+                    nextAllowances[p] = snapshot.allowance;
+                    nextExistingCounts[p] = snapshot.existingCount;
+                    nextTruncatedReasons[p] = snapshot.truncatedReason;
+                    nextCursors[p] = snapshot.nextCursor;
+                    nextPages[p] = snapshot.page;
+                    for (const row of snapshot.rows) {
+                        const game = row.game;
                         nextRows.push({
                             game,
+                            ticket: row.ticket,
                             provider: p,
                             externalId: parseExternalId(game),
                             isNew: true,
                             selected: true,
                         });
                     }
-                    for (const game of existingGames) {
-                        nextRows.push({
-                            game,
-                            provider: p,
-                            externalId: parseExternalId(game),
-                            isNew: false,
-                            selected: false,
-                        });
-                    }
                 } catch (error) {
+                    if (
+                        controller.signal.aborted ||
+                        (error instanceof Error &&
+                            error.name === 'AbortError')
+                    ) {
+                        throw error;
+                    }
                     if (!runIsCurrent(run)) return;
                     failures.push({
                         provider: p,
@@ -325,7 +368,7 @@ export function SyncGamesModal({
             }
 
             if (!runIsCurrent(run)) return;
-            if (failures.length === enabledProviders.length) {
+            if (failures.length === providersToFetch.length) {
                 throw new Error(
                     failures.map((failure) => failure.error).join(' ')
                 );
@@ -334,6 +377,11 @@ export function SyncGamesModal({
             nextRows.sort((a, b) => +new Date(b.game.playedAt) - +new Date(a.game.playedAt));
             setRows(nextRows);
             setProviderErrors(failures);
+            setAllowances(nextAllowances);
+            setExistingCounts(nextExistingCounts);
+            setTruncatedReasons(nextTruncatedReasons);
+            setHistoryCursors(nextCursors);
+            setHistoryPages(nextPages);
 
             if (failures.length > 0) {
                 toast.warning(
@@ -343,11 +391,20 @@ export function SyncGamesModal({
             } else {
                 toast.success(`Fetched ${nextRows.length} games`, { id: toastId });
             }
+            setRunSummary(null);
             setStep('review');
         } catch (e) {
+            if (
+                controller.signal.aborted ||
+                (e instanceof Error && e.name === 'AbortError')
+            ) {
+                toast.dismiss(toastId);
+                return;
+            }
             if (!runIsCurrent(run)) return;
             toast.error(e instanceof Error ? e.message : 'Fetch failed', { id: toastId });
         } finally {
+            finishAbortableOperation(controller);
             if (runIsCurrent(run)) {
                 setBusy(false);
             } else {
@@ -362,7 +419,7 @@ export function SyncGamesModal({
             toast.error('Your session changed. Reopen sync and try again.');
             return;
         }
-        const toSave = rows.filter((r) => r.isNew && r.selected).map((r) => r.game);
+        const toSave = rows.filter((r) => r.isNew && r.selected);
         if (toSave.length === 0) {
             toast.message('No new games selected');
             return;
@@ -370,29 +427,43 @@ export function SyncGamesModal({
 
         setStep('saving');
         setBusy(true);
+        operationControllerRef.current?.abort();
+        operationControllerRef.current = null;
+        setOperationPhase('committing');
         const toastId = toast.loading('Saving games…');
         try {
-            const res = await saveGamesToLibrary({ games: toSave });
+            const res = await saveHistoricalGamesToLibrary({
+                ownerId: run.ownerId,
+                items: toSave.map((row) => ({
+                    game: row.game,
+                    ticket: row.ticket,
+                })),
+            });
             if (!runIsCurrent(run)) return;
             const summary: SyncRunSummary = {
                 selected: toSave.length,
-                saved: res.saved,
-                skipped: res.skipped,
-                importErrors: res.errors?.length ?? 0,
+                imported: res.imported,
+                duplicates: dupCount + res.duplicates,
+                failed: res.failed,
+                capRejected: res.capRejected,
                 browserRequested: 0,
                 serverQueued: 0,
                 serverSkipped: 0,
                 analysisError: null,
                 providerErrors: [...providerErrors],
             };
+            setAllowances((current) => ({
+                ...current,
+                ...res.allowances,
+            }));
             clearLastAnalysisCompletion(run.ownerId);
-            if (res.skipped > 0 || res.errors?.length) {
+            if (res.failed > 0 || res.duplicates > 0) {
                 toast.warning(
-                    `Imported ${res.saved} of ${toSave.length} selected games.`,
+                    `Imported ${res.imported} of ${toSave.length} selected games.`,
                     { id: toastId }
                 );
             } else {
-                toast.success(`Saved ${res.saved} games`, { id: toastId });
+                toast.success(`Imported ${res.imported} games`, { id: toastId });
             }
 
             if (enableAnalyze && (analyzeInBrowserAfter || queueServerAnalysisAfter)) {
@@ -467,6 +538,7 @@ export function SyncGamesModal({
             toast.error(e instanceof Error ? e.message : 'Save failed', { id: toastId });
             setStep('review');
         } finally {
+            setOperationPhase('idle');
             if (runIsCurrent(run)) {
                 setBusy(false);
             } else {
@@ -481,20 +553,70 @@ export function SyncGamesModal({
         );
     }
 
+    const hasOlderHistoryPage =
+        historyCursors.lichess !== null ||
+        historyCursors.chesscom !== null;
+    const unresolvedPageGames = runSummary
+        ? unresolvedHistoryPageGameCount({
+              newCount,
+              selectedCount: runSummary.selected,
+              failed: runSummary.failed,
+          })
+        : Math.max(0, newCount - selectedCount);
+
+    function resetHistoryTraversal() {
+        setHistoryCursors({ lichess: null, chesscom: null });
+        setHistoryPages({ lichess: 1, chesscom: 1 });
+        setRows([]);
+        setRunSummary(null);
+        setProviderErrors([]);
+        setTruncatedReasons({ lichess: null, chesscom: null });
+        setContinueReviewOpen(false);
+        setStep('config');
+    }
+
+    async function continueHistoryTraversal() {
+        setContinueReviewOpen(false);
+        await fetchStep({ ...historyCursors });
+    }
+
+    function requestHistoryContinuation() {
+        if (unresolvedPageGames > 0) {
+            setContinueReviewOpen(true);
+            return;
+        }
+        void continueHistoryTraversal();
+    }
+
     async function prepareServerReview() {
         const run = captureOwnerRun(ownerEpochRef.current);
         if (!run || !runIsCurrent(run)) {
             toast.error('Your session changed. Reopen sync and try again.');
             return;
         }
+        setServerReviewOpen(false);
         setBusy(true);
+        const controller = beginAbortableOperation('preparing-save');
         try {
-            const latestStatus = await getSyncStatus();
+            const latestStatus = await getSyncStatus({
+                signal: controller.signal,
+            });
             if (!runIsCurrent(run)) return;
+            if (latestStatus.ownerId !== run.ownerId) {
+                throw new Error(
+                    'The server returned credit capacity for a different account.'
+                );
+            }
             setStatus(latestStatus);
             setStatusOwnerId(run.ownerId);
             setServerReviewOpen(true);
         } catch (error) {
+            if (
+                controller.signal.aborted ||
+                (error instanceof Error && error.name === 'AbortError')
+            ) {
+                return;
+            }
             if (!runIsCurrent(run)) return;
             toast.error(
                 error instanceof Error
@@ -502,6 +624,7 @@ export function SyncGamesModal({
                     : 'Could not verify server credit capacity'
                 );
         } finally {
+            finishAbortableOperation(controller);
             if (runIsCurrent(run)) setBusy(false);
         }
     }
@@ -512,10 +635,19 @@ export function SyncGamesModal({
             toast.error('Your session changed. Reopen sync and try again.');
             return;
         }
+        setServerReviewOpen(false);
         setBusy(true);
+        const controller = beginAbortableOperation('preparing-save');
         try {
-            const latestStatus = await getSyncStatus();
+            const latestStatus = await getSyncStatus({
+                signal: controller.signal,
+            });
             if (!runIsCurrent(run)) return;
+            if (latestStatus.ownerId !== run.ownerId) {
+                throw new Error(
+                    'The server returned credit capacity for a different account.'
+                );
+            }
             setStatus(latestStatus);
             setStatusOwnerId(run.ownerId);
             const capacity = latestStatus.billing;
@@ -526,10 +658,24 @@ export function SyncGamesModal({
                 );
                 return;
             }
-            setServerReviewOpen(false);
+            finishAbortableOperation(controller);
             await saveStep(run);
             if (!runIsCurrent(run)) return;
+        } catch (error) {
+            if (
+                controller.signal.aborted ||
+                (error instanceof Error && error.name === 'AbortError')
+            ) {
+                return;
+            }
+            if (!runIsCurrent(run)) return;
+            toast.error(
+                error instanceof Error
+                    ? error.message
+                    : 'Could not verify server credit capacity'
+            );
         } finally {
+            finishAbortableOperation(controller);
             if (runIsCurrent(run)) setBusy(false);
         }
     }
@@ -542,12 +688,13 @@ export function SyncGamesModal({
         });
         setProviderErrors([]);
         setRows([]);
+        setHistoryCursors({ lichess: null, chesscom: null });
+        setHistoryPages({ lichess: 1, chesscom: 1 });
         setRunSummary(null);
         setStep('config');
     }
 
-    const modalTitle =
-        context === 'home' ? 'Sync games to your account' : 'Sync new games';
+    const modalTitle = 'Import older games';
 
     return (
         <>
@@ -568,6 +715,7 @@ export function SyncGamesModal({
             />
             <DialogPrimitive.Content
                 aria-describedby="sync-games-description"
+                data-context={context}
                 style={{
                     position: 'fixed',
                     left: '50%',
@@ -588,10 +736,10 @@ export function SyncGamesModal({
                     gap: 12,
                 }}
                 onEscapeKeyDown={(event) => {
-                    if (busy) event.preventDefault();
+                    if (closeProtected) event.preventDefault();
                 }}
                 onInteractOutside={(event) => {
-                    if (busy) event.preventDefault();
+                    if (closeProtected) event.preventDefault();
                 }}
             >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
@@ -601,6 +749,8 @@ export function SyncGamesModal({
                     <button
                         type="button"
                         onClick={close}
+                        disabled={closeProtected}
+                        aria-disabled={closeProtected}
                         style={{
                             height: 30,
                             padding: '0 10px',
@@ -608,19 +758,20 @@ export function SyncGamesModal({
                             border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))',
                             background: 'hsl(var(--background, 0 0% 100%))',
                             fontWeight: 700,
-                            cursor: busy ? 'not-allowed' : 'pointer',
-                            opacity: busy ? 0.5 : 1,
+                            cursor: closeProtected ? 'not-allowed' : 'pointer',
+                            opacity: closeProtected ? 0.5 : 1,
                         }}
                     >
-                        Close
+                        {operationCanCancel ? 'Cancel' : 'Close'}
                     </button>
                 </div>
                 <DialogPrimitive.Description
                     id="sync-games-description"
                     style={{ fontSize: 12, opacity: 0.8 }}
                 >
-                    Choose linked providers, review the exact games, then import
-                    them with optional browser or server analysis.
+                    Add a bounded snapshot of up to 2,000 older games per
+                    connected source. Syncing is free. Analysis is separate and
+                    only server analysis uses credits.
                 </DialogPrimitive.Description>
 
                 {currentStep === 'config' ? (
@@ -640,60 +791,81 @@ export function SyncGamesModal({
                                     fontSize: 12,
                                 }}
                             >
-                                Sync status unavailable: {currentStatusError}. Close and reopen
+                                Source status unavailable: {currentStatusError}. Close and reopen
                                 this dialog to retry.
                             </div>
                         ) : null}
                         <div style={{ fontSize: 12, opacity: 0.8 }}>
-                            Choose providers and filters. We’ll only import games not already in your library.
+                            Choose connected sources. We’ll find the most recent
+                            older games and skip anything already in your
+                            library. Use Sync now outside this dialog for future
+                            games.
                         </div>
 
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+                        <div
+                            style={{
+                                display: 'grid',
+                                gridTemplateColumns:
+                                    'repeat(auto-fit, minmax(min(100%, 180px), 1fr))',
+                                gap: 12,
+                            }}
+                        >
                             <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
                                 <input
                                     type="checkbox"
                                     checked={providers.lichess}
+                                    disabled={!currentStatus?.linked.lichessUsername}
                                     onChange={(e) => setProviders((p) => ({ ...p, lichess: e.target.checked }))}
                                 />
-                                <span>Lichess</span>
+                                <span>
+                                    Lichess
+                                    {currentStatus?.linked.lichessUsername
+                                        ? ` · up to 2,000 for ${currentStatus.linked.lichessUsername}`
+                                        : ' · not connected'}
+                                </span>
                             </label>
                             <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
                                 <input
                                     type="checkbox"
                                     checked={providers.chesscom}
+                                    disabled={!currentStatus?.linked.chesscomUsername}
                                     onChange={(e) => setProviders((p) => ({ ...p, chesscom: e.target.checked }))}
                                 />
-                                <span>Chess.com</span>
+                                <span>
+                                    Chess.com
+                                    {currentStatus?.linked.chesscomUsername
+                                        ? ` · up to 2,000 for ${currentStatus.linked.chesscomUsername}`
+                                        : ' · not connected'}
+                                </span>
                             </label>
-
-                            <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.8 }}>
-                                <span>Max games</span>
-                                <input
-                                    inputMode="numeric"
-                                    value={String(filters.max)}
-                                    onChange={(e) => setFilters((f) => ({ ...f, max: Number(e.target.value) || 50 }))}
-                                    style={{ height: 36, borderRadius: 10, border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', padding: '0 10px', background: 'transparent', color: 'inherit' }}
-                                />
-                            </label>
-
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.8 }}>
                                 <span>Time class</span>
                                 <MultiSelect
                                     options={timeClassOptions}
                                     value={filters.timeClasses}
-                                    onChange={(next) => setFilters((f) => ({ ...f, timeClasses: next as TimeClass[] }))}
+                                    onChange={(next) =>
+                                        setFilters((current) => ({
+                                            ...current,
+                                            timeClasses: next as TimeClass[],
+                                        }))
+                                    }
                                     placeholder="Any"
                                     searchPlaceholder="Search…"
                                     maxBadges={2}
                                     triggerClassName="h-9 text-xs"
                                 />
                             </div>
-
                             <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.8 }}>
                                 <span>Rated</span>
                                 <select
                                     value={filters.rated}
-                                    onChange={(e) => setFilters((f) => ({ ...f, rated: e.target.value as SyncFilters['rated'] }))}
+                                    onChange={(event) =>
+                                        setFilters((current) => ({
+                                            ...current,
+                                            rated: event.target
+                                                .value as HistoricalGameFilters['rated'],
+                                        }))
+                                    }
                                     style={{ height: 36, borderRadius: 10, border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', padding: '0 10px', background: 'transparent', color: 'inherit' }}
                                 >
                                     <option value="any">Any</option>
@@ -701,23 +873,31 @@ export function SyncGamesModal({
                                     <option value="casual">Casual only</option>
                                 </select>
                             </label>
-
                             <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.8 }}>
                                 <span>Since</span>
                                 <input
-                                    value={filters.since ? filters.since.slice(0, 10) : ''}
+                                    value={filters.since?.slice(0, 10) ?? ''}
                                     type="date"
-                                    onChange={(e) => setFilters((f) => ({ ...f, since: e.target.value ? new Date(e.target.value).toISOString() : undefined }))}
+                                    onChange={(event) =>
+                                        setFilters((current) => ({
+                                            ...current,
+                                            since: event.target.value || undefined,
+                                        }))
+                                    }
                                     style={{ height: 36, borderRadius: 10, border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', padding: '0 10px', background: 'transparent', color: 'inherit' }}
                                 />
                             </label>
-
                             <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, opacity: 0.8 }}>
                                 <span>Until</span>
                                 <input
-                                    value={filters.until ? filters.until.slice(0, 10) : ''}
+                                    value={filters.until?.slice(0, 10) ?? ''}
                                     type="date"
-                                    onChange={(e) => setFilters((f) => ({ ...f, until: e.target.value ? new Date(e.target.value + 'T23:59:59.999Z').toISOString() : undefined }))}
+                                    onChange={(event) =>
+                                        setFilters((current) => ({
+                                            ...current,
+                                            until: event.target.value || undefined,
+                                        }))
+                                    }
                                     style={{ height: 36, borderRadius: 10, border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))', padding: '0 10px', background: 'transparent', color: 'inherit' }}
                                 />
                             </label>
@@ -760,7 +940,7 @@ export function SyncGamesModal({
                         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                             <button
                                 type="button"
-                                onClick={fetchStep}
+                                onClick={() => void fetchStep()}
                                 disabled={busy || currentStatusLoading || !!currentStatusError}
                                 style={{
                                     height: 36,
@@ -778,10 +958,11 @@ export function SyncGamesModal({
                                         busy || currentStatusLoading || currentStatusError ? 0.7 : 1,
                                 }}
                             >
-                                Fetch games
+                                Find older games
                             </button>
                             <div style={{ fontSize: 12, opacity: 0.75 }}>
-                                Last sync: lichess {currentStatus?.lastSync.lichess ? new Date(currentStatus.lastSync.lichess).toLocaleDateString() : '—'} • chesscom {currentStatus?.lastSync.chesscom ? new Date(currentStatus.lastSync.chesscom).toLocaleDateString() : '—'}
+                                Importing is free. You choose separately whether
+                                and where to analyze the new games.
                             </div>
                         </div>
                     </>
@@ -808,9 +989,59 @@ export function SyncGamesModal({
                                 Games fetched from the other provider remain available to import.
                             </div>
                         ) : null}
+                        {(['lichess', 'chesscom'] as const).some(
+                            (provider) => truncatedReasons[provider] !== null
+                        ) ? (
+                            <div
+                                role="status"
+                                style={{
+                                    border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))',
+                                    borderRadius: 10,
+                                    padding: 10,
+                                    fontSize: 12,
+                                }}
+                            >
+                                {(['lichess', 'chesscom'] as const)
+                                    .filter(
+                                        (provider) =>
+                                            truncatedReasons[provider] !== null
+                                    )
+                                    .map((provider) => {
+                                        const label =
+                                            provider === 'lichess'
+                                                ? 'Lichess'
+                                                : 'Chess.com';
+                                        return (
+                                            <div key={provider}>
+                                                <strong>{label}:</strong>{' '}
+                                                {truncatedReasons[provider] ===
+                                                'allowance'
+                                                    ? 'This is the final importable batch for this account’s 2,000-game history allowance.'
+                                                    : truncatedReasons[
+                                                            provider
+                                                        ] ===
+                                                        'provider-page'
+                                                      ? `Page ${historyPages[provider]}. Import this page, then continue explicitly to older games.`
+                                                      : 'This review page reached the safe response-size limit. Import it, then Start over to recover every remaining game on this page.'}
+                                            </div>
+                                        );
+                                    })}
+                            </div>
+                        ) : null}
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                            <div style={{ fontSize: 12, opacity: 0.85 }}>
-                                New: <strong>{newCount}</strong> • Existing: <strong>{dupCount}</strong> • Selected: <strong>{selectedCount}</strong>
+                            <div style={{ display: 'grid', gap: 4, fontSize: 12, opacity: 0.85 }}>
+                                <div>
+                                    New: <strong>{newCount}</strong> • Existing: <strong>{dupCount}</strong> • Selected: <strong>{selectedCount}</strong>
+                                </div>
+                                <div>
+                                    {(['lichess', 'chesscom'] as const)
+                                        .filter((provider) => allowances[provider])
+                                        .map((provider) => {
+                                            const value = allowances[provider];
+                                            return `${provider === 'lichess' ? 'Lichess' : 'Chess.com'}: ${value?.remaining ?? 0} of ${value?.limit ?? 0} imports remaining`;
+                                        })
+                                        .join(' • ')}
+                                </div>
                             </div>
                             <div style={{ display: 'flex', gap: 10 }}>
                                 <button
@@ -862,7 +1093,14 @@ export function SyncGamesModal({
                                 </thead>
                                 <tbody>
                                     {rows.map((r) => (
-                                        <tr key={`${r.provider}:${r.externalId}`} style={{ borderTop: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))' }}>
+                                        <tr
+                                            key={`${r.provider}:${r.externalId}`}
+                                            style={{
+                                                borderTop: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))',
+                                                contentVisibility: 'auto',
+                                                containIntrinsicSize: '44px',
+                                            }}
+                                        >
                                             <td style={{ padding: 10 }}>
                                                 {r.isNew ? (
                                                     <input
@@ -927,9 +1165,32 @@ export function SyncGamesModal({
                             >
                                 Import selected
                             </button>
+                            {hasOlderHistoryPage &&
+                            selectedCount === 0 ? (
+                                <button
+                                    type="button"
+                                    onClick={requestHistoryContinuation}
+                                    disabled={busy}
+                                    style={{
+                                        height: 36,
+                                        padding: '0 12px',
+                                        borderRadius: 10,
+                                        border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))',
+                                        background: 'transparent',
+                                        fontWeight: 700,
+                                        cursor: busy
+                                            ? 'not-allowed'
+                                            : 'pointer',
+                                    }}
+                                >
+                                    {newCount > 0
+                                        ? `Skip ${newCount} and continue older`
+                                        : 'Continue to older games'}
+                                </button>
+                            ) : null}
                             <button
                                 type="button"
-                                onClick={() => setStep('config')}
+                                onClick={resetHistoryTraversal}
                                 disabled={busy}
                                 style={{
                                     height: 36,
@@ -942,7 +1203,7 @@ export function SyncGamesModal({
                                     opacity: busy ? 0.6 : 1,
                                 }}
                             >
-                                Back
+                                Start over
                             </button>
                         </div>
                     </>
@@ -956,8 +1217,7 @@ export function SyncGamesModal({
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                         <div style={{ fontWeight: 800 }}>
                             {runSummary?.analysisError ||
-                            (runSummary?.importErrors ?? 0) > 0 ||
-                            (runSummary?.skipped ?? 0) > 0 ||
+                            (runSummary?.failed ?? 0) > 0 ||
                             (runSummary?.serverSkipped ?? 0) > 0 ||
                             (runSummary?.providerErrors.length ?? 0) > 0
                                 ? 'Imported with follow-up needed'
@@ -977,13 +1237,29 @@ export function SyncGamesModal({
                             >
                                 <div>
                                     Selected <strong>{runSummary.selected}</strong> • Imported{' '}
-                                    <strong>{runSummary.saved}</strong>
-                                    {runSummary.skipped > 0
-                                        ? ` • Skipped ${runSummary.skipped}`
+                                    <strong>{runSummary.imported}</strong>
+                                    {runSummary.duplicates > 0
+                                        ? ` • Already in library ${runSummary.duplicates}`
                                         : ''}
-                                    {runSummary.importErrors > 0
-                                        ? ` • ${runSummary.importErrors} import errors`
+                                    {runSummary.failed > 0
+                                        ? ` • Failed ${runSummary.failed}`
                                         : ''}
+                                </div>
+                                {runSummary.capRejected > 0 ? (
+                                    <div>
+                                        {runSummary.capRejected} selected game
+                                        {runSummary.capRejected === 1 ? '' : 's'} exceeded
+                                        the 2,000-game allowance for that source.
+                                    </div>
+                                ) : null}
+                                <div>
+                                    {(['lichess', 'chesscom'] as const)
+                                        .filter((provider) => allowances[provider])
+                                        .map((provider) => {
+                                            const value = allowances[provider];
+                                            return `${provider === 'lichess' ? 'Lichess' : 'Chess.com'}: ${value?.remaining ?? 0} imports remaining`;
+                                        })
+                                        .join(' • ')}
                                 </div>
                                 {runSummary.browserRequested > 0 ? (
                                     <div>
@@ -1022,6 +1298,31 @@ export function SyncGamesModal({
                             </div>
                         ) : null}
                         <div style={{ display: 'flex', gap: 10 }}>
+                            {hasOlderHistoryPage ? (
+                                <button
+                                    type="button"
+                                    onClick={requestHistoryContinuation}
+                                    disabled={busy}
+                                    style={{
+                                        height: 36,
+                                        padding: '0 12px',
+                                        borderRadius: 10,
+                                        border: '1px solid transparent',
+                                        background:
+                                            'hsl(var(--primary, 222.2 47.4% 11.2%))',
+                                        color:
+                                            'hsl(var(--primary-foreground, 210 40% 98%))',
+                                        fontWeight: 750,
+                                        cursor: busy
+                                            ? 'not-allowed'
+                                            : 'pointer',
+                                    }}
+                                >
+                                    {unresolvedPageGames > 0
+                                        ? `Skip ${unresolvedPageGames} and continue older`
+                                        : 'Continue to older games'}
+                                </button>
+                            ) : null}
                             {(runSummary?.providerErrors.length ?? 0) > 0 ? (
                                 <button
                                     type="button"
@@ -1057,12 +1358,42 @@ export function SyncGamesModal({
                             >
                                 Close
                             </button>
+                            <button
+                                type="button"
+                                onClick={resetHistoryTraversal}
+                                style={{
+                                    height: 36,
+                                    padding: '0 12px',
+                                    borderRadius: 10,
+                                    border: '1px solid hsl(var(--border, 214.3 31.8% 91.4%))',
+                                    background: 'transparent',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                Start over
+                            </button>
                         </div>
                     </div>
                 ) : null}
             </DialogPrimitive.Content>
             </DialogPrimitive.Portal>
         </DialogPrimitive.Root>
+        <ActionConfirmDialog
+            open={continueReviewOpen && statusOwnerId === ownerId}
+            onOpenChange={setContinueReviewOpen}
+            title="Continue past unimported games?"
+            description={`This page still has ${unresolvedPageGames} unimported game${unresolvedPageGames === 1 ? '' : 's'}. Continuing moves this review to older games.`}
+            confirmLabel={`Skip ${unresolvedPageGames} and continue`}
+            onConfirm={continueHistoryTraversal}
+            busy={busy}
+        >
+            <div style={{ fontSize: 12 }}>
+                Skipped games are not deleted or lost. Choose{' '}
+                <strong>Start over</strong>, or reopen this dialog, to review
+                them again from the newest page.
+            </div>
+        </ActionConfirmDialog>
         <ActionConfirmDialog
             open={serverReviewOpen && statusOwnerId === ownerId}
             onOpenChange={setServerReviewOpen}

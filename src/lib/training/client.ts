@@ -5,8 +5,8 @@ import type {
     SubmitTrainingAttemptResponse,
     TrainingApiErrorResponse,
     TrainingMomentResponse,
-    TrainingSessionRequest,
-    TrainingSessionResponse,
+    PracticeFeedRequest,
+    PracticeFeedResponse,
 } from '@/lib/training/api';
 
 export class TrainingClientError extends Error {
@@ -69,10 +69,10 @@ function appendMany(
     for (const value of values ?? []) params.append(key, value);
 }
 
-export async function fetchTrainingSession(
-    request: TrainingSessionRequest = {},
+export async function fetchPracticeFeed(
+    request: PracticeFeedRequest = {},
     signal?: AbortSignal
-): Promise<TrainingSessionResponse> {
+): Promise<PracticeFeedResponse> {
     const params = new URLSearchParams();
     if (typeof request.limit === 'number') {
         params.set('limit', String(request.limit));
@@ -101,13 +101,13 @@ export async function fetchTrainingSession(
 
     const query = params.toString();
     const response = await fetch(
-        `/api/training/session${query ? `?${query}` : ''}`,
+        `/api/training/feed${query ? `?${query}` : ''}`,
         {
             cache: 'no-store',
             signal,
         }
     );
-    return readJson<TrainingSessionResponse>(response);
+    return readJson<PracticeFeedResponse>(response);
 }
 
 export async function fetchTrainingMoment(

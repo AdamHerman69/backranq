@@ -87,7 +87,6 @@ export async function analyzeGameJob(
         const transitionedRun = await transitionAnalysisRunForJob({
             jobId: job.id,
             status: 'RUNNING',
-            queuedReason: job.queuedReason,
             config,
             startedAt: running.startedAt,
         });

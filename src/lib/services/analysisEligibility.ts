@@ -1,24 +1,15 @@
 import type { Provider, TimeClass } from '@prisma/client';
+import {
+    canonicalPreferences,
+    type AutoAnalysisPolicy,
+    type AutoAnalysisProviderKey,
+    type AutoAnalysisResultScope,
+    type AutoAnalysisTimeControlKey,
+} from '@/lib/preferences';
 
-export type AutoAnalysisResultScope = 'losses' | 'draws' | 'all';
-export type ProviderKey = 'lichess' | 'chesscom';
-export type TimeControlKey =
-    | 'bullet'
-    | 'blitz'
-    | 'rapid'
-    | 'classical'
-    | 'unknown';
-
-export type AutoAnalysisRules = {
-    enabled: boolean;
-    providers: Record<ProviderKey, boolean>;
-    resultScope: AutoAnalysisResultScope;
-    timeControls: Record<TimeControlKey, boolean>;
-    ratedOnly: boolean;
-    minPlies: number;
-    dailyCap: number | null;
-    monthlyCap: number | null;
-};
+export type ProviderKey = AutoAnalysisProviderKey;
+export type TimeControlKey = AutoAnalysisTimeControlKey;
+export type AutoAnalysisRules = AutoAnalysisPolicy;
 
 export type AutoAnalysisGameCandidate = {
     id?: string;
@@ -29,6 +20,7 @@ export type AutoAnalysisGameCandidate = {
     pgn?: string | null;
     whiteName?: string | null;
     blackName?: string | null;
+    createdAt?: Date | string | null;
     white?: { name?: string | null };
     black?: { name?: string | null };
 };
@@ -40,75 +32,37 @@ export type AutoAnalysisEligibility = {
     rules: AutoAnalysisRules;
 };
 
-const DEFAULT_TIME_CONTROLS: Record<TimeControlKey, boolean> = {
-    bullet: false,
-    blitz: true,
-    rapid: true,
-    classical: true,
-    unknown: false,
-};
-
-const TIME_CONTROLS: TimeControlKey[] = [
-    'bullet',
-    'blitz',
-    'rapid',
-    'classical',
-    'unknown',
-];
-
 export function autoAnalysisRulesFromPreferences(
     preferences: unknown
 ): AutoAnalysisRules {
-    const prefs = record(preferences) ?? {};
-    const nested = record(prefs.autoAnalysis) ?? {};
-    const enabled =
-        prefs.autoAnalyzeEnabled === true || nested.enabled === true;
-    const providerPrefs =
-        record(prefs.autoAnalyzeProviders) ??
-        record(prefs.autoAnalysisProviders) ??
-        record(nested.providers) ??
-        record(prefs.autoSyncProviders);
-    const timeControlPrefs =
-        prefs.autoAnalyzeTimeControls ??
-        prefs.autoAnalysisTimeControls ??
-        nested.timeControls;
-
-    return {
-        enabled,
-        providers: normalizeProviders(providerPrefs),
-        resultScope: normalizeResultScope(
-            nested.resultScope ?? prefs.autoAnalyzeResultScope
-        ),
-        timeControls: normalizeTimeControls(timeControlPrefs),
-        ratedOnly: normalizeBoolean(
-            nested.ratedOnly ?? prefs.autoAnalyzeRatedOnly,
-            true
-        ),
-        minPlies: normalizeNonNegativeInteger(
-            nested.minPlies ?? prefs.autoAnalyzeMinPlies,
-            20
-        ),
-        dailyCap: normalizeNullablePositiveInteger(
-            nested.dailyCap ?? prefs.autoAnalyzeDailyCap
-        ),
-        monthlyCap: normalizeNullablePositiveInteger(
-            nested.monthlyCap ?? prefs.autoAnalyzeMonthlyCap
-        ),
-    };
+    return canonicalPreferences(preferences).autoAnalysis;
 }
 
 export function evaluateAutoAnalysisEligibility(args: {
     preferences: unknown;
     game: AutoAnalysisGameCandidate;
     username?: string | null;
+    usernameByProvider?: Partial<Record<ProviderKey, string | null>>;
 }): AutoAnalysisEligibility {
     const rules = autoAnalysisRulesFromPreferences(args.preferences);
     const provider = providerKey(args.game.provider);
     const timeControl = timeControlKey(args.game.timeClass);
     const plies = countPgnPlies(args.game.pgn ?? '');
-    const perspective = perspectiveResult(args.game, args.username);
+    const perspective = perspectiveResult(
+        args.game,
+        args.usernameByProvider?.[provider] ?? args.username
+    );
 
     if (!rules.enabled) return ineligible(rules, 'disabled');
+    if (
+        rules.backlogMode === 'new' &&
+        rules.enabledAt &&
+        (!args.game.createdAt ||
+            new Date(args.game.createdAt).getTime() <
+                new Date(rules.enabledAt).getTime())
+    ) {
+        return ineligible(rules, 'before-enabled');
+    }
     if (!rules.providers[provider]) return ineligible(rules, 'provider');
     if (!rules.timeControls[timeControl]) {
         return ineligible(rules, 'time-control');
@@ -141,6 +95,7 @@ export function eligibleAutoAnalysisGameIds<T extends AutoAnalysisGameCandidate>
         games: T[];
         gameId: (game: T) => string | null | undefined;
         username?: string | null;
+        usernameByProvider?: Partial<Record<ProviderKey, string | null>>;
     }
 ) {
     return args.games
@@ -151,6 +106,7 @@ export function eligibleAutoAnalysisGameIds<T extends AutoAnalysisGameCandidate>
                 preferences: args.preferences,
                 game,
                 username: args.username,
+                usernameByProvider: args.usernameByProvider,
             }),
         }))
         .filter(
@@ -174,44 +130,6 @@ function ineligible(
     return { eligible: false, reason, priority: 0, rules };
 }
 
-function normalizeProviders(
-    value: Record<string, unknown> | null
-): Record<ProviderKey, boolean> {
-    if (!value) return { lichess: true, chesscom: true };
-    return {
-        lichess: normalizeBoolean(value.lichess, false),
-        chesscom: normalizeBoolean(value.chesscom, false),
-    };
-}
-
-function normalizeTimeControls(value: unknown): Record<TimeControlKey, boolean> {
-    if (Array.isArray(value)) {
-        const selected = new Set(
-            value.filter((item): item is TimeControlKey =>
-                TIME_CONTROLS.includes(item as TimeControlKey)
-            )
-        );
-        return Object.fromEntries(
-            TIME_CONTROLS.map((key) => [key, selected.has(key)])
-        ) as Record<TimeControlKey, boolean>;
-    }
-    const entries = record(value);
-    if (!entries) return { ...DEFAULT_TIME_CONTROLS };
-    return Object.fromEntries(
-        TIME_CONTROLS.map((key) => [
-            key,
-            normalizeBoolean(entries[key], DEFAULT_TIME_CONTROLS[key]),
-        ])
-    ) as Record<TimeControlKey, boolean>;
-}
-
-function normalizeResultScope(value: unknown): AutoAnalysisResultScope {
-    if (value === 'all' || value === 'draws' || value === 'losses') {
-        return value;
-    }
-    return 'losses';
-}
-
 function resultInScope(
     scope: AutoAnalysisResultScope,
     perspective: 'win' | 'loss' | 'draw' | 'unknown'
@@ -226,13 +144,13 @@ function perspectiveResult(
     username?: string | null
 ): 'win' | 'loss' | 'draw' | 'unknown' {
     const result = (game.result ?? '').trim();
-    if (result === '1/2-1/2') return 'draw';
-    if (result !== '1-0' && result !== '0-1') return 'unknown';
-
     const user = normalizeName(username);
     if (!user) return 'unknown';
     const white = normalizeName(game.whiteName ?? game.white?.name);
     const black = normalizeName(game.blackName ?? game.black?.name);
+    if (user !== white && user !== black) return 'unknown';
+    if (result === '1/2-1/2') return 'draw';
+    if (result !== '1-0' && result !== '0-1') return 'unknown';
     if (user === white) return result === '1-0' ? 'win' : 'loss';
     if (user === black) return result === '0-1' ? 'win' : 'loss';
     return 'unknown';
@@ -296,29 +214,6 @@ function timeControlKey(timeClass: TimeClass | TimeControlKey): TimeControlKey {
     }
 }
 
-function normalizeBoolean(value: unknown, fallback: boolean) {
-    return typeof value === 'boolean' ? value : fallback;
-}
-
-function normalizeNonNegativeInteger(value: unknown, fallback: number) {
-    const n = typeof value === 'string' ? Number(value) : value;
-    if (typeof n !== 'number' || !Number.isFinite(n)) return fallback;
-    return Math.max(0, Math.trunc(n));
-}
-
-function normalizeNullablePositiveInteger(value: unknown) {
-    const n = typeof value === 'string' ? Number(value) : value;
-    if (typeof n !== 'number' || !Number.isFinite(n)) return null;
-    const int = Math.trunc(n);
-    return int > 0 ? int : null;
-}
-
 function normalizeName(value: unknown) {
     return typeof value === 'string' ? value.trim().toLowerCase() : '';
-}
-
-function record(value: unknown): Record<string, unknown> | null {
-    return value && typeof value === 'object' && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : null;
 }

@@ -1,7 +1,8 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,6 +15,7 @@ type Props = {
     provider: ChessProvider;
     currentUsername?: string | null;
     onUpdate: (username: string) => Promise<void>;
+    disabled?: boolean;
 };
 
 function labelFor(provider: ChessProvider) {
@@ -29,30 +31,107 @@ function statusBadgeClass(status: Status, isLinked: boolean) {
     return 'bg-muted text-muted-foreground';
 }
 
-export function ChessAccountLink({ provider, currentUsername, onUpdate }: Props) {
+export function ChessAccountLink({
+    provider,
+    currentUsername,
+    onUpdate,
+    disabled = false,
+}: Props) {
     const [username, setUsername] = useState(currentUsername ?? '');
     const [status, setStatus] = useState<Status>('idle');
     const [message, setMessage] = useState<string>('');
     const [saving, setSaving] = useState(false);
+    const [unlinkOpen, setUnlinkOpen] = useState(false);
+    const validationRef = useRef<{
+        requestId: number;
+        controller: AbortController | null;
+        timeoutId: number | null;
+    }>({
+        requestId: 0,
+        controller: null,
+        timeoutId: null,
+    });
 
     const normalizedUsername = useMemo(() => {
         const v = username.trim();
         return provider === 'chesscom' ? v.toLowerCase() : v;
     }, [provider, username]);
+    const currentNormalized = useMemo(() => {
+        const value = (currentUsername ?? '').trim();
+        return provider === 'chesscom' ? value.toLowerCase() : value;
+    }, [currentUsername, provider]);
+
+    useEffect(() => {
+        validationRef.current.requestId += 1;
+        validationRef.current.controller?.abort();
+        if (validationRef.current.timeoutId !== null) {
+            window.clearTimeout(validationRef.current.timeoutId);
+        }
+        validationRef.current.controller = null;
+        validationRef.current.timeoutId = null;
+        setUsername(currentUsername ?? '');
+        setStatus('idle');
+        setMessage('');
+        setSaving(false);
+        setUnlinkOpen(false);
+    }, [currentUsername, disabled]);
+
+    useEffect(
+        () => () => {
+            validationRef.current.requestId += 1;
+            validationRef.current.controller?.abort();
+            if (validationRef.current.timeoutId !== null) {
+                window.clearTimeout(validationRef.current.timeoutId);
+            }
+            validationRef.current.controller = null;
+            validationRef.current.timeoutId = null;
+        },
+        []
+    );
+
+    function invalidateValidation() {
+        validationRef.current.requestId += 1;
+        validationRef.current.controller?.abort();
+        if (validationRef.current.timeoutId !== null) {
+            window.clearTimeout(validationRef.current.timeoutId);
+        }
+        validationRef.current.controller = null;
+        validationRef.current.timeoutId = null;
+    }
 
     async function validate() {
+        if (disabled) return false;
+        invalidateValidation();
+        const requestId = validationRef.current.requestId;
+        const controller = new AbortController();
+        validationRef.current.controller = controller;
+        let timedOut = false;
+        validationRef.current.timeoutId = window.setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, 10_000);
+        const candidate = normalizedUsername;
         setStatus('checking');
         setMessage('');
         try {
             const url = new URL('/api/user/validate', window.location.origin);
             url.searchParams.set('provider', provider);
-            url.searchParams.set('username', normalizedUsername);
-            const res = await fetch(url.toString(), { cache: 'no-store' });
+            url.searchParams.set('username', candidate);
+            const res = await fetch(url.toString(), {
+                cache: 'no-store',
+                signal: controller.signal,
+            });
             const json = (await res.json().catch(() => ({}))) as {
                 ok?: boolean;
                 exists?: boolean;
                 error?: string;
             };
+            if (
+                controller.signal.aborted ||
+                requestId !== validationRef.current.requestId
+            ) {
+                return false;
+            }
             if (!res.ok || json.ok === false) {
                 setStatus('error');
                 setMessage(json.error ?? 'Validation failed');
@@ -67,16 +146,72 @@ export function ChessAccountLink({ provider, currentUsername, onUpdate }: Props)
             setMessage('Username not found');
             return false;
         } catch (e) {
+            if (
+                timedOut &&
+                requestId === validationRef.current.requestId
+            ) {
+                setStatus('error');
+                setMessage(
+                    `${title} validation timed out. Try again.`
+                );
+                return false;
+            }
+            if (
+                controller.signal.aborted ||
+                requestId !== validationRef.current.requestId ||
+                (e instanceof Error && e.name === 'AbortError')
+            ) {
+                return false;
+            }
             setStatus('error');
             setMessage(e instanceof Error ? e.message : 'Unknown error');
             return false;
+        } finally {
+            if (
+                requestId === validationRef.current.requestId &&
+                validationRef.current.controller === controller
+            ) {
+                if (validationRef.current.timeoutId !== null) {
+                    window.clearTimeout(validationRef.current.timeoutId);
+                }
+                validationRef.current.controller = null;
+                validationRef.current.timeoutId = null;
+            }
         }
     }
 
     async function save() {
+        if (disabled) return;
+        invalidateValidation();
         setSaving(true);
         try {
             await onUpdate(normalizedUsername);
+            setMessage(
+                currentNormalized
+                    ? `Linked profile replaced. The next sync will start from ${normalizedUsername}.`
+                    : `Account linked. Checking ${title} for games in the background.`
+            );
+        } catch {
+            // The parent reports the provider-specific save error.
+        } finally {
+            setSaving(false);
+        }
+    }
+
+    async function unlink() {
+        if (disabled) return;
+        invalidateValidation();
+        setSaving(true);
+        try {
+            await onUpdate('');
+            setUsername('');
+            setStatus('idle');
+            setMessage(
+                `${title} disconnected. Imported games remain in your library.`
+            );
+            setUnlinkOpen(false);
+        } catch {
+            // The parent reports the provider-specific save error.
         } finally {
             setSaving(false);
         }
@@ -113,7 +248,10 @@ export function ChessAccountLink({ provider, currentUsername, onUpdate }: Props)
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 <Input
                     value={username}
+                    aria-label={`${title} username`}
+                    disabled={disabled || saving}
                     onChange={(e) => {
+                        invalidateValidation();
                         setUsername(e.target.value);
                         setStatus('idle');
                         setMessage('');
@@ -121,30 +259,65 @@ export function ChessAccountLink({ provider, currentUsername, onUpdate }: Props)
                     placeholder={`${title} username`}
                     className="sm:max-w-sm"
                 />
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                     <Button
                         type="button"
                         variant="outline"
                         onClick={validate}
-                        disabled={status === 'checking' || !normalizedUsername}
+                        disabled={
+                            saving ||
+                            disabled ||
+                            status === 'checking' ||
+                            !normalizedUsername
+                        }
                     >
                         Validate
                     </Button>
                     <Button
                         type="button"
                         onClick={save}
-                        disabled={saving || !normalizedUsername}
+                        disabled={
+                            saving ||
+                            disabled ||
+                            !normalizedUsername ||
+                            normalizedUsername === currentNormalized
+                        }
                     >
-                        Save
+                        {currentUsername ? 'Replace' : 'Link account'}
                     </Button>
+                    {currentUsername ? (
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            onClick={() => setUnlinkOpen(true)}
+                            disabled={disabled || saving}
+                        >
+                            Disconnect
+                        </Button>
+                    ) : null}
                 </div>
             </div>
 
             {message ? (
-                <div className="text-sm text-muted-foreground">{message}</div>
+                <div
+                    className="text-sm text-muted-foreground"
+                    role="status"
+                    aria-live="polite"
+                >
+                    {message}
+                </div>
             ) : null}
+
+            <ActionConfirmDialog
+                open={unlinkOpen}
+                onOpenChange={setUnlinkOpen}
+                title={`Disconnect ${title}?`}
+                description={`Future ${title} sync will stop. Games already imported from this account stay in your library and can be deleted separately.`}
+                confirmLabel={`Disconnect ${title}`}
+                variant="destructive"
+                busy={saving}
+                onConfirm={unlink}
+            />
         </div>
     );
 }
-
-

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type Stripe from 'stripe';
+import { Prisma } from '@prisma/client';
 import { getStripeClient } from '@/lib/stripe';
 import { prisma } from '@/lib/prisma';
 import {
@@ -9,6 +10,7 @@ import {
 } from '@/lib/services/stripeBilling';
 
 export const runtime = 'nodejs';
+const STRIPE_WEBHOOK_PROCESSING_LEASE_MS = 5 * 60 * 1_000;
 
 export async function POST(req: Request) {
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -39,15 +41,35 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
     }
 
+    let processingToken: string | null = null;
     try {
-        const duplicate = await recordStripeWebhookProcessing(event);
-        if (duplicate) {
+        const claim = await claimStripeWebhookEvent(event);
+        if (claim.state === 'succeeded') {
             return NextResponse.json({ received: true, duplicate: true });
         }
+        if (claim.state === 'processing') {
+            return NextResponse.json(
+                { error: 'Stripe webhook is already being processed' },
+                { status: 503 }
+            );
+        }
+        processingToken = claim.processingToken;
         await handleStripeEvent(event);
-        await markStripeWebhookSucceeded(event.id);
+        const marked = await markStripeWebhookSucceeded(
+            event.id,
+            processingToken
+        );
+        if (!marked) {
+            throw new Error('Stripe webhook processing lease was lost');
+        }
     } catch (error) {
-        await markStripeWebhookFailed(event.id, error).catch(() => undefined);
+        if (processingToken) {
+            await markStripeWebhookFailed(
+                event.id,
+                processingToken,
+                error
+            ).catch(() => undefined);
+        }
         return NextResponse.json(
             {
                 error:
@@ -62,48 +84,92 @@ export async function POST(req: Request) {
     return NextResponse.json({ received: true });
 }
 
-async function recordStripeWebhookProcessing(event: Stripe.Event) {
-    const existing = await prisma.stripeWebhookEvent.findUnique({
-        where: { id: event.id },
-        select: { status: true },
-    });
-    if (existing?.status === 'SUCCEEDED' || existing?.status === 'PROCESSING') {
-        return true;
+async function claimStripeWebhookEvent(event: Stripe.Event) {
+    const now = new Date();
+    const processingToken = crypto.randomUUID();
+    const processingUntil = new Date(
+        now.getTime() + STRIPE_WEBHOOK_PROCESSING_LEASE_MS
+    );
+    try {
+        await prisma.stripeWebhookEvent.create({
+            data: {
+                id: event.id,
+                type: event.type,
+                status: 'PROCESSING',
+                processingToken,
+                processingUntil,
+            },
+        });
+        return { state: 'claimed' as const, processingToken };
+    } catch (error) {
+        if (!isUniqueConstraintError(error)) throw error;
     }
 
-    await prisma.stripeWebhookEvent.upsert({
-        where: { id: event.id },
-        update: {
+    const takeover = await prisma.stripeWebhookEvent.updateMany({
+        where: {
+            id: event.id,
+            OR: [
+                { status: 'FAILED' },
+                {
+                    status: 'PROCESSING',
+                    OR: [
+                        { processingUntil: null },
+                        { processingUntil: { lt: now } },
+                    ],
+                },
+            ],
+        },
+        data: {
             type: event.type,
             status: 'PROCESSING',
             attempts: { increment: 1 },
             lastError: null,
-        },
-        create: {
-            id: event.id,
-            type: event.type,
-            status: 'PROCESSING',
+            processedAt: null,
+            processingToken,
+            processingUntil,
         },
     });
-    return false;
+    if (takeover.count === 1) {
+        return { state: 'claimed' as const, processingToken };
+    }
+
+    const existing = await prisma.stripeWebhookEvent.findUnique({
+        where: { id: event.id },
+        select: { status: true },
+    });
+    return existing?.status === 'SUCCEEDED'
+        ? { state: 'succeeded' as const }
+        : { state: 'processing' as const };
 }
 
-async function markStripeWebhookSucceeded(eventId: string) {
-    await prisma.stripeWebhookEvent.update({
-        where: { id: eventId },
+async function markStripeWebhookSucceeded(
+    eventId: string,
+    processingToken: string
+) {
+    const result = await prisma.stripeWebhookEvent.updateMany({
+        where: { id: eventId, status: 'PROCESSING', processingToken },
         data: {
             status: 'SUCCEEDED',
             processedAt: new Date(),
             lastError: null,
+            processingToken: null,
+            processingUntil: null,
         },
     });
+    return result.count === 1;
 }
 
-async function markStripeWebhookFailed(eventId: string, error: unknown) {
-    await prisma.stripeWebhookEvent.update({
-        where: { id: eventId },
+async function markStripeWebhookFailed(
+    eventId: string,
+    processingToken: string,
+    error: unknown
+) {
+    await prisma.stripeWebhookEvent.updateMany({
+        where: { id: eventId, status: 'PROCESSING', processingToken },
         data: {
             status: 'FAILED',
+            processingToken: null,
+            processingUntil: null,
             lastError:
                 error instanceof Error
                     ? error.message.slice(0, 2_000)
@@ -113,31 +179,54 @@ async function markStripeWebhookFailed(eventId: string, error: unknown) {
 }
 
 async function handleStripeEvent(event: Stripe.Event) {
+    const eventFence = {
+        eventId: event.id,
+        eventCreatedAt: new Date(event.created * 1_000),
+    };
     switch (event.type) {
         case 'checkout.session.completed':
             await applyStripeCheckoutSession(
-                event.data.object as Stripe.Checkout.Session
+                event.data.object as Stripe.Checkout.Session,
+                eventFence
             );
             return;
         case 'customer.subscription.created':
-        case 'customer.subscription.updated':
-            await applyStripeSubscription(event.data.object as Stripe.Subscription);
+        case 'customer.subscription.updated': {
+            const eventSubscription =
+                event.data.object as Stripe.Subscription;
+            const currentSubscription =
+                await getStripeClient().subscriptions.retrieve(
+                    eventSubscription.id,
+                    { expand: ['items.data.price'] }
+                );
+            await applyStripeSubscription(currentSubscription, eventFence);
             return;
+        }
         case 'customer.subscription.deleted':
             await markStripeSubscriptionDeleted(
-                event.data.object as Stripe.Subscription
+                event.data.object as Stripe.Subscription,
+                eventFence
             );
             return;
         case 'invoice.paid':
         case 'invoice.payment_failed':
-            await syncSubscriptionFromInvoice(event.data.object as Stripe.Invoice);
+            await syncSubscriptionFromInvoice(
+                event.data.object as Stripe.Invoice,
+                eventFence
+            );
             return;
         default:
             return;
     }
 }
 
-async function syncSubscriptionFromInvoice(invoice: Stripe.Invoice) {
+async function syncSubscriptionFromInvoice(
+    invoice: Stripe.Invoice,
+    eventFence: {
+        eventId: string;
+        eventCreatedAt: Date;
+    }
+) {
     const subscriptionId =
         (invoice as unknown as { subscription?: string | { id: string } | null })
             .subscription ?? null;
@@ -147,5 +236,17 @@ async function syncSubscriptionFromInvoice(invoice: Stripe.Invoice) {
     const subscription = await getStripeClient().subscriptions.retrieve(id, {
         expand: ['items.data.price'],
     });
-    await applyStripeSubscription(subscription);
+    await applyStripeSubscription(subscription, eventFence);
+}
+
+function isUniqueConstraintError(error: unknown) {
+    return (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+    ) || (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: unknown }).code === 'P2002'
+    );
 }

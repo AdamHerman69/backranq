@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
+import {
+    lookupProviderProfile,
+    type ProfileProvider,
+} from '@/lib/providers/profileLookup';
 
 export const runtime = 'nodejs';
 
@@ -23,24 +27,23 @@ export async function GET(req: Request) {
         return NextResponse.json({ ok: true, exists: true });
     }
 
-    try {
-        const endpoint =
-            provider === 'lichess'
-                ? `https://lichess.org/api/user/${encodeURIComponent(username)}`
-                : `https://api.chess.com/pub/player/${encodeURIComponent(
-                      username.toLowerCase()
-                  )}`;
-
-        const res = await fetch(endpoint, { cache: 'no-store' });
-        return NextResponse.json({ ok: true, exists: res.ok });
-    } catch (e) {
-        return NextResponse.json(
-            {
-                ok: false,
-                error: e instanceof Error ? e.message : 'Unknown error',
-            },
-            { status: 502 }
-        );
+    const lookup = await lookupProviderProfile({
+        provider: provider as ProfileProvider,
+        username,
+    });
+    if (lookup.state === 'found') {
+        return NextResponse.json({ ok: true, exists: true });
     }
+    if (lookup.state === 'not-found') {
+        return NextResponse.json({ ok: true, exists: false });
+    }
+    return NextResponse.json(
+        {
+            ok: false,
+            retryable: true,
+            error: lookup.error,
+            sourceStatus: lookup.sourceStatus,
+        },
+        { status: lookup.httpStatus }
+    );
 }
-

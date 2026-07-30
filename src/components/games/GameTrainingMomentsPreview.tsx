@@ -17,14 +17,14 @@ export function GameTrainingMomentsPreview({
             <CardHeader className="pb-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <CardTitle className="text-base">
-                        Training moments from this game
+                        Practice positions from this game
                         <span className="ml-2 text-sm font-normal text-muted-foreground">
                             ({trainingMoments.length})
                         </span>
                     </CardTitle>
                     {trainingMoments.length > 0 ? (
                         <Button asChild variant="outline" size="sm">
-                            <Link href="/training">Train</Link>
+                            <Link href="/practice">Practice</Link>
                         </Button>
                     ) : null}
                 </div>
@@ -32,7 +32,7 @@ export function GameTrainingMomentsPreview({
             <CardContent className="space-y-3">
                 {trainingMoments.length === 0 ? (
                     <div className="text-sm text-muted-foreground">
-                        No active training moments for this game yet.
+                        No active practice positions for this game yet.
                     </div>
                 ) : (
                     <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
@@ -41,7 +41,7 @@ export function GameTrainingMomentsPreview({
                                 <CardContent className="pt-6">
                                     <div className="flex items-center justify-between gap-2">
                                         <Badge variant="secondary">
-                                            Personal decision
+                                            Practice position
                                         </Badge>
                                         <span className="text-sm text-muted-foreground">
                                             Move{' '}
@@ -57,9 +57,9 @@ export function GameTrainingMomentsPreview({
                                             size="sm"
                                         >
                                             <Link
-                                                href={`/training?momentId=${encodeURIComponent(moment.id)}`}
+                                                href={`/practice?momentId=${encodeURIComponent(moment.id)}`}
                                             >
-                                                Train
+                                                Practice
                                             </Link>
                                         </Button>
                                     </div>

@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     getTrainingMomentPrompt,
-    InvalidTrainingCursorError,
-    listTrainingSession,
+    InvalidPracticeFeedCursorError,
+    listPracticeFeed,
 } from '@/lib/training/readService';
 import {
     parseSubmitTrainingAttemptRequest,
-    parseTrainingSessionRequest,
+    parsePracticeFeedRequest,
 } from '@/lib/training/apiValidation';
 
 const promptRow = {
@@ -40,7 +40,7 @@ describe('canonical training API boundary', () => {
             },
         };
 
-        const session = await listTrainingSession({
+        const feed = await listPracticeFeed({
             db: db as never,
             userId: 'user-1',
             request: { limit: 10 },
@@ -58,13 +58,13 @@ describe('canonical training API boundary', () => {
             fen: promptRow.fen,
             sideToMove: 'w',
         };
-        expect(session).toEqual({
+        expect(feed).toEqual({
             items: [expected],
             nextCursor: null,
             appliedFilters: {},
         });
         expect(detail).toEqual({ moment: expected });
-        expect(Object.keys(session.items[0]!).sort()).toEqual(
+        expect(Object.keys(feed.items[0]!).sort()).toEqual(
             ['fen', 'id', 'sideToMove', 'solutionRevisionId'].sort()
         );
         expect(db.trainingMoment.findMany).toHaveBeenCalledWith(
@@ -94,13 +94,13 @@ describe('canonical training API boundary', () => {
             },
         };
 
-        const session = await listTrainingSession({
+        const feed = await listPracticeFeed({
             db: db as never,
             userId: 'user-1',
             request: { limit: 10 },
         });
 
-        expect(session.items).toHaveLength(1);
+        expect(feed.items).toHaveLength(1);
         const call = db.trainingMoment.findMany.mock.calls[0]![0];
         expect(call.where).not.toHaveProperty('attempts');
         expect(call.orderBy).toEqual([
@@ -134,7 +134,7 @@ describe('canonical training API boundary', () => {
             fallbackMinCpLoss,
         }) => {
             const findMany = vi.fn().mockResolvedValue([]);
-            await listTrainingSession({
+            await listPracticeFeed({
                 db: {
                     trainingMoment: { findMany },
                 } as never,
@@ -167,7 +167,7 @@ describe('canonical training API boundary', () => {
         }
     );
 
-    it('uses a stable session snapshot so mutable review timestamps cannot repeat pages', async () => {
+    it('uses a stable feed snapshot so mutable review timestamps cannot repeat pages', async () => {
         const rows = Array.from({ length: 13 }, (_, index) => ({
             ...promptRow,
             id: `moment-${String(index).padStart(2, '0')}`,
@@ -194,7 +194,7 @@ describe('canonical training API boundary', () => {
         let cursor: string | undefined;
 
         do {
-            const page = await listTrainingSession({
+            const page = await listPracticeFeed({
                 db: db as never,
                 userId: 'user-1',
                 request: { limit: 5, cursor },
@@ -229,7 +229,7 @@ describe('canonical training API boundary', () => {
         );
     });
 
-    it('rejects a cursor that forges a future session snapshot', async () => {
+    it('rejects a cursor that forges a future feed snapshot', async () => {
         const findMany = vi.fn().mockResolvedValue([
             promptRow,
             {
@@ -243,7 +243,7 @@ describe('canonical training API boundary', () => {
                 findMany,
             },
         };
-        const first = await listTrainingSession({
+        const first = await listPracticeFeed({
             db: db as never,
             userId: 'user-1',
             request: { limit: 1 },
@@ -257,22 +257,22 @@ describe('canonical training API boundary', () => {
         const cursor = Buffer.from(
             JSON.stringify({
                 ...decoded,
-                sessionStartedAt: '2999-01-01T00:00:00.000Z',
+                feedStartedAt: '2999-01-01T00:00:00.000Z',
             }),
             'utf8'
         ).toString('base64url');
 
         await expect(
-            listTrainingSession({
+            listPracticeFeed({
                 db: db as never,
                 userId: 'user-1',
                 request: { limit: 5, cursor },
             })
-        ).rejects.toBeInstanceOf(InvalidTrainingCursorError);
+        ).rejects.toBeInstanceOf(InvalidPracticeFeedCursorError);
         expect(findMany).toHaveBeenCalledTimes(1);
     });
 
-    it('binds a session cursor to its normalized filters', async () => {
+    it('binds a feed cursor to its normalized filters', async () => {
         const findMany = vi
             .fn()
             .mockResolvedValueOnce([
@@ -287,7 +287,7 @@ describe('canonical training API boundary', () => {
             ])
             .mockResolvedValueOnce([]);
         const db = { trainingMoment: { findMany } };
-        const first = await listTrainingSession({
+        const first = await listPracticeFeed({
             db: db as never,
             userId: 'user-1',
             request: {
@@ -301,7 +301,7 @@ describe('canonical training API boundary', () => {
         expect(first.nextCursor).toEqual(expect.any(String));
 
         await expect(
-            listTrainingSession({
+            listPracticeFeed({
                 db: db as never,
                 userId: 'user-1',
                 request: {
@@ -323,7 +323,7 @@ describe('canonical training API boundary', () => {
         });
 
         await expect(
-            listTrainingSession({
+            listPracticeFeed({
                 db: db as never,
                 userId: 'user-1',
                 request: {
@@ -335,14 +335,14 @@ describe('canonical training API boundary', () => {
                     },
                 },
             })
-        ).rejects.toBeInstanceOf(InvalidTrainingCursorError);
+        ).rejects.toBeInstanceOf(InvalidPracticeFeedCursorError);
         expect(findMany).toHaveBeenCalledTimes(2);
     });
 
     it('parses repeated filters and rejects loose booleans or oversized limits', () => {
-        const parsed = parseTrainingSessionRequest(
+        const parsed = parsePracticeFeedRequest(
             new URL(
-                'http://localhost/api/training/session?focus=meaningful&phase=opening&phase=endgame&sourceKind=my_mistake&theme=quiet-move&includeAttempted=false'
+                'http://localhost/api/training/feed?focus=meaningful&phase=opening&phase=endgame&sourceKind=my_mistake&theme=quiet-move&includeAttempted=false'
             )
         );
         expect(parsed).toEqual({
@@ -356,30 +356,30 @@ describe('canonical training API boundary', () => {
             },
         });
         expect(
-            parseTrainingSessionRequest(
+            parsePracticeFeedRequest(
                 new URL(
-                    'http://localhost/api/training/session?includeAttempted=1'
+                    'http://localhost/api/training/feed?includeAttempted=1'
                 )
             )
         ).toBeNull();
         expect(
-            parseTrainingSessionRequest(
+            parsePracticeFeedRequest(
                 new URL(
-                    'http://localhost/api/training/session?focus=major&focus=meaningful'
+                    'http://localhost/api/training/feed?focus=major&focus=meaningful'
                 )
             )
         ).toBeNull();
         expect(
-            parseTrainingSessionRequest(
+            parsePracticeFeedRequest(
                 new URL(
-                    'http://localhost/api/training/session?focus=extreme'
+                    'http://localhost/api/training/feed?focus=extreme'
                 )
             )
         ).toBeNull();
         expect(
-            parseTrainingSessionRequest(
+            parsePracticeFeedRequest(
                 new URL(
-                    'http://localhost/api/training/session?limit=51'
+                    'http://localhost/api/training/feed?limit=51'
                 )
             )
         ).toBeNull();

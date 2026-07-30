@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import type { NormalizedGame } from '@/lib/types/game';
 import { prisma } from '@/lib/prisma';
 import {
@@ -25,10 +26,14 @@ export type SaveNormalizedGamesResult = {
     errors: Array<{ index: number; id?: string; error: string }>;
 };
 
+type GameImportClient = Pick<Prisma.TransactionClient, 'analyzedGame'>;
+
 export async function saveNormalizedGamesForUser(args: {
     userId: string;
     games: NormalizedGame[];
+    client?: GameImportClient;
 }): Promise<SaveNormalizedGamesResult> {
+    const client = args.client ?? prisma;
     const result: SaveNormalizedGamesResult = {
         saved: 0,
         created: 0,
@@ -55,7 +60,7 @@ export async function saveNormalizedGamesForUser(args: {
         }
 
         for (const [provider, externalIds] of byProvider) {
-            const rows = await prisma.analyzedGame.findMany({
+            const rows = await client.analyzedGame.findMany({
                 where: {
                     userId: args.userId,
                     provider: provider as 'LICHESS' | 'CHESSCOM',
@@ -78,7 +83,7 @@ export async function saveNormalizedGamesForUser(args: {
             const key = `${provider}:${externalId}`;
             const wasExisting = existingByKey.has(key);
             const data = normalizedGameToDb(game, args.userId);
-            const row = await prisma.analyzedGame.upsert({
+            const row = await client.analyzedGame.upsert({
                 where: {
                     userId_provider_externalId: {
                         userId: args.userId,

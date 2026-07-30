@@ -12,26 +12,29 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import type {
+    PracticeFeedFocus,
+    PracticeFilters,
     TrainingPhase,
-    TrainingSessionFilters,
-    TrainingSessionFocus,
 } from '@/lib/training/api';
 
-type SourceFocus = 'SAVED' | 'ALL' | 'MY_MISTAKES' | 'MISSED_CHANCES';
-type PhaseFocus = 'ALL' | TrainingPhase;
-type HistoryFocus = 'ALL' | 'FRESH';
+export type PracticeFocusControlState = {
+    source: 'SAVED' | 'ALL' | 'MY_MISTAKES' | 'MISSED_CHANCES';
+    impact: PracticeFeedFocus;
+    phase: 'ALL' | TrainingPhase;
+    history: 'ALL' | 'FRESH';
+};
 
-export function filtersForTrainingFocus({
+export function filtersForPracticeFocus({
     source,
     impact,
     phase,
     history,
 }: {
-    source: SourceFocus;
-    impact: TrainingSessionFocus;
-    phase: PhaseFocus;
-    history: HistoryFocus;
-}): TrainingSessionFilters {
+    source: PracticeFocusControlState['source'];
+    impact: PracticeFeedFocus;
+    phase: PracticeFocusControlState['phase'];
+    history: PracticeFocusControlState['history'];
+}): PracticeFilters {
     return {
         focus: impact,
         ...(source === 'ALL'
@@ -53,33 +56,87 @@ export function filtersForTrainingFocus({
     };
 }
 
+export function controlStateForPracticeFilters(
+    filters: PracticeFilters
+): PracticeFocusControlState {
+    const sourceKinds = new Set(filters.sourceKinds ?? []);
+    const source =
+        filters.sourceKinds === undefined
+            ? 'SAVED'
+            : sourceKinds.has('MY_MISTAKE') &&
+                sourceKinds.has('MISSED_OPPORTUNITY')
+              ? 'ALL'
+              : sourceKinds.has('MY_MISTAKE')
+                ? 'MY_MISTAKES'
+                : sourceKinds.has('MISSED_OPPORTUNITY')
+                  ? 'MISSED_CHANCES'
+                  : 'ALL';
+
+    return {
+        source,
+        impact: filters.focus ?? 'ALL',
+        phase:
+            filters.phases?.length === 1
+                ? filters.phases[0]
+                : 'ALL',
+        history:
+            filters.includeAttempted === false ? 'FRESH' : 'ALL',
+    };
+}
+
+export function hasEffectivePracticeFocus(
+    requestedFilters: PracticeFilters,
+    appliedFilters: PracticeFilters
+): boolean {
+    return [requestedFilters, appliedFilters].some(
+        (filters) =>
+            filters.focus === 'MEANINGFUL' ||
+            filters.focus === 'MAJOR' ||
+            Boolean(filters.sourceKinds?.length) ||
+            Boolean(filters.phases?.length) ||
+            Boolean(filters.lessonKinds?.length) ||
+            Boolean(filters.themes?.length) ||
+            filters.minConfidence !== undefined ||
+            filters.includeAttempted === false
+    );
+}
+
+export function filtersForReviewAgain(
+    filters: PracticeFilters
+): PracticeFilters {
+    const reviewFilters = { ...filters };
+    delete reviewFilters.includeAttempted;
+    return reviewFilters;
+}
+
 export function TrainingFocusControls({
     disabled,
+    filters,
     onApply,
 }: {
     disabled: boolean;
-    onApply: (filters: TrainingSessionFilters) => void;
+    filters: PracticeFilters;
+    onApply: (filters: PracticeFilters) => void;
 }) {
-    const [source, setSource] = useState<SourceFocus>('SAVED');
-    const [impact, setImpact] = useState<TrainingSessionFocus>('ALL');
-    const [phase, setPhase] = useState<PhaseFocus>('ALL');
-    const [history, setHistory] = useState<HistoryFocus>('ALL');
+    const [controls, setControls] = useState<PracticeFocusControlState>(
+        () => controlStateForPracticeFilters(filters)
+    );
 
-    const filters = useMemo(
+    const filtersToApply = useMemo(
         () =>
-            filtersForTrainingFocus({
-                source,
-                impact,
-                phase,
-                history,
+            filtersForPracticeFocus({
+                source: controls.source,
+                impact: controls.impact,
+                phase: controls.phase,
+                history: controls.history,
             }),
-        [history, impact, phase, source]
+        [controls]
     );
 
     return (
         <div
             className="rounded-xl border bg-card p-4"
-            aria-label="Session focus"
+            aria-label="Position focus"
         >
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -88,20 +145,20 @@ export function TrainingFocusControls({
                             className="h-4 w-4"
                             aria-hidden="true"
                         />
-                        Session focus
+                        Position focus
                     </div>
                     <p className="mt-1 text-sm text-muted-foreground">
-                        Choose what to practise now. Every extracted moment
-                        stays in your library.
+                        Choose which saved positions to practise now. Your
+                        other positions stay available.
                     </p>
                 </div>
                 <Button
                     type="button"
                     size="sm"
                     disabled={disabled}
-                    onClick={() => onApply(filters)}
+                    onClick={() => onApply(filtersToApply)}
                 >
-                    Start focused session
+                    Apply focus
                 </Button>
             </div>
 
@@ -109,13 +166,17 @@ export function TrainingFocusControls({
                 <label className="space-y-1.5 text-sm">
                     <span className="font-medium">From your games</span>
                     <Select
-                        value={source}
+                        value={controls.source}
                         onValueChange={(value) =>
-                            setSource(value as SourceFocus)
+                            setControls((current) => ({
+                                ...current,
+                                source:
+                                    value as PracticeFocusControlState['source'],
+                            }))
                         }
                         disabled={disabled}
                     >
-                        <SelectTrigger aria-label="Training source">
+                        <SelectTrigger aria-label="Position source">
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -138,13 +199,16 @@ export function TrainingFocusControls({
                 <label className="space-y-1.5 text-sm">
                     <span className="font-medium">Impact</span>
                     <Select
-                        value={impact}
+                        value={controls.impact}
                         onValueChange={(value) =>
-                            setImpact(value as TrainingSessionFocus)
+                            setControls((current) => ({
+                                ...current,
+                                impact: value as PracticeFeedFocus,
+                            }))
                         }
                         disabled={disabled}
                     >
-                        <SelectTrigger aria-label="Training impact">
+                        <SelectTrigger aria-label="Position impact">
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -152,10 +216,10 @@ export function TrainingFocusControls({
                                 Every confirmed difference
                             </SelectItem>
                             <SelectItem value="MEANINGFUL">
-                                Meaningful moments
+                                Meaningful positions
                             </SelectItem>
                             <SelectItem value="MAJOR">
-                                Major moments
+                                Major positions
                             </SelectItem>
                         </SelectContent>
                     </Select>
@@ -170,9 +234,13 @@ export function TrainingFocusControls({
                     <label className="space-y-1.5">
                         <span className="font-medium">Game phase</span>
                         <Select
-                            value={phase}
+                            value={controls.phase}
                             onValueChange={(value) =>
-                                setPhase(value as PhaseFocus)
+                                setControls((current) => ({
+                                    ...current,
+                                    phase:
+                                        value as PracticeFocusControlState['phase'],
+                                }))
                             }
                             disabled={disabled}
                         >
@@ -199,13 +267,17 @@ export function TrainingFocusControls({
                     <label className="space-y-1.5">
                         <span className="font-medium">History</span>
                         <Select
-                            value={history}
+                            value={controls.history}
                             onValueChange={(value) =>
-                                setHistory(value as HistoryFocus)
+                                setControls((current) => ({
+                                    ...current,
+                                    history:
+                                        value as PracticeFocusControlState['history'],
+                                }))
                             }
                             disabled={disabled}
                         >
-                            <SelectTrigger aria-label="Training history">
+                            <SelectTrigger aria-label="Position history">
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>

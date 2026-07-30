@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
     analysisDefaultsToExtractOptions,
+    canonicalPreferences,
     defaultPreferences,
+    mergePreferences,
     pickAnalysisDefaults,
 } from '@/lib/preferences';
 
@@ -47,6 +49,68 @@ describe('analysis preference bounds', () => {
         expect(options).not.toHaveProperty('evalBandMinCp');
         expect(options).not.toHaveProperty('evalBandMaxCp');
         expect(options).not.toHaveProperty('requireTactical');
+    });
+
+    it('uses the nested auto-analysis policy as the only enabled flag', () => {
+        const preferences = mergePreferences(defaultPreferences(), {
+            autoAnalysis: { enabled: false },
+        });
+
+        expect(preferences.autoAnalysis.enabled).toBe(false);
+    });
+
+    it('canonicalizes the nested auto-analysis policy', () => {
+        const preferences = canonicalPreferences({
+            autoSyncProviders: { lichess: false, chesscom: true },
+            autoAnalysis: {
+                enabled: true,
+                providers: { lichess: true, chesscom: false },
+                timeControls: { rapid: true },
+                resultScope: 'losses',
+                ratedOnly: false,
+                minPlies: 14,
+                dailyCap: 3,
+                monthlyCap: 20,
+            },
+        });
+
+        expect(preferences.autoAnalysis).toMatchObject({
+            enabled: true,
+            providers: { lichess: true, chesscom: false },
+            timeControls: {
+                bullet: false,
+                blitz: false,
+                rapid: true,
+                classical: true,
+                unknown: false,
+            },
+            resultScope: 'losses',
+            ratedOnly: false,
+            minPlies: 14,
+            dailyCap: 3,
+            monthlyCap: 20,
+        });
+    });
+
+    it('replaces malformed persisted automation values with safe defaults', () => {
+        const preferences = canonicalPreferences({
+            autoAnalysis: {
+                enabled: false,
+                providers: 'all',
+                timeControls: { rapid: 'yes' },
+                minPlies: -1,
+                dailyCap: 0,
+                monthlyCap: Number.POSITIVE_INFINITY,
+                reserveCredits: -5,
+                backlogMode: 'surprise-me',
+                enabledAt: 'not-a-date',
+            },
+        });
+
+        expect(preferences.autoAnalysis).toEqual({
+            ...defaultPreferences().autoAnalysis,
+            enabled: false,
+        });
     });
 
 });

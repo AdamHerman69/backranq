@@ -83,8 +83,52 @@ export type MultiPvResult = {
     fen: string;
     bestMoveUci: string;
     lines: MultiPvLine[];
+    /**
+     * True only when the adapter can prove the bundle is structurally complete
+     * for the request: every requested slot is present, or fewer slots exhaust
+     * the legal root moves. False means partial/malformed; undefined is unknown
+     * and must never prove that a short frontier is exhausted.
+     */
+    alternativesComplete?: boolean;
     identity?: EngineIdentity;
 };
+
+const ROOT_UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
+
+/**
+ * Structural adapter-level proof only. The continuation verifier separately
+ * replays every root move against the FEN and decides whether the evaluation
+ * frontier is outside the grading tolerance.
+ */
+export function isStructurallyCompleteMultiPvBundle(
+    lines: readonly MultiPvLine[],
+    requestedMultiPv: number
+): boolean {
+    const requested = Math.max(
+        1,
+        Math.min(8, Math.trunc(requestedMultiPv))
+    );
+    if (lines.length !== requested) return false;
+
+    const ordered = lines
+        .slice()
+        .sort((left, right) => left.multipv - right.multipv);
+    const rootMoves = new Set<string>();
+    for (let index = 0; index < ordered.length; index += 1) {
+        const line = ordered[index]!;
+        const rootMove = line.pvUci[0]?.trim().toLowerCase() ?? '';
+        if (
+            line.multipv !== index + 1 ||
+            line.score == null ||
+            !ROOT_UCI_RE.test(rootMove) ||
+            rootMoves.has(rootMove)
+        ) {
+            return false;
+        }
+        rootMoves.add(rootMove);
+    }
+    return true;
+}
 
 export interface StockfishEngine {
     evalPosition(opts: AnalysisLimit & {
@@ -124,8 +168,9 @@ export class StockfishClient implements StockfishEngine {
               timeoutId?: number;
               abortCleanup?: () => void;
           }
-        | {
+          | {
               kind: 'multipv';
+              requestedMultiPv: number;
               cacheKey?: string;
               resolve: (v: MultiPvResult) => void;
               reject: (e: Error) => void;
@@ -360,6 +405,7 @@ export class StockfishClient implements StockfishEngine {
         const p = new Promise<MultiPvResult>((resolve, reject) => {
             this.pending.set(id, {
                 kind: 'multipv',
+                requestedMultiPv: multiPv,
                 cacheKey: key,
                 resolve,
                 reject,
@@ -573,6 +619,11 @@ export class StockfishClient implements StockfishEngine {
                         fen: latest.fen,
                         bestMoveUci,
                         lines,
+                        alternativesComplete:
+                            isStructurallyCompleteMultiPvBundle(
+                                lines,
+                                p.requestedMultiPv
+                            ),
                         identity: this.identity,
                     });
                 }

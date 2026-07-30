@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { fetchTrainingSession } from '@/lib/training/client';
+import { fetchPracticeFeed } from '@/lib/training/client';
 
 describe('training client transport', () => {
     afterEach(() => {
         vi.unstubAllGlobals();
     });
 
-    it('serializes canonical session filters as repeated query parameters', async () => {
+    it('serializes canonical practice filters as repeated query parameters', async () => {
         const fetchMock = vi.fn(
             async (input: RequestInfo | URL, init?: RequestInit) => {
                 void input;
@@ -29,7 +29,7 @@ describe('training client transport', () => {
         );
         vi.stubGlobal('fetch', fetchMock);
 
-        await fetchTrainingSession({
+        await fetchPracticeFeed({
             limit: 7,
             filters: {
                 focus: 'MAJOR',
@@ -45,7 +45,7 @@ describe('training client transport', () => {
             String(fetchMock.mock.calls[0]?.[0]),
             'http://localhost'
         );
-        expect(requested.pathname).toBe('/api/training/session');
+        expect(requested.pathname).toBe('/api/training/feed');
         expect(requested.searchParams.get('focus')).toBe('major');
         expect(requested.searchParams.getAll('phase')).toEqual([
             'OPENING',

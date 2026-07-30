@@ -17,13 +17,17 @@ import {
 } from 'lucide-react';
 import { Chessboard } from 'react-chessboard';
 
-import { TrainingFocusControls } from '@/components/training/TrainingFocusControls';
+import {
+    filtersForReviewAgain,
+    hasEffectivePracticeFocus,
+    TrainingFocusControls,
+} from '@/components/training/TrainingFocusControls';
 import { ModalDialog } from '@/components/ui/ModalDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { useTrainingSession } from '@/lib/hooks/useTrainingSession';
+import { usePracticeFeed } from '@/lib/hooks/usePracticeFeed';
 import type { TrainingReviewDto } from '@/lib/training/api';
 import {
     formatOutcomeDifference,
@@ -86,9 +90,9 @@ function ReviewPanel({
     const bestLine = moveLineLabels(rootFen, review.bestLineUci);
 
     return (
-        <Card role="region" aria-label="Training review">
+        <Card role="region" aria-label="Position review">
             <CardHeader className="pb-3">
-                <CardTitle className="text-base">Decision review</CardTitle>
+                <CardTitle className="text-base">Position review</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5 text-sm">
                 <dl className="grid gap-3 sm:grid-cols-2">
@@ -277,7 +281,7 @@ export function TrainingTrainer({
     ownerId?: string;
     compact?: boolean;
 }) {
-    const training = useTrainingSession(initialMomentId, ownerId);
+    const training = usePracticeFeed(initialMomentId, ownerId);
     const [flipped, setFlipped] = useState(false);
     const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
     const [pendingPromotion, setPendingPromotion] =
@@ -467,15 +471,16 @@ export function TrainingTrainer({
     const boardFen = training.review
         ? training.prompt?.fen
         : training.positionFen;
-    const hasCustomFocus =
-        training.sessionFilters.focus === 'MEANINGFUL' ||
-        training.sessionFilters.focus === 'MAJOR' ||
-        Boolean(training.sessionFilters.sourceKinds?.length) ||
-        Boolean(training.sessionFilters.phases?.length) ||
-        training.sessionFilters.includeAttempted === false;
+    const hasCustomFocus = hasEffectivePracticeFocus(
+        training.practiceFilters,
+        training.appliedPracticeFilters
+    );
+    const isCaughtUp =
+        training.feedExhausted && training.feedHadPositions;
     const focusControls =
         !compact && !initialMomentId ? (
             <TrainingFocusControls
+                key={JSON.stringify(training.practiceFilters)}
                 disabled={
                     training.loading ||
                     training.phase === 'SUBMITTING' ||
@@ -483,12 +488,13 @@ export function TrainingTrainer({
                     training.phase === 'PENDING_GRADING' ||
                     training.phase === 'AWAITING_MOVE'
                 }
+                filters={training.practiceFilters}
                 onApply={(filters) => {
                     setSelectedSquare(null);
                     setPendingPromotion(null);
                     setKeyboardMove('');
                     setKeyboardMoveError(null);
-                    training.restartSession(filters);
+                    training.resetFeed(filters);
                 }}
             />
         ) : null;
@@ -527,7 +533,7 @@ export function TrainingTrainer({
                 role="status"
             >
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                Preparing your training session…
+                Preparing your positions…
             </div>
         );
     }
@@ -543,7 +549,7 @@ export function TrainingTrainer({
                         className="mt-4"
                         type="button"
                         variant="outline"
-                        onClick={() => void training.retryLoad()}
+                        onClick={() => void training.retryFeed()}
                     >
                         <RotateCcw className="mr-2 h-4 w-4" aria-hidden="true" />
                         Try again
@@ -560,35 +566,33 @@ export function TrainingTrainer({
                 <Card>
                     <CardContent className="py-10 text-center">
                         <h2 className="font-medium">
-                            {hasCustomFocus
-                                ? 'No moments match this focus'
-                                : training.sessionComplete &&
-                                    training.sessionHadItems
-                                  ? 'Session complete'
-                                  : 'No training moments yet'}
+                            {isCaughtUp
+                                ? 'You’re caught up'
+                                : hasCustomFocus
+                                  ? 'No positions match this focus'
+                                  : 'No practice positions yet'}
                         </h2>
                         <p className="mt-2 text-sm text-muted-foreground">
-                            {hasCustomFocus
-                                ? 'Adjust the session focus above to practise a broader set of decisions.'
-                                : training.sessionComplete &&
-                                    training.sessionHadItems
-                                  ? 'You reviewed every position in this session.'
-                                : 'Analyze more games to add personal decisions to your training queue.'}
+                            {isCaughtUp
+                                ? 'You’ve practised every position matching this focus.'
+                                : hasCustomFocus
+                                  ? 'Adjust the position focus above to practise a broader set of decisions.'
+                                : 'Analyze more games to find personal practice positions.'}
                         </p>
-                        {training.sessionComplete &&
-                        training.sessionHadItems &&
-                        !initialMomentId ? (
+                        {isCaughtUp && !initialMomentId ? (
                             <Button
                                 type="button"
                                 variant="outline"
                                 className="mt-4"
                                 onClick={() =>
-                                    training.restartSession(
-                                        training.sessionFilters
+                                    training.resetFeed(
+                                        filtersForReviewAgain(
+                                            training.practiceFilters
+                                        )
                                     )
                                 }
                             >
-                                Start another session
+                                Review these positions again
                             </Button>
                         ) : null}
                     </CardContent>
@@ -600,7 +604,7 @@ export function TrainingTrainer({
     return (
         <section
             className="space-y-4"
-            aria-label="Personal decision trainer"
+            aria-label="Personal chess practice"
         >
             {focusControls}
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -657,7 +661,7 @@ export function TrainingTrainer({
                     <div
                         className="rounded-xl border bg-card p-1 shadow-sm sm:p-2"
                         role="group"
-                        aria-label={promptText ?? 'Chess training board'}
+                        aria-label={promptText ?? 'Chess practice board'}
                     >
                         <Chessboard
                             options={{
@@ -758,7 +762,7 @@ export function TrainingTrainer({
                                 type="button"
                                 size="sm"
                                 variant="outline"
-                                onClick={() => void training.retryLoad()}
+                                onClick={() => void training.retryFeed()}
                             >
                                 Reload position
                             </Button>

@@ -8,6 +8,7 @@ function input(overrides: Partial<HomeStateInput> = {}): HomeStateInput {
     return {
         loading: false,
         error: null,
+        linkedAccountKnown: true,
         hasLinkedAccount: true,
         gameCount: 4,
         unanalyzedGameCount: 0,
@@ -15,6 +16,8 @@ function input(overrides: Partial<HomeStateInput> = {}): HomeStateInput {
         browserAnalysisRunning: false,
         serverQueued: 0,
         serverRunning: 0,
+        serverFailed: 0,
+        analysisBlockedReason: null,
         lastCompletion: null,
         ...overrides,
     };
@@ -58,11 +61,17 @@ describe('home product state', () => {
             )
         ).toBe('no-games');
         expect(
-            deriveHomeProductState(input({ unanalyzedGameCount: 2 }))
+            deriveHomeProductState(
+                input({ unanalyzedGameCount: 2, trainingMomentCount: 0 })
+            )
         ).toBe('unanalyzed');
         expect(
             deriveHomeProductState(
-                input({ unanalyzedGameCount: 2, serverRunning: 1 })
+                input({
+                    unanalyzedGameCount: 2,
+                    trainingMomentCount: 0,
+                    serverRunning: 1,
+                })
             )
         ).toBe('analysis-in-progress');
     });
@@ -75,6 +84,19 @@ describe('home product state', () => {
         ).toBe('analyzed-with-training-moments');
     });
 
+    it('does not claim an account is unlinked when source status is unknown', () => {
+        expect(
+            deriveHomeProductState(
+                input({
+                    linkedAccountKnown: false,
+                    hasLinkedAccount: false,
+                    gameCount: 0,
+                    trainingMomentCount: 0,
+                })
+            )
+        ).toBe('sync-status-unavailable');
+    });
+
     it('distinguishes generated moments from a successful no-candidate run', () => {
         expect(deriveHomeProductState(input({ trainingMomentCount: 2 }))).toBe(
             'analyzed-with-training-moments'
@@ -84,11 +106,48 @@ describe('home product state', () => {
         );
     });
 
+    it('keeps Practice dominant while more games wait or analyze', () => {
+        expect(
+            deriveHomeProductState(
+                input({
+                    trainingMomentCount: 2,
+                    unanalyzedGameCount: 8,
+                    serverRunning: 1,
+                    analysisBlockedReason: 'No credits',
+                })
+            )
+        ).toBe('analyzed-with-training-moments');
+    });
+
+    it('keeps available Practice dominant when a secondary overview refresh fails', () => {
+        expect(
+            deriveHomeProductState(
+                input({
+                    error: 'sync status unavailable',
+                    trainingMomentCount: 2,
+                })
+            )
+        ).toBe('analyzed-with-training-moments');
+    });
+
+    it('distinguishes an analysis backlog blocked by credits or caps', () => {
+        expect(
+            deriveHomeProductState(
+                input({
+                    trainingMomentCount: 0,
+                    unanalyzedGameCount: 3,
+                    analysisBlockedReason: 'Daily cap reached',
+                })
+            )
+        ).toBe('analysis-blocked');
+    });
+
     it('surfaces a partial terminal run while unfinished games remain', () => {
         expect(
             deriveHomeProductState(
                 input({
                     unanalyzedGameCount: 1,
+                    trainingMomentCount: 0,
                     lastCompletion: {
                         id: 'summary',
                         ownerId: 'user-a',
@@ -111,6 +170,7 @@ describe('home product state', () => {
             deriveHomeProductState(
                 input({
                     unanalyzedGameCount: 3,
+                    trainingMomentCount: 0,
                     lastCompletion: {
                         id: 'old-summary',
                         ownerId: 'user-a',

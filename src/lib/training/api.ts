@@ -6,24 +6,24 @@ import type {
 } from '@/lib/training/contracts';
 import type { Provider } from '@/lib/types/game';
 
-export const TRAINING_SESSION_MAX_LIMIT = 50;
+export const PRACTICE_FEED_MAX_LIMIT = 50;
 export const TRAINING_API_MAX_ID_LENGTH = 128;
 
 export type TrainingPhase = 'OPENING' | 'MIDDLEGAME' | 'ENDGAME';
-export const TRAINING_SESSION_FOCUSES = [
+export const PRACTICE_FEED_FOCUSES = [
     'ALL',
     'MEANINGFUL',
     'MAJOR',
 ] as const;
-export type TrainingSessionFocus =
-    (typeof TRAINING_SESSION_FOCUSES)[number];
+export type PracticeFeedFocus =
+    (typeof PRACTICE_FEED_FOCUSES)[number];
 
-export type TrainingSessionFilters = {
+export type PracticeFilters = {
     /**
-     * User-facing session intensity. Thresholds remain a server policy so the
+     * User-facing practice intensity. Thresholds remain a server policy so the
      * client never needs to know engine scores or extraction internals.
      */
-    focus?: TrainingSessionFocus;
+    focus?: PracticeFeedFocus;
     phases?: TrainingPhase[];
     sourceKinds?: TrainingSourceKind[];
     lessonKinds?: TrainingLessonKind[];
@@ -32,10 +32,10 @@ export type TrainingSessionFilters = {
     includeAttempted?: boolean;
 };
 
-export type TrainingSessionRequest = {
+export type PracticeFeedRequest = {
     limit?: number;
     cursor?: string;
-    filters?: TrainingSessionFilters;
+    filters?: PracticeFilters;
 };
 
 /**
@@ -50,15 +50,15 @@ export type TrainingPromptDto = {
     sideToMove: 'w' | 'b';
 };
 
-export type TrainingSessionResponse = {
+export type PracticeFeedResponse = {
     items: TrainingPromptDto[];
     nextCursor: string | null;
     /**
      * Effective filters after applying the user's saved defaults. Send these
-     * with the cursor so an in-progress session cannot change underneath the
-     * user when preferences are edited elsewhere.
+     * with the cursor so an in-progress feed snapshot cannot change underneath
+     * the user when preferences are edited elsewhere.
      */
-    appliedFilters: TrainingSessionFilters;
+    appliedFilters: PracticeFilters;
 };
 
 export type TrainingMomentResponse = {

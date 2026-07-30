@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
+import { EXPECTED_OWNER_HEADER } from "@/lib/auth/ownerContract";
 
 import {
   defaultPreferences,
@@ -29,7 +30,7 @@ export function analysisDefaultsEqual(
   );
 }
 
-export function AnalysisDefaultsCard() {
+export function AnalysisDefaultsCard({ ownerId }: { ownerId: string }) {
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -97,7 +98,10 @@ export function AnalysisDefaultsCard() {
     try {
       const res = await fetch("/api/user/preferences", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          [EXPECTED_OWNER_HEADER]: ownerId,
+        },
         body: JSON.stringify(analysisDefaults),
       });
       const json = (await res.json().catch(() => ({}))) as {

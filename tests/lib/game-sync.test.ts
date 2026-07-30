@@ -1,16 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { NormalizedGame } from '@/lib/types/game';
-import {
-    getExistingExternalIds,
-    saveGamesToLibrary,
-} from '@/lib/services/gameSync';
 
-function makeGame(id: string): NormalizedGame {
+import {
+    fetchHistoricalGames,
+    saveHistoricalGamesToLibrary,
+    unresolvedHistoryPageGameCount,
+} from '@/lib/services/gameSync';
+import type { NormalizedGame } from '@/lib/types/game';
+
+function makeGame(
+    id: string,
+    provider: NormalizedGame['provider'] = 'lichess'
+): NormalizedGame {
     return {
         id,
-        provider: 'lichess',
+        provider,
         playedAt: '2026-07-04T12:00:00.000Z',
-        timeClass: 'blitz',
+        timeClass: 'rapid',
         rated: true,
         white: { name: 'Ada', rating: 1800 },
         black: { name: 'Grace', rating: 1750 },
@@ -27,81 +32,179 @@ function jsonResponse(body: unknown, status = 200) {
     });
 }
 
-describe('game sync service chunking', () => {
+describe('historical game sync client', () => {
     beforeEach(() => {
         vi.stubGlobal('fetch', vi.fn());
     });
 
-    it('chunks existing-id checks at the server limit', async () => {
-        vi.mocked(fetch)
-            .mockResolvedValueOnce(jsonResponse({ existingExternalIds: ['id-1'] }))
-            .mockResolvedValueOnce(jsonResponse({ existingExternalIds: ['id-200'] }));
-
-        const ids = await getExistingExternalIds({
-            provider: 'lichess',
-            externalIds: Array.from({ length: 201 }, (_, i) => `id-${i}`),
-        });
-
-        expect(ids).toEqual(new Set(['id-1', 'id-200']));
-        expect(fetch).toHaveBeenCalledTimes(2);
-        const firstBody = JSON.parse(
-            vi.mocked(fetch).mock.calls[0]?.[1]?.body as string
-        ) as { externalIds: string[] };
-        const secondBody = JSON.parse(
-            vi.mocked(fetch).mock.calls[1]?.[1]?.body as string
-        ) as { externalIds: string[] };
-        expect(firstBody.externalIds).toHaveLength(200);
-        expect(secondBody.externalIds).toEqual(['id-200']);
+    it('counts cap-rejected games only once when continuing a partial page', () => {
+        expect(
+            unresolvedHistoryPageGameCount({
+                newCount: 10,
+                selectedCount: 8,
+                failed: 3,
+            })
+        ).toBe(5);
     });
 
-    it('preserves partial save success and offsets chunk error indexes', async () => {
+    it('sends owner fencing and preserves the optional history filters', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(
+            jsonResponse({
+                ownerId: 'user-1',
+                provider: 'lichess',
+                username: 'Ada',
+                rows: [],
+                fetched: 0,
+                existingCount: 0,
+                truncatedReason: 'provider-page',
+                providerComplete: false,
+                nextCursor: 'next-page',
+                page: 2,
+                allowance: { limit: 2_000, used: 20, remaining: 1_980 },
+            })
+        );
+
+        const snapshot = await fetchHistoricalGames({
+            ownerId: 'user-1',
+            provider: 'lichess',
+            filters: {
+                timeClasses: ['rapid', 'classical'],
+                rated: 'rated',
+                since: '2026-01-01',
+                until: '2026-07-30',
+            },
+            cursor: 'current-page',
+        });
+
+        expect(snapshot.allowance.remaining).toBe(1_980);
+        expect(snapshot.nextCursor).toBe('next-page');
+        const [url, init] = vi.mocked(fetch).mock.calls[0] ?? [];
+        expect(String(url)).toContain('provider=lichess');
+        expect(String(url)).toContain('timeClass=rapid%2Cclassical');
+        expect(String(url)).toContain('rated=rated');
+        expect(String(url)).toContain('since=2026-01-01');
+        expect(String(url)).toContain('cursor=current-page');
+        expect(
+            new Headers(init?.headers).get('X-Backranq-Owner-Id')
+        ).toBe('user-1');
+    });
+
+    it('imports a 580-row Chess.com snapshot in three bounded writes and aggregates every outcome', async () => {
         vi.mocked(fetch)
             .mockResolvedValueOnce(
                 jsonResponse({
-                    saved: 200,
-                    skipped: 0,
-                    ids: { 'lichess:id-0': 'db-0' },
+                    ownerId: 'user-1',
+                    provider: 'chesscom',
+                    imported: 200,
+                    duplicates: 0,
+                    failed: 0,
+                    capRejected: 0,
+                    ids: { 'chesscom:id-0': 'db-0' },
                     errors: [],
+                    allowance: { limit: 2_000, used: 200, remaining: 1_800 },
                 })
             )
             .mockResolvedValueOnce(
-                jsonResponse(
-                    {
-                        error: 'No games saved',
-                        saved: 0,
-                        skipped: 1,
-                        ids: {},
-                        errors: [
-                            {
-                                index: 0,
-                                id: 'lichess:id-200',
-                                kind: 'validation',
-                                error: 'Invalid pgn',
-                            },
-                        ],
-                    },
-                    400
-                )
+                jsonResponse({
+                    ownerId: 'user-1',
+                    provider: 'chesscom',
+                    imported: 197,
+                    duplicates: 2,
+                    failed: 1,
+                    capRejected: 0,
+                    ids: { 'chesscom:id-200': 'db-200' },
+                    errors: [
+                        {
+                            index: 5,
+                            id: 'chesscom:id-205',
+                            kind: 'validation',
+                            error: 'invalid ticket',
+                        },
+                    ],
+                    allowance: { limit: 2_000, used: 397, remaining: 1_603 },
+                })
+            )
+            .mockResolvedValueOnce(
+                jsonResponse({
+                    ownerId: 'user-1',
+                    provider: 'chesscom',
+                    imported: 176,
+                    duplicates: 1,
+                    failed: 3,
+                    capRejected: 2,
+                    ids: { 'chesscom:id-400': 'db-400' },
+                    errors: [
+                        {
+                            index: 7,
+                            id: 'chesscom:id-407',
+                            kind: 'save',
+                            error: 'save failed',
+                        },
+                    ],
+                    allowance: { limit: 2_000, used: 573, remaining: 1_427 },
+                })
             );
 
-        const result = await saveGamesToLibrary({
-            games: Array.from({ length: 201 }, (_, i) =>
-                makeGame(`lichess:id-${i}`)
-            ),
+        const result = await saveHistoricalGamesToLibrary({
+            ownerId: 'user-1',
+            items: Array.from({ length: 580 }, (_, index) => ({
+                game: makeGame(`chesscom:id-${index}`, 'chesscom'),
+                ticket: `ticket-${index}`,
+            })),
         });
 
+        expect(fetch).toHaveBeenCalledTimes(3);
         expect(result).toMatchObject({
-            saved: 200,
-            skipped: 1,
-            ids: { 'lichess:id-0': 'db-0' },
-            errors: [
-                {
-                    index: 200,
-                    id: 'lichess:id-200',
-                    kind: 'validation',
-                    error: 'Invalid pgn',
-                },
-            ],
+            imported: 573,
+            duplicates: 3,
+            failed: 4,
+            capRejected: 2,
+            allowances: {
+                chesscom: { used: 573, remaining: 1_427 },
+            },
         });
+        expect(result.errors.map((error) => error.index)).toEqual([205, 407]);
+        const batchSizes = vi.mocked(fetch).mock.calls.map((call) => {
+            const body = JSON.parse(call[1]?.body as string) as {
+                items: unknown[];
+            };
+            return body.items.length;
+        });
+        expect(batchSizes).toEqual([200, 200, 180]);
+    });
+
+    it('stops at a failed write batch so an explicit retry cannot skip the remainder', async () => {
+        vi.mocked(fetch)
+            .mockResolvedValueOnce(
+                jsonResponse({
+                    ownerId: 'user-1',
+                    provider: 'chesscom',
+                    imported: 200,
+                    duplicates: 0,
+                    failed: 0,
+                    capRejected: 0,
+                    ids: {},
+                    errors: [],
+                    allowance: {
+                        limit: 2_000,
+                        used: 200,
+                        remaining: 1_800,
+                    },
+                })
+            )
+            .mockResolvedValueOnce(
+                jsonResponse({ error: 'temporary failure' }, 503)
+            );
+
+        await expect(
+            saveHistoricalGamesToLibrary({
+                ownerId: 'user-1',
+                items: Array.from({ length: 580 }, (_, index) => ({
+                    game: makeGame(`chesscom:id-${index}`, 'chesscom'),
+                    ticket: `ticket-${index}`,
+                })),
+            })
+        ).rejects.toThrow('temporary failure');
+        expect(fetch).toHaveBeenCalledTimes(2);
     });
 });

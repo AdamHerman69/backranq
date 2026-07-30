@@ -250,6 +250,30 @@ describe('canonical training persistence', () => {
         expect(tx.solutionRevision.create).not.toHaveBeenCalled();
     });
 
+    it('rejects duplicate precomputed assessments before writing a moment', async () => {
+        const tx = transaction();
+        const duplicated = solution();
+        duplicated.moveAssessments = [
+            ...duplicated.moveAssessments,
+            {
+                ...duplicated.moveAssessments[0]!,
+                grade: 'GOOD',
+            },
+        ];
+        duplicated.solutionHash =
+            solutionSemanticsHash(duplicated);
+
+        await expect(
+            persist(tx, [moment({ solution: duplicated })])
+        ).rejects.toThrow('Duplicate precomputed move assessment');
+
+        expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
+        expect(tx.solutionRevision.create).not.toHaveBeenCalled();
+        expect(
+            tx.solutionMoveAssessment.createMany
+        ).not.toHaveBeenCalled();
+    });
+
     it('keeps repeated boards at different decisions and halfmove clocks distinct', async () => {
         const tx = transaction();
         const base = solution();

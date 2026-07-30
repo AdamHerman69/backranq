@@ -154,11 +154,11 @@ export function GameCard({
                                 {trainingMoments.map((moment) => (
                                     <Link
                                         key={moment.id}
-                                        href={`/training?momentId=${encodeURIComponent(moment.id)}`}
-                                        title={`Personal training moment at move ${Math.floor(moment.decisionPly / 2) + 1}`}
+                                        href={`/practice?momentId=${encodeURIComponent(moment.id)}`}
+                                        title={`Personal practice position at move ${Math.floor(moment.decisionPly / 2) + 1}`}
                                     >
                                         <Badge variant="outline" className="cursor-pointer">
-                                            Train move{' '}
+                                            Practice move{' '}
                                             {Math.floor(
                                                 moment.decisionPly / 2
                                             ) + 1}

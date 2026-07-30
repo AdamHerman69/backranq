@@ -5,6 +5,26 @@ export const BACKRANQ_QUEUE_TOPIC = 'backranq-jobs';
 export type BackranqQueueMessage =
     | { type: 'sync-all'; requestedAt: string }
     | { type: 'sync-job'; jobId: string }
+    | {
+          type: 'reconcile-auto-analysis';
+          userId: string;
+          requestedAt: string;
+          reason:
+              | 'preferences'
+              | 'billing'
+              | 'capacity-release'
+              | 'import'
+              | 'scheduled';
+          cursor?: {
+              playedAt: string;
+              id: string;
+          };
+      }
+    | {
+          type: 'reconcile-auto-analysis-sweep';
+          requestedAt: string;
+          cursor?: string;
+      }
     | { type: 'dispatch-analysis'; requestedAt: string }
     | { type: 'analysis-job'; jobId: string; dispatchToken: string };
 

@@ -2,10 +2,10 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import {
-    InvalidTrainingCursorError,
-    listTrainingSession,
+    InvalidPracticeFeedCursorError,
+    listPracticeFeed,
 } from '@/lib/training/readService';
-import { parseTrainingSessionRequest } from '@/lib/training/apiValidation';
+import { parsePracticeFeedRequest } from '@/lib/training/apiValidation';
 import type { TrainingApiErrorResponse } from '@/lib/training/api';
 import {
     defaultPreferences,
@@ -25,10 +25,10 @@ export async function GET(req: Request) {
             { status: 401 }
         );
     }
-    const request = parseTrainingSessionRequest(new URL(req.url));
+    const request = parsePracticeFeedRequest(new URL(req.url));
     if (!request) {
         return NextResponse.json<TrainingApiErrorResponse>(
-            { error: 'Invalid training session query', code: 'INVALID_REQUEST' },
+            { error: 'Invalid practice feed query', code: 'INVALID_REQUEST' },
             { status: 400 }
         );
     }
@@ -56,7 +56,7 @@ export async function GET(req: Request) {
             }
         }
         return NextResponse.json(
-            await listTrainingSession({
+            await listPracticeFeed({
                 db: prisma,
                 userId,
                 request,
@@ -68,7 +68,7 @@ export async function GET(req: Request) {
             }
         );
     } catch (error) {
-        if (error instanceof InvalidTrainingCursorError) {
+        if (error instanceof InvalidPracticeFeedCursorError) {
             return NextResponse.json<TrainingApiErrorResponse>(
                 { error: error.message, code: 'INVALID_REQUEST' },
                 { status: 400 }

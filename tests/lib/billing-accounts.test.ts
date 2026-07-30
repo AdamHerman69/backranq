@@ -2,10 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
 
 type BillingAccountsModule = typeof import('@/lib/services/billingAccounts');
+const requestAutoAnalysisWakeupMock = vi.fn();
 
 async function importBilling(): Promise<BillingAccountsModule> {
     vi.resetModules();
     mockPrismaModule();
+    vi.doMock('@/lib/services/autoAnalysisBacklog', () => ({
+        requestAutoAnalysisWakeup: requestAutoAnalysisWakeupMock,
+    }));
     prismaMock.$transaction.mockImplementation(
         async (callback: unknown) =>
             (callback as (tx: typeof prismaMock) => Promise<unknown>)(
@@ -53,6 +57,10 @@ function ledgerEntry(overrides: Record<string, unknown> = {}) {
 describe('billing account server credit policy', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        requestAutoAnalysisWakeupMock.mockResolvedValue({
+            queued: true,
+            inline: false,
+        });
     });
 
     it('reserves credits by debiting the billing account and appending a ledger entry', async () => {
@@ -140,6 +148,115 @@ describe('billing account server credit policy', () => {
         expect(prismaMock.creditLedgerEntry.create).not.toHaveBeenCalled();
     });
 
+    it('enforces the lower personal auto-analysis budget and plan cap', async () => {
+        const billing = await importBilling();
+        prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);
+        prismaMock.billingAccount.upsert.mockResolvedValue(account());
+        prismaMock.creditLedgerEntry.findMany
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([
+                { type: 'RESERVED', credits: 1 },
+            ]);
+
+        await expect(
+            billing.reserveServerAnalysisCredits({
+                userId: 'user-1',
+                credits: 1,
+                idempotencyKey: 'reserve:auto:2',
+                reason: 'auto-analysis',
+                enforceAutoAnalysisCaps: true,
+                autoAnalysisBudget: {
+                    dailyCap: 10,
+                    monthlyCap: 1,
+                    reserveCredits: 0,
+                },
+                now: new Date('2026-07-05T12:00:00Z'),
+            })
+        ).rejects.toThrow(billing.AutoAnalysisCapExceededError);
+        expect(prismaMock.billingAccount.updateMany).not.toHaveBeenCalled();
+        expect(
+            prismaMock.creditLedgerEntry.findMany.mock.calls[1]?.[0]
+        ).toEqual(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    OR: expect.arrayContaining([
+                        expect.objectContaining({
+                            analysisRun: {
+                                is: {
+                                    queuedReason: {
+                                        in: ['auto-sync', 'auto-analysis'],
+                                    },
+                                },
+                            },
+                        }),
+                    ]),
+                }),
+            })
+        );
+    });
+
+    it('atomically preserves the personal reserve floor for auto jobs', async () => {
+        const billing = await importBilling();
+        prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);
+        prismaMock.billingAccount.upsert.mockResolvedValue(
+            account({ serverCreditsBalance: 3 })
+        );
+        prismaMock.creditLedgerEntry.findMany.mockResolvedValue([]);
+
+        await expect(
+            billing.reserveServerAnalysisCredits({
+                userId: 'user-1',
+                credits: 1,
+                idempotencyKey: 'reserve:auto:floor',
+                reason: 'auto-analysis',
+                enforceAutoAnalysisCaps: true,
+                autoAnalysisBudget: {
+                    dailyCap: 10,
+                    monthlyCap: 10,
+                    reserveCredits: 3,
+                },
+            })
+        ).rejects.toThrow(billing.ServerCreditStopThresholdError);
+        expect(prismaMock.billingAccount.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('includes the reserve floor in the atomic debit predicate', async () => {
+        const billing = await importBilling();
+        prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);
+        prismaMock.billingAccount.upsert.mockResolvedValue(account());
+        prismaMock.creditLedgerEntry.findMany.mockResolvedValue([]);
+        prismaMock.billingAccount.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.billingAccount.findUniqueOrThrow.mockResolvedValue(
+            account({ serverCreditsBalance: 9 })
+        );
+        prismaMock.creditLedgerEntry.create.mockResolvedValue(
+            ledgerEntry({ reason: 'auto-analysis' })
+        );
+
+        await billing.reserveServerAnalysisCredits({
+            userId: 'user-1',
+            credits: 1,
+            idempotencyKey: 'reserve:auto:predicate',
+            reason: 'auto-analysis',
+            enforceAutoAnalysisCaps: true,
+            autoAnalysisBudget: {
+                dailyCap: 10,
+                monthlyCap: 10,
+                reserveCredits: 4,
+            },
+        });
+
+        expect(prismaMock.billingAccount.updateMany).toHaveBeenCalledWith({
+            where: {
+                userId: 'user-1',
+                serverCreditsBalance: { gte: 5 },
+            },
+            data: {
+                serverCreditsBalance: { decrement: 1 },
+            },
+        });
+    });
+
     it('releases a reservation by restoring credits to the billing account', async () => {
         const billing = await importBilling();
         prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);
@@ -178,6 +295,10 @@ describe('billing account server credit policy', () => {
                 serverCreditsBalance: { increment: 1 },
             },
         });
+        expect(requestAutoAnalysisWakeupMock).toHaveBeenCalledWith(
+            'user-1',
+            'capacity-release'
+        );
     });
 
     it('refunds consumed credits back to balance and monthly usage', async () => {

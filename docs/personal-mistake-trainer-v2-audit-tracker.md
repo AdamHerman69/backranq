@@ -31,7 +31,7 @@ verification gate pass. Checkboxes are intentionally conservative.
 - [x] Use tablebase evidence for eligible positions.
 - [x] Keep lesson/theme tagging separate from chess validity.
 - [x] Correct sacrifice/hanging-piece and quiet/defensive theme semantics.
-- [x] Rank/session-sample moments without dropping persisted coverage.
+- [x] Rank/feed-sample positions without dropping persisted coverage.
 
 ## Identity and persistence
 
@@ -87,6 +87,12 @@ verification gate pass. Checkboxes are intentionally conservative.
 - [x] Support conditional continuations without revealing their length.
 - [x] Compare feedback with both the best outcome and the original move.
 - [x] Replace extraction-type presets with coverage/sampling/tolerance presets.
+- [x] Use Practice/position/Focus as the user-facing language while retaining
+      `TrainingMoment` only as the persisted domain name.
+- [x] Keep Practice continuous rather than introducing finite sessions, goals,
+      rounds, or end summaries.
+- [x] Prefetch spoiler-safe cursor pages at a low-water mark with one in-flight
+      request, deduplication, filter-reset invalidation, and buffered fallback.
 
 ## Tests and rollout
 

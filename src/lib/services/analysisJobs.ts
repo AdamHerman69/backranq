@@ -30,10 +30,11 @@ import {
     parseAnalysisDispatchToken,
     type AnalysisDispatchFence,
 } from '@/lib/services/analysisDispatchFence';
+import { autoAnalysisRulesFromPreferences } from '@/lib/services/analysisEligibility';
 import {
     reserveServerAnalysisCreditsInTransaction,
+    releaseServerAnalysisCreditsInTransaction,
     SERVER_ANALYSIS_BILLING_POLICY_V1,
-    type BillingTransactionClient,
 } from '@/lib/services/billingAccounts';
 
 export const SERVER_ANALYSIS_EXECUTION_MODE =
@@ -42,6 +43,23 @@ export const SERVER_ANALYSIS_CONSUMED_CREDITS_V1 = 0;
 export const SERVER_ANALYSIS_ESTIMATED_CREDITS_V1 = 1;
 export const SERVER_ANALYSIS_CREDIT_POLICY =
     SERVER_ANALYSIS_BILLING_POLICY_V1;
+export const AUTO_ANALYSIS_QUEUED_REASONS = [
+    'auto-sync',
+    'auto-analysis',
+] as const;
+export class AutoAnalysisDisabledError extends Error {
+    constructor(message = 'Automatic analysis is disabled') {
+        super(message);
+        this.name = 'AutoAnalysisDisabledError';
+    }
+}
+
+export class AnalysisJobOwnershipError extends Error {
+    constructor(gameId: string) {
+        super(`Analysis job ownership mismatch for game ${gameId}`);
+        this.name = 'AnalysisJobOwnershipError';
+    }
+}
 
 export type ServerAnalysisConfig = {
     snapshot: Prisma.InputJsonObject;
@@ -108,6 +126,9 @@ async function enqueueAnalysisJobOnce(args: {
         });
 
         if (existing) {
+            if (existing.userId !== args.userId) {
+                throw new AnalysisJobOwnershipError(args.gameId);
+            }
             if (existing.status === 'SUCCEEDED' && !args.force) {
                 return { job: existing, created: false, queued: false };
             }
@@ -142,7 +163,11 @@ async function enqueueAnalysisJobOnce(args: {
                     queuedReason: args.queuedReason ?? existing.queuedReason,
                 },
             });
-            await reserveCreditsForQueuedAnalysisJob({ tx, job, run });
+            await reserveCreditsForQueuedAnalysisJob({
+                tx,
+                job,
+                run,
+            });
             return { job, created: false, queued: true };
         }
 
@@ -170,7 +195,11 @@ async function enqueueAnalysisJobOnce(args: {
                 queuedReason: args.queuedReason,
             },
         });
-        await reserveCreditsForQueuedAnalysisJob({ tx, job, run });
+        await reserveCreditsForQueuedAnalysisJob({
+            tx,
+            job,
+            run,
+        });
         return { job, created: true, queued: true };
     }, serializableTransactionOptions());
 }
@@ -562,7 +591,6 @@ function analysisRunProvenancePayload(args: {
 export async function transitionAnalysisRunForJob(args: {
     jobId: string;
     status: AnalysisJobStatus;
-    queuedReason?: string | null;
     config?: ServerAnalysisConfig;
     startedAt?: Date | null;
     completedAt?: Date | null;
@@ -595,7 +623,6 @@ export async function transitionAnalysisRunForJob(args: {
             where: { id: run.id },
             data: pruneUndefined({
                 status: analysisJobStatusToRunStatus(args.status),
-                queuedReason: args.queuedReason ?? undefined,
                 configSnapshot: args.config?.snapshot,
                 configHash: args.config?.hash,
                 startedAt:
@@ -694,7 +721,7 @@ function warnAnalysisRunUnavailable(error: unknown) {
 }
 
 async function reserveCreditsForQueuedAnalysisJob(args: {
-    tx: BillingTransactionClient;
+    tx: Prisma.TransactionClient;
     job: Pick<
         AnalysisJob,
         'id' | 'userId' | 'gameId' | 'queuedReason' | 'estimatedCredits'
@@ -710,6 +737,33 @@ async function reserveCreditsForQueuedAnalysisJob(args: {
         ? `analysis-run:${run.id}:reserve`
         : `analysis-job:${job.id}:reserve`;
 
+    const isAutomatic = isAutoAnalysisQueuedReason(job.queuedReason);
+    let autoAnalysisBudget:
+        | {
+              dailyCap: number | null;
+              monthlyCap: number | null;
+              reserveCredits: number;
+          }
+        | undefined;
+    if (isAutomatic) {
+        const user = await tx.user.findUnique({
+            where: { id: job.userId },
+            select: { preferences: true },
+        });
+        const rules = autoAnalysisRulesFromPreferences(
+            user?.preferences ?? {}
+        );
+        if (!rules.enabled) throw new AutoAnalysisDisabledError();
+        // This canonical policy read and the reservation share the same
+        // serializable transaction. A reconciliation snapshot may already be
+        // stale if the user tightened or disabled automation.
+        autoAnalysisBudget = {
+            dailyCap: rules.dailyCap,
+            monthlyCap: rules.monthlyCap,
+            reserveCredits: rules.reserveCredits,
+        };
+    }
+
     await reserveServerAnalysisCreditsInTransaction({
         tx,
         userId: job.userId,
@@ -719,14 +773,104 @@ async function reserveCreditsForQueuedAnalysisJob(args: {
         credits,
         idempotencyKey,
         reason: job.queuedReason,
-        enforceAutoAnalysisCaps: job.queuedReason === 'auto-sync',
+        enforceAutoAnalysisCaps: isAutomatic,
         enforceStopThreshold: true,
+        autoAnalysisBudget,
         metadata: {
             executionMode: SERVER_ANALYSIS_EXECUTION_MODE,
             estimatedCredits: credits,
             policy: SERVER_ANALYSIS_CREDIT_POLICY,
         },
     });
+}
+
+export function isAutoAnalysisQueuedReason(reason: string | null | undefined) {
+    return AUTO_ANALYSIS_QUEUED_REASONS.includes(
+        reason as (typeof AUTO_ANALYSIS_QUEUED_REASONS)[number]
+    );
+}
+
+/**
+ * Disabling automation cancels every still-QUEUED auto job, including one
+ * whose delivery has already been published. The worker's QUEUED→RUNNING CAS
+ * then rejects that stale delivery. Jobs which won the race to RUNNING and all
+ * manual work are deliberately untouched. The caller can include this helper
+ * in the same transaction as the preferences update.
+ */
+export async function cancelQueuedAutoAnalysisJobsInTransaction(args: {
+    tx: Prisma.TransactionClient;
+    userId: string;
+}) {
+    const jobs = await args.tx.analysisJob.findMany({
+        where: {
+            userId: args.userId,
+            status: 'QUEUED',
+            queuedReason: { in: [...AUTO_ANALYSIS_QUEUED_REASONS] },
+        },
+        select: {
+            id: true,
+            userId: true,
+            gameId: true,
+            analysisRunId: true,
+            estimatedCredits: true,
+        },
+    });
+    let cancelled = 0;
+    for (const job of jobs) {
+        const update = await args.tx.analysisJob.updateMany({
+            where: {
+                id: job.id,
+                status: 'QUEUED',
+            },
+            data: {
+                status: 'CANCELLED',
+                ...analysisJobClearedLeaseData(),
+                completedAt: new Date(),
+                scheduledFor: null,
+                lastError: null,
+            },
+        });
+        if (update.count !== 1) continue;
+        cancelled += 1;
+        await args.tx.analysisRun.updateMany({
+            where: { id: job.analysisRunId, status: 'QUEUED' },
+            data: {
+                status: 'CANCELLED',
+                completedAt: new Date(),
+                lastError: null,
+            },
+        });
+
+        const credits = Math.max(1, Math.trunc(job.estimatedCredits ?? 1));
+        const entries = await args.tx.creditLedgerEntry.findMany({
+            where: { analysisJobId: job.id },
+            select: { type: true, credits: true },
+        });
+        const reserved = entries.reduce((total, entry) => {
+            if (entry.type === 'RESERVED') return total + entry.credits;
+            if (
+                entry.type === 'CONSUMED' ||
+                entry.type === 'RELEASED' ||
+                entry.type === 'EXPIRED'
+            ) {
+                return total - entry.credits;
+            }
+            return total;
+        }, 0);
+        if (reserved < credits) continue;
+        await releaseServerAnalysisCreditsInTransaction({
+            tx: args.tx,
+            userId: job.userId,
+            gameId: job.gameId,
+            analysisJobId: job.id,
+            analysisRunId: job.analysisRunId,
+            credits,
+            idempotencyKey:
+                `analysis-run:${job.analysisRunId}:disabled-release`,
+            reason: 'auto-analysis-disabled',
+        });
+    }
+    return { cancelled };
 }
 
 function errorMessage(error: unknown) {

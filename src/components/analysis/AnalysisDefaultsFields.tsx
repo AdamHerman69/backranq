@@ -25,9 +25,9 @@ export const TRAINING_COVERAGE_OPTION_LABELS: Record<
     TrainingCoveragePreset,
     string
 > = {
-    ALL_CONFIRMED: 'Nearly every confirmed moment',
-    BALANCED: 'Meaningful moments',
-    HIGH_CONFIDENCE: 'Major moments only',
+    ALL_CONFIRMED: 'Nearly every confirmed position',
+    BALANCED: 'Meaningful positions',
+    HIGH_CONFIDENCE: 'Major positions only',
 };
 
 const NUMERIC_FIELD_COPY: Record<
@@ -46,7 +46,7 @@ const NUMERIC_FIELD_COPY: Record<
     },
     themeLookaheadPlies: {
         label: 'Theme lookahead (plies)',
-        hint: 'Used only for explanation tags; it never filters a training moment.',
+        hint: 'Used only for explanation tags; it never filters a practice position.',
         error: 'Enter a whole number from 0 to 32.',
     },
 };
@@ -150,12 +150,12 @@ export function AnalysisDefaultsFields({
         <div className={cn(dense ? 'space-y-3' : 'space-y-4')}>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <IntentSetting
-                    title="Training moments to keep"
-                    description="Coverage controls which confirmed decisions become training moments."
+                    title="Practice positions to keep"
+                    description="Coverage controls which confirmed decisions become practice positions."
                     dense={dense}
                 >
                     <Field
-                        label="Training coverage"
+                        label="Position coverage"
                         hint="Includes your mistakes and missed opportunities when a game is analyzed again."
                     >
                         <Select
@@ -192,7 +192,7 @@ export function AnalysisDefaultsFields({
 
                 <IntentSetting
                     title="Moves to accept"
-                    description="Tolerance grades your answer; it never removes saved training moments."
+                    description="Tolerance grades your answer; it never removes saved practice positions."
                     dense={dense}
                 >
                     <Field

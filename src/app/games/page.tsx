@@ -229,11 +229,11 @@ export default async function GamesPage({
         <div className="space-y-6">
             <PageHeader
                 title="Games"
-                subtitle="Browse your analyzed games library."
+                subtitle="Your imported games and their analysis status."
             />
 
-            <Card>
-                <CardContent className="p-4">
+            <Card className="shadow-none">
+                <CardContent className="p-3 sm:p-4">
                     <SyncGamesWidget context="games" enableAnalyze variant="banner" />
                 </CardContent>
             </Card>

@@ -1,17 +1,17 @@
 import type { NormalizedGame, TimeClass } from '@/lib/types/game';
-import { parseExternalId } from '@/lib/api/games';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 
 export type SyncProvider = 'lichess' | 'chesscom';
 
-export type SyncFilters = {
+export type HistoricalGameFilters = {
     timeClasses: TimeClass[]; // empty array = any
     rated: 'any' | 'rated' | 'casual';
     since?: string; // ISO
     until?: string; // ISO
-    max: number;
 };
 
 export type SyncStatus = {
+    ownerId: string;
     linked: {
         lichessUsername: string | null;
         chesscomUsername: string | null;
@@ -22,7 +22,6 @@ export type SyncStatus = {
     };
     autoSync?: {
         enabled: boolean;
-        autoAnalyzeEnabled: boolean;
         providers: { lichess: boolean; chesscom: boolean };
         schedule: string;
         states: {
@@ -57,12 +56,120 @@ export type SyncProviderState = {
     lastError: string | null;
 };
 
-type SaveGamesResult = {
-    saved: number;
-    skipped: number;
+export type SyncJobActivity = {
+    id: string;
+    status: string;
+    scheduledFor: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    fetchedCount: number;
+    savedCount: number;
+    createdCount: number;
+    updatedCount: number;
+    queuedAnalysisCount: number;
+    lastError: string | null;
+};
+
+export type SyncProviderActivity = {
+    provider: 'LICHESS' | 'CHESSCOM';
+    linked: boolean;
+    username: string | null;
+    state: {
+        enabled: boolean;
+        providerUsernameNormalized: string | null;
+        lastSyncedPlayedAt: string | null;
+        lastAttemptAt: string | null;
+        lastSuccessAt: string | null;
+        lastError: string | null;
+        hasPendingCursor: boolean;
+    } | null;
+    activeJob: SyncJobActivity | null;
+    latestJob: SyncJobActivity | null;
+};
+
+export type UserSyncActivity = {
+    providers: SyncProviderActivity[];
+    requestedJobs?: SyncJobActivity[];
+};
+
+export type RequestGameSyncResult = {
+    requested: SyncProvider[];
+    providers: Array<{
+        provider: SyncProvider;
+        queued: boolean;
+        jobId: string | null;
+        skippedReason: string | null;
+        queuePublished: boolean | null;
+        jobStatus: string | null;
+    }>;
+    active: UserSyncActivity;
+};
+
+export type HistoryImportAllowance = {
+    limit: number;
+    used: number;
+    remaining: number;
+};
+
+export type HistoryImportTruncatedReason =
+    | 'allowance'
+    | 'response-size'
+    | 'provider-page'
+    | null;
+
+export type HistoryImportSnapshot = {
+    ownerId: string;
+    provider: SyncProvider;
+    username: string;
+    rows: Array<{ game: NormalizedGame; ticket: string }>;
+    allowance: HistoryImportAllowance;
+    fetched: number;
+    existingCount: number;
+    truncatedReason: HistoryImportTruncatedReason;
+    providerComplete: boolean;
+    nextCursor: string | null;
+    page: number;
+};
+
+export type HistoricalGameImportItem = {
+    game: NormalizedGame;
+    ticket: string;
+};
+
+export type SaveHistoricalGamesResult = {
+    imported: number;
+    duplicates: number;
+    failed: number;
+    capRejected: number;
     ids: Record<string, string>;
-    errors?: Array<{ index: number; id?: string; kind?: string; error: string }>;
-    error?: string;
+    errors: Array<{
+        index: number;
+        id?: string;
+        kind: 'validation' | 'save';
+        error: string;
+    }>;
+    allowances: Partial<Record<SyncProvider, HistoryImportAllowance>>;
+};
+
+export function unresolvedHistoryPageGameCount(args: {
+    newCount: number;
+    selectedCount: number;
+    failed: number;
+}) {
+    return Math.max(
+        0,
+        Math.trunc(args.newCount) -
+            Math.trunc(args.selectedCount) +
+            Math.trunc(args.failed)
+    );
+}
+
+type HistoricalGamesChunkResult = Omit<
+    SaveHistoricalGamesResult,
+    'allowances'
+> & {
+    ownerId: string;
+    allowance: HistoryImportAllowance;
 };
 
 export type EnqueueServerAnalysisJobsResult = {
@@ -128,103 +235,195 @@ function chunkArray<T>(items: T[], size: number): T[][] {
     return chunks;
 }
 
-export async function getSyncStatus(): Promise<SyncStatus> {
-    const res = await fetch('/api/sync/status', { cache: 'no-store' });
+export async function getSyncStatus(options: {
+    signal?: AbortSignal;
+} = {}): Promise<SyncStatus> {
+    const res = await fetch('/api/sync/status', {
+        cache: 'no-store',
+        signal: options.signal,
+    });
     const json = (await res.json().catch(() => ({}))) as unknown;
     if (!res.ok)
         throw new Error(errorMessageFromJson(json, 'Failed to load sync status'));
     return json as SyncStatus;
 }
 
-function buildProviderQuery(filters: SyncFilters, username: string) {
-    const p = new URLSearchParams();
-    p.set('username', username);
-    if (filters.timeClasses.length > 0) {
-        p.set('timeClass', filters.timeClasses.join(','));
+export async function getGameSyncActivity(
+    jobIds: string[] = []
+): Promise<UserSyncActivity> {
+    const uniqueJobIds = [...new Set(jobIds.filter(Boolean))];
+    const query =
+        uniqueJobIds.length > 0
+            ? `?${new URLSearchParams({
+                  jobIds: uniqueJobIds.join(','),
+              }).toString()}`
+            : '';
+    const res = await fetch(`/api/sync${query}`, { cache: 'no-store' });
+    const json = (await res.json().catch(() => ({}))) as unknown;
+    if (!res.ok) {
+        throw new Error(
+            errorMessageFromJson(json, 'Failed to load sync activity')
+        );
     }
-    if (filters.rated === 'rated') p.set('rated', 'true');
-    if (filters.rated === 'casual') p.set('rated', 'false');
-    if (filters.since) p.set('since', filters.since);
-    if (filters.until) p.set('until', filters.until);
-    p.set('max', String(filters.max));
-    return p.toString();
+    return json as UserSyncActivity;
 }
 
-export async function fetchGamesFromProvider(args: {
-    provider: SyncProvider;
-    username: string;
-    filters: SyncFilters;
-}): Promise<NormalizedGame[]> {
-    const qs = buildProviderQuery(args.filters, args.username);
-    const res = await fetch(`/api/${args.provider}/games?${qs}`, {
-        cache: 'no-store',
+export async function requestGameSync(args: {
+    providers?: SyncProvider[];
+    onlyIfStaleMinutes?: number;
+} = {}): Promise<RequestGameSyncResult> {
+    const res = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(args),
     });
     const json = (await res.json().catch(() => ({}))) as unknown;
-    if (!res.ok)
-        throw new Error(
-            errorMessageFromJson(
-                json,
-                `Failed to fetch ${args.provider} games`
-            )
-        );
-    const games = isRecord(json) ? json.games : undefined;
-    return Array.isArray(games) ? (games as NormalizedGame[]) : [];
-}
-
-export async function getExistingExternalIds(args: {
-    provider: SyncProvider;
-    externalIds: string[];
-}) {
-    const out = new Set<string>();
-    for (const externalIds of chunkArray(args.externalIds, GAME_BULK_CHUNK_SIZE)) {
-        const res = await fetch('/api/games/existing', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: args.provider, externalIds }),
-        });
-        const json = (await res.json().catch(() => ({}))) as unknown;
-        if (!res.ok)
-            throw new Error(
-                errorMessageFromJson(json, 'Failed to check existing games')
-            );
-        const existingExternalIds = isRecord(json)
-            ? json.existingExternalIds
-            : undefined;
-        const list = Array.isArray(existingExternalIds)
-            ? existingExternalIds.filter((id): id is string => typeof id === 'string')
-            : [];
-        for (const id of list) out.add(id);
+    if (!res.ok) {
+        throw new Error(errorMessageFromJson(json, 'Failed to start sync'));
     }
-    return out;
+    return json as RequestGameSyncResult;
 }
 
-export async function saveGamesToLibrary(args: { games: NormalizedGame[] }) {
-    const aggregate: SaveGamesResult = { saved: 0, skipped: 0, ids: {}, errors: [] };
-    for (let start = 0; start < args.games.length; start += GAME_BULK_CHUNK_SIZE) {
-        const games = args.games.slice(start, start + GAME_BULK_CHUNK_SIZE);
-        const res = await saveGamesChunk(games);
-        aggregate.saved += res.saved;
-        aggregate.skipped += res.skipped;
-        aggregate.error ??= res.error;
-        Object.assign(aggregate.ids, res.ids);
-        if (res.errors?.length) {
-            aggregate.errors?.push(
-                ...res.errors.map((error) => ({
+export async function fetchHistoricalGames(args: {
+    ownerId: string;
+    provider: SyncProvider;
+    filters: HistoricalGameFilters;
+    cursor?: string;
+    signal?: AbortSignal;
+}): Promise<HistoryImportSnapshot> {
+    const params = new URLSearchParams({ provider: args.provider });
+    if (args.filters.timeClasses.length > 0) {
+        params.set('timeClass', args.filters.timeClasses.join(','));
+    }
+    if (args.filters.rated !== 'any') {
+        params.set('rated', args.filters.rated);
+    }
+    if (args.filters.since) params.set('since', args.filters.since);
+    if (args.filters.until) params.set('until', args.filters.until);
+    if (args.cursor) params.set('cursor', args.cursor);
+    const res = await fetch(`/api/sync/history?${params.toString()}`, {
+        cache: 'no-store',
+        headers: {
+            [EXPECTED_OWNER_HEADER]: args.ownerId,
+        },
+        signal: args.signal,
+    });
+    const json = (await res.json().catch(() => ({}))) as unknown;
+    if (!res.ok) {
+        throw new Error(
+            errorMessageFromJson(json, 'Failed to fetch older games')
+        );
+    }
+    if (
+        !isRecord(json) ||
+        json.ownerId !== args.ownerId ||
+        json.provider !== args.provider ||
+        !Array.isArray(json.rows) ||
+        !isRecord(json.allowance) ||
+        typeof json.providerComplete !== 'boolean' ||
+        (json.nextCursor !== null &&
+            typeof json.nextCursor !== 'string') ||
+        typeof json.page !== 'number' ||
+        !Number.isSafeInteger(json.page) ||
+        json.page < 1 ||
+        (json.truncatedReason !== null &&
+            json.truncatedReason !== 'allowance' &&
+            json.truncatedReason !== 'response-size' &&
+            json.truncatedReason !== 'provider-page')
+    ) {
+        throw new Error('Invalid older-games response');
+    }
+    return json as HistoryImportSnapshot;
+}
+
+async function saveHistoricalGamesChunk(args: {
+    ownerId: string;
+    provider: SyncProvider;
+    items: HistoricalGameImportItem[];
+}) {
+    const res = await fetch('/api/sync/history', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            [EXPECTED_OWNER_HEADER]: args.ownerId,
+        },
+        body: JSON.stringify({
+            provider: args.provider,
+            items: args.items,
+        }),
+    });
+    const json = (await res.json().catch(() => ({}))) as unknown;
+    if (!res.ok && !isHistoricalGamesResult(json)) {
+        throw new Error(
+            errorMessageFromJson(json, 'Failed to import older games')
+        );
+    }
+    if (!isHistoricalGamesResult(json)) {
+        throw new Error('Invalid older-games import response');
+    }
+    return json;
+}
+
+function isHistoricalGamesResult(
+    value: unknown
+): value is HistoricalGamesChunkResult {
+    return (
+        isRecord(value) &&
+        typeof value.ownerId === 'string' &&
+        typeof value.imported === 'number' &&
+        typeof value.duplicates === 'number' &&
+        typeof value.failed === 'number' &&
+        typeof value.capRejected === 'number' &&
+        isRecord(value.ids) &&
+        Array.isArray(value.errors) &&
+        isRecord(value.allowance)
+    );
+}
+
+export async function saveHistoricalGamesToLibrary(args: {
+    ownerId: string;
+    items: HistoricalGameImportItem[];
+}): Promise<SaveHistoricalGamesResult> {
+    const aggregate: SaveHistoricalGamesResult = {
+        imported: 0,
+        duplicates: 0,
+        failed: 0,
+        capRejected: 0,
+        ids: {},
+        errors: [],
+        allowances: {},
+    };
+    let offset = 0;
+    for (const provider of ['lichess', 'chesscom'] as const) {
+        const providerItems = args.items.filter(
+            (item) => item.game.provider === provider
+        );
+        for (const items of chunkArray(providerItems, GAME_BULK_CHUNK_SIZE)) {
+            const result = await saveHistoricalGamesChunk({
+                ownerId: args.ownerId,
+                provider,
+                items,
+            });
+            if (result.ownerId !== args.ownerId) {
+                throw new Error(
+                    'The server returned an import for a different account'
+                );
+            }
+            aggregate.imported += result.imported;
+            aggregate.duplicates += result.duplicates;
+            aggregate.failed += result.failed;
+            aggregate.capRejected += result.capRejected;
+            aggregate.allowances[provider] = result.allowance;
+            Object.assign(aggregate.ids, result.ids);
+            aggregate.errors.push(
+                ...result.errors.map((error) => ({
                     ...error,
-                    index: error.index + start,
+                    index: error.index + offset,
                 }))
             );
+            offset += items.length;
         }
     }
-
-    if (aggregate.saved === 0 && aggregate.skipped > 0) {
-        throw new Error(
-            aggregate.error ??
-                aggregate.errors?.[0]?.error ??
-                'Failed to save games'
-        );
-    }
-
     return aggregate;
 }
 
@@ -271,46 +470,4 @@ export async function fetchServerAnalysisJobs(
                   typeof job.status === 'string'
           )
         : [];
-}
-
-async function saveGamesChunk(games: NormalizedGame[]): Promise<SaveGamesResult> {
-    const res = await fetch('/api/games', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ games }),
-    });
-    const json = (await res.json().catch(() => ({}))) as unknown;
-    if (!res.ok && isSaveGamesResult(json)) {
-        return json;
-    }
-    if (!res.ok) {
-        throw new Error(errorMessageFromJson(json, 'Failed to save games'));
-    }
-    return json as SaveGamesResult;
-}
-
-function isSaveGamesResult(value: unknown): value is SaveGamesResult {
-    return (
-        isRecord(value) &&
-        typeof value.saved === 'number' &&
-        typeof value.skipped === 'number' &&
-        isRecord(value.ids) &&
-        (value.errors == null || Array.isArray(value.errors))
-    );
-}
-
-export function splitNewVsExisting(
-    provider: SyncProvider,
-    games: NormalizedGame[],
-    existingExternalIds: Set<string>
-) {
-    const newGames: NormalizedGame[] = [];
-    const existingGames: NormalizedGame[] = [];
-    for (const g of games) {
-        if (g.provider !== provider) continue;
-        const ext = parseExternalId(g);
-        if (existingExternalIds.has(ext)) existingGames.push(g);
-        else newGames.push(g);
-    }
-    return { newGames, existingGames };
 }

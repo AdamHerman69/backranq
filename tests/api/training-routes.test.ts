@@ -27,17 +27,17 @@ describe('canonical training routes', () => {
     it('requires authentication on every pre-attempt and write endpoint', async () => {
         prepareRouteModules();
         setMockUserId(null);
-        const [sessionRoute, detailRoute, attemptRoute, revealRoute] =
+        const [feedRoute, detailRoute, attemptRoute, revealRoute] =
             await Promise.all([
-                import('@/app/api/training/session/route'),
+                import('@/app/api/training/feed/route'),
                 import('@/app/api/training/moments/[id]/route'),
                 import('@/app/api/training/moments/[id]/attempts/route'),
                 import('@/app/api/training/moments/[id]/reveal/route'),
             ]);
 
         const responses = await Promise.all([
-            sessionRoute.GET(
-                new Request('http://localhost/api/training/session')
+            feedRoute.GET(
+                new Request('http://localhost/api/training/feed')
             ),
             detailRoute.GET(new Request('http://localhost'), {
                 params: Promise.resolve({ id: momentId }),
@@ -73,7 +73,7 @@ describe('canonical training routes', () => {
         expect(prismaMock.trainingAttempt.create).not.toHaveBeenCalled();
     });
 
-    it('keeps the session response spoiler-free and scopes reads to the user', async () => {
+    it('keeps the feed response spoiler-free and scopes reads to the user', async () => {
         prepareRouteModules();
         prismaMock.trainingMoment.findMany.mockResolvedValue([
             {
@@ -87,10 +87,10 @@ describe('canonical training routes', () => {
                 themes: ['quiet-move'],
             },
         ]);
-        const route = await import('@/app/api/training/session/route');
+        const route = await import('@/app/api/training/feed/route');
 
         const response = await route.GET(
-            new Request('http://localhost/api/training/session?limit=10')
+            new Request('http://localhost/api/training/feed?limit=10')
         );
 
         expect(response.status).toBe(200);
@@ -118,7 +118,7 @@ describe('canonical training routes', () => {
         );
     });
 
-    it('applies the saved session mix without changing extracted moments', async () => {
+    it('applies the saved practice mix without changing extracted moments', async () => {
         prepareRouteModules();
         prismaMock.user.findUnique.mockResolvedValue({
             preferences: {
@@ -126,10 +126,10 @@ describe('canonical training routes', () => {
             },
         });
         prismaMock.trainingMoment.findMany.mockResolvedValue([]);
-        const route = await import('@/app/api/training/session/route');
+        const route = await import('@/app/api/training/feed/route');
 
         const response = await route.GET(
-            new Request('http://localhost/api/training/session?limit=10')
+            new Request('http://localhost/api/training/feed?limit=10')
         );
 
         expect(response.status).toBe(200);
@@ -172,11 +172,11 @@ describe('canonical training routes', () => {
                 lastTrainedAt: null,
             },
         ]);
-        const route = await import('@/app/api/training/session/route');
+        const route = await import('@/app/api/training/feed/route');
 
         const first = await route.GET(
             new Request(
-                'http://localhost/api/training/session?limit=1'
+                'http://localhost/api/training/feed?limit=1'
             )
         );
         const firstBody = await readJson<{
@@ -193,7 +193,7 @@ describe('canonical training routes', () => {
         prismaMock.trainingMoment.findMany.mockResolvedValueOnce([]);
         const second = await route.GET(
             new Request(
-                `http://localhost/api/training/session?limit=1&cursor=${encodeURIComponent(firstBody.nextCursor)}`
+                `http://localhost/api/training/feed?limit=1&cursor=${encodeURIComponent(firstBody.nextCursor)}`
             )
         );
 

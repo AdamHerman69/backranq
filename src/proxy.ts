@@ -25,9 +25,10 @@ export async function proxy(req: NextRequest) {
 
 export const config = {
     matcher: [
+        '/home/:path*',
         '/stats/:path*',
         '/games/:path*',
-        '/training/:path*',
+        '/practice/:path*',
         '/settings/:path*',
         '/profile/:path*',
         '/insights/:path*',

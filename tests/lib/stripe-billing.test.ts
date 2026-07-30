@@ -4,6 +4,7 @@ import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
 type StripeBillingModule = typeof import('@/lib/services/stripeBilling');
 
 const subscriptionsRetrieveMock = vi.fn();
+const scheduleAutoAnalysisWakeupMock = vi.fn();
 
 async function importStripeBilling(): Promise<StripeBillingModule> {
     vi.resetModules();
@@ -17,6 +18,9 @@ async function importStripeBilling(): Promise<StripeBillingModule> {
             billingPortal: { sessions: { create: vi.fn() } },
         }),
     }));
+    vi.doMock('@/lib/services/autoAnalysisBacklog', () => ({
+        scheduleAutoAnalysisWakeup: scheduleAutoAnalysisWakeupMock,
+    }));
     return import('@/lib/services/stripeBilling');
 }
 
@@ -26,6 +30,12 @@ describe('stripe billing price mapping', () => {
         vi.unstubAllEnvs();
         vi.stubEnv('STRIPE_PRICE_PLUS_MONTHLY', 'price_plus');
         vi.stubEnv('STRIPE_PRICE_PRO_MONTHLY', 'price_pro');
+        prismaMock.$transaction.mockImplementation(
+            async (callback: unknown) =>
+                (callback as (tx: typeof prismaMock) => Promise<unknown>)(
+                    prismaMock
+                )
+        );
     });
 
     it('maps internal paid plans to configured Stripe prices', async () => {
@@ -76,13 +86,167 @@ describe('stripe billing price mapping', () => {
                 autoAnalysisMonthlyCap: 500,
                 autoAnalysisDailyCap: 50,
                 serverCreditsBalance: 1000,
-                monthlyServerCreditsUsed: 0,
             }),
             create: expect.objectContaining({
                 userId: 'user-1',
                 plan: 'PLUS',
             }),
         });
+        expect(scheduleAutoAnalysisWakeupMock).toHaveBeenCalledWith(
+            'user-1',
+            'billing'
+        );
+    });
+
+    it('tops up and wakes the backlog when Stripe advances the billing period', async () => {
+        const billing = await importStripeBilling();
+        prismaMock.billingAccount.findFirst.mockResolvedValue({
+            userId: 'user-1',
+        });
+        prismaMock.billingAccount.findUnique.mockResolvedValue({
+            userId: 'user-1',
+            plan: 'PLUS',
+            serverCreditsBalance: 0,
+            serverCreditsRenewAt: new Date('2020-01-01T00:00:00Z'),
+            monthlyServerCreditsLimit: 1000,
+            autoAnalysisMonthlyCap: 500,
+            autoAnalysisDailyCap: 50,
+            stripePriceId: 'price_plus',
+            stripeSubscriptionStatus: 'active',
+            stripeCurrentPeriodEnd: new Date('2026-12-15T08:00:00Z'),
+        });
+        prismaMock.billingAccount.upsert.mockResolvedValue({});
+
+        await billing.applyStripeSubscription(
+            subscription({ status: 'active' })
+        );
+
+        expect(prismaMock.billingAccount.upsert).toHaveBeenCalledWith(
+            expect.objectContaining({
+                update: expect.objectContaining({
+                    serverCreditsBalance: 1000,
+                    monthlyServerCreditsUsed: 0,
+                    serverCreditsRenewAt: expect.any(Date),
+                }),
+            })
+        );
+        expect(scheduleAutoAnalysisWakeupMock).toHaveBeenCalledWith(
+            'user-1',
+            'billing'
+        );
+    });
+
+    it('changes plans by granting only the entitlement delta without resetting usage', async () => {
+        const billing = await importStripeBilling();
+        prismaMock.billingAccount.findFirst.mockResolvedValue({
+            userId: 'user-1',
+        });
+        prismaMock.billingAccount.findUnique.mockResolvedValue({
+            userId: 'user-1',
+            plan: 'PLUS',
+            serverCreditsBalance: 400,
+            monthlyServerCreditsUsed: 600,
+            serverCreditsRenewAt: new Date('2027-01-15T08:00:00Z'),
+            monthlyServerCreditsLimit: 1000,
+            autoAnalysisMonthlyCap: 500,
+            autoAnalysisDailyCap: 50,
+            stripePriceId: 'price_plus',
+            stripeSubscriptionStatus: 'active',
+            stripeCurrentPeriodEnd: new Date('2027-01-15T08:00:00Z'),
+        });
+        prismaMock.billingAccount.upsert.mockResolvedValue({});
+
+        await billing.applyStripeSubscription(
+            subscription({ status: 'active', priceId: 'price_pro' })
+        );
+
+        const upsertArgs = prismaMock.billingAccount.upsert.mock
+            .calls[0]?.[0] as
+            | { update: Record<string, unknown> }
+            | undefined;
+        const update = upsertArgs?.update ?? {};
+        expect(update).toMatchObject({
+            plan: 'PRO',
+            monthlyServerCreditsLimit: 5_000,
+            serverCreditsBalance: 4_400,
+        });
+        expect(update).not.toHaveProperty('monthlyServerCreditsUsed');
+        expect(update).not.toHaveProperty('serverCreditsRenewAt');
+    });
+
+    it('does not move the stored period backward or reset usage for a stale webhook', async () => {
+        const billing = await importStripeBilling();
+        const storedPeriodEnd = new Date('2027-02-15T08:00:00Z');
+        prismaMock.billingAccount.findFirst.mockResolvedValue({
+            userId: 'user-1',
+        });
+        prismaMock.billingAccount.findUnique.mockResolvedValue({
+            userId: 'user-1',
+            plan: 'PLUS',
+            serverCreditsBalance: 400,
+            monthlyServerCreditsUsed: 600,
+            serverCreditsRenewAt: storedPeriodEnd,
+            monthlyServerCreditsLimit: 1000,
+            autoAnalysisMonthlyCap: 500,
+            autoAnalysisDailyCap: 50,
+            stripePriceId: 'price_plus',
+            stripeSubscriptionStatus: 'active',
+            stripeCurrentPeriodEnd: storedPeriodEnd,
+        });
+        prismaMock.billingAccount.upsert.mockResolvedValue({});
+
+        await billing.applyStripeSubscription(
+            subscription({
+                status: 'active',
+                periodEnd: Date.parse('2027-01-15T08:00:00Z') / 1_000,
+            })
+        );
+
+        const upsertArgs = prismaMock.billingAccount.upsert.mock
+            .calls[0]?.[0] as
+            | { update: Record<string, unknown> }
+            | undefined;
+        const update = upsertArgs?.update ?? {};
+        expect(update.stripeCurrentPeriodEnd).toEqual(storedPeriodEnd);
+        expect(update).not.toHaveProperty('monthlyServerCreditsUsed');
+        expect(update).not.toHaveProperty('serverCreditsBalance');
+        expect(update).not.toHaveProperty('serverCreditsRenewAt');
+    });
+
+    it('ignores an older subscription event without overwriting the current plan', async () => {
+        const billing = await importStripeBilling();
+        prismaMock.billingAccount.findFirst.mockResolvedValue({
+            userId: 'user-1',
+        });
+        prismaMock.billingAccount.findUnique.mockResolvedValue({
+            userId: 'user-1',
+            plan: 'PRO',
+            serverCreditsBalance: 4_000,
+            monthlyServerCreditsUsed: 1_000,
+            serverCreditsRenewAt: new Date('2027-02-15T08:00:00Z'),
+            monthlyServerCreditsLimit: 5_000,
+            autoAnalysisMonthlyCap: 5_000,
+            autoAnalysisDailyCap: 250,
+            stripePriceId: 'price_pro',
+            stripeSubscriptionStatus: 'active',
+            stripeSubscriptionId: 'sub_1',
+            stripeCurrentPeriodEnd: new Date('2027-02-15T08:00:00Z'),
+            stripeLastEventCreatedAt: new Date(
+                '2027-01-20T08:00:00Z'
+            ),
+            stripeLastEventId: 'evt_new',
+        });
+
+        await billing.applyStripeSubscription(
+            subscription({ status: 'active', priceId: 'price_plus' }),
+            {
+                eventId: 'evt_old',
+                eventCreatedAt: new Date('2027-01-19T08:00:00Z'),
+            }
+        );
+
+        expect(prismaMock.billingAccount.upsert).not.toHaveBeenCalled();
+        expect(scheduleAutoAnalysisWakeupMock).not.toHaveBeenCalled();
     });
 
     it('maps non-paid subscription statuses back to free entitlements', async () => {
@@ -144,10 +308,7 @@ describe('stripe billing price mapping', () => {
 
         expect(prismaMock.billingAccount.updateMany).toHaveBeenCalledWith({
             where: {
-                OR: [
-                    { stripeSubscriptionId: 'sub_1' },
-                    { stripeCustomerId: 'cus_1' },
-                ],
+                stripeSubscriptionId: 'sub_1',
             },
             data: expect.objectContaining({
                 plan: 'FREE',
@@ -156,9 +317,46 @@ describe('stripe billing price mapping', () => {
             }),
         });
     });
+
+    it('cannot downgrade a replacement subscription through an old deletion event', async () => {
+        const billing = await importStripeBilling();
+        prismaMock.billingAccount.updateMany.mockResolvedValue({ count: 0 });
+        const eventCreatedAt = new Date('2027-01-20T08:00:00Z');
+
+        await billing.markStripeSubscriptionDeleted(
+            subscription({ status: 'canceled' }),
+            {
+                eventId: 'evt_delete_old',
+                eventCreatedAt,
+            }
+        );
+
+        expect(prismaMock.billingAccount.updateMany).toHaveBeenCalledWith({
+            where: {
+                stripeSubscriptionId: 'sub_1',
+                OR: [
+                    { stripeLastEventCreatedAt: null },
+                    {
+                        stripeLastEventCreatedAt: {
+                            lte: eventCreatedAt,
+                        },
+                    },
+                ],
+            },
+            data: expect.objectContaining({
+                plan: 'FREE',
+                stripeLastEventId: 'evt_delete_old',
+                stripeLastEventCreatedAt: eventCreatedAt,
+            }),
+        });
+    });
 });
 
-function subscription(args: { status: string }) {
+function subscription(args: {
+    status: string;
+    priceId?: string;
+    periodEnd?: number;
+}) {
     return {
         id: 'sub_1',
         customer: 'cus_1',
@@ -167,8 +365,8 @@ function subscription(args: { status: string }) {
         items: {
             data: [
                 {
-                    price: { id: 'price_plus' },
-                    current_period_end: 1_800_000_000,
+                    price: { id: args.priceId ?? 'price_plus' },
+                    current_period_end: args.periodEnd ?? 1_800_000_000,
                 },
             ],
         },

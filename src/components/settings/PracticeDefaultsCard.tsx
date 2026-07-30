@@ -23,8 +23,9 @@ import {
     type PreferencesSchema,
     type TrainingSessionMix,
 } from '@/lib/preferences';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 
-export function canSaveTrainingSessionMix({
+export function canSavePracticeMix({
     busy,
     loadError,
     loading,
@@ -46,7 +47,7 @@ export function canSaveTrainingSessionMix({
     );
 }
 
-export function TrainingSessionSettingsCard() {
+export function PracticeDefaultsCard({ ownerId }: { ownerId: string }) {
     const [loading, setLoading] = React.useState(true);
     const [busy, setBusy] = React.useState(false);
     const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -71,7 +72,7 @@ export function TrainingSessionSettingsCard() {
             };
             if (!response.ok || !body.preferences) {
                 throw new Error(
-                    body.error ?? 'Failed to load training settings'
+                    body.error ?? 'Failed to load practice settings'
                 );
             }
             if (requestId !== requestIdRef.current) return;
@@ -85,7 +86,7 @@ export function TrainingSessionSettingsCard() {
             setLoadError(
                 error instanceof Error
                     ? error.message
-                    : 'Failed to load training settings'
+                    : 'Failed to load practice settings'
             );
         } finally {
             if (requestId === requestIdRef.current) setLoading(false);
@@ -99,7 +100,7 @@ export function TrainingSessionSettingsCard() {
         };
     }, [load]);
 
-    const canSave = canSaveTrainingSessionMix({
+    const canSave = canSavePracticeMix({
         busy,
         loadError,
         loading,
@@ -110,12 +111,15 @@ export function TrainingSessionSettingsCard() {
     async function save() {
         if (!canSave) return;
 
-        const toastId = toast.loading('Saving training mix…');
+        const toastId = toast.loading('Saving position mix…');
         setBusy(true);
         try {
             const response = await fetch('/api/user/preferences', {
                 method: 'PUT',
-                headers: { 'content-type': 'application/json' },
+                headers: {
+                    'content-type': 'application/json',
+                    [EXPECTED_OWNER_HEADER]: ownerId,
+                },
                 body: JSON.stringify({ trainingSessionMix: mix }),
             });
             const body = (await response.json().catch(() => ({}))) as {
@@ -128,7 +132,7 @@ export function TrainingSessionSettingsCard() {
             const persistedMix = body.preferences?.trainingSessionMix ?? mix;
             setMix(persistedMix);
             setSavedMix(persistedMix);
-            toast.success('Default session mix saved.', { id: toastId });
+            toast.success('Default position mix saved.', { id: toastId });
         } catch (error) {
             toast.error(
                 error instanceof Error ? error.message : 'Save failed',
@@ -143,12 +147,12 @@ export function TrainingSessionSettingsCard() {
         <Card>
             <CardHeader>
                 <CardTitle className="text-base">
-                    Default session mix
+                    Default position mix
                 </CardTitle>
                 <CardDescription>
-                    Used when you start a new training session. You can
-                    temporarily override it in the trainer. This only changes
-                    what gets selected; it never deletes extracted moments.
+                    Used when you open Practice. You can temporarily override
+                    it in Position focus. This only changes which positions
+                    are selected; it never deletes saved positions.
                 </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -159,7 +163,7 @@ export function TrainingSessionSettingsCard() {
                     }
                     disabled={loading || busy || loadError !== null}
                 >
-                    <SelectTrigger aria-label="Default training session mix">
+                    <SelectTrigger aria-label="Default position mix">
                         <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -176,7 +180,7 @@ export function TrainingSessionSettingsCard() {
                 </Select>
                 {loading ? (
                     <p className="text-sm text-muted-foreground" role="status">
-                        Loading your current default…
+                        Loading your current position mix…
                     </p>
                 ) : null}
                 {loadError ? (

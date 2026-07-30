@@ -1,16 +1,26 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
+import {
+    EXPECTED_OWNER_HEADER,
+    expectedOwnerId,
+} from '@/lib/auth/ownerContract';
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import {
     ANALYSIS_NUMERIC_PREFERENCE_RULES,
-    defaultPreferences,
+    AUTO_ANALYSIS_BACKLOG_MODES,
+    AUTO_ANALYSIS_PROVIDER_KEYS,
+    AUTO_ANALYSIS_RESULT_SCOPES,
+    AUTO_ANALYSIS_TIME_CONTROL_KEYS,
+    canonicalPreferences,
     mergePreferences,
     TRAINING_SESSION_MIXES,
     validateAnalysisNumericPreference,
     type AnalysisNumericPreferenceKey,
     type PartialPreferences,
 } from '@/lib/preferences';
+import { cancelQueuedAutoAnalysisJobsInTransaction } from '@/lib/services/analysisJobs';
+import { scheduleAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
 import {
     boundedJsonBody,
     isRecord,
@@ -27,7 +37,6 @@ const MAX_PREFERENCES_BODY_BYTES = 256_000;
 
 const BOOLEAN_PREF_KEYS = new Set<keyof PartialPreferences>([
     'autoSyncEnabled',
-    'autoAnalyzeEnabled',
 ]);
 const FILTER_STRING_KEYS = new Set(['lichessUsername', 'chesscomUsername']);
 
@@ -54,7 +63,172 @@ function validatePreferenceCrossFields(
     if (minElo && maxElo && Number(minElo) > Number(maxElo)) {
         return 'filters.minElo must not exceed filters.maxElo';
     }
+    const auto = preferences.autoAnalysis;
+    if (
+        auto.dailyCap !== null &&
+        auto.monthlyCap !== null &&
+        auto.dailyCap > auto.monthlyCap
+    ) {
+        return 'autoAnalysis.dailyCap must not exceed autoAnalysis.monthlyCap';
+    }
+    if (auto.enabled && !Object.values(auto.providers).some(Boolean)) {
+        return 'autoAnalysis requires at least one provider when enabled';
+    }
+    if (auto.enabled && !Object.values(auto.timeControls).some(Boolean)) {
+        return 'autoAnalysis requires at least one time control when enabled';
+    }
     return null;
+}
+
+function validatedInteger(
+    raw: unknown,
+    path: string,
+    options: { min: number; max: number; nullable?: boolean }
+): { value: number | null } | { error: string } {
+    if (raw === null && options.nullable) return { value: null };
+    if (
+        typeof raw !== 'number' ||
+        !Number.isSafeInteger(raw) ||
+        raw < options.min ||
+        raw > options.max
+    ) {
+        return {
+            error: `Invalid ${path}; expected ${options.min}..${options.max}${
+                options.nullable ? ' or null' : ''
+            }`,
+        };
+    }
+    return { value: raw };
+}
+
+function validateAutoAnalysisPatch(
+    raw: Record<string, unknown>
+):
+    | { value: NonNullable<PartialPreferences['autoAnalysis']> }
+    | { error: string } {
+    const value: NonNullable<PartialPreferences['autoAnalysis']> = {};
+    for (const [key, nestedRaw] of Object.entries(raw)) {
+        if (key === 'enabledAt') {
+            return { error: 'autoAnalysis.enabledAt is server-controlled' };
+        }
+        if (key === 'enabled' || key === 'ratedOnly') {
+            if (typeof nestedRaw !== 'boolean') {
+                return { error: `Invalid autoAnalysis.${key}` };
+            }
+            value[key] = nestedRaw;
+            continue;
+        }
+        if (key === 'providers') {
+            if (!isRecord(nestedRaw)) {
+                return { error: 'Invalid autoAnalysis.providers' };
+            }
+            const providers: NonNullable<
+                NonNullable<PartialPreferences['autoAnalysis']>['providers']
+            > = {};
+            for (const [provider, enabled] of Object.entries(nestedRaw)) {
+                if (
+                    !AUTO_ANALYSIS_PROVIDER_KEYS.includes(
+                        provider as (typeof AUTO_ANALYSIS_PROVIDER_KEYS)[number]
+                    )
+                ) {
+                    return {
+                        error: `Unknown autoAnalysis.providers.${provider}`,
+                    };
+                }
+                if (typeof enabled !== 'boolean') {
+                    return {
+                        error: `Invalid autoAnalysis.providers.${provider}`,
+                    };
+                }
+                providers[
+                    provider as (typeof AUTO_ANALYSIS_PROVIDER_KEYS)[number]
+                ] = enabled;
+            }
+            value.providers = providers;
+            continue;
+        }
+        if (key === 'timeControls') {
+            if (!isRecord(nestedRaw)) {
+                return { error: 'Invalid autoAnalysis.timeControls' };
+            }
+            const controls: NonNullable<
+                NonNullable<PartialPreferences['autoAnalysis']>['timeControls']
+            > = {};
+            for (const [control, enabled] of Object.entries(nestedRaw)) {
+                if (
+                    !AUTO_ANALYSIS_TIME_CONTROL_KEYS.includes(
+                        control as (typeof AUTO_ANALYSIS_TIME_CONTROL_KEYS)[number]
+                    )
+                ) {
+                    return {
+                        error: `Unknown autoAnalysis.timeControls.${control}`,
+                    };
+                }
+                if (typeof enabled !== 'boolean') {
+                    return {
+                        error: `Invalid autoAnalysis.timeControls.${control}`,
+                    };
+                }
+                controls[
+                    control as (typeof AUTO_ANALYSIS_TIME_CONTROL_KEYS)[number]
+                ] = enabled;
+            }
+            value.timeControls = controls;
+            continue;
+        }
+        if (key === 'resultScope') {
+            if (
+                typeof nestedRaw !== 'string' ||
+                !AUTO_ANALYSIS_RESULT_SCOPES.includes(
+                    nestedRaw as (typeof AUTO_ANALYSIS_RESULT_SCOPES)[number]
+                )
+            ) {
+                return { error: 'Invalid autoAnalysis.resultScope' };
+            }
+            value.resultScope =
+                nestedRaw as (typeof AUTO_ANALYSIS_RESULT_SCOPES)[number];
+            continue;
+        }
+        if (key === 'backlogMode') {
+            if (
+                typeof nestedRaw !== 'string' ||
+                !AUTO_ANALYSIS_BACKLOG_MODES.includes(
+                    nestedRaw as (typeof AUTO_ANALYSIS_BACKLOG_MODES)[number]
+                )
+            ) {
+                return { error: 'Invalid autoAnalysis.backlogMode' };
+            }
+            value.backlogMode =
+                nestedRaw as (typeof AUTO_ANALYSIS_BACKLOG_MODES)[number];
+            continue;
+        }
+        const integerRules = {
+            minPlies: { min: 0, max: 1_000 },
+            dailyCap: { min: 1, max: 10_000, nullable: true },
+            monthlyCap: { min: 1, max: 100_000, nullable: true },
+            reserveCredits: { min: 0, max: 100_000 },
+        } as const;
+        if (key in integerRules) {
+            const parsed = validatedInteger(
+                nestedRaw,
+                `autoAnalysis.${key}`,
+                integerRules[key as keyof typeof integerRules]
+            );
+            if ('error' in parsed) return parsed;
+            if (key === 'minPlies' && parsed.value !== null) {
+                value.minPlies = parsed.value;
+            } else if (key === 'dailyCap') {
+                value.dailyCap = parsed.value;
+            } else if (key === 'monthlyCap') {
+                value.monthlyCap = parsed.value;
+            } else if (key === 'reserveCredits' && parsed.value !== null) {
+                value.reserveCredits = parsed.value;
+            }
+            continue;
+        }
+        return { error: `Unknown autoAnalysis.${key}` };
+    }
+    return { value };
 }
 
 function validatePreferencesPatch(value: unknown): { patch: PartialPreferences } | { error: string; status?: number } {
@@ -148,6 +322,14 @@ function validatePreferencesPatch(value: unknown): { patch: PartialPreferences }
                 providers[providerKey] = providerRaw;
             }
             patch.autoSyncProviders = providers;
+            continue;
+        }
+
+        if (key === 'autoAnalysis') {
+            if (!isRecord(raw)) return { error: 'Invalid autoAnalysis' };
+            const parsedAutoAnalysis = validateAutoAnalysisPatch(raw);
+            if ('error' in parsedAutoAnalysis) return parsedAutoAnalysis;
+            patch.autoAnalysis = parsedAutoAnalysis.value;
             continue;
         }
 
@@ -249,12 +431,9 @@ export async function GET() {
         select: { preferences: true },
     });
 
-    const prefs = mergePreferences(
-        defaultPreferences(),
-        (user?.preferences ?? {}) as PartialPreferences
-    );
+    const prefs = canonicalPreferences(user?.preferences ?? {});
 
-    return NextResponse.json({ preferences: prefs });
+    return NextResponse.json({ ownerId: userId, preferences: prefs });
 }
 
 export async function PUT(req: Request) {
@@ -262,6 +441,15 @@ export async function PUT(req: Request) {
     const userId = session?.user?.id;
     if (!userId) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (expectedOwnerId(req) !== userId) {
+        return NextResponse.json(
+            {
+                code: 'OWNER_MISMATCH',
+                error: `The signed-in account no longer matches ${EXPECTED_OWNER_HEADER}. Reload Settings before saving.`,
+            },
+            { status: 409 }
+        );
     }
 
     const requestBody = await boundedJsonBody(req, MAX_PREFERENCES_BODY_BYTES);
@@ -280,28 +468,108 @@ export async function PUT(req: Request) {
         );
     }
 
-    const cur = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { preferences: true },
-    });
-
-    const merged = mergePreferences(
-        defaultPreferences(),
-        (cur?.preferences ?? {}) as PartialPreferences
+    const result = await updatePreferencesTransactionally(
+        userId,
+        parsed.patch
     );
-    const next = mergePreferences(merged, parsed.patch);
-    const crossFieldError = validatePreferenceCrossFields(next);
-    if (crossFieldError) {
+    if (result.crossFieldError) {
         return NextResponse.json(
-            { error: crossFieldError },
+            { error: result.crossFieldError },
             { status: 400 }
         );
     }
+    const next = result.preferences;
+    if (next.autoAnalysis.enabled && result.automationPolicyChanged) {
+        scheduleAutoAnalysisWakeup(userId, 'preferences');
+    }
 
-    await prisma.user.update({
-        where: { id: userId },
-        data: { preferences: next as unknown as Prisma.InputJsonValue },
-    });
+    return NextResponse.json({ ownerId: userId, preferences: next });
+}
 
-    return NextResponse.json({ preferences: next });
+async function updatePreferencesTransactionally(
+    userId: string,
+    requestedPatch: PartialPreferences
+) {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+            return await prisma.$transaction(
+                async (tx) => {
+                    const current = await tx.user.findUnique({
+                        where: { id: userId },
+                        select: { preferences: true },
+                    });
+                    const previous = canonicalPreferences(
+                        current?.preferences ?? {}
+                    );
+                    let next = mergePreferences(previous, requestedPatch);
+                    const needsNewBacklogBoundary =
+                        next.autoAnalysis.enabled &&
+                        ((!previous.autoAnalysis.enabled &&
+                            next.autoAnalysis.enabled) ||
+                            (previous.autoAnalysis.backlogMode !== 'new' &&
+                                next.autoAnalysis.backlogMode === 'new'));
+                    if (needsNewBacklogBoundary) {
+                        next = mergePreferences(next, {
+                            autoAnalysis: {
+                                enabledAt: new Date().toISOString(),
+                            },
+                        });
+                    }
+
+                    const crossFieldError =
+                        validatePreferenceCrossFields(next);
+                    if (crossFieldError) {
+                        return {
+                            preferences: next,
+                            crossFieldError,
+                            automationPolicyChanged: false,
+                        };
+                    }
+
+                    await tx.user.update({
+                        where: { id: userId },
+                        data: {
+                            preferences:
+                                next as unknown as Prisma.InputJsonValue,
+                        },
+                    });
+                    if (
+                        previous.autoAnalysis.enabled &&
+                        !next.autoAnalysis.enabled
+                    ) {
+                        await cancelQueuedAutoAnalysisJobsInTransaction({
+                            tx,
+                            userId,
+                        });
+                    }
+                    return {
+                        preferences: next,
+                        crossFieldError: null,
+                        automationPolicyChanged:
+                            requestedPatch.autoAnalysis !== undefined,
+                    };
+                },
+                {
+                    isolationLevel:
+                        Prisma.TransactionIsolationLevel.Serializable,
+                }
+            );
+        } catch (error) {
+            if (attempt < maxAttempts && isTransactionWriteConflict(error)) {
+                continue;
+            }
+            throw error;
+        }
+    }
+    throw new Error('Preferences transaction retry limit exceeded');
+}
+
+function isTransactionWriteConflict(error: unknown) {
+    return (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: unknown }).code === 'P2034'
+    );
 }

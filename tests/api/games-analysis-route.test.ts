@@ -474,7 +474,7 @@ describe('PUT /api/games/[id]/analysis', () => {
         );
 
         await expect(readJson(response)).resolves.toEqual({
-            error: 'Training moments do not match source game positions',
+            error: 'Practice positions do not match source game positions',
         });
         expect(response.status).toBe(400);
         expect(

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { canSaveTrainingSessionMix } from '@/components/settings/TrainingSessionSettingsCard';
+import { canSavePracticeMix } from '@/components/settings/PracticeDefaultsCard';
 
-describe('training session settings save state', () => {
+describe('default position mix save state', () => {
     const readyState = {
         busy: false,
         loadError: null,
@@ -12,27 +12,27 @@ describe('training session settings save state', () => {
     };
 
     it('allows saving only after a successfully loaded value changed', () => {
-        expect(canSaveTrainingSessionMix(readyState)).toBe(true);
+        expect(canSavePracticeMix(readyState)).toBe(true);
         expect(
-            canSaveTrainingSessionMix({
+            canSavePracticeMix({
                 ...readyState,
                 mix: readyState.savedMix,
             })
         ).toBe(false);
         expect(
-            canSaveTrainingSessionMix({ ...readyState, savedMix: null })
+            canSavePracticeMix({ ...readyState, savedMix: null })
         ).toBe(false);
     });
 
     it('prevents saving during requests or after a load failure', () => {
         expect(
-            canSaveTrainingSessionMix({ ...readyState, loading: true })
+            canSavePracticeMix({ ...readyState, loading: true })
         ).toBe(false);
         expect(
-            canSaveTrainingSessionMix({ ...readyState, busy: true })
+            canSavePracticeMix({ ...readyState, busy: true })
         ).toBe(false);
         expect(
-            canSaveTrainingSessionMix({
+            canSavePracticeMix({
                 ...readyState,
                 loadError: 'Unavailable',
             })

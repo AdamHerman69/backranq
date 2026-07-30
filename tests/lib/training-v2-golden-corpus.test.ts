@@ -43,6 +43,7 @@ function multi(
     return {
         fen,
         bestMoveUci: lines[0]?.moveUci ?? '',
+        alternativesComplete: true,
         lines: lines.map((line, index) => ({
             multipv: index + 1,
             pvUci: line.pvUci,

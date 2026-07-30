@@ -1,12 +1,14 @@
-import type {
-    AnalysisLimit,
-    EngineIdentity,
-    EngineWdl,
-    EvalResult,
-    MultiPvLine,
-    MultiPvResult,
-    Score,
-    StockfishEngine,
+import { Chess } from 'chess.js';
+import {
+    isStructurallyCompleteMultiPvBundle,
+    type AnalysisLimit,
+    type EngineIdentity,
+    type EngineWdl,
+    type EvalResult,
+    type MultiPvLine,
+    type MultiPvResult,
+    type Score,
+    type StockfishEngine,
 } from '@/lib/analysis/stockfishClient';
 import {
     createStockfish18LiteEngine,
@@ -40,6 +42,40 @@ type ActiveJob = {
     settled: boolean;
     abortCleanup?: () => void;
 };
+
+function exactMateInOneFallback(job: ActiveJob): MultiPvLine | null {
+    const moveUci = job.bestMoveUci.trim().toLowerCase();
+    if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(moveUci)) return null;
+
+    try {
+        const chess = new Chess(job.fen);
+        const move = chess.move({
+            from: moveUci.slice(0, 2),
+            to: moveUci.slice(2, 4),
+            promotion: moveUci.slice(4, 5) || undefined,
+        });
+        if (!move || !chess.isCheckmate()) return null;
+    } catch {
+        return null;
+    }
+
+    // This is a rule-exact outcome derived from the legal UCI bestmove. It is
+    // intentionally limited to mate in one: other missing-PV searches remain
+    // unresolved and retry instead of receiving a guessed evaluation.
+    return {
+        multipv: 1,
+        pvUci: [moveUci],
+        score: { type: 'mate', value: 1 },
+        wdl: { win: 1_000, draw: 0, loss: 0 },
+        ...(job.latestDepth != null ? { depth: job.latestDepth } : {}),
+        ...(job.latestSelDepth != null
+            ? { selDepth: job.latestSelDepth }
+            : {}),
+        ...(job.latestNodes != null ? { nodes: job.latestNodes } : {}),
+        ...(job.latestNps != null ? { nps: job.latestNps } : {}),
+        ...(job.latestTimeMs != null ? { timeMs: job.latestTimeMs } : {}),
+    };
+}
 
 export type ServerStockfishClientOptions = {
     hashMb?: number;
@@ -504,12 +540,14 @@ export class ServerStockfishClient implements StockfishEngine {
             const depthBuckets = Array.from(job.linesByDepth.entries()).sort(
                 ([depthA], [depthB]) => depthB - depthA
             );
+            const completeBucket = depthBuckets.find(([, linesAtDepth]) => {
+                return isStructurallyCompleteMultiPvBundle(
+                    Array.from(linesAtDepth.values()),
+                    job.multiPv
+                );
+            });
             const selectedBucket =
-                depthBuckets.find(
-                    ([, linesAtDepth]) =>
-                        linesAtDepth.has(1) &&
-                        linesAtDepth.size >= job.multiPv
-                ) ??
+                completeBucket ??
                 depthBuckets.find(([, linesAtDepth]) =>
                     linesAtDepth.has(1)
                 );
@@ -517,7 +555,26 @@ export class ServerStockfishClient implements StockfishEngine {
                 selectedBucket?.[1].values() ?? []
             ).sort((a, b) => a.multipv - b.multipv);
             if (lines.length === 0) {
-                job.reject(new Error('Engine returned no exact PV'));
+                const terminalFallback = exactMateInOneFallback(job);
+                if (!terminalFallback) {
+                    job.reject(new Error('Engine returned no exact PV'));
+                } else {
+                    job.resolve({
+                        fen: job.fen,
+                        bestMoveUci: job.bestMoveUci,
+                        lines: [terminalFallback],
+                        // UCI bestmove proves this exact mate, but it does not
+                        // prove that no equivalent mating move exists.
+                        alternativesComplete: false,
+                        identity: {
+                            ...this.identity,
+                            options: {
+                                ...this.identity.options,
+                                MultiPV: job.multiPv,
+                            },
+                        },
+                    });
+                }
             } else {
                 job.resolve({
                     fen: job.fen,
@@ -527,6 +584,7 @@ export class ServerStockfishClient implements StockfishEngine {
                             ?.pvUci[0] ||
                         '',
                     lines,
+                    alternativesComplete: completeBucket != null,
                     identity: {
                         ...this.identity,
                         options: {

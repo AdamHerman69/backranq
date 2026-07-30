@@ -12,12 +12,26 @@ import type {
     TablebaseProvider,
 } from '@/lib/analysis/tablebase';
 
-type Line = { move: string; cp: number };
+type Line = {
+    move: string;
+    cp: number;
+    nodes?: number;
+    multipv?: number;
+};
 
 class VerifierFixtureEngine implements StockfishEngine {
     readonly calls: Array<{ fen: string; multiPv: number }> = [];
+    private readonly alternativesComplete: boolean | undefined;
 
-    constructor(private readonly positions: ReadonlyMap<string, Line[]>) {}
+    constructor(
+        private readonly positions: ReadonlyMap<string, Line[]>,
+        alternativesComplete: boolean | 'UNKNOWN' = true
+    ) {
+        this.alternativesComplete =
+            alternativesComplete === 'UNKNOWN'
+                ? undefined
+                : alternativesComplete;
+    }
 
     evalPosition(): Promise<EvalResult> {
         throw new Error('Verifier must use coherent MultiPV analysis');
@@ -29,16 +43,23 @@ class VerifierFixtureEngine implements StockfishEngine {
         this.calls.push({ fen: opts.fen, multiPv: opts.multiPv ?? 1 });
         const lines = this.positions.get(opts.fen);
         if (!lines) throw new Error(`Missing verifier fixture for ${opts.fen}`);
+        const requestedLines = lines.slice(0, opts.multiPv ?? 1);
         return {
             fen: opts.fen,
-            bestMoveUci: lines[0]?.move ?? '',
-            lines: lines.map((line, index) => ({
-                multipv: index + 1,
+            bestMoveUci: requestedLines[0]?.move ?? '',
+            lines: requestedLines.map((line, index) => ({
+                multipv: line.multipv ?? index + 1,
                 pvUci: [line.move],
                 score: { type: 'cp', value: line.cp },
                 depth: opts.depth ?? 18,
-                nodes: opts.nodes ?? 100_000,
+                nodes: line.nodes ?? opts.nodes ?? 100_000,
             })),
+            ...(this.alternativesComplete == null
+                ? {}
+                : {
+                      alternativesComplete:
+                          this.alternativesComplete,
+                  }),
         };
     }
 }
@@ -167,6 +188,205 @@ describe('bounded conditional continuation verifier', () => {
         expect(verified.diagnostics.join('\n')).not.toMatch(
             /frontier remains open/
         );
+    });
+
+    it('keeps a short duplicated MultiPV frontier open while retaining the lowest slot', async () => {
+        const root = new Chess().fen();
+        const engine = new VerifierFixtureEngine(
+            new Map([
+                [
+                    root,
+                    [
+                        { move: 'e2e4', cp: 100, nodes: 4_000 },
+                        { move: 'e2e4', cp: 100, nodes: 10_000 },
+                        { move: 'd2d4', cp: 90, nodes: 10_000 },
+                    ],
+                ],
+            ])
+        );
+
+        const verified = await verifyConditionalContinuation({
+            fen: root,
+            engine,
+            options: {
+                maxPlies: 1,
+                multiPv: 5,
+                fallbackMaxAcceptedCpLoss: 50,
+            },
+        });
+
+        expect(verified.acceptedMovesUci).toEqual(['e2e4', 'd2d4']);
+        expect(verified.root.branches).toHaveLength(2);
+        expect(verified.root.branches).toMatchObject([
+            {
+                moveUci: 'e2e4',
+                best: true,
+                evaluation: { source: 'ENGINE', nodes: 4_000 },
+            },
+            {
+                moveUci: 'd2d4',
+                best: false,
+                evaluation: { source: 'ENGINE', nodes: 10_000 },
+            },
+        ]);
+        expect(verified.root.alternativesComplete).toBe(false);
+        expect(verified.status).toBe('AMBIGUOUS');
+        expect(verified.diagnostics).toContain(
+            'Duplicate MultiPV root move at ply 0'
+        );
+    });
+
+    it('rejects an illegal unselected frontier as completeness evidence', async () => {
+        const root = new Chess().fen();
+        const engine = new VerifierFixtureEngine(
+            new Map([
+                [
+                    root,
+                    [
+                        { move: 'e2e4', cp: 100 },
+                        { move: 'd2d4', cp: 90 },
+                        { move: 'e2e5', cp: -200 },
+                    ],
+                ],
+            ])
+        );
+
+        const verified = await verifyConditionalContinuation({
+            fen: root,
+            engine,
+            options: {
+                maxPlies: 1,
+                multiPv: 3,
+                fallbackMaxAcceptedCpLoss: 50,
+            },
+        });
+
+        expect(verified.acceptedMovesUci).toEqual(['e2e4', 'd2d4']);
+        expect(verified.root.branches).toHaveLength(2);
+        expect(verified.root.alternativesComplete).toBe(false);
+        expect(verified.status).toBe('INVALID');
+        expect(verified.solutionShape).toBe('OPEN');
+        expect(verified.diagnostics).toContain(
+            'Illegal engine move e2e5 at ply 0'
+        );
+    });
+
+    it('does not promote slot two to best when malformed slot one is rejected', async () => {
+        const root = new Chess().fen();
+        const engine = new VerifierFixtureEngine(
+            new Map([
+                [
+                    root,
+                    [
+                        { move: 'not-a-move', cp: 100 },
+                        { move: 'e2e4', cp: 90 },
+                        { move: 'd2d4', cp: 80 },
+                    ],
+                ],
+            ])
+        );
+
+        const verified = await verifyConditionalContinuation({
+            fen: root,
+            engine,
+            options: {
+                maxPlies: 1,
+                multiPv: 3,
+                fallbackMaxAcceptedCpLoss: 50,
+            },
+        });
+
+        expect(verified.status).toBe('INVALID');
+        expect(verified.solutionShape).toBe('OPEN');
+        expect(verified.root.alternativesComplete).toBe(false);
+        expect(verified.diagnostics).toContain(
+            'Malformed engine line in MultiPV slot 1 at ply 0'
+        );
+        expect(verified.diagnostics).toContain(
+            'Non-contiguous MultiPV slots at ply 0'
+        );
+    });
+
+    it('rejects a non-contiguous MultiPV bundle even when the adapter claims completeness', async () => {
+        const root = new Chess().fen();
+        const engine = new VerifierFixtureEngine(
+            new Map([
+                [
+                    root,
+                    [
+                        { move: 'e2e4', cp: 100, multipv: 1 },
+                        { move: 'd2d4', cp: 90, multipv: 3 },
+                    ],
+                ],
+            ])
+        );
+
+        const verified = await verifyConditionalContinuation({
+            fen: root,
+            engine,
+            options: {
+                maxPlies: 1,
+                multiPv: 3,
+                fallbackMaxAcceptedCpLoss: 50,
+            },
+        });
+
+        expect(verified.status).toBe('INVALID');
+        expect(verified.solutionShape).toBe('OPEN');
+        expect(verified.root.alternativesComplete).toBe(false);
+        expect(verified.diagnostics).toContain(
+            'Non-contiguous MultiPV slots at ply 0'
+        );
+    });
+
+    it('keeps a short frontier open without explicit adapter proof', async () => {
+        const root = new Chess().fen();
+        const engine = new VerifierFixtureEngine(
+            new Map([
+                [
+                    root,
+                    [
+                        { move: 'e2e4', cp: 100 },
+                        { move: 'd2d4', cp: 90 },
+                    ],
+                ],
+            ]),
+            'UNKNOWN'
+        );
+
+        const verified = await verifyConditionalContinuation({
+            fen: root,
+            engine,
+            options: {
+                maxPlies: 1,
+                multiPv: 5,
+                fallbackMaxAcceptedCpLoss: 50,
+            },
+        });
+
+        expect(verified.acceptedMovesUci).toEqual(['e2e4', 'd2d4']);
+        expect(verified.status).toBe('AMBIGUOUS');
+        expect(verified.solutionShape).toBe('OPEN');
+        expect(verified.root.alternativesComplete).toBe(false);
+    });
+
+    it('keeps the alternative frontier open when the engine adapter cannot enumerate it', async () => {
+        const root = new Chess().fen();
+        const engine = new VerifierFixtureEngine(
+            new Map([[root, [{ move: 'e2e4', cp: 100 }]]]),
+            false
+        );
+
+        const verified = await verifyConditionalContinuation({
+            fen: root,
+            engine,
+            options: { maxPlies: 1, multiPv: 5 },
+        });
+
+        expect(verified.acceptedMovesUci).toEqual(['e2e4']);
+        expect(verified.root.alternativesComplete).toBe(false);
+        expect(verified.status).toBe('AMBIGUOUS');
+        expect(verified.solutionShape).toBe('OPEN');
     });
 
     it('stops a legal replay on threefold repetition using source/PV history', async () => {

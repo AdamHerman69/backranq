@@ -32,7 +32,6 @@ describe('auto analysis eligibility', () => {
     it('accepts matching losses and draws when explicitly enabled', () => {
         const preferences = {
             ...defaultPreferences(),
-            autoAnalyzeEnabled: true,
             autoAnalysis: {
                 enabled: true,
                 resultScope: 'draws',
@@ -56,7 +55,6 @@ describe('auto analysis eligibility', () => {
     it('rejects games outside provider, time, rated, and length rules', () => {
         const preferences = {
             ...defaultPreferences(),
-            autoAnalyzeEnabled: true,
             autoAnalysis: {
                 enabled: true,
                 resultScope: 'all',
@@ -95,5 +93,120 @@ describe('auto analysis eligibility', () => {
                 username: 'Ada',
             }).reason
         ).toBe('min-plies');
+    });
+
+    it('keeps analysis providers independent from sync providers', () => {
+        const preferences = {
+            ...defaultPreferences(),
+            autoSyncProviders: { lichess: false, chesscom: true },
+            autoAnalysis: {
+                ...defaultPreferences().autoAnalysis,
+                enabled: true,
+                backlogMode: 'all' as const,
+                providers: { lichess: true, chesscom: false },
+                timeControls: {
+                    ...defaultPreferences().autoAnalysis.timeControls,
+                    rapid: true,
+                },
+                minPlies: 10,
+            },
+        };
+
+        expect(
+            evaluateAutoAnalysisEligibility({
+                preferences,
+                game: longLoss,
+                usernameByProvider: { lichess: 'Ada' },
+            }).eligible
+        ).toBe(true);
+        expect(
+            evaluateAutoAnalysisEligibility({
+                preferences,
+                game: { ...longLoss, provider: 'chesscom' },
+                usernameByProvider: { chesscom: 'Ada' },
+            }).reason
+        ).toBe('provider');
+    });
+
+    it('uses enabledAt only for the new-games backlog mode', () => {
+        const enabledAt = '2026-07-10T00:00:00.000Z';
+        const base = {
+            ...defaultPreferences(),
+            autoAnalysis: {
+                ...defaultPreferences().autoAnalysis,
+                enabled: true,
+                enabledAt,
+                providers: { lichess: true, chesscom: false },
+                minPlies: 10,
+            },
+        };
+
+        expect(
+            evaluateAutoAnalysisEligibility({
+                preferences: {
+                    ...base,
+                    autoAnalysis: {
+                        ...base.autoAnalysis,
+                        backlogMode: 'new',
+                    },
+                },
+                game: {
+                    ...longLoss,
+                    createdAt: '2026-07-09T23:59:59.000Z',
+                },
+                username: 'Ada',
+            }).reason
+        ).toBe('before-enabled');
+        expect(
+            evaluateAutoAnalysisEligibility({
+                preferences: {
+                    ...base,
+                    autoAnalysis: {
+                        ...base.autoAnalysis,
+                        backlogMode: 'all',
+                    },
+                },
+                game: {
+                    ...longLoss,
+                    createdAt: '2026-07-09T23:59:59.000Z',
+                },
+                username: 'Ada',
+            }).eligible
+        ).toBe(true);
+    });
+
+    it('does not classify a draw until provider identity matches a player', () => {
+        const preferences = {
+            ...defaultPreferences(),
+            autoAnalysis: {
+                ...defaultPreferences().autoAnalysis,
+                enabled: true,
+                backlogMode: 'all' as const,
+                resultScope: 'draws' as const,
+                ratedOnly: false,
+                minPlies: 0,
+            },
+        };
+
+        expect(
+            evaluateAutoAnalysisEligibility({
+                preferences,
+                game: {
+                    ...longLoss,
+                    result: '1/2-1/2',
+                },
+                username: 'SomeoneElse',
+            }).reason
+        ).toBe('result-scope');
+        expect(
+            evaluateAutoAnalysisEligibility({
+                preferences,
+                game: {
+                    ...longLoss,
+                    result: '1/2-1/2',
+                },
+                username: 'Ada',
+            }).eligible
+        ).toBe(true);
     });
 });

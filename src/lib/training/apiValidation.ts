@@ -1,12 +1,12 @@
 import {
     TRAINING_API_MAX_ID_LENGTH,
-    TRAINING_SESSION_FOCUSES,
-    TRAINING_SESSION_MAX_LIMIT,
+    PRACTICE_FEED_MAX_LIMIT,
+    PRACTICE_FEED_FOCUSES,
+    type PracticeFeedFocus,
+    type PracticeFeedRequest,
     type RevealTrainingMomentRequest,
     type SubmitTrainingAttemptRequest,
     type TrainingPhase,
-    type TrainingSessionFocus,
-    type TrainingSessionRequest,
 } from '@/lib/training/api';
 import {
     TRAINING_LESSON_KINDS,
@@ -23,7 +23,7 @@ const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
 const PHASES = ['OPENING', 'MIDDLEGAME', 'ENDGAME'] as const;
-const SESSION_QUERY_KEYS = new Set([
+const FEED_QUERY_KEYS = new Set([
     'limit',
     'cursor',
     'focus',
@@ -88,12 +88,12 @@ function boundedThemes(values: string[]): string[] | null {
     return themes;
 }
 
-export function parseTrainingSessionRequest(
+export function parsePracticeFeedRequest(
     url: URL
-): TrainingSessionRequest | null {
+): PracticeFeedRequest | null {
     if (
         Array.from(url.searchParams.keys()).some(
-            (key) => !SESSION_QUERY_KEYS.has(key)
+            (key) => !FEED_QUERY_KEYS.has(key)
         ) ||
         [
             'limit',
@@ -112,7 +112,7 @@ export function parseTrainingSessionRequest(
     if (
         !Number.isSafeInteger(limit) ||
         limit < 1 ||
-        limit > TRAINING_SESSION_MAX_LIMIT
+        limit > PRACTICE_FEED_MAX_LIMIT
     ) {
         return null;
     }
@@ -125,7 +125,7 @@ export function parseTrainingSessionRequest(
             : rawFocus.trim().toUpperCase();
     if (
         focus !== undefined &&
-        !(TRAINING_SESSION_FOCUSES as readonly string[]).includes(
+        !(PRACTICE_FEED_FOCUSES as readonly string[]).includes(
             focus
         )
     ) {
@@ -176,7 +176,7 @@ export function parseTrainingSessionRequest(
         filters: {
             ...(focus !== undefined
                 ? {
-                      focus: focus as TrainingSessionFocus,
+                      focus: focus as PracticeFeedFocus,
                   }
                 : {}),
             ...(phases.length > 0

@@ -1,4 +1,5 @@
 import { Prisma, type Provider } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
 import { prisma } from '@/lib/prisma';
 import {
@@ -7,11 +8,13 @@ import {
     type PartialPreferences,
 } from '@/lib/preferences';
 import {
+    StaleSyncJobLeaseError,
     syncUserProvider,
     type SyncProviderResult,
 } from '@/lib/services/autoSync';
 
 const SYNC_JOB_LEASE_MS = 10 * 60 * 1_000;
+const SYNC_JOB_HEARTBEAT_MS = 60 * 1_000;
 const SYNC_JOB_MAX_ATTEMPTS = 5;
 const SYNC_RETRY_BACKOFF_BASE_MS = 60_000;
 const SYNC_RETRY_BACKOFF_MAX_MS = 30 * 60_000;
@@ -25,6 +28,9 @@ type SyncJobUser = {
     providerSyncStates?: Array<{
         provider: Provider;
         enabled: boolean;
+        lastSuccessAt?: Date | null;
+        lastAttemptAt?: Date | null;
+        cursorUntilPlayedAt?: Date | null;
     }>;
     accounts?: Array<{ access_token: string | null }>;
 };
@@ -35,6 +41,42 @@ export type PlannedSyncJob = {
     queued: boolean;
     jobId: string | null;
     skippedReason: string | null;
+};
+
+export type UserSyncProviderActivity = {
+    provider: Provider;
+    linked: boolean;
+    username: string | null;
+    state: {
+        enabled: boolean;
+        providerUsernameNormalized: string | null;
+        lastSyncedPlayedAt: Date | null;
+        lastAttemptAt: Date | null;
+        lastSuccessAt: Date | null;
+        lastError: string | null;
+        hasPendingCursor: boolean;
+    } | null;
+    activeJob: SyncJobSummary | null;
+    latestJob: SyncJobSummary | null;
+};
+
+export type SyncJobSummary = {
+    id: string;
+    status: string;
+    scheduledFor: Date;
+    startedAt: Date | null;
+    completedAt: Date | null;
+    fetchedCount: number;
+    savedCount: number;
+    createdCount: number;
+    updatedCount: number;
+    queuedAnalysisCount: number;
+    lastError: string | null;
+};
+
+export type UserSyncActivity = {
+    providers: UserSyncProviderActivity[];
+    requestedJobs?: SyncJobSummary[];
 };
 
 export type PlanSyncJobsResult = {
@@ -55,12 +97,28 @@ export type DispatchSyncJobsResult = PlanSyncJobsResult & {
         jobId: string;
         queued: boolean;
         messageId: string | null;
+        jobStatus: string | null;
     }>;
 };
 
 export type ProcessDueSyncJobsResult = {
     processed: ProcessSyncJobResult[];
 };
+
+const SYNC_JOB_SUMMARY_SELECT = {
+    id: true,
+    provider: true,
+    status: true,
+    scheduledFor: true,
+    startedAt: true,
+    completedAt: true,
+    fetchedCount: true,
+    savedCount: true,
+    createdCount: true,
+    updatedCount: true,
+    queuedAnalysisCount: true,
+    lastError: true,
+} as const;
 
 export async function planSyncJobs(args: { scheduledFor?: Date; now?: Date } = {}) {
     const scheduledFor = args.scheduledFor ?? new Date();
@@ -78,7 +136,13 @@ export async function planSyncJobs(args: { scheduledFor?: Date; now?: Date } = {
             lichessUsername: true,
             chesscomUsername: true,
             providerSyncStates: {
-                select: { provider: true, enabled: true },
+                select: {
+                    provider: true,
+                    enabled: true,
+                    lastSuccessAt: true,
+                    lastAttemptAt: true,
+                    cursorUntilPlayedAt: true,
+                },
             },
         },
     });
@@ -92,6 +156,7 @@ export async function planSyncJobs(args: { scheduledFor?: Date; now?: Date } = {
                     provider,
                     scheduledFor,
                     now,
+                    respectAutoSyncPreferences: true,
                 })
             );
         }
@@ -107,22 +172,221 @@ export async function planSyncJobs(args: { scheduledFor?: Date; now?: Date } = {
     } satisfies PlanSyncJobsResult;
 }
 
+export async function planUserSyncJobs(args: {
+    userId: string;
+    providers?: Provider[];
+    onlyIfStaleMinutes?: number;
+    scheduledFor?: Date;
+    now?: Date;
+}): Promise<PlannedSyncJob[]> {
+    const now = args.now ?? new Date();
+    const user = await prisma.user.findUnique({
+        where: { id: args.userId },
+        select: {
+            id: true,
+            preferences: true,
+            lichessUsername: true,
+            chesscomUsername: true,
+            providerSyncStates: {
+                select: {
+                    provider: true,
+                    enabled: true,
+                    lastSuccessAt: true,
+                    lastAttemptAt: true,
+                    cursorUntilPlayedAt: true,
+                },
+            },
+        },
+    });
+    if (!user) throw new Error('User not found');
+
+    const providers = args.providers?.length
+        ? Array.from(new Set(args.providers))
+        : (['LICHESS', 'CHESSCOM'] as Provider[]);
+    const planned: PlannedSyncJob[] = [];
+    for (const provider of providers) {
+        planned.push(
+            await planUserProviderSyncJob({
+                user,
+                provider,
+                scheduledFor: args.scheduledFor ?? now,
+                now,
+                // A stale-threshold request is the non-interactive app-open
+                // trigger and must honor automation preferences. Omitting the
+                // threshold is an explicit user action and may sync any linked
+                // provider the user selected.
+                respectAutoSyncPreferences:
+                    args.onlyIfStaleMinutes != null,
+                onlyIfStaleMinutes: args.onlyIfStaleMinutes,
+            })
+        );
+    }
+    return planned;
+}
+
+export async function dispatchUserSyncJobs(args: {
+    userId: string;
+    providers?: Provider[];
+    onlyIfStaleMinutes?: number;
+    scheduledFor?: Date;
+    now?: Date;
+}) {
+    const providers = await planUserSyncJobs(args);
+    const published: DispatchSyncJobsResult['published'] = [];
+    for (const job of providers) {
+        if (!job.jobId) continue;
+        published.push(
+            await publishSyncJobWakeup(job.jobId, args.now ?? new Date())
+        );
+    }
+    return { providers, published };
+}
+
+export async function getUserSyncActivity(
+    userId: string,
+    options: { requestedJobIds?: string[] } = {}
+): Promise<UserSyncActivity> {
+    const requestedJobIds = Array.from(
+        new Set((options.requestedJobIds ?? []).filter(Boolean))
+    ).slice(0, 4);
+    const [
+        user,
+        states,
+        lichessActive,
+        chesscomActive,
+        lichessLatest,
+        chesscomLatest,
+        requestedJobs,
+    ] = await Promise.all([
+        prisma.user.findUnique({
+            where: { id: userId },
+            select: {
+                lichessUsername: true,
+                chesscomUsername: true,
+            },
+        }),
+        prisma.providerSyncState.findMany({
+            where: { userId },
+            select: {
+                provider: true,
+                enabled: true,
+                providerUsernameNormalized: true,
+                lastSyncedPlayedAt: true,
+                cursorSincePlayedAt: true,
+                cursorUntilPlayedAt: true,
+                cursorWindowEnd: true,
+                lastAttemptAt: true,
+                lastSuccessAt: true,
+                lastError: true,
+            },
+        }),
+        prisma.syncJob.findFirst({
+            where: {
+                userId,
+                provider: 'LICHESS',
+                status: { in: ['QUEUED', 'RUNNING'] },
+            },
+            orderBy: { createdAt: 'desc' },
+            select: SYNC_JOB_SUMMARY_SELECT,
+        }),
+        prisma.syncJob.findFirst({
+            where: {
+                userId,
+                provider: 'CHESSCOM',
+                status: { in: ['QUEUED', 'RUNNING'] },
+            },
+            orderBy: { createdAt: 'desc' },
+            select: SYNC_JOB_SUMMARY_SELECT,
+        }),
+        prisma.syncJob.findFirst({
+            where: { userId, provider: 'LICHESS' },
+            orderBy: { createdAt: 'desc' },
+            select: SYNC_JOB_SUMMARY_SELECT,
+        }),
+        prisma.syncJob.findFirst({
+            where: { userId, provider: 'CHESSCOM' },
+            orderBy: { createdAt: 'desc' },
+            select: SYNC_JOB_SUMMARY_SELECT,
+        }),
+        requestedJobIds.length > 0
+            ? prisma.syncJob.findMany({
+                  where: {
+                      userId,
+                      id: { in: requestedJobIds },
+                  },
+                  take: 4,
+                  select: SYNC_JOB_SUMMARY_SELECT,
+              })
+            : Promise.resolve([]),
+    ]);
+    const activeByProvider = {
+        LICHESS: lichessActive,
+        CHESSCOM: chesscomActive,
+    } as const;
+    const latestByProvider = {
+        LICHESS: lichessLatest,
+        CHESSCOM: chesscomLatest,
+    } as const;
+
+    const activity: UserSyncActivity = {
+        providers: (['LICHESS', 'CHESSCOM'] as const).map((provider) => {
+            const state = states.find((item) => item.provider === provider);
+            const active = activeByProvider[provider];
+            const latest = latestByProvider[provider];
+            return {
+                provider,
+                linked: !!providerUsername(provider, user ?? {
+                    lichessUsername: null,
+                    chesscomUsername: null,
+                }),
+                username:
+                    providerUsername(provider, user ?? {
+                        lichessUsername: null,
+                        chesscomUsername: null,
+                    }) ?? null,
+                state: state
+                    ? {
+                          enabled: state.enabled,
+                          providerUsernameNormalized:
+                              state.providerUsernameNormalized,
+                          lastSyncedPlayedAt: state.lastSyncedPlayedAt,
+                          lastAttemptAt: state.lastAttemptAt,
+                          lastSuccessAt: state.lastSuccessAt,
+                          lastError: state.lastError,
+                          hasPendingCursor: !!(
+                              state.cursorSincePlayedAt &&
+                              state.cursorUntilPlayedAt &&
+                              state.cursorWindowEnd
+                          ),
+                      }
+                    : null,
+                activeJob: active ? syncJobSummary(active) : null,
+                latestJob: latest ? syncJobSummary(latest) : null,
+            };
+        }),
+    };
+    if (requestedJobIds.length > 0) {
+        const byId = new Map(
+            requestedJobs.map((job) => [job.id, syncJobSummary(job)])
+        );
+        activity.requestedJobs = requestedJobIds.flatMap((id) => {
+            const job = byId.get(id);
+            return job ? [job] : [];
+        });
+    }
+    return activity;
+}
+
 export async function dispatchPlannedSyncJobs(
-    args: { scheduledFor?: Date } = {}
+    args: { scheduledFor?: Date; now?: Date } = {}
 ): Promise<DispatchSyncJobsResult> {
     const plan = await planSyncJobs(args);
     const published: DispatchSyncJobsResult['published'] = [];
     for (const job of plan.providers) {
-        if (!job.jobId || !job.queued) continue;
-        const result = await publishBackranqQueueMessage(
-            { type: 'sync-job', jobId: job.jobId },
-            { idempotencyKey: `sync-job:${job.jobId}` }
+        if (!job.jobId) continue;
+        published.push(
+            await publishSyncJobWakeup(job.jobId, args.now ?? new Date())
         );
-        published.push({
-            jobId: job.jobId,
-            queued: result.queued,
-            messageId: result.messageId,
-        });
     }
     return { ...plan, published };
 }
@@ -179,6 +443,7 @@ export async function processSyncJob(
 ): Promise<ProcessSyncJobResult> {
     const now = args.now ?? new Date();
     const lockedUntil = new Date(now.getTime() + SYNC_JOB_LEASE_MS);
+    const leaseToken = randomUUID();
     const claim = await prisma.syncJob.updateMany({
         where: {
             id: jobId,
@@ -200,6 +465,7 @@ export async function processSyncJob(
             startedAt: now,
             completedAt: null,
             lockedUntil,
+            leaseToken,
             lastError: null,
         },
     });
@@ -227,6 +493,7 @@ export async function processSyncJob(
     });
     if (!job) throw new Error('Sync job not found');
 
+    const heartbeat = startSyncJobHeartbeat(job.id, leaseToken);
     try {
         const prefs = mergePreferences(
             defaultPreferences(),
@@ -236,34 +503,94 @@ export async function processSyncJob(
             user: job.user,
             provider: job.provider,
             prefs,
-            rawPreferences: job.user.preferences,
             lichessAccessToken: job.user.accounts[0]?.access_token ?? null,
-        });
-        if (result.error) {
-            await retryOrFailSyncJob({ job, error: result.error, now });
-            return { jobId: job.id, provider: job.provider, result };
-        }
-        await prisma.syncJob.update({
-            where: { id: job.id },
-            data: {
-                status: result.error ? 'FAILED' : 'SUCCEEDED',
-                completedAt: new Date(),
-                lockedUntil: null,
-                lastError: result.error?.slice(0, 2_000) ?? null,
-                fetchedCount: result.fetched,
-                savedCount: result.saved,
-                createdCount: result.created,
-                updatedCount: result.updated,
-                queuedAnalysisCount: result.queuedAnalysis,
+            force: true,
+            jobLease: {
+                jobId: job.id,
+                leaseToken,
             },
         });
+        if (result.error) {
+            const retried = await retryOrFailSyncJob({
+                job,
+                leaseToken,
+                error: result.error,
+                now,
+                result,
+                immediate: result.identityChanged === true,
+            });
+            if (retried.stale) return staleProcessResult(job);
+            if (retried.status === 'QUEUED') {
+                await publishSyncJobWakeup(job.id, now);
+            }
+            return { jobId: job.id, provider: job.provider, result };
+        }
+        if (!result.complete) {
+            const continued = await prisma.syncJob.updateMany({
+                where: {
+                    id: job.id,
+                    status: 'RUNNING',
+                    leaseToken,
+                },
+                data: {
+                    status: 'QUEUED',
+                    scheduledFor: now,
+                    attempts: 0,
+                    startedAt: null,
+                    completedAt: null,
+                    lockedUntil: null,
+                    leaseToken: null,
+                    lastError: null,
+                    fetchedCount: { increment: result.fetched },
+                    savedCount: { increment: result.saved },
+                    createdCount: { increment: result.created },
+                    updatedCount: { increment: result.updated },
+                    queuedAnalysisCount: {
+                        increment: result.queuedAnalysis,
+                    },
+                },
+            });
+            if (continued.count !== 1) return staleProcessResult(job);
+            await publishSyncJobWakeup(job.id, now);
+            return { jobId: job.id, provider: job.provider, result };
+        }
+        const completed = await prisma.syncJob.updateMany({
+            where: {
+                id: job.id,
+                status: 'RUNNING',
+                leaseToken,
+            },
+            data: {
+                status: 'SUCCEEDED',
+                completedAt: now,
+                lockedUntil: null,
+                leaseToken: null,
+                lastError: null,
+                fetchedCount: { increment: result.fetched },
+                savedCount: { increment: result.saved },
+                createdCount: { increment: result.created },
+                updatedCount: { increment: result.updated },
+                queuedAnalysisCount: {
+                    increment: result.queuedAnalysis,
+                },
+            },
+        });
+        if (completed.count !== 1) return staleProcessResult(job);
         return { jobId: job.id, provider: job.provider, result };
     } catch (error) {
-        await retryOrFailSyncJob({
+        if (error instanceof StaleSyncJobLeaseError) {
+            return staleProcessResult(job);
+        }
+        const retried = await retryOrFailSyncJob({
             job,
+            leaseToken,
             error,
             now,
         });
+        if (retried.stale) return staleProcessResult(job);
+        if (retried.status === 'QUEUED') {
+            await publishSyncJobWakeup(job.id, now);
+        }
         return {
             jobId: job.id,
             provider: job.provider,
@@ -274,12 +601,78 @@ export async function processSyncJob(
                 saved: 0,
                 created: 0,
                 updated: 0,
+                importedGameIds: [],
                 queuedAnalysis: 0,
+                analysisErrors: 0,
+                complete: false,
                 skipped: false,
                 error: errorMessage(error),
             },
         };
+    } finally {
+        await heartbeat.stop();
     }
+}
+
+function startSyncJobHeartbeat(jobId: string, leaseToken: string) {
+    let stopped = false;
+    let inFlight: Promise<unknown> = Promise.resolve();
+    const timer = setInterval(() => {
+        if (stopped) return;
+        inFlight = prisma.syncJob
+            .updateMany({
+                where: {
+                    id: jobId,
+                    status: 'RUNNING',
+                    leaseToken,
+                },
+                data: {
+                    lockedUntil: new Date(Date.now() + SYNC_JOB_LEASE_MS),
+                },
+            })
+            .catch(() => {
+                // The transaction-level lease fence remains authoritative. A
+                // transient heartbeat failure must not grant this worker
+                // ownership or mutate the job through an unfenced fallback.
+            });
+    }, SYNC_JOB_HEARTBEAT_MS);
+    timer.unref?.();
+
+    return {
+        async stop() {
+            stopped = true;
+            clearInterval(timer);
+            await inFlight;
+        },
+    };
+}
+
+function staleProcessResult(job: {
+    id: string;
+    provider: Provider;
+    user: {
+        lichessUsername: string | null;
+        chesscomUsername: string | null;
+    };
+}): ProcessSyncJobResult {
+    return {
+        jobId: job.id,
+        provider: job.provider,
+        result: {
+            provider: job.provider,
+            username: providerUsername(job.provider, job.user) ?? '',
+            fetched: 0,
+            saved: 0,
+            created: 0,
+            updated: 0,
+            importedGameIds: [],
+            queuedAnalysis: 0,
+            analysisErrors: 0,
+            complete: false,
+            skipped: true,
+            error: 'Sync delivery was superseded by a newer worker lease',
+        },
+    };
 }
 
 async function planUserProviderSyncJob(args: {
@@ -287,19 +680,29 @@ async function planUserProviderSyncJob(args: {
     provider: Provider;
     scheduledFor: Date;
     now: Date;
+    respectAutoSyncPreferences: boolean;
+    onlyIfStaleMinutes?: number;
 }): Promise<PlannedSyncJob> {
     const username = providerUsername(args.provider, args.user);
     if (!username) return skipped(args.user.id, args.provider, 'unlinked');
 
-    const prefs = mergePreferences(
-        defaultPreferences(),
-        (args.user.preferences ?? {}) as PartialPreferences
-    );
     const state = args.user.providerSyncStates?.find(
         (item) => item.provider === args.provider
     );
-    if (!autoSyncEnabledForProvider(prefs, args.provider, state?.enabled ?? true)) {
-        return skipped(args.user.id, args.provider, 'disabled');
+    if (args.respectAutoSyncPreferences) {
+        const prefs = mergePreferences(
+            defaultPreferences(),
+            (args.user.preferences ?? {}) as PartialPreferences
+        );
+        if (
+            !autoSyncEnabledForProvider(
+                prefs,
+                args.provider,
+                state?.enabled ?? true
+            )
+        ) {
+            return skipped(args.user.id, args.provider, 'disabled');
+        }
     }
 
     const recovered = await recoverExpiredSyncJobForProvider({
@@ -336,6 +739,19 @@ async function planUserProviderSyncJob(args: {
             jobId: existing.id,
             skippedReason: 'already-queued',
         };
+    }
+
+    const latestProviderActivityMs = Math.max(
+        state?.lastSuccessAt?.getTime() ?? Number.NEGATIVE_INFINITY,
+        state?.lastAttemptAt?.getTime() ?? Number.NEGATIVE_INFINITY
+    );
+    if (
+        args.onlyIfStaleMinutes != null &&
+        !state?.cursorUntilPlayedAt &&
+        latestProviderActivityMs >
+            args.now.getTime() - args.onlyIfStaleMinutes * 60_000
+    ) {
+        return skipped(args.user.id, args.provider, 'fresh');
     }
 
     const planned = await prisma.syncJob
@@ -380,6 +796,34 @@ async function planUserProviderSyncJob(args: {
         queued: true,
         jobId: planned.job.id,
         skippedReason: null,
+    };
+}
+
+function syncJobSummary(job: {
+    id: string;
+    status: string;
+    scheduledFor: Date;
+    startedAt: Date | null;
+    completedAt: Date | null;
+    fetchedCount: number;
+    savedCount: number;
+    createdCount: number;
+    updatedCount: number;
+    queuedAnalysisCount: number;
+    lastError: string | null;
+}): SyncJobSummary {
+    return {
+        id: job.id,
+        status: job.status,
+        scheduledFor: job.scheduledFor,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
+        fetchedCount: job.fetchedCount,
+        savedCount: job.savedCount,
+        createdCount: job.createdCount,
+        updatedCount: job.updatedCount,
+        queuedAnalysisCount: job.queuedAnalysisCount,
+        lastError: job.lastError,
     };
 }
 
@@ -429,11 +873,20 @@ async function recoverExpiredSyncJobForProvider(args: {
     if (!job) return null;
 
     if (job.attempts >= SYNC_JOB_MAX_ATTEMPTS) {
-        await prisma.syncJob.update({
-            where: { id: job.id },
+        await prisma.syncJob.updateMany({
+            where: {
+                id: job.id,
+                status: 'RUNNING',
+                leaseToken: job.leaseToken,
+                OR: [
+                    { lockedUntil: null },
+                    { lockedUntil: { lte: args.now } },
+                ],
+            },
             data: {
                 status: 'FAILED',
                 lockedUntil: null,
+                leaseToken: null,
                 completedAt: args.now,
                 lastError: 'Sync job lease expired after maximum attempts',
             },
@@ -441,8 +894,16 @@ async function recoverExpiredSyncJobForProvider(args: {
         return null;
     }
 
-    return prisma.syncJob.update({
-        where: { id: job.id },
+    const recovered = await prisma.syncJob.updateMany({
+        where: {
+            id: job.id,
+            status: 'RUNNING',
+            leaseToken: job.leaseToken,
+            OR: [
+                { lockedUntil: null },
+                { lockedUntil: { lte: args.now } },
+            ],
+        },
         data: {
             status: 'QUEUED',
             scheduledFor: syncRetryScheduledFor({
@@ -452,9 +913,11 @@ async function recoverExpiredSyncJobForProvider(args: {
             startedAt: null,
             completedAt: null,
             lockedUntil: null,
+            leaseToken: null,
             lastError: 'Sync job lease expired and was requeued',
         },
     });
+    return recovered.count === 1 ? { id: job.id } : null;
 }
 
 async function retryOrFailSyncJob(args: {
@@ -462,36 +925,125 @@ async function retryOrFailSyncJob(args: {
         id: string;
         attempts: number;
     };
+    leaseToken: string;
     error: unknown;
     now: Date;
+    result?: SyncProviderResult;
+    immediate?: boolean;
 }) {
     const lastError = errorMessage(args.error).slice(0, 2_000);
+    const countUpdates = args.result
+        ? {
+              fetchedCount: { increment: args.result.fetched },
+              savedCount: { increment: args.result.saved },
+              createdCount: { increment: args.result.created },
+              updatedCount: { increment: args.result.updated },
+              queuedAnalysisCount: {
+                  increment: args.result.queuedAnalysis,
+              },
+          }
+        : {};
     if (args.job.attempts < SYNC_JOB_MAX_ATTEMPTS) {
-        return prisma.syncJob.update({
-            where: { id: args.job.id },
+        const update = await prisma.syncJob.updateMany({
+            where: {
+                id: args.job.id,
+                status: 'RUNNING',
+                leaseToken: args.leaseToken,
+            },
             data: {
                 status: 'QUEUED',
-                scheduledFor: syncRetryScheduledFor({
-                    attempts: Math.max(1, args.job.attempts),
-                    now: args.now,
-                }),
+                scheduledFor: args.immediate
+                    ? args.now
+                    : syncRetryScheduledFor({
+                          attempts: Math.max(1, args.job.attempts),
+                          now: args.now,
+                      }),
                 startedAt: null,
                 completedAt: null,
                 lockedUntil: null,
+                leaseToken: null,
                 lastError,
+                ...countUpdates,
             },
         });
+        return {
+            status: 'QUEUED' as const,
+            stale: update.count !== 1,
+        };
     }
 
-    return prisma.syncJob.update({
-        where: { id: args.job.id },
+    const update = await prisma.syncJob.updateMany({
+        where: {
+            id: args.job.id,
+            status: 'RUNNING',
+            leaseToken: args.leaseToken,
+        },
         data: {
             status: 'FAILED',
             completedAt: args.now,
             lockedUntil: null,
+            leaseToken: null,
             lastError,
+            ...countUpdates,
         },
     });
+    return {
+        status: 'FAILED' as const,
+        stale: update.count !== 1,
+    };
+}
+
+async function publishSyncJobWakeup(
+    jobId: string,
+    now: Date
+): Promise<DispatchSyncJobsResult['published'][number]> {
+    const job = await prisma.syncJob.findUnique({
+        where: { id: jobId },
+        select: {
+            id: true,
+            status: true,
+            attempts: true,
+            scheduledFor: true,
+            updatedAt: true,
+        },
+    });
+    if (!job || job.status !== 'QUEUED') {
+        return {
+            jobId,
+            queued: false,
+            messageId: null,
+            jobStatus: job?.status ?? null,
+        };
+    }
+
+    const delaySeconds = Math.max(
+        0,
+        Math.ceil((job.scheduledFor.getTime() - now.getTime()) / 1_000)
+    );
+    try {
+        const result = await publishBackranqQueueMessage(
+            { type: 'sync-job', jobId },
+            {
+                idempotencyKey: `sync-job:${jobId}:state:${job.updatedAt.toISOString()}:attempt:${job.attempts + 1}`,
+                delaySeconds,
+            }
+        );
+        return {
+            jobId,
+            queued: result.queued,
+            messageId: result.messageId,
+            jobStatus: job.status,
+        };
+    } catch {
+        // The database job remains the durable source of truth. A later manual,
+        // app-open, or cron planning pass republishes every queued job.
+        return {
+            jobId,
+            queued: false,
+            messageId: null,
+            jobStatus: job.status,
+        };
+    }
 }
 
 function syncRetryScheduledFor(args: { attempts: number; now: Date }) {

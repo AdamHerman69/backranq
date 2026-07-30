@@ -14,7 +14,7 @@ export function AppShell({
   disableBackgroundAnalysisBar?: boolean;
 }) {
   const pathname = usePathname();
-  const hideChrome = pathname === "/login";
+  const hideChrome = pathname === "/" || pathname === "/login";
 
   if (hideChrome) return <>{children}</>;
 
@@ -30,4 +30,3 @@ export function AppShell({
     </div>
   );
 }
-

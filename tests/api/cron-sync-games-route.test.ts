@@ -7,6 +7,7 @@ const publishMock = vi.fn();
 const planAndProcessDueSyncJobsInlineMock = vi.fn();
 const dispatchQueuedAnalysisJobsMock = vi.fn();
 const reconcileAnalysisCreditSettlementsMock = vi.fn();
+const dispatchAutoAnalysisPolicySweepMock = vi.fn();
 
 async function importRoute(): Promise<CronRouteModule> {
     vi.resetModules();
@@ -22,6 +23,10 @@ async function importRoute(): Promise<CronRouteModule> {
     vi.doMock('@/lib/services/analysisOps', () => ({
         reconcileAnalysisCreditSettlements:
             reconcileAnalysisCreditSettlementsMock,
+    }));
+    vi.doMock('@/lib/services/autoAnalysisBacklog', () => ({
+        dispatchAutoAnalysisPolicySweep:
+            dispatchAutoAnalysisPolicySweepMock,
     }));
     return import('@/app/api/cron/sync-games/route');
 }
@@ -50,6 +55,13 @@ describe('GET /api/cron/sync-games', () => {
             consumed: 0,
             released: 0,
             errors: [],
+        });
+        dispatchAutoAnalysisPolicySweepMock.mockResolvedValue({
+            scanned: 0,
+            enabled: 0,
+            published: [],
+            nextCursor: null,
+            continuation: null,
         });
     });
 
@@ -101,5 +113,6 @@ describe('GET /api/cron/sync-games', () => {
         });
         expect(planAndProcessDueSyncJobsInlineMock).toHaveBeenCalledTimes(1);
         expect(dispatchQueuedAnalysisJobsMock).toHaveBeenCalledTimes(1);
+        expect(dispatchAutoAnalysisPolicySweepMock).toHaveBeenCalledTimes(1);
     });
 });

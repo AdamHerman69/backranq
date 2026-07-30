@@ -346,7 +346,7 @@ export async function PUT(
     ) {
         return NextResponse.json(
             {
-                error: 'Training moments do not match source game positions',
+                error: 'Practice positions do not match source game positions',
             },
             { status: 400 }
         );

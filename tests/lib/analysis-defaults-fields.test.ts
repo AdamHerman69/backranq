@@ -11,9 +11,9 @@ import {
 import { analysisDefaultsEqual } from '@/components/settings/AnalysisDefaultsCard';
 
 describe('analysis defaults field validation', () => {
-    it('describes HIGH_CONFIDENCE as major-moment coverage', () => {
+    it('describes HIGH_CONFIDENCE as major-position coverage', () => {
         expect(TRAINING_COVERAGE_OPTION_LABELS.HIGH_CONFIDENCE).toBe(
-            'Major moments only'
+            'Major positions only'
         );
     });
 

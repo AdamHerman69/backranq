@@ -9,6 +9,138 @@ afterEach(() => {
 });
 
 describe('ServerStockfishClient integration', () => {
+    it('uses a rule-exact mate-in-one fallback when bestmove arrives without a PV', async () => {
+        const runtime: ServerStockfishRuntime = {
+            sendCommand(command) {
+                if (command === 'uci') {
+                    queueMicrotask(() => {
+                        runtime.listener?.('id name Protocol Stockfish 18');
+                        runtime.listener?.('uciok');
+                    });
+                    return;
+                }
+                if (command === 'isready') {
+                    queueMicrotask(() => runtime.listener?.('readyok'));
+                    return;
+                }
+                if (command.startsWith('go nodes ')) {
+                    queueMicrotask(() => {
+                        runtime.listener?.(
+                            'info depth 1 seldepth 2 score mate 1 wdl 1000 0 0 nodes 1 nps 1000 time 1'
+                        );
+                        runtime.listener?.('bestmove f7g7');
+                    });
+                }
+            },
+        };
+        const client = new ServerStockfishClient({
+            defaultTimeoutMs: 5_000,
+            runtimeFactory: async () => runtime,
+        });
+        clients.push(client);
+
+        const analyzed = await client.analyzeMultiPv({
+            fen: '7k/5Q2/6K1/8/8/8/8/8 w - - 0 1',
+            nodes: 1_000,
+            multiPv: 5,
+        });
+
+        expect(analyzed.bestMoveUci).toBe('f7g7');
+        expect(analyzed.alternativesComplete).toBe(false);
+        expect(analyzed.lines).toEqual([
+            {
+                multipv: 1,
+                pvUci: ['f7g7'],
+                score: { type: 'mate', value: 1 },
+                wdl: { win: 1_000, draw: 0, loss: 0 },
+                depth: 1,
+                selDepth: 2,
+                nodes: 1,
+                nps: 1_000,
+                timeMs: 1,
+            },
+        ]);
+    });
+
+    it('still rejects a non-terminal bestmove when no exact PV was returned', async () => {
+        const runtime: ServerStockfishRuntime = {
+            sendCommand(command) {
+                if (command === 'uci') {
+                    queueMicrotask(() => {
+                        runtime.listener?.('id name Protocol Stockfish 18');
+                        runtime.listener?.('uciok');
+                    });
+                    return;
+                }
+                if (command === 'isready') {
+                    queueMicrotask(() => runtime.listener?.('readyok'));
+                    return;
+                }
+                if (command.startsWith('go nodes ')) {
+                    queueMicrotask(() =>
+                        runtime.listener?.('bestmove e2e4')
+                    );
+                }
+            },
+        };
+        const client = new ServerStockfishClient({
+            defaultTimeoutMs: 5_000,
+            runtimeFactory: async () => runtime,
+        });
+        clients.push(client);
+
+        await expect(
+            client.analyzeMultiPv({
+                fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                nodes: 1_000,
+                multiPv: 5,
+            })
+        ).rejects.toThrow('Engine returned no exact PV');
+    });
+
+    it('marks a partial MultiPV depth bucket as incomplete', async () => {
+        const runtime: ServerStockfishRuntime = {
+            sendCommand(command) {
+                if (command === 'uci') {
+                    queueMicrotask(() => {
+                        runtime.listener?.('id name Protocol Stockfish 18');
+                        runtime.listener?.('uciok');
+                    });
+                    return;
+                }
+                if (command === 'isready') {
+                    queueMicrotask(() => runtime.listener?.('readyok'));
+                    return;
+                }
+                if (command.startsWith('go nodes ')) {
+                    queueMicrotask(() => {
+                        runtime.listener?.(
+                            'info depth 8 multipv 1 score cp 30 nodes 1000 pv e2e4'
+                        );
+                        runtime.listener?.(
+                            'info depth 8 multipv 2 score cp 20 nodes 1000 pv d2d4'
+                        );
+                        runtime.listener?.('bestmove e2e4');
+                    });
+                }
+            },
+        };
+        const client = new ServerStockfishClient({
+            defaultTimeoutMs: 5_000,
+            runtimeFactory: async () => runtime,
+        });
+        clients.push(client);
+
+        const analyzed = await client.analyzeMultiPv({
+            fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+            nodes: 1_000,
+            multiPv: 3,
+        });
+
+        expect(analyzed.lines.map((line) => line.multipv)).toEqual([1, 2]);
+        expect(analyzed.alternativesComplete).toBe(false);
+    });
+
     it('reuses hash across related positions with one explicit UCI session boundary', async () => {
         const commands: string[] = [];
         let positionFen = '';

@@ -2,6 +2,7 @@ import { SignInButton } from '@/components/auth/SignInButton';
 import { auth } from '@/lib/auth';
 import { redirect } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { safeAuthCallbackUrl } from '@/lib/auth/callbackUrl';
 import { AUTH_PROVIDER_UI } from '@/lib/auth/config';
 
 export default async function LoginPage({
@@ -11,7 +12,7 @@ export default async function LoginPage({
     searchParams?: Promise<{ callbackUrl?: string }>;
 }) {
     const sp = (await searchParams) ?? {};
-    const callbackUrl = sp.callbackUrl ?? '/';
+    const callbackUrl = safeAuthCallbackUrl(sp.callbackUrl);
     const session = await auth();
 
     // If already signed in, don't show login page.
@@ -43,4 +44,3 @@ export default async function LoginPage({
         </main>
     );
 }
-

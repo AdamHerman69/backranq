@@ -5,9 +5,9 @@ Status: implementation charter
 ## Mission
 
 Backranq turns practically every verified mistake or missed opportunity from a
-player's own games into a fair, personalized, repeatable training moment.
+player's own games into a fair, personalized, repeatable practice position.
 
-The trainer presents every moment with the same neutral prompt:
+Practice presents every position with the same neutral prompt:
 
 > You are to move. Play the best move you can find.
 
@@ -26,15 +26,15 @@ after the attempt.
 ## Product contract
 
 1. **Coverage:** every legal, decisionful, stable mistake above the configured
-   threshold becomes a training moment. Multiple good moves, quiet moves, and
-   non-tactical positions are not rejection reasons.
+   threshold becomes a saved practice position. Multiple good moves, quiet
+   moves, and non-tactical positions are not rejection reasons.
 2. **Correctness:** a mistake claim has reproducible engine evidence with an
    explicit point of view, score type, configuration, engine identity, and
    verification status.
 3. **Fairness:** the player is not required to guess the exact engine
    `bestmove`. Every move that meets the practical outcome tolerance is
    accepted.
-4. **Unified experience:** all moments share the same board flow. Differences
+4. **Unified experience:** all positions share the same board flow. Differences
    in solution shape and grading are internal properties, not user-visible
    exercise modes.
 5. **Personalization:** source kind, lesson, themes, severity, confidence, and
@@ -43,9 +43,10 @@ after the attempt.
 
 ## Domain language
 
-### Training moment
+### Practice position (`TrainingMoment`)
 
-An immutable, source-game decision point containing:
+The user-facing name is **position**. `TrainingMoment` remains the persisted
+domain entity: an immutable source-game decision point containing:
 
 - the position before the player's decision;
 - the original played move;
@@ -58,7 +59,7 @@ An immutable, source-game decision point containing:
 
 ### Solution revision
 
-A versioned solution contract for a training moment:
+A versioned solution contract for a saved position:
 
 - canonical best move and principal continuation;
 - known practically accepted alternatives;
@@ -111,13 +112,13 @@ remains evidence and may be used by configured policies.
 
 ## Configuration boundaries
 
-Extraction and session selection are deliberately separate:
+Extraction and practice-feed selection are deliberately separate:
 
 - analysis persists every confirmed decision loss above the configured
-  coverage threshold; it never drops a valid moment because a session should
-  be shorter;
+  coverage threshold; it never drops a valid position to make the current feed
+  shorter;
 - source kind, phase, theme, recency, severity, confidence, and attempt history
-  are session filters or scheduling signals;
+  are feed filters or scheduling signals;
 - selecting only own mistakes or only missed opportunities changes what is
   practised now, not what was extracted and retained;
 - grading tolerance changes a versioned solution revision, so historical
@@ -130,7 +131,7 @@ The clean user-facing controls are therefore based on intent:
 
 - coverage threshold (from nearly every confirmed inaccuracy to only larger
   losses);
-- what to practise in the current session;
+- what to practise now;
 - practical grading tolerance;
 - analysis quality/cost where server credits matter.
 
@@ -185,9 +186,9 @@ implementation details instead of user intent.
 - Queue-disabled behavior either runs a real fallback worker or reports that
   server execution is unavailable.
 
-### Trainer
+### Practice
 
-- The prompt is neutral and identical for every training moment.
+- The prompt is neutral and identical for every position.
 - Lesson, source, themes, and original move stay hidden until the attempt.
 - Multiple acceptable moves are normal, not a separate mode.
 - Unknown legal moves can be dynamically evaluated when enabled.
@@ -195,7 +196,7 @@ implementation details instead of user intent.
 - Feedback compares the new move with both the best outcome and the original
   mistake.
 
-### Public training boundary
+### Public practice boundary
 
 Before an attempt, the server returns only the moment ID, pinned revision ID,
 FEN, side to move, neutral prompt, and non-spoiling progress state. It never
@@ -209,6 +210,19 @@ unstable evidence produces `UNRESOLVED`, never an automatic wrong answer.
 Only a graded/revealed response may contain the review DTO and solution
 evidence. Conditional continuations disclose at most the next opponent move;
 they never disclose the remaining line length.
+
+### Practice feed
+
+- Practice is continuous: there are no implicit goals, rounds, summaries, or
+  finite sessions.
+- The client keeps a spoiler-safe position buffer and proactively fetches the
+  next cursor page at a low-water mark.
+- Only one page request may be in flight. Position identity is deduplicated by
+  moment ID plus pinned solution revision.
+- Changing Focus aborts or invalidates older requests so results from different
+  filters cannot mix.
+- A failed prefetch never discards positions already in the buffer. Exhaustion
+  is presented as being caught up, not as completing a session.
 
 ## Verification gates
 

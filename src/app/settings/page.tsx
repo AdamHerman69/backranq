@@ -3,12 +3,11 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { ProfileForm, type UserProfile } from '@/components/settings/ProfileForm';
 import { PageHeader } from '@/components/app/PageHeader';
-import { Card, CardContent } from '@/components/ui/card';
 import { AnalysisDefaultsCard } from '@/components/settings/AnalysisDefaultsCard';
 import { AutoSyncSettingsCard } from '@/components/settings/AutoSyncSettingsCard';
 import { BillingSettingsCard } from '@/components/settings/BillingSettingsCard';
 import { getOrCreateDefaultBillingAccount } from '@/lib/services/billingAccounts';
-import { TrainingSessionSettingsCard } from '@/components/settings/TrainingSessionSettingsCard';
+import { PracticeDefaultsCard } from '@/components/settings/PracticeDefaultsCard';
 
 export default async function SettingsPage() {
     const session = await auth();
@@ -59,35 +58,44 @@ export default async function SettingsPage() {
         <div className="space-y-6">
             <PageHeader
                 title="Settings"
-                subtitle="Link your chess accounts so Backranq can import your games."
+                subtitle="Manage connections, game automation, billing and Practice defaults."
             />
-            <Card>
-                <CardContent className="pt-6">
-                    <ProfileForm initialUser={initialUser} />
-                </CardContent>
-            </Card>
-            <BillingSettingsCard
-                billing={{
-                    plan: billingAccount.plan,
-                    serverCreditsBalance: billingAccount.serverCreditsBalance,
-                    monthlyServerCreditsLimit:
-                        billingAccount.monthlyServerCreditsLimit,
-                    autoAnalysisMonthlyCap:
-                        billingAccount.autoAnalysisMonthlyCap,
-                    autoAnalysisDailyCap: billingAccount.autoAnalysisDailyCap,
-                    stripeSubscriptionStatus:
-                        billingAccount.stripeSubscriptionStatus,
-                    stripeCurrentPeriodEnd:
-                        billingAccount.stripeCurrentPeriodEnd?.toISOString() ??
-                        null,
-                    canOpenPortal: !!billingAccount.stripeCustomerId,
-                    stripeConfigured: stripeMissing.length === 0,
-                    stripeMissing,
-                }}
-            />
-            <AutoSyncSettingsCard />
-            <TrainingSessionSettingsCard />
-            <AnalysisDefaultsCard />
+
+            <ProfileForm initialUser={initialUser} />
+            <p className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+                Replacing a username starts future sync from the newly linked
+                profile. Disconnecting a source stops future updates; games
+                already imported into your library are kept unless you delete
+                them separately.
+            </p>
+
+            <AutoSyncSettingsCard ownerId={initialUser.id} />
+
+            <section id="billing" className="scroll-mt-24">
+                <BillingSettingsCard
+                    billing={{
+                        plan: billingAccount.plan,
+                        serverCreditsBalance:
+                            billingAccount.serverCreditsBalance,
+                        monthlyServerCreditsLimit:
+                            billingAccount.monthlyServerCreditsLimit,
+                        autoAnalysisMonthlyCap:
+                            billingAccount.autoAnalysisMonthlyCap,
+                        autoAnalysisDailyCap:
+                            billingAccount.autoAnalysisDailyCap,
+                        stripeSubscriptionStatus:
+                            billingAccount.stripeSubscriptionStatus,
+                        stripeCurrentPeriodEnd:
+                            billingAccount.stripeCurrentPeriodEnd?.toISOString() ??
+                            null,
+                        canOpenPortal: !!billingAccount.stripeCustomerId,
+                        stripeConfigured: stripeMissing.length === 0,
+                        stripeMissing,
+                    }}
+                />
+            </section>
+            <PracticeDefaultsCard ownerId={initialUser.id} />
+            <AnalysisDefaultsCard ownerId={initialUser.id} />
         </div>
     );
 }

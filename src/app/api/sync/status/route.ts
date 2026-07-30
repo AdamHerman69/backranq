@@ -2,12 +2,11 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import {
-    defaultPreferences,
-    mergePreferences,
-    type PartialPreferences,
+    canonicalPreferences,
 } from '@/lib/preferences';
 import { getAnalysisJobCounts } from '@/lib/services/analysisJobs';
 import { getManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
+import { getAutoAnalysisStatus } from '@/lib/services/autoAnalysisBacklog';
 
 export const runtime = 'nodejs';
 
@@ -48,12 +47,12 @@ export async function GET() {
         },
     });
     const jobCounts = await getAnalysisJobCounts(userId);
-    const billing = await getManualServerAnalysisCapacity(userId);
+    const [billing, automation] = await Promise.all([
+        getManualServerAnalysisCapacity(userId),
+        getAutoAnalysisStatus(userId),
+    ]);
 
-    const prefs = mergePreferences(
-        defaultPreferences(),
-        (user?.preferences ?? {}) as PartialPreferences
-    );
+    const prefs = canonicalPreferences(user?.preferences ?? {});
     const stateByProvider = Object.fromEntries(
         syncStates.map((state) => [
             state.provider === 'LICHESS' ? 'lichess' : 'chesscom',
@@ -69,6 +68,7 @@ export async function GET() {
     );
 
     return NextResponse.json({
+        ownerId: userId,
         linked: {
             lichessUsername: user?.lichessUsername ?? null,
             chesscomUsername: user?.chesscomUsername ?? null,
@@ -79,7 +79,6 @@ export async function GET() {
         },
         autoSync: {
             enabled: prefs.autoSyncEnabled,
-            autoAnalyzeEnabled: prefs.autoAnalyzeEnabled,
             providers: prefs.autoSyncProviders,
             schedule: '0 3 * * *',
             states: {
@@ -93,5 +92,11 @@ export async function GET() {
             failed: jobCounts.failed,
         },
         billing,
+        inventory: automation.inventory,
+        automation: {
+            policy: automation.policy,
+            backlog: automation.backlog,
+            capacity: automation.capacity,
+        },
     });
 }

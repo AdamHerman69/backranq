@@ -1,637 +1,299 @@
-'use client';
-
-import {
-    useCallback,
-    useEffect,
-    useRef,
-    useState,
-    type ReactNode,
-} from 'react';
+import type { Metadata } from 'next';
 import Link from 'next/link';
-import { useSession } from 'next-auth/react';
+import type { ReactNode } from 'react';
 import {
-    AlertCircle,
-    CheckCircle2,
-    Clock3,
-    Laptop,
-    LineChart,
+    BrainCircuit,
+    CloudCog,
+    EyeOff,
     RefreshCw,
-    Shuffle,
-    SlidersHorizontal,
 } from 'lucide-react';
 
+import { SignInButton } from '@/components/auth/SignInButton';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { SignInButton } from '@/components/auth/SignInButton';
-import { SyncGamesWidget } from '@/components/sync/SyncGamesWidget';
-import { TrainingTrainer } from '@/components/training/TrainingTrainer';
-import {
-    ANALYSIS_COMPLETION_EVENT,
-    LIBRARY_CHANGED_EVENT,
-    readLastAnalysisCompletion,
-    type AnalysisCompletionSummary,
-} from '@/lib/analysis/analysisCompletion';
-import {
-    backgroundAnalysis,
-    type BackgroundAnalysisSnapshot,
-} from '@/lib/analysis/backgroundAnalysisManager';
-import { getSyncStatus, type SyncStatus } from '@/lib/services/gameSync';
-import {
-    deriveHomeProductState,
-    type HomeProductState,
-} from '@/lib/product/homeState';
+import { auth } from '@/lib/auth';
 
-export default function Home() {
-    const { data: session, status: sessionStatus } = useSession();
-    const ownerId = session?.user?.id ?? null;
-    const isLoggedIn = !!ownerId;
-    const isLoading = sessionStatus === 'loading';
+export const metadata: Metadata = {
+    title: 'Backranq — Practice decisions from your own chess games',
+    description:
+        'Turn your own chess games into focused, spoiler-free practice positions.',
+};
 
-    const [dashboard, setDashboard] = useState<{
-        ownerId: string | null;
-        status: 'idle' | 'loading' | 'ready' | 'error';
-        trainingMomentCount: number;
-        gameCount: number;
-        unanalyzedGameCount: number;
-        syncStatus: SyncStatus | null;
-        error: string | null;
-    }>({
-        ownerId: null,
-        status: 'idle',
-        trainingMomentCount: 0,
-        gameCount: 0,
-        unanalyzedGameCount: 0,
-        syncStatus: null,
-        error: null,
-    });
-    const [analysisSnapshot, setAnalysisSnapshot] =
-        useState<BackgroundAnalysisSnapshot>(() => backgroundAnalysis.snapshot());
-    const [lastCompletion, setLastCompletion] =
-        useState<AnalysisCompletionSummary | null>(null);
-    const dashboardRequestId = useRef(0);
+export default async function LandingPage() {
+    const session = await auth();
+    const isSignedIn = Boolean(session?.user?.id);
 
-    const fetchDashboard = useCallback(async () => {
-        if (!ownerId) return;
-        const requestId = ++dashboardRequestId.current;
-        setDashboard((current) => ({
-            ...current,
-            ownerId,
-            status: current.status === 'ready' ? 'ready' : 'loading',
-            error: null,
-        }));
-        try {
-            const [trainingRes, gameRes, unanalyzedRes, syncStatus] =
-                await Promise.all([
-                    fetch('/api/training/session?limit=1', {
-                        cache: 'no-store',
-                    }),
-                    fetch('/api/games?limit=1', { cache: 'no-store' }),
-                    fetch('/api/games?hasAnalysis=false&limit=1', {
-                        cache: 'no-store',
-                    }),
-                    getSyncStatus(),
-                ]);
-            if (!trainingRes.ok || !gameRes.ok || !unanalyzedRes.ok) {
-                throw new Error('Could not load your training overview.');
-            }
-            const [trainingJson, gameJson, unanalyzedJson] =
-                (await Promise.all([
-                    trainingRes.json(),
-                    gameRes.json(),
-                    unanalyzedRes.json(),
-                ])) as [
-                    { items?: unknown[] },
-                    { total?: number },
-                    { total?: number },
-                ];
-            if (requestId !== dashboardRequestId.current) return;
-            setDashboard({
-                ownerId,
-                status: 'ready',
-                trainingMomentCount: Array.isArray(trainingJson.items)
-                    ? trainingJson.items.length
-                    : 0,
-                gameCount:
-                    typeof gameJson.total === 'number' ? gameJson.total : 0,
-                unanalyzedGameCount:
-                    typeof unanalyzedJson.total === 'number'
-                        ? unanalyzedJson.total
-                        : 0,
-                syncStatus,
-                error: null,
-            });
-        } catch (error) {
-            if (requestId !== dashboardRequestId.current) return;
-            setDashboard((current) => ({
-                ...current,
-                ownerId,
-                status: 'error',
-                error:
-                    error instanceof Error
-                        ? error.message
-                        : 'Could not load your training overview.',
-            }));
-        }
-    }, [ownerId]);
+    return (
+        <div className="min-h-dvh">
+            <header className="border-b bg-background/80 backdrop-blur">
+                <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
+                    <Link
+                        href="/"
+                        className="inline-flex items-center gap-2 font-semibold tracking-tight"
+                        aria-label="Backranq home"
+                    >
+                        <span
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-foreground text-xs font-bold text-background"
+                            aria-hidden="true"
+                        >
+                            B
+                        </span>
+                        Backranq
+                    </Link>
+                    {isSignedIn ? (
+                        <Button asChild size="sm">
+                            <Link href="/home">Open app</Link>
+                        </Button>
+                    ) : (
+                        <SignInButton
+                            callbackUrl="/home"
+                            variant="outline"
+                            size="sm"
+                        >
+                            Sign in
+                        </SignInButton>
+                    )}
+                </div>
+            </header>
 
-    useEffect(() => {
-        backgroundAnalysis.setOwner(ownerId);
-        dashboardRequestId.current += 1;
-        setDashboard({
-            ownerId,
-            status: 'idle',
-            trainingMomentCount: 0,
-            gameCount: 0,
-            unanalyzedGameCount: 0,
-            syncStatus: null,
-            error: null,
-        });
-        setLastCompletion(
-            ownerId ? readLastAnalysisCompletion(ownerId) : null
-        );
-        setAnalysisSnapshot(backgroundAnalysis.snapshot());
-        if (!ownerId) return;
-        const unsubscribe = backgroundAnalysis.subscribe((next) => {
-            if (next.ownerId === ownerId) setAnalysisSnapshot(next);
-        });
-        void fetchDashboard();
-        const onCompletion = (event: Event) => {
-            const summary = (
-                event as CustomEvent<AnalysisCompletionSummary>
-            ).detail;
-            if (summary?.ownerId === ownerId) setLastCompletion(summary);
-        };
-        const refresh = (event: Event) => {
-            const eventOwner = (
-                event as CustomEvent<{
-                    ownerId?: string;
-                    invalidateCompletion?: boolean;
-                }>
-            ).detail?.ownerId;
-            const invalidateCompletion = (
-                event as CustomEvent<{
-                    ownerId?: string;
-                    invalidateCompletion?: boolean;
-                }>
-            ).detail?.invalidateCompletion;
-            if (
-                invalidateCompletion &&
-                (!eventOwner || eventOwner === ownerId)
-            ) {
-                setLastCompletion(null);
-            }
-            if (!eventOwner || eventOwner === ownerId) void fetchDashboard();
-        };
-        window.addEventListener(ANALYSIS_COMPLETION_EVENT, onCompletion);
-        window.addEventListener(LIBRARY_CHANGED_EVENT, refresh);
-        window.addEventListener('focus', refresh);
-        return () => {
-            dashboardRequestId.current += 1;
-            unsubscribe();
-            window.removeEventListener(
-                ANALYSIS_COMPLETION_EVENT,
-                onCompletion
-            );
-            window.removeEventListener(LIBRARY_CHANGED_EVENT, refresh);
-            window.removeEventListener('focus', refresh);
-        };
-    }, [fetchDashboard, ownerId]);
-
-    const dashboardMatchesOwner = dashboard.ownerId === ownerId;
-    const dashboardStatus = dashboardMatchesOwner
-        ? dashboard.status
-        : 'idle';
-    const trainingMomentCount = dashboardMatchesOwner
-        ? dashboard.trainingMomentCount
-        : 0;
-    const gameCount = dashboardMatchesOwner ? dashboard.gameCount : 0;
-    const unanalyzedGameCount = dashboardMatchesOwner
-        ? dashboard.unanalyzedGameCount
-        : 0;
-    const dashboardSyncStatus = dashboardMatchesOwner
-        ? dashboard.syncStatus
-        : null;
-    const hasTrainingMoments = trainingMomentCount > 0;
-
-    const hasLinkedAccount =
-        !!dashboardSyncStatus?.linked.lichessUsername ||
-        !!dashboardSyncStatus?.linked.chesscomUsername;
-    const productState: HomeProductState = deriveHomeProductState({
-        loading:
-            dashboardStatus === 'idle' || dashboardStatus === 'loading',
-        error: dashboardMatchesOwner ? dashboard.error : null,
-        hasLinkedAccount,
-        gameCount,
-        unanalyzedGameCount,
-        trainingMomentCount,
-        browserAnalysisRunning:
-            analysisSnapshot.ownerId === ownerId &&
-            analysisSnapshot.state === 'running',
-        serverQueued: dashboardSyncStatus?.analysisJobs?.queued ?? 0,
-        serverRunning: dashboardSyncStatus?.analysisJobs?.running ?? 0,
-        lastCompletion,
-    });
-
-    // Loading state
-    if (isLoading) {
-        return (
-            <div className="flex min-h-[60vh] items-center justify-center">
-                <div className="text-muted-foreground">Loading…</div>
-            </div>
-        );
-    }
-
-    // Guest view - Hero with CTA
-    if (!isLoggedIn) {
-        return (
-            <div className="space-y-16 pb-16">
-                {/* Hero Section */}
+            <main className="space-y-20 pb-16 sm:space-y-24">
                 <section className="relative overflow-hidden">
-                    <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-200/50 via-transparent to-transparent dark:from-zinc-800/30" />
-                    
-                    <div className="mx-auto max-w-3xl px-4 pt-16 pb-12 text-center sm:pt-24">
-                        {/* <Badge variant="secondary" className="mb-6 text-xs font-medium tracking-wide uppercase">
-                            Chess Improvement Tool
-                        </Badge> */}
-                        
-                        <h1 className="text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-                            Training from your
-                            <span className="block text-transparent bg-clip-text bg-gradient-to-r from-zinc-600 to-zinc-900 dark:from-zinc-200 dark:to-zinc-400">
-                              blunders and missed wins
+                    <div
+                        className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-200/60 via-transparent to-transparent dark:from-zinc-800/40"
+                        aria-hidden="true"
+                    />
+                    <div className="mx-auto max-w-4xl px-4 pb-14 pt-16 text-center sm:pb-20 sm:pt-24">
+                        <p className="mb-5 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                            Personal chess practice
+                        </p>
+                        <h1 className="text-balance text-4xl font-bold tracking-tight sm:text-6xl lg:text-7xl">
+                            Stop solving random puzzles.
+                            <span className="mt-2 block bg-gradient-to-r from-zinc-600 to-zinc-950 bg-clip-text text-transparent dark:from-zinc-100 dark:to-zinc-500">
+                                Practice your decisions.
                             </span>
                         </h1>
-                        
-                        <p className="mt-6 text-lg text-muted-foreground max-w-xl mx-auto">
-                            Import your games, fine-tune extraction to focus on what matters, 
-                            and analyze everything locally in your browser—completely free.
+                        <p className="mx-auto mt-7 max-w-2xl text-pretty text-lg leading-8 text-muted-foreground">
+                            Backranq turns critical decisions from your own games
+                            into focused positions. No category hints, no
+                            tactical spoilers—just find the best move you can.
                         </p>
-
-                        <div className="mt-10 flex flex-col items-center gap-3 sm:flex-row sm:flex-wrap sm:justify-center">
-                            <SignInButton
-                                className="h-12 px-8 text-base font-semibold"
-                            >
-                                Sign in with Google
-                            </SignInButton>
-                            <SignInButton
-                                provider="lichess"
-                                variant="outline"
-                                className="h-12 px-8 text-base font-semibold"
-                            >
-                                Sign in with Lichess
-                            </SignInButton>
-                            <SignInButton
-                                provider="github"
-                                variant="outline"
-                                className="h-12 px-8 text-base font-semibold"
-                            >
-                                Sign in with GitHub
-                            </SignInButton>
+                        <div className="mt-10">
+                            <LandingActions
+                                isSignedIn={isSignedIn}
+                                size="large"
+                            />
                         </div>
                     </div>
                 </section>
 
-                {/* Features */}
-                <section className="mx-auto max-w-5xl px-4">
-                    <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-                        <Card className="border-0 bg-zinc-50 dark:bg-zinc-900/50">
-                            <CardContent className="pt-6">
-                                <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
-                                    <SlidersHorizontal className="h-5 w-5" />
-                                </div>
-                                <h3 className="font-semibold">Your Games, Your Rules</h3>
-                                <p className="mt-2 text-sm text-muted-foreground">
-                                    Fine-tune what positions to include by tweaking the extraction parameters.
-                                </p>
-                            </CardContent>
-                        </Card>
-
-                        <Card className="border-0 bg-zinc-50 dark:bg-zinc-900/50">
-                            <CardContent className="pt-6">
-                                <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
-                                    <Laptop className="h-5 w-5" />
-                                </div>
-                                <h3 className="font-semibold">Run Locally</h3>
-                                <p className="mt-2 text-sm text-muted-foreground">
-                                    Analysis runs in your browser—no server costs means no subscription fees.
-                                </p>
-                            </CardContent>
-                        </Card>
-
-                        <Card className="border-0 bg-zinc-50 dark:bg-zinc-900/50">
-                            <CardContent className="pt-6">
-                                <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
-                                    <LineChart className="h-5 w-5" />
-                                </div>
-                                <h3 className="font-semibold">Analyze</h3>
-                                <p className="mt-2 text-sm text-muted-foreground">
-                                    Explore positions with analysis tools on par with Chess.com or Lichess.
-                                </p>
-                            </CardContent>
-                        </Card>
-
-                        <Card className="border-0 bg-zinc-50 dark:bg-zinc-900/50">
-                            <CardContent className="pt-6">
-                                <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
-                                    <Shuffle className="h-5 w-5" />
-                                </div>
-                                <h3 className="font-semibold">Multiple good moves</h3>
-                                <p className="mt-2 text-sm text-muted-foreground">
-                                    Not every training moment has to be tactical. Practice positions where you erred even though several good moves were available.
-                                </p>
-                            </CardContent>
-                        </Card>
+                <section
+                    className="mx-auto max-w-6xl px-4"
+                    aria-labelledby="difference-heading"
+                >
+                    <div className="mx-auto mb-8 max-w-2xl text-center">
+                        <h2
+                            id="difference-heading"
+                            className="text-2xl font-semibold tracking-tight sm:text-3xl"
+                        >
+                            Built around the decisions that cost you
+                        </h2>
+                        <p className="mt-3 text-muted-foreground">
+                            A direct loop from the games you play to the
+                            positions worth revisiting.
+                        </p>
+                    </div>
+                    <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-4">
+                        <FeatureCard
+                            icon={
+                                <RefreshCw
+                                    className="h-5 w-5"
+                                    aria-hidden="true"
+                                />
+                            }
+                            title="Your games stay current"
+                            description="Connect Lichess or Chess.com and keep new games synced without spending analysis credits."
+                        />
+                        <FeatureCard
+                            icon={
+                                <BrainCircuit
+                                    className="h-5 w-5"
+                                    aria-hidden="true"
+                                />
+                            }
+                            title="More than tactics"
+                            description="Revisit mistakes, missed opportunities and quiet improvements through one consistent best-move flow."
+                        />
+                        <FeatureCard
+                            icon={
+                                <EyeOff
+                                    className="h-5 w-5"
+                                    aria-hidden="true"
+                                />
+                            }
+                            title="Spoiler-free by design"
+                            description="You do not know the lesson or solution shape until after your attempt."
+                        />
+                        <FeatureCard
+                            icon={
+                                <CloudCog
+                                    className="h-5 w-5"
+                                    aria-hidden="true"
+                                />
+                            }
+                            title="Analyze your way"
+                            description="Use free analysis in your browser or let server analysis continue while you are away."
+                        />
                     </div>
                 </section>
 
-                {/* How it works */}
-                <section className="mx-auto max-w-3xl px-4 text-center">
-                    <h2 className="text-2xl font-semibold tracking-tight">How it works</h2>
-                    <div className="mt-8 grid gap-8 text-left sm:grid-cols-3">
-                        <div>
-                            <div className="mb-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-zinc-200 text-sm font-bold dark:bg-zinc-800">
-                                1
-                            </div>
-                            <h3 className="font-medium">Import Games</h3>
-                            <p className="mt-1 text-sm text-muted-foreground">
-                                Connect your Lichess or Chess.com account and sync your recent games.
-                            </p>
-                        </div>
-                        <div>
-                            <div className="mb-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-zinc-200 text-sm font-bold dark:bg-zinc-800">
-                                2
-                            </div>
-                            <h3 className="font-medium">Analyze</h3>
-                            <p className="mt-1 text-sm text-muted-foreground">
-                                Run local Stockfish analysis to extract training moments from mistakes and missed opportunities.
-                            </p>
-                        </div>
-                        <div>
-                            <div className="mb-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-zinc-200 text-sm font-bold dark:bg-zinc-800">
-                                3
-                            </div>
-                            <h3 className="font-medium">Train</h3>
-                            <p className="mt-1 text-sm text-muted-foreground">
-                                Always play the best move you can find, then compare and improve.
-                            </p>
-                        </div>
-                    </div>
-                </section>
-
-                {/* CTA */}
-                <section className="mx-auto max-w-xl px-4 text-center">
-                    <Card>
-                        <CardContent className="py-8">
-                            <h2 className="text-xl font-semibold">Ready to improve?</h2>
-                            <p className="mt-2 text-muted-foreground">
-                                Sign in to start analyzing your games and generating personal training moments.
-                            </p>
-                            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-center">
-                                <SignInButton className="h-11 px-6">
-                                    Sign in with Google
-                                </SignInButton>
-                                <SignInButton provider="lichess" variant="outline" className="h-11 px-6">
-                                    Sign in with Lichess
-                                </SignInButton>
-                                <SignInButton provider="github" variant="outline" className="h-11 px-6">
-                                    Sign in with GitHub
-                                </SignInButton>
+                <section
+                    className="mx-auto max-w-4xl px-4"
+                    aria-labelledby="how-it-works-heading"
+                >
+                    <Card className="overflow-hidden">
+                        <CardContent className="p-6 sm:p-10">
+                            <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:items-start">
+                                <div>
+                                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                                        The loop
+                                    </p>
+                                    <h2
+                                        id="how-it-works-heading"
+                                        className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl"
+                                    >
+                                        Play. Review. Recognize it next time.
+                                    </h2>
+                                    <p className="mt-4 text-sm leading-6 text-muted-foreground">
+                                        Backranq keeps the workflow simple so
+                                        the work stays on the board.
+                                    </p>
+                                </div>
+                                <ol className="grid gap-6 sm:grid-cols-3">
+                                    <Step
+                                        number="01"
+                                        title="Connect"
+                                        description="Link a public chess profile and import the games you want."
+                                    />
+                                    <Step
+                                        number="02"
+                                        title="Analyze"
+                                        description="Find stable, meaningful decisions with Stockfish."
+                                    />
+                                    <Step
+                                        number="03"
+                                        title="Practice"
+                                        description="Play your move first, then compare it with the engine-backed review."
+                                    />
+                                </ol>
                             </div>
                         </CardContent>
                     </Card>
                 </section>
-            </div>
-        );
-    }
 
-    // Logged-in view
-    return (
-        <div className="space-y-8">
-            {/* Welcome header */}
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-                <div className="space-y-1">
-                    <h1 className="text-2xl font-semibold tracking-tight">
-                        Welcome back{session?.user?.name ? `, ${session.user.name.split(' ')[0]}` : ''}
-                    </h1>
-                    <p className="text-sm text-muted-foreground">
-                        {dashboardStatus === 'loading' || dashboardStatus === 'idle'
-                            ? 'Loading your training overview…'
-                            : dashboardStatus === 'error'
-                              ? 'Your library is still here, but its latest status could not be loaded.'
-                            : hasTrainingMoments
-                            ? `Your next personal training position is ready from ${gameCount} games.`
-                            : gameCount > 0
-                                ? `You have ${gameCount} games. Analyze them to generate personal training moments.`
-                                : 'Sync your first games to get started.'}
+                <section className="mx-auto max-w-2xl px-4 text-center">
+                    <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+                        Make your own games useful.
+                    </h2>
+                    <p className="mt-3 text-muted-foreground">
+                        Build a practice feed from positions you actually
+                        reached.
                     </p>
-                </div>
-                <div className="flex items-center gap-2">
-                    <Button variant="outline" asChild>
-                        <Link href="/games">View Games</Link>
-                    </Button>
-                </div>
-            </div>
-
-            {/* Sync widget */}
-            <Card>
-                <CardContent className="p-4">
-                    <SyncGamesWidget context="home" enableAnalyze variant="banner" />
-                </CardContent>
-            </Card>
-
-            <HomeStateCard
-                state={productState}
-                gameCount={gameCount}
-                unanalyzedGameCount={unanalyzedGameCount}
-                trainingMomentCount={trainingMomentCount}
-                error={dashboardMatchesOwner ? dashboard.error : null}
-                onRetry={() => void fetchDashboard()}
-            />
-
-            {hasTrainingMoments ? (
-                <>
-                    {/* Personal decision trainer */}
-                    <Card>
-                        <CardContent className="p-4 sm:p-6">
-                            <div className="mb-4 flex items-center justify-between">
-                                <h2 className="text-lg font-semibold">Train</h2>
-                                <Button variant="ghost" size="sm" asChild>
-                                    <Link href="/training">Open Trainer</Link>
-                                </Button>
-                            </div>
-                            <TrainingTrainer ownerId={ownerId} compact />
-                        </CardContent>
-                    </Card>
-
-                </>
-            ) : null}
+                    <div className="mt-7">
+                        <LandingActions isSignedIn={isSignedIn} />
+                    </div>
+                </section>
+            </main>
         </div>
     );
 }
 
-function HomeStateCard({
-    state,
-    gameCount,
-    unanalyzedGameCount,
-    trainingMomentCount,
-    error,
-    onRetry,
+function LandingActions({
+    isSignedIn,
+    size = 'default',
 }: {
-    state: HomeProductState;
-    gameCount: number;
-    unanalyzedGameCount: number;
-    trainingMomentCount: number;
-    error: string | null;
-    onRetry: () => void;
+    isSignedIn: boolean;
+    size?: 'default' | 'large';
 }) {
-    if (state === 'loading') {
-        return (
-            <Card aria-live="polite">
-                <CardContent className="flex items-center gap-3 py-6">
-                    <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
-                    <div>
-                        <div className="font-medium">Loading your next step</div>
-                        <div className="text-sm text-muted-foreground">
-                            Checking games, analysis and training progress…
-                        </div>
-                    </div>
-                </CardContent>
-            </Card>
-        );
-    }
+    const className =
+        size === 'large'
+            ? 'h-12 px-8 text-base font-semibold'
+            : 'h-11 px-6 font-semibold';
 
-    if (state === 'error') {
+    if (isSignedIn) {
         return (
-            <Card aria-live="polite">
-                <CardContent className="flex flex-wrap items-center justify-between gap-4 py-6">
-                    <div className="flex items-start gap-3">
-                        <AlertCircle className="mt-0.5 h-5 w-5 text-destructive" aria-hidden="true" />
-                        <div>
-                            <div className="font-medium">Overview unavailable</div>
-                            <div className="text-sm text-muted-foreground">
-                                {error ?? 'We could not load the latest library status.'}
-                            </div>
-                        </div>
-                    </div>
-                    <Button type="button" variant="outline" onClick={onRetry}>
-                        Try again
-                    </Button>
-                </CardContent>
-            </Card>
-        );
-    }
-
-    if (state === 'no-linked-account') {
-        return (
-            <NextActionCard
-                icon={<AlertCircle className="h-5 w-5" aria-hidden="true" />}
-                title="Link a chess account"
-                description="Connect Lichess or Chess.com first. Then Backranq can import games without asking for files."
-                actionLabel="Open settings"
-                href="/settings"
-            />
-        );
-    }
-
-    if (state === 'no-games') {
-        return (
-            <NextActionCard
-                icon={<Shuffle className="h-5 w-5" aria-hidden="true" />}
-                title="Sync your first games"
-                description="Your account is linked. Use Sync games above to import recent games and start building your training set."
-                actionLabel="Review linked accounts"
-                href="/settings"
-            />
-        );
-    }
-
-    if (state === 'analysis-in-progress') {
-        return (
-            <NextActionCard
-                icon={<Clock3 className="h-5 w-5" aria-hidden="true" />}
-                title="Analysis is in progress"
-                description={`${Math.max(0, gameCount - unanalyzedGameCount)} of ${gameCount} games are analyzed. You can leave server analysis running or keep this tab open for browser analysis.`}
-                actionLabel={trainingMomentCount > 0 ? 'Train available decisions' : 'View games'}
-                href={trainingMomentCount > 0 ? '/training' : '/games'}
-            />
-        );
-    }
-
-    if (state === 'failed') {
-        return (
-            <NextActionCard
-                icon={<AlertCircle className="h-5 w-5 text-destructive" aria-hidden="true" />}
-                title="Some games still need analysis"
-                description={`${unanalyzedGameCount} game${unanalyzedGameCount === 1 ? '' : 's'} remain. Review the analysis bar for the error and retry only the unfinished games.`}
-                actionLabel="Review games"
-                href="/games"
-            />
-        );
-    }
-
-    if (state === 'unanalyzed') {
-        return (
-            <NextActionCard
-                icon={<LineChart className="h-5 w-5" aria-hidden="true" />}
-                title="Analyze your imported games"
-                description={`${unanalyzedGameCount} of ${gameCount} game${gameCount === 1 ? '' : 's'} still need analysis before they can produce training moments.`}
-                actionLabel="Choose analysis"
-                href="/games"
-            />
-        );
-    }
-
-    if (state === 'analyzed-no-candidates') {
-        return (
-            <NextActionCard
-                icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
-                title="Analysis complete — no training moments"
-                description={`All ${gameCount} games were analyzed successfully. None matched your current extraction settings; this is different from an analysis error.`}
-                actionLabel="Review extraction settings"
-                href="/settings"
-            />
+            <Button asChild className={className}>
+                <Link href="/home">Open app</Link>
+            </Button>
         );
     }
 
     return (
-        <NextActionCard
-            icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
-            title="Your training set is ready"
-            description="Personal training decisions are ready. The next best step is a short focused session."
-            actionLabel="Start training"
-            href="/training"
-        />
+        <div className="flex flex-col items-center justify-center gap-3 sm:flex-row sm:flex-wrap">
+            <SignInButton callbackUrl="/home" className={className}>
+                Get started with Google
+            </SignInButton>
+            <SignInButton
+                provider="lichess"
+                callbackUrl="/home"
+                variant="outline"
+                className={className}
+            >
+                Sign in with Lichess
+            </SignInButton>
+            <SignInButton
+                provider="github"
+                callbackUrl="/home"
+                variant="outline"
+                className={className}
+            >
+                Sign in with GitHub
+            </SignInButton>
+        </div>
     );
 }
 
-function NextActionCard({
+function FeatureCard({
     icon,
     title,
     description,
-    actionLabel,
-    href,
 }: {
     icon: ReactNode;
     title: string;
     description: string;
-    actionLabel: string;
-    href: string;
 }) {
     return (
-        <Card>
-            <CardContent className="flex flex-wrap items-center justify-between gap-4 py-6">
-                <div className="flex max-w-2xl items-start gap-3">
-                    <div className="mt-0.5 text-muted-foreground">{icon}</div>
-                    <div>
-                        <div className="font-medium">{title}</div>
-                        <div className="mt-1 text-sm text-muted-foreground">
-                            {description}
-                        </div>
-                    </div>
+        <Card className="border-0 bg-zinc-50 dark:bg-zinc-900/50">
+            <CardContent className="pt-6">
+                <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
+                    {icon}
                 </div>
-                <Button asChild>
-                    <Link href={href}>{actionLabel}</Link>
-                </Button>
+                <h3 className="font-semibold">{title}</h3>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    {description}
+                </p>
             </CardContent>
         </Card>
+    );
+}
+
+function Step({
+    number,
+    title,
+    description,
+}: {
+    number: string;
+    title: string;
+    description: string;
+}) {
+    return (
+        <li>
+            <div className="font-mono text-xs font-semibold text-muted-foreground">
+                {number}
+            </div>
+            <h3 className="mt-2 font-medium">{title}</h3>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                {description}
+            </p>
+        </li>
     );
 }

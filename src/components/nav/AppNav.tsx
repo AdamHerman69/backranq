@@ -24,11 +24,16 @@ type NavItem = {
   active?: (pathname: string) => boolean;
 };
 
-const navItems: NavItem[] = [
+export const appNavItems: NavItem[] = [
   {
-    href: "/training",
-    label: "Train",
-    active: (p) => p === "/training" || p.startsWith("/training/"),
+    href: "/home",
+    label: "Home",
+    active: (p) => p === "/home" || p.startsWith("/home/"),
+  },
+  {
+    href: "/practice",
+    label: "Practice",
+    active: (p) => p === "/practice" || p.startsWith("/practice/"),
   },
   {
     href: "/games",
@@ -104,7 +109,7 @@ export function AppNav() {
               </SheetHeader>
 
               <div className="mt-4 flex flex-col gap-1">
-                {navItems.map((it) => {
+                {appNavItems.map((it) => {
                   const isActive = it.active ? it.active(pathname) : pathname === it.href;
                   return (
                     <NavLinkButton
@@ -144,7 +149,7 @@ export function AppNav() {
         </Button>
 
         <nav className="hidden items-center gap-1 md:flex">
-          {navItems.map((it) => {
+          {appNavItems.map((it) => {
             const isActive = it.active ? it.active(pathname) : pathname === it.href;
             return (
               <Button
