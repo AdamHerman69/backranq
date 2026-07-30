@@ -12,6 +12,10 @@ describe('history import quota schema', () => {
             'prisma/migrations/20260730120000_add_history_import_fetch_lease/migration.sql',
             'utf8'
         );
+        const hardeningMigration = readFileSync(
+            'prisma/migrations/20260730130000_harden_history_import_quota/migration.sql',
+            'utf8'
+        );
 
         expect(schema).toContain('model HistoryImportQuota');
         expect(schema).toContain(
@@ -24,6 +28,12 @@ describe('history import quota schema', () => {
         expect(schema).toContain('fetchLeaseUntil');
         expect(leaseMigration).toContain(
             'ADD COLUMN "fetchLeaseUntil" TIMESTAMP(3)'
+        );
+        expect(hardeningMigration).toContain(
+            'ALTER TABLE public."HistoryImportQuota" ENABLE ROW LEVEL SECURITY'
+        );
+        expect(hardeningMigration).toContain(
+            'REVOKE ALL PRIVILEGES ON TABLE public."HistoryImportQuota"'
         );
     });
 });
