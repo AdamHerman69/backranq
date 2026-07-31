@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { modelMoveToIndex } from '@/lib/coach/maia/preprocess';
 import {
+    buildMaiaPolicyCandidates,
     normalizeMaiaSeed,
     sampleMaiaPolicy,
+    sampleWeightedMaiaCandidate,
 } from '@/lib/coach/maia/sampling';
 
 function blankPolicy(): Float32Array {
@@ -85,6 +87,45 @@ describe('Maia legal policy sampling', () => {
         expect(result.moveUci).toBe('e2e4');
         expect(result.candidateCount).toBe(1);
         expect(result.probability).toBe(1);
+    });
+
+    it('exposes the ranked nucleus and preserves relative weights when resampling a safe subset', () => {
+        const logits = blankPolicy();
+        const legalMoves = ['e2e4', 'd2d4', 'g1f3'].map(
+            (moveUci, index) => {
+                logits[modelMoveToIndex(moveUci)] = 3 - index;
+                return {
+                    moveUci,
+                    modelIndex: modelMoveToIndex(moveUci),
+                };
+            }
+        );
+        const candidates = buildMaiaPolicyCandidates({
+            logits,
+            legalMoves,
+            temperature: 1,
+            topP: 1,
+        });
+
+        expect(candidates.map((candidate) => candidate.moveUci)).toEqual([
+            'e2e4',
+            'd2d4',
+            'g1f3',
+        ]);
+        expect(
+            candidates.reduce(
+                (sum, candidate) => sum + candidate.probability,
+                0
+            )
+        ).toBeCloseTo(1);
+
+        const safe = candidates.slice(1);
+        expect(sampleWeightedMaiaCandidate(safe, 42)).toEqual(
+            sampleWeightedMaiaCandidate(safe, 42)
+        );
+        expect(['d2d4', 'g1f3']).toContain(
+            sampleWeightedMaiaCandidate(safe, 42).candidate.moveUci
+        );
     });
 
     it('rejects NaN legal logits and invalid sampling controls', () => {

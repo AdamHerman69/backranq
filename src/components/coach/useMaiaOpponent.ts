@@ -27,7 +27,7 @@ export function useMaiaOpponent() {
     );
     const clientRef = useRef<MaiaOpponentClient | null>(null);
     const initializeRef = useRef<{
-        allowDownload: boolean;
+        key: string;
         promise: Promise<boolean>;
         token: object;
     } | null>(null);
@@ -41,11 +41,12 @@ export function useMaiaOpponent() {
     }, []);
 
     const initialize = useCallback(async (
-        allowDownload = false
+        allowDownload = true,
+        forceRefresh = false
     ): Promise<boolean> => {
+        const key = `${allowDownload}:${forceRefresh}`;
         if (initializeRef.current) {
-            return initializeRef.current.allowDownload ===
-                allowDownload
+            return initializeRef.current.key === key
                 ? initializeRef.current.promise
                 : false;
         }
@@ -55,6 +56,7 @@ export function useMaiaOpponent() {
             try {
                 const ready = await current.initialize({
                     allowDownload,
+                    forceRefresh,
                     onProgress: (nextStatus) => {
                         if (
                             mountedRef.current &&
@@ -98,7 +100,7 @@ export function useMaiaOpponent() {
             }
         })();
         initializeRef.current = {
-            allowDownload,
+            key,
             promise: operation,
             token,
         };
@@ -110,7 +112,7 @@ export function useMaiaOpponent() {
             const current = clientRef.current;
             if (!current || current.getStatus().phase !== 'ready') {
                 throw new Error(
-                    'The Maia opponent is not ready. Retry the local model download.'
+                    'The Maia opponent is not ready. Retry its preparation.'
                 );
             }
             try {

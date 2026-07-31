@@ -13,6 +13,7 @@ export {
     type MaiaEngineStatus,
     type MaiaErrorCode,
     type MaiaInitializeOptions,
+    type MaiaMoveCandidate,
     type MaiaMoveRequest,
     type MaiaMoveResult,
     type MaiaProgressCallback,

@@ -1,3 +1,5 @@
+import { STOCKFISH_BROWSER_WORKER_URL } from '@/lib/analysis/stockfishMetadata';
+
 export type Score =
     | { type: 'cp'; value: number }
     | { type: 'mate'; value: number };
@@ -94,6 +96,28 @@ export type MultiPvResult = {
 };
 
 const ROOT_UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
+
+export function normalizeRestrictedRootMoves(
+    value: readonly string[] | undefined
+): string[] | undefined {
+    if (value == null) return undefined;
+    if (value.length === 0 || value.length > 8) {
+        throw new Error(
+            'Restricted Stockfish search requires between 1 and 8 root moves.'
+        );
+    }
+    const seen = new Set<string>();
+    return value.map((rawMove) => {
+        const move = rawMove.trim().toLowerCase();
+        if (!ROOT_UCI_RE.test(move) || seen.has(move)) {
+            throw new Error(
+                'Restricted Stockfish root moves must be unique, exact UCI moves.'
+            );
+        }
+        seen.add(move);
+        return move;
+    });
+}
 
 /**
  * Structural adapter-level proof only. The continuation verifier separately
@@ -213,7 +237,7 @@ export class StockfishClient implements StockfishEngine {
         if (typeof window === 'undefined') {
             throw new Error('Stockfish can only run in the browser.');
         }
-        this.worker = new Worker('/vendor/stockfish/backranq-engine.worker.js');
+        this.worker = new Worker(STOCKFISH_BROWSER_WORKER_URL);
         this.debugLog('worker created');
         this.worker.onmessage = (ev: MessageEvent) => {
             this.onWorkerMessage(ev.data);
@@ -381,6 +405,7 @@ export class StockfishClient implements StockfishEngine {
         fen: string;
         multiPv?: number;
         cacheKey?: string;
+        rootMoves?: readonly string[];
     }): Promise<MultiPvResult> {
         if (opts.signal?.aborted) throw new Error('Analysis aborted');
         const nodes =
@@ -391,11 +416,18 @@ export class StockfishClient implements StockfishEngine {
             nodes == null && depth == null
                 ? Math.max(1, Math.trunc(opts.movetimeMs ?? 400))
                 : undefined;
-        const multiPv = Math.max(1, Math.min(8, Math.trunc(opts.multiPv ?? 3)));
+        const rootMoves = normalizeRestrictedRootMoves(opts.rootMoves);
+        const multiPv = Math.max(
+            1,
+            Math.min(
+                rootMoves?.length ?? 8,
+                Math.trunc(opts.multiPv ?? 3)
+            )
+        );
 
         const key =
             opts.cacheKey ??
-            `${opts.fen}::nodes=${nodes ?? ''}::depth=${depth ?? ''}::time=${movetimeMs}::multipv=${multiPv}`;
+            `${opts.fen}::nodes=${nodes ?? ''}::depth=${depth ?? ''}::time=${movetimeMs}::multipv=${multiPv}::roots=${rootMoves?.join(',') ?? ''}`;
         const cached = this.cacheMulti.get(key);
         if (cached) {
             return cached;
@@ -424,6 +456,7 @@ export class StockfishClient implements StockfishEngine {
                 depth,
                 movetimeMs,
                 multiPv,
+                rootMoves,
             });
             this.worker?.postMessage({
                 type: 'start',
@@ -434,6 +467,7 @@ export class StockfishClient implements StockfishEngine {
                 maxDepth: depth,
                 maxTimeMs: movetimeMs,
                 emitIntervalMs: 120,
+                rootMoves,
             });
         });
 

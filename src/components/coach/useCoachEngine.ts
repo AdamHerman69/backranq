@@ -74,6 +74,7 @@ export function useCoachEngine() {
             nodes: number;
             multiPv: number;
             timeoutMs: number;
+            rootMoves?: readonly string[];
         }): Promise<MultiPvResult> => {
             const current = ensure();
             searchAbortRef.current?.abort();
@@ -85,6 +86,7 @@ export function useCoachEngine() {
                     nodes: args.nodes,
                     multiPv: args.multiPv,
                     timeoutMs: args.timeoutMs,
+                    rootMoves: args.rootMoves,
                     signal: controller.signal,
                 });
             } finally {

@@ -125,6 +125,7 @@ describe('MaiaOpponentClient worker protocol', () => {
             throw new Error('Expected an initialization request.');
         }
         expect(request.allowDownload).toBe(true);
+        expect(request.forceRefresh).toBe(false);
 
         worker.emit({
             type: 'status',
@@ -191,6 +192,12 @@ describe('MaiaOpponentClient worker protocol', () => {
             engineRevision: MAIA_MODEL.engineRevision,
             samplerVersion: MAIA_MODEL.samplerVersion,
             seed: 42,
+            candidates: [
+                {
+                    moveUci: 'e2e4',
+                    probability: 0.5,
+                },
+            ],
         };
         worker.emit({
             type: 'move',
@@ -285,6 +292,130 @@ describe('MaiaOpponentClient worker protocol', () => {
             source: 'cache',
         });
         client.terminate();
+    });
+
+    it('prefers a saved worker during automatic preparation', async () => {
+        const match = vi.fn().mockResolvedValue(
+            new Response('self.onmessage = () => undefined', {
+                headers: {
+                    'Content-Type': 'text/javascript',
+                },
+            })
+        );
+        vi.stubGlobal('caches', {
+            open: vi.fn().mockResolvedValue({ match }),
+        });
+        const fetch = vi.mocked(globalThis.fetch);
+        const client = new MaiaOpponentClient();
+        const initializing = client.initialize({
+            allowDownload: true,
+        });
+        const worker = await workerWithMessages();
+        const request = worker.messages[0]!;
+
+        expect(match).toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(request).toMatchObject({
+            type: 'initialize',
+            allowDownload: true,
+            forceRefresh: false,
+        });
+        worker.emit({
+            type: 'initialized',
+            id: request.id,
+            status: {
+                ...readyStatus,
+                source: 'cache',
+            },
+        });
+        await initializing;
+    });
+
+    it('runs a freshly fetched worker when Cache Storage is unavailable', async () => {
+        vi.stubGlobal('caches', undefined);
+        const client = new MaiaOpponentClient();
+        const initializing = client.initialize({
+            allowDownload: true,
+        });
+        const worker = await workerWithMessages();
+        const request = worker.messages[0]!;
+
+        expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledOnce();
+        worker.emit({
+            type: 'initialized',
+            id: request.id,
+            status: {
+                ...readyStatus,
+                offlineReady: false,
+            },
+        });
+        await expect(initializing).resolves.toMatchObject({
+            phase: 'ready',
+            offlineReady: false,
+        });
+    });
+
+    it('keeps running when persisting a freshly fetched worker fails', async () => {
+        vi.stubGlobal('caches', {
+            open: vi.fn().mockResolvedValue({
+                match: vi.fn().mockResolvedValue(undefined),
+                put: vi.fn().mockRejectedValue(
+                    new Error('Cache write blocked')
+                ),
+            }),
+        });
+        const client = new MaiaOpponentClient();
+        const initializing = client.initialize({
+            allowDownload: true,
+        });
+        const worker = await workerWithMessages();
+        const request = worker.messages[0]!;
+
+        worker.emit({
+            type: 'initialized',
+            id: request.id,
+            status: {
+                ...readyStatus,
+                offlineReady: false,
+            },
+        });
+        await expect(initializing).resolves.toMatchObject({
+            phase: 'ready',
+            offlineReady: false,
+        });
+    });
+
+    it('bypasses a saved worker during explicit repair', async () => {
+        const match = vi.fn().mockResolvedValue(
+            new Response('stale worker')
+        );
+        vi.stubGlobal('caches', {
+            open: vi.fn().mockResolvedValue({
+                match,
+                put: vi.fn(),
+            }),
+        });
+        const client = new MaiaOpponentClient();
+        const initializing = client.initialize({
+            allowDownload: true,
+            forceRefresh: true,
+        });
+        const worker = await workerWithMessages();
+        const request = worker.messages[0]!;
+
+        expect(match).not.toHaveBeenCalled();
+        expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledOnce();
+        expect(request).toMatchObject({
+            type: 'initialize',
+            allowDownload: true,
+            forceRefresh: true,
+        });
+        worker.emit({
+            type: 'initialized',
+            id: request.id,
+            status: readyStatus,
+        });
+        await initializing;
     });
 
     it('never coalesces local-only initialization into an active download', async () => {

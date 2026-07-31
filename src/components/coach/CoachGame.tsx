@@ -39,7 +39,10 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { ModalDialog } from '@/components/ui/ModalDialog';
-import type { MultiPvResult } from '@/lib/analysis/stockfishClient';
+import {
+    isStructurallyCompleteMultiPvBundle,
+    type MultiPvResult,
+} from '@/lib/analysis/stockfishClient';
 import { moveToUci, parseUci } from '@/lib/chess/utils';
 import {
     assessUserMove,
@@ -50,14 +53,23 @@ import {
     COACH_OPPONENT_NODES,
     COACH_THRESHOLD_DEFAULT_CP,
     MAIA_OPPONENT_DEFAULT_ELO,
+    MAIA_TACTICAL_GUARD_DEFAULT_CP,
+    MAIA_TACTICAL_GUARD_CANDIDATES,
+    MAIA_TACTICAL_GUARD_NODES,
     STOCKFISH_OPPONENT_REVISION,
+    coachOpponentEngineRevision,
     deriveMaiaOpponentSeed,
     firstEvaluation,
     getCoachGameOutcome,
     getOpponentProfile,
+    isMaiaOpponentModel,
+    isMaiaTacticalGuardModel,
+    isCompatibleCoachOpponentRevision,
     normalizeMaiaOpponentElo,
+    normalizeMaiaTacticalGuardCp,
     normalizeCoachThresholdCp,
     selectOpponentMove,
+    selectTacticalGuardMove,
     shouldConfirmCoachAssessment,
     terminalEvaluation,
     type CoachOpponentModelId,
@@ -143,7 +155,7 @@ function phaseMessage(
     opponentModel: CoachOpponentModelId
 ) {
     if (phase === 'starting') {
-        return opponentModel === 'maia3'
+        return isMaiaOpponentModel(opponentModel)
             ? 'Starting the Stockfish judge and Maia opponent…'
             : 'Starting local Stockfish…';
     }
@@ -155,8 +167,10 @@ function phaseMessage(
         return `Confirming the evaluation at ${Math.round(COACH_CONFIRMATION_NODES / 1_000)}k nodes…`;
     }
     if (phase === 'bot') {
-        return opponentModel === 'maia3'
-            ? 'Maia is choosing a human-like move…'
+        return isMaiaTacticalGuardModel(opponentModel)
+            ? 'Maia is choosing a move and Stockfish is checking it…'
+            : opponentModel === 'maia3'
+              ? 'Maia is choosing a human-like move…'
             : 'Stockfish opponent is choosing a move…';
     }
     if (phase === 'mistake') return 'The coach paused the game.';
@@ -190,6 +204,9 @@ export function CoachGame({
         useState<OpponentProfileId>('club');
     const [maiaElo, setMaiaElo] = useState(
         MAIA_OPPONENT_DEFAULT_ELO
+    );
+    const [tacticalGuardCp, setTacticalGuardCp] = useState(
+        MAIA_TACTICAL_GUARD_DEFAULT_CP
     );
     const [thresholdCp, setThresholdCp] = useState(
         COACH_THRESHOLD_DEFAULT_CP
@@ -232,6 +249,7 @@ export function CoachGame({
     const activeOpponentEngineRevisionRef = useRef(
         STOCKFISH_OPPONENT_REVISION
     );
+    const activeTacticalGuardCpRef = useRef<number | null>(null);
     const activeThresholdCpRef = useRef(COACH_THRESHOLD_DEFAULT_CP);
     const userColorRef = useRef<'w' | 'b'>('w');
     const pendingDecisionRef = useRef<CoachPendingDecision | null>(null);
@@ -291,6 +309,9 @@ export function CoachGame({
                     if (snapshot.opponentElo != null) {
                         setMaiaElo(snapshot.opponentElo);
                     }
+                    if (snapshot.tacticalGuardCp != null) {
+                        setTacticalGuardCp(snapshot.tacticalGuardCp);
+                    }
                 }
             });
         try {
@@ -299,6 +320,14 @@ export function CoachGame({
             );
             if (saved != null) {
                 setThresholdCp(normalizeCoachThresholdCp(saved));
+            }
+            const savedGuard = window.localStorage.getItem(
+                'backranq.coach.maiaTacticalGuardCp'
+            );
+            if (savedGuard != null) {
+                setTacticalGuardCp(
+                    normalizeMaiaTacticalGuardCp(savedGuard)
+                );
             }
         } catch {
             // Preference persistence is best-effort.
@@ -318,6 +347,17 @@ export function CoachGame({
             // Preference persistence is best-effort.
         }
     }, [thresholdCp]);
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(
+                'backranq.coach.maiaTacticalGuardCp',
+                String(tacticalGuardCp)
+            );
+        } catch {
+            // Preference persistence is best-effort.
+        }
+    }, [tacticalGuardCp]);
 
     useEffect(() => {
         if (!('serviceWorker' in navigator)) return;
@@ -357,6 +397,22 @@ export function CoachGame({
     }, [engineWarmup, phase, warmUpEngine]);
 
     useEffect(() => {
+        if (
+            phase !== 'setup' ||
+            !isMaiaOpponentModel(opponentModel) ||
+            maiaStatus.phase !== 'idle'
+        ) {
+            return;
+        }
+        void initializeMaia(true);
+    }, [
+        initializeMaia,
+        maiaStatus.phase,
+        opponentModel,
+        phase,
+    ]);
+
+    useEffect(() => {
         const resumablePhase: CoachResumablePhase | null =
             phase === 'analysis'
                 ? 'mistake'
@@ -376,7 +432,7 @@ export function CoachGame({
             return;
         }
         const snapshot: CoachSessionSnapshot = {
-            version: 2,
+            version: 3,
             sessionKey: sessionKeyRef.current,
             ownerId: ownerIdRef.current,
             savedAt: Date.now(),
@@ -387,6 +443,7 @@ export function CoachGame({
             opponentElo: activeOpponentEloRef.current,
             opponentEngineRevision:
                 activeOpponentEngineRevisionRef.current,
+            tacticalGuardCp: activeTacticalGuardCpRef.current,
             thresholdCp: activeThresholdCpRef.current,
             gameFen: gameRef.current.fen(),
             moves: movesRef.current,
@@ -429,12 +486,14 @@ export function CoachGame({
             options: {
                 nodes: number;
                 multiPv: number;
+                rootMoves?: readonly string[];
             }
         ) => {
             const result = await analyzeWithEngine({
                 fen,
                 nodes: options.nodes,
                 multiPv: options.multiPv,
+                rootMoves: options.rootMoves,
                 timeoutMs:
                     options.nodes >= COACH_CONFIRMATION_NODES
                         ? 30_000
@@ -517,7 +576,7 @@ export function CoachGame({
                 });
                 if (generationRef.current !== generation) return;
                 const checkpoint: CoachSessionSnapshot = {
-                    version: 2,
+                    version: 3,
                     sessionKey: sessionKeyRef.current,
                     ownerId: ownerIdRef.current,
                     savedAt: Date.now(),
@@ -528,6 +587,8 @@ export function CoachGame({
                     opponentElo: activeOpponentEloRef.current,
                     opponentEngineRevision:
                         activeOpponentEngineRevisionRef.current,
+                    tacticalGuardCp:
+                        activeTacticalGuardCpRef.current,
                     thresholdCp: activeThresholdCpRef.current,
                     gameFen: gameRef.current.fen(),
                     moves: movesRef.current,
@@ -594,10 +655,15 @@ export function CoachGame({
     );
 
     const playOpponentTurn = useCallback(
-        async (fen: string, generation: number) => {
+        async (
+            fen: string,
+            generation: number,
+            verifiedPositionAnalysis?: MultiPvResult | null
+        ) => {
             if (generationRef.current !== generation) return;
             setPhase('bot');
-            if (activeOpponentModelRef.current === 'maia3') {
+            const activeModel = activeOpponentModelRef.current;
+            if (isMaiaOpponentModel(activeModel)) {
                 try {
                     const seed = deriveMaiaOpponentSeed(
                         sessionKeyRef.current,
@@ -616,7 +682,7 @@ export function CoachGame({
                     if (generationRef.current !== generation) return;
                     if (
                         selected.engineRevision !==
-                            activeOpponentEngineRevisionRef.current ||
+                            MAIA_MODEL.engineRevision ||
                         selected.modelId !== MAIA_MODEL.id ||
                         selected.samplerVersion !==
                             MAIA_MODEL.samplerVersion ||
@@ -626,7 +692,93 @@ export function CoachGame({
                             'The loaded Maia model or sampler does not match this game.'
                         );
                     }
-                    const parsed = parseUci(selected.moveUci);
+                    let selectedMoveUci = selected.moveUci;
+                    if (isMaiaTacticalGuardModel(activeModel)) {
+                        if (selected.candidates.length === 0) {
+                            throw new Error(
+                                'Maia returned no candidates for tactical verification.'
+                            );
+                        }
+                        const maiaCandidates =
+                            selected.candidates.slice(
+                                0,
+                                MAIA_TACTICAL_GUARD_CANDIDATES
+                            );
+                        const verifiedBestLine =
+                            verifiedPositionAnalysis?.fen === fen
+                                ? verifiedPositionAnalysis.lines
+                                      .slice()
+                                      .sort(
+                                          (left, right) =>
+                                              left.multipv -
+                                              right.multipv
+                                      )[0]
+                                : undefined;
+                        const seedAnalysis =
+                            verifiedBestLine?.nodes != null &&
+                            verifiedBestLine.nodes >=
+                                MAIA_TACTICAL_GUARD_NODES
+                                ? verifiedPositionAnalysis!
+                                : await analyzePosition(
+                                      fen,
+                                      generation,
+                                      {
+                                          nodes: MAIA_TACTICAL_GUARD_NODES,
+                                          multiPv: 1,
+                                      }
+                                  );
+                        const stockfishSeed = seedAnalysis.lines
+                            .slice()
+                            .sort(
+                                (left, right) =>
+                                    left.multipv - right.multipv
+                            )[0]?.pvUci[0]
+                            ?.trim()
+                            .toLowerCase();
+                        if (!stockfishSeed) {
+                            throw new Error(
+                                'Stockfish returned no tactical fallback.'
+                            );
+                        }
+                        const rootMoves = Array.from(
+                            new Set([
+                                ...maiaCandidates.map((candidate) =>
+                                    candidate.moveUci
+                                        .trim()
+                                        .toLowerCase()
+                                ),
+                                stockfishSeed,
+                            ])
+                        );
+                        const guardedAnalysis = await analyzePosition(
+                            fen,
+                            generation,
+                            {
+                                nodes: MAIA_TACTICAL_GUARD_NODES,
+                                multiPv: rootMoves.length,
+                                rootMoves,
+                            }
+                        );
+                        if (
+                            !isStructurallyCompleteMultiPvBundle(
+                                guardedAnalysis.lines,
+                                rootMoves.length
+                            )
+                        ) {
+                            throw new Error(
+                                'Stockfish could not verify every tactical candidate.'
+                            );
+                        }
+                        selectedMoveUci = selectTacticalGuardMove({
+                            maiaCandidates,
+                            analysis: guardedAnalysis,
+                            thresholdCp:
+                                activeTacticalGuardCpRef.current ??
+                                MAIA_TACTICAL_GUARD_DEFAULT_CP,
+                            seed,
+                        }).moveUci;
+                    }
+                    const parsed = parseUci(selectedMoveUci);
                     if (!parsed) {
                         throw new Error(
                             'Maia returned an invalid move.'
@@ -690,10 +842,10 @@ export function CoachGame({
             return;
         }
         if (
-            opponentModel === 'maia3' &&
+            isMaiaOpponentModel(opponentModel) &&
             maiaStatus.phase !== 'ready'
         ) {
-            void initializeMaia(false);
+            void initializeMaia(true);
             return;
         }
         const generation = generationRef.current + 1;
@@ -706,13 +858,15 @@ export function CoachGame({
         activeOpponentModelRef.current = opponentModel;
         activeOpponentRef.current = opponentId;
         activeOpponentEloRef.current =
-            opponentModel === 'maia3'
+            isMaiaOpponentModel(opponentModel)
                 ? normalizeMaiaOpponentElo(maiaElo)
                 : null;
         activeOpponentEngineRevisionRef.current =
-            opponentModel === 'maia3'
-                ? MAIA_MODEL.engineRevision
-                : STOCKFISH_OPPONENT_REVISION;
+            coachOpponentEngineRevision(opponentModel);
+        activeTacticalGuardCpRef.current =
+            isMaiaTacticalGuardModel(opponentModel)
+                ? normalizeMaiaTacticalGuardCp(tacticalGuardCp)
+                : null;
         activeThresholdCpRef.current =
             normalizeCoachThresholdCp(thresholdCp);
         pendingDecisionRef.current = null;
@@ -771,6 +925,7 @@ export function CoachGame({
         preparePlayerTurn,
         setPhase,
         thresholdCp,
+        tacticalGuardCp,
         warmUpEngine,
     ]);
 
@@ -899,7 +1054,11 @@ export function CoachGame({
                 }
                 if (finishGame()) return;
                 setBaseline(null);
-                await playOpponentTurn(record.fenAfter, generation);
+                await playOpponentTurn(
+                    record.fenAfter,
+                    generation,
+                    verifiedAfterAnalysis
+                );
             } catch (error) {
                 failEngine(error, generation);
             }
@@ -931,7 +1090,7 @@ export function CoachGame({
                 beforeAnalysis,
             };
             const checkpoint: CoachSessionSnapshot = {
-                version: 2,
+                version: 3,
                 sessionKey: sessionKeyRef.current,
                 ownerId: ownerIdRef.current,
                 savedAt: Date.now(),
@@ -942,6 +1101,8 @@ export function CoachGame({
                 opponentElo: activeOpponentEloRef.current,
                 opponentEngineRevision:
                     activeOpponentEngineRevisionRef.current,
+                tacticalGuardCp:
+                    activeTacticalGuardCpRef.current,
                 thresholdCp: activeThresholdCpRef.current,
                 gameFen: record.fenAfter,
                 moves: movesRef.current,
@@ -1056,7 +1217,8 @@ export function CoachGame({
         if (finishGame()) return;
         void playOpponentTurn(
             gameRef.current.fen(),
-            generationRef.current
+            generationRef.current,
+            mistake.afterAnalysis
         );
     }, [finishGame, mistake, playOpponentTurn]);
 
@@ -1068,13 +1230,11 @@ export function CoachGame({
             const maiaReady =
                 maiaReadyOverride ?? maiaStatus.phase === 'ready';
             if (
-                snapshot.opponentModel === 'maia3' &&
+                isMaiaOpponentModel(snapshot.opponentModel) &&
                 !maiaReady
             ) {
                 setEngineError(
-                    maiaInstallStatus.installed
-                        ? 'Load the saved Maia opponent before continuing this game.'
-                        : 'Download the Maia opponent explicitly before continuing this game.'
+                    'Maia is still being prepared. Continue once the opponent is ready.'
                 );
                 return;
             }
@@ -1109,6 +1269,8 @@ export function CoachGame({
             activeOpponentEloRef.current = snapshot.opponentElo;
             activeOpponentEngineRevisionRef.current =
                 snapshot.opponentEngineRevision;
+            activeTacticalGuardCpRef.current =
+                snapshot.tacticalGuardCp;
             activeThresholdCpRef.current = snapshot.thresholdCp;
             userColorRef.current = snapshot.userColor;
             pendingDecisionRef.current = snapshot.pendingDecision;
@@ -1117,13 +1279,16 @@ export function CoachGame({
             positionFensRef.current = snapshot.positionFens;
             lastSnapshotRef.current = snapshot;
             setUserColor(snapshot.userColor);
-            if (snapshot.opponentModel !== 'maia3') {
+            if (!isMaiaOpponentModel(snapshot.opponentModel)) {
                 resetMaia();
             }
             setOpponentModel(snapshot.opponentModel);
             setOpponentId(snapshot.opponentId);
             if (snapshot.opponentElo != null) {
                 setMaiaElo(snapshot.opponentElo);
+            }
+            if (snapshot.tacticalGuardCp != null) {
+                setTacticalGuardCp(snapshot.tacticalGuardCp);
             }
             setThresholdCp(snapshot.thresholdCp);
             setGameFen(restored.fen());
@@ -1141,12 +1306,14 @@ export function CoachGame({
 
             try {
                 const expectedOpponentRevision =
-                    snapshot.opponentModel === 'maia3'
-                        ? MAIA_MODEL.engineRevision
-                        : STOCKFISH_OPPONENT_REVISION;
+                    coachOpponentEngineRevision(
+                        snapshot.opponentModel
+                    );
                 if (
-                    snapshot.opponentEngineRevision !==
-                    expectedOpponentRevision
+                    !isCompatibleCoachOpponentRevision(
+                        snapshot.opponentModel,
+                        snapshot.opponentEngineRevision
+                    )
                 ) {
                     throw new Error(
                         `This game requires ${snapshot.opponentEngineRevision}, but this app provides ${expectedOpponentRevision}. The opponent cannot be changed during a game.`
@@ -1155,7 +1322,7 @@ export function CoachGame({
                 const [judgeReady, opponentReady] =
                     await Promise.all([
                         prepareEngine(),
-                        snapshot.opponentModel === 'maia3'
+                        isMaiaOpponentModel(snapshot.opponentModel)
                             ? Promise.resolve(maiaReady)
                             : Promise.resolve(true),
                     ]);
@@ -1212,7 +1379,6 @@ export function CoachGame({
         [
             checkPlayerMove,
             cancelSearch,
-            maiaInstallStatus.installed,
             maiaStatus.phase,
             playOpponentTurn,
             prepareEngine,
@@ -1234,11 +1400,11 @@ export function CoachGame({
         }
         const recoveryGeneration = generationRef.current;
         terminateEngine('idle');
-        if (snapshot.opponentModel === 'maia3') {
+        if (isMaiaOpponentModel(snapshot.opponentModel)) {
             resetMaia();
             setEngineError(null);
             setPhase('recovering');
-            const ready = await initializeMaia(false);
+            const ready = await initializeMaia(true);
             if (
                 generationRef.current !== recoveryGeneration
             ) {
@@ -1246,7 +1412,7 @@ export function CoachGame({
             }
             if (!ready) {
                 setEngineError(
-                    'The saved Maia opponent could not be restarted from local data. Return to setup to load it again or explicitly download a replacement.'
+                    'The Maia opponent could not be restarted. Return to setup and retry its preparation.'
                 );
                 setPhase('error');
                 return;
@@ -1257,7 +1423,7 @@ export function CoachGame({
         }
         await resumeCoachSession(
             snapshot,
-            snapshot.opponentModel === 'maia3'
+            isMaiaOpponentModel(snapshot.opponentModel)
                 ? true
                 : undefined
         );
@@ -1273,8 +1439,8 @@ export function CoachGame({
     const changeOpponentModel = useCallback(
         (nextModel: CoachOpponentModelId) => {
             if (
-                nextModel !== 'maia3' &&
-                opponentModel === 'maia3'
+                !isMaiaOpponentModel(nextModel) &&
+                isMaiaOpponentModel(opponentModel)
             ) {
                 resetMaia();
             }
@@ -1362,6 +1528,8 @@ export function CoachGame({
     const rows = useMemo(() => moveRows(moves), [moves]);
     const normalizedThresholdCp =
         normalizeCoachThresholdCp(thresholdCp);
+    const normalizedTacticalGuardCp =
+        normalizeMaiaTacticalGuardCp(tacticalGuardCp);
     const ownerSessionIsCurrent =
         loadedOwnerKey === (ownerId ?? '__offline__');
 
@@ -1399,6 +1567,9 @@ export function CoachGame({
                 }
                 maiaPhase={maiaStatus.phase}
                 maiaProgress={maiaStatus.progress}
+                normalizedTacticalGuardCp={
+                    normalizedTacticalGuardCp
+                }
                 normalizedThresholdCp={normalizedThresholdCp}
                 offlineAssetsReady={offlineAssetsReady}
                 opponentId={opponentId}
@@ -1412,6 +1583,7 @@ export function CoachGame({
                     ownerSessionIsCurrent && sessionLoaded
                 }
                 thresholdCp={thresholdCp}
+                tacticalGuardCp={tacticalGuardCp}
                 onColorChoiceChange={setColorChoice}
                 onDiscardSession={() => {
                     void clearCoachSession(
@@ -1425,12 +1597,17 @@ export function CoachGame({
                 onOpponentModelChange={changeOpponentModel}
                 onResume={(snapshot) => void resumeCoachSession(snapshot)}
                 onRetryEngine={() => void warmUpEngine()}
-                onPrepareMaia={(allowDownload) =>
-                    void initializeMaia(allowDownload)
-                }
-                onRemoveMaia={removeMaiaOfflineData}
+                onRetryMaia={() => void initializeMaia(true, true)}
+                onRemoveMaia={async () => {
+                    const error = await removeMaiaOfflineData();
+                    if (!error) {
+                        setOpponentModel('stockfish');
+                    }
+                    return error;
+                }}
                 onStart={startGame}
                 onThresholdChange={setThresholdCp}
+                onTacticalGuardChange={setTacticalGuardCp}
             />
         );
     }
@@ -1759,9 +1936,10 @@ export function CoachGame({
                                 </Button>
                             </div>
                             <CardDescription>
-                                {activeOpponentModelRef.current ===
-                                'maia3'
-                                    ? `Maia 3 · ${activeOpponentEloRef.current} Elo`
+                                {isMaiaOpponentModel(
+                                    activeOpponentModelRef.current
+                                )
+                                    ? `${isMaiaTacticalGuardModel(activeOpponentModelRef.current) ? 'Maia + tactical guard' : 'Maia 3'} · ${activeOpponentEloRef.current} Elo${activeTacticalGuardCpRef.current == null ? '' : ` · guard at ${activeTacticalGuardCpRef.current} cp`}`
                                     : `Stockfish · ${
                                           getOpponentProfile(
                                               activeOpponentRef.current

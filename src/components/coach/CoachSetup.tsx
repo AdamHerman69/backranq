@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import {
     AlertTriangle,
-    Download,
     HardDrive,
     Loader2,
     ShieldCheck,
@@ -33,10 +32,16 @@ import {
     MAIA_OPPONENT_ELO_STEP,
     MAIA_OPPONENT_MAX_ELO,
     MAIA_OPPONENT_MIN_ELO,
+    MAIA_TACTICAL_GUARD_CP_STEP,
+    MAIA_TACTICAL_GUARD_MAX_CP,
+    MAIA_TACTICAL_GUARD_MIN_CP,
+    MAIA_TACTICAL_GUARD_NODES,
     COACH_THRESHOLD_MAX_CP,
     COACH_THRESHOLD_MIN_CP,
     OPPONENT_PROFILES,
     getOpponentProfile,
+    isMaiaOpponentModel,
+    isMaiaTacticalGuardModel,
     normalizeMaiaOpponentElo,
     type CoachOpponentModelId,
     type OpponentProfileId,
@@ -92,6 +97,7 @@ type CoachSetupProps = {
         | 'error'
         | 'terminated';
     maiaProgress: number | null;
+    normalizedTacticalGuardCp: number;
     normalizedThresholdCp: number;
     offlineAssetsReady: boolean;
     opponentId: OpponentProfileId;
@@ -99,6 +105,7 @@ type CoachSetupProps = {
     resumableSession: CoachSessionSnapshot | null;
     sessionLoaded: boolean;
     thresholdCp: number;
+    tacticalGuardCp: number;
     onColorChoiceChange: (value: CoachColorChoice) => void;
     onDiscardSession: () => void;
     onMaiaEloChange: (value: number) => void;
@@ -106,10 +113,11 @@ type CoachSetupProps = {
     onOpponentModelChange: (value: CoachOpponentModelId) => void;
     onResume: (snapshot: CoachSessionSnapshot) => void;
     onRetryEngine: () => void;
-    onPrepareMaia: (allowDownload: boolean) => void;
+    onRetryMaia: () => void;
     onRemoveMaia: () => Promise<string | null>;
     onStart: () => void;
     onThresholdChange: (value: number) => void;
+    onTacticalGuardChange: (value: number) => void;
 };
 
 export function CoachSetup({
@@ -131,6 +139,7 @@ export function CoachSetup({
     maiaOfflineReady,
     maiaPhase,
     maiaProgress,
+    normalizedTacticalGuardCp,
     normalizedThresholdCp,
     offlineAssetsReady,
     opponentId,
@@ -138,6 +147,7 @@ export function CoachSetup({
     resumableSession,
     sessionLoaded,
     thresholdCp,
+    tacticalGuardCp,
     onColorChoiceChange,
     onDiscardSession,
     onMaiaEloChange,
@@ -145,10 +155,11 @@ export function CoachSetup({
     onOpponentModelChange,
     onResume,
     onRetryEngine,
-    onPrepareMaia,
+    onRetryMaia,
     onRemoveMaia,
     onStart,
     onThresholdChange,
+    onTacticalGuardChange,
 }: CoachSetupProps) {
     const [removeMaiaDialogOpen, setRemoveMaiaDialogOpen] =
         useState(false);
@@ -156,11 +167,13 @@ export function CoachSetup({
     const [removeMaiaError, setRemoveMaiaError] =
         useState<string | null>(null);
     const selectedOpponent = getOpponentProfile(opponentId);
+    const maiaSelected = isMaiaOpponentModel(opponentModel);
+    const tacticalGuardSelected =
+        isMaiaTacticalGuardModel(opponentModel);
     const engineLoading =
         engineWarmup === 'loading' || engineWarmup === 'idle';
     const maiaLoading =
-        opponentModel === 'maia3' &&
-        maiaPhase !== 'idle' &&
+        maiaSelected &&
         maiaPhase !== 'ready' &&
         maiaPhase !== 'error';
     const selectedOpponentReady =
@@ -169,7 +182,7 @@ export function CoachSetup({
         engineWarmup === 'ready' && selectedOpponentReady;
     const resumableOpponentReady =
         !resumableSession ||
-        resumableSession.opponentModel !== 'maia3' ||
+        !isMaiaOpponentModel(resumableSession.opponentModel) ||
         maiaPhase === 'ready';
     const modelSizeMiB = (
         maiaModelBytes /
@@ -187,9 +200,7 @@ export function CoachSetup({
             : maiaPhase === 'error'
               ? `Maia opponent failed to load. ${maiaError ?? ''}`
               : maiaPhase === 'idle'
-                ? maiaInstalled
-                    ? 'Maia is saved on this device. Choose Load Maia to prepare it.'
-                    : 'Maia is not saved on this device. Choose Download Maia to install it.'
+                ? 'Preparing Maia opponent automatically.'
               : maiaPhase === 'downloading' &&
                   announcedMaiaProgress != null
                 ? `Downloading Maia opponent: ${announcedMaiaProgress} percent.`
@@ -209,9 +220,10 @@ export function CoachSetup({
                             </div>
                             <p className="mt-1 text-sm text-muted-foreground">
                                 {resumableSession.moves.length} moves ·{' '}
-                                {resumableSession.opponentModel ===
-                                'maia3'
-                                    ? `Maia 3 · ${resumableSession.opponentElo} Elo`
+                                {isMaiaOpponentModel(
+                                    resumableSession.opponentModel
+                                )
+                                    ? `${isMaiaTacticalGuardModel(resumableSession.opponentModel) ? 'Maia + tactical guard' : 'Maia 3'} · ${resumableSession.opponentElo} Elo${resumableSession.tacticalGuardCp == null ? '' : ` · guard at ${resumableSession.tacticalGuardCp} cp`}`
                                     : `Stockfish · ${getOpponentProfile(
                                           resumableSession.opponentId
                                       ).label}`}{' '}
@@ -221,9 +233,8 @@ export function CoachSetup({
                             {!resumableOpponentReady &&
                             !maiaInstallChecking ? (
                                 <p className="mt-1 text-xs text-muted-foreground">
-                                    The saved game is intact. Load Maia below,
-                                    or explicitly download it again if this
-                                    browser evicted the files.
+                                    The saved game is intact. Maia is being
+                                    prepared automatically before you continue.
                                 </p>
                             ) : null}
                         </div>
@@ -237,7 +248,7 @@ export function CoachSetup({
                                     ? 'Continue game'
                                     : maiaInstallChecking
                                       ? 'Checking saved Maia…'
-                                      : 'Prepare Maia below to continue'}
+                                      : 'Preparing Maia to continue…'}
                             </Button>
                             <Button
                                 type="button"
@@ -344,10 +355,10 @@ export function CoachSetup({
                                         Stockfish · engine-like
                                     </SelectItem>
                                     <SelectItem value="maia3">
-                                        Maia 3 · human-like ·{' '}
-                                        {maiaInstalled
-                                            ? 'saved on device'
-                                            : `${maiaDownloadMiB.toFixed(1)} MiB download`}
+                                        Maia 3 · human-like
+                                    </SelectItem>
+                                    <SelectItem value="maia3-tactical">
+                                        Maia + tactical guard
                                     </SelectItem>
                                 </SelectContent>
                             </Select>
@@ -423,9 +434,50 @@ export function CoachSetup({
                             )}
                         </label>
 
+                        {tacticalGuardSelected ? (
+                            <label className="space-y-2 text-sm">
+                                <span className="font-medium">
+                                    Opponent guard threshold
+                                </span>
+                                <div className="relative">
+                                    <Input
+                                        type="number"
+                                        min={MAIA_TACTICAL_GUARD_MIN_CP}
+                                        max={MAIA_TACTICAL_GUARD_MAX_CP}
+                                        step={MAIA_TACTICAL_GUARD_CP_STEP}
+                                        inputMode="numeric"
+                                        value={tacticalGuardCp}
+                                        onChange={(event) =>
+                                            onTacticalGuardChange(
+                                                Number(
+                                                    event.currentTarget
+                                                        .value
+                                                ) || 0
+                                            )
+                                        }
+                                        onBlur={() =>
+                                            onTacticalGuardChange(
+                                                normalizedTacticalGuardCp
+                                            )
+                                        }
+                                        aria-label="Tactical guard centipawn threshold"
+                                        className="pr-10 font-mono"
+                                    />
+                                    <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                                        cp
+                                    </span>
+                                </div>
+                                <span className="block text-xs text-muted-foreground">
+                                    Reject Maia moves losing at least this
+                                    much. If none survive, play Stockfish’s
+                                    best move.
+                                </span>
+                            </label>
+                        ) : null}
+
                         <label className="space-y-2 text-sm sm:col-span-2">
                             <span className="font-medium">
-                                Stop threshold
+                                Coach stop threshold
                             </span>
                             <div className="relative">
                                 <Input
@@ -460,13 +512,15 @@ export function CoachSetup({
                     <div className="grid gap-3 rounded-lg border bg-muted/25 p-4 sm:grid-cols-2">
                         <div>
                             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                {opponentModel === 'maia3'
-                                    ? `Maia 3 · ${maiaElo} Elo`
+                                {maiaSelected
+                                    ? `${tacticalGuardSelected ? 'Maia + tactical guard' : 'Maia 3'} · ${maiaElo} Elo`
                                     : `${selectedOpponent.label} Stockfish`}
                             </div>
                             <p className="mt-1 text-sm">
-                                {opponentModel === 'maia3'
-                                    ? 'Predicts moves people at this rating actually play. Stockfish remains the independent coach and judge.'
+                                {tacticalGuardSelected
+                                    ? `Keeps Maia’s human move distribution, but rejects candidates at ≥ ${normalizedTacticalGuardCp} cp loss using a ${Math.round(MAIA_TACTICAL_GUARD_NODES / 1_000)}k-node Stockfish check.`
+                                    : opponentModel === 'maia3'
+                                      ? 'Predicts moves people at this rating actually play. Stockfish remains the independent coach and judge.'
                                     : selectedOpponent.description}
                             </p>
                         </div>
@@ -484,7 +538,7 @@ export function CoachSetup({
                         </div>
                     </div>
 
-                    {opponentModel === 'maia3' ? (
+                    {maiaSelected ? (
                         <div
                             className="rounded-lg border p-4"
                             data-maia-phase={maiaPhase}
@@ -501,8 +555,8 @@ export function CoachSetup({
                                         aria-hidden="true"
                                     />
                                 ) : (
-                                    <Download
-                                        className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
+                                    <Loader2
+                                        className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground"
                                         aria-hidden="true"
                                     />
                                 )}
@@ -523,11 +577,9 @@ export function CoachSetup({
                                             : maiaPhase === 'error'
                                               ? 'Maia model unavailable'
                                               : maiaPhase === 'idle'
-                                                ? maiaInstalled
-                                                    ? 'Maia is saved on this device'
-                                                    : 'Download Maia to use this opponent'
+                                                ? 'Preparing human-like opponent…'
                                               : maiaPhase === 'downloading'
-                                                ? `Downloading human-like opponent${maiaProgress == null ? '…' : ` · ${Math.round(maiaProgress * 100)}%`}`
+                                                ? `Preparing human-like opponent${maiaProgress == null ? '…' : ` · ${Math.round(maiaProgress * 100)}%`}`
                                                 : 'Preparing human-like opponent…'}
                                     </div>
                                     <p className="mt-1 text-xs text-muted-foreground">
@@ -562,31 +614,11 @@ export function CoachSetup({
                                         )}
                                     </p>
                                     {maiaPhase === 'idle' ? (
-                                        <div className="mt-3 space-y-2">
-                                            <p className="text-xs text-muted-foreground">
-                                                {maiaInstalled
-                                                    ? 'The verified model and runtime are already on this device. Loading them does not require a network download.'
-                                                    : `This explicit one-time download comes from GitHub: ${modelSizeMiB} MiB for the model plus about 13.0 MiB for its local runtime. After both are verified and saved, Maia can play offline.`}
-                                            </p>
-                                            <Button
-                                                type="button"
-                                                size="sm"
-                                                variant="outline"
-                                                onClick={() =>
-                                                    onPrepareMaia(
-                                                        !maiaInstalled
-                                                    )
-                                                }
-                                            >
-                                                <Download
-                                                    className="mr-2 h-4 w-4"
-                                                    aria-hidden="true"
-                                                />
-                                                {maiaInstalled
-                                                    ? 'Load Maia from this device'
-                                                    : `Download Maia · ${maiaDownloadMiB.toFixed(1)} MiB`}
-                                            </Button>
-                                        </div>
+                                        <p className="mt-3 text-xs text-muted-foreground">
+                                            {maiaInstalled
+                                                ? 'The verified model and runtime are saved on this device and are loading automatically.'
+                                                : `First use prepares approximately ${maiaDownloadMiB.toFixed(1)} MiB from the immutable Maia source and saves it for offline play.`}
+                                        </p>
                                     ) : null}
                                     {maiaProgress != null &&
                                     maiaPhase !== 'ready' &&
@@ -594,7 +626,7 @@ export function CoachSetup({
                                         <div
                                             className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"
                                             role="progressbar"
-                                            aria-label="Maia model download"
+                                            aria-label="Maia preparation progress"
                                             aria-valuemin={0}
                                             aria-valuemax={100}
                                             aria-valuenow={Math.round(
@@ -623,12 +655,9 @@ export function CoachSetup({
                                                 type="button"
                                                 size="sm"
                                                 variant="outline"
-                                                onClick={() =>
-                                                    onPrepareMaia(true)
-                                                }
+                                                onClick={onRetryMaia}
                                             >
-                                                Download Maia again ·{' '}
-                                                {maiaDownloadMiB.toFixed(1)} MiB
+                                                Retry Maia preparation
                                             </Button>
                                         </div>
                                     ) : null}
@@ -677,11 +706,9 @@ export function CoachSetup({
                             ? 'Preparing Stockfish judge…'
                             : maiaLoading
                               ? 'Preparing Maia opponent…'
-                              : opponentModel === 'maia3' &&
+                              : maiaSelected &&
                                   maiaPhase !== 'ready'
-                                ? maiaInstalled
-                                    ? 'Load Maia to start'
-                                    : 'Download Maia to start'
+                                ? 'Maia needs attention'
                               : 'Start coach game'}
                     </Button>
 
@@ -735,12 +762,12 @@ export function CoachSetup({
                     </ol>
                     <div className="mt-5 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3 text-xs text-muted-foreground">
                         {offlineAssetsReady
-                            ? opponentModel === 'maia3' &&
+                            ? maiaSelected &&
                               (!maiaOfflineReady ||
                                   maiaPhase !== 'ready')
                                 ? maiaPhase === 'idle'
-                                    ? `The coach shell and Stockfish judge are saved offline. Maia is downloaded only after you explicitly request its approximately ${maiaDownloadMiB.toFixed(1)} MiB model and runtime.`
-                                    : 'The coach shell and Stockfish judge are saved offline. Maia will also be available offline once this model download is saved successfully.'
+                                    ? `The coach shell and Stockfish judge are saved offline. The selected Maia opponent is preparing automatically (approximately ${maiaDownloadMiB.toFixed(1)} MiB on first use).`
+                                    : 'The coach shell and Stockfish judge are saved offline. Maia will also be available offline once preparation is saved successfully.'
                                 : 'The coach shell, Stockfish judge, selected opponent and analysis workspace are saved for a cold offline start.'
                             : engineWarmup === 'ready'
                               ? 'The Stockfish judge is loaded, so this open session can continue offline. The production app also saves a cold-start offline shell.'
@@ -752,7 +779,7 @@ export function CoachSetup({
                 open={removeMaiaDialogOpen}
                 onOpenChange={setRemoveMaiaDialogOpen}
                 title="Remove Maia from this device?"
-                description={`This removes the verified model and local runtime (about ${maiaDownloadMiB.toFixed(1)} MiB total). To use Maia again, you will need to download them again.`}
+                description={`This removes the verified model and local runtime (about ${maiaDownloadMiB.toFixed(1)} MiB total). Selecting Maia again will prepare them automatically.`}
                 confirmLabel="Remove Maia data"
                 variant="destructive"
                 busy={removingMaia}

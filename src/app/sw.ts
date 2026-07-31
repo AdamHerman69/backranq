@@ -11,6 +11,7 @@ import {
     NetworkOnly,
     Serwist,
 } from 'serwist';
+import { STOCKFISH_BROWSER_CACHE_NAME } from '@/lib/analysis/stockfishMetadata';
 import { MAIA_MODEL } from '@/lib/coach/maia/metadata';
 
 declare global {
@@ -36,7 +37,9 @@ const runtimeCaching: RuntimeCaching[] = [
         matcher: ({ sameOrigin, url }) =>
             sameOrigin &&
             url.pathname.startsWith('/vendor/stockfish/'),
-        handler: new CacheFirst({ cacheName: 'coach-engine-v1' }),
+        handler: new CacheFirst({
+            cacheName: STOCKFISH_BROWSER_CACHE_NAME,
+        }),
     },
     {
         matcher: ({ sameOrigin, url }) =>
@@ -108,11 +111,14 @@ self.addEventListener('activate', (event) => {
                 cacheNames
                     .filter(
                         (cacheName) =>
-                            cacheName.startsWith(
+                            (cacheName.startsWith(
                                 'coach-maia-runtime-'
                             ) &&
-                            cacheName !==
-                                MAIA_MODEL.runtimeCacheName
+                                cacheName !==
+                                    MAIA_MODEL.runtimeCacheName) ||
+                            (cacheName.startsWith('coach-engine-') &&
+                                cacheName !==
+                                    STOCKFISH_BROWSER_CACHE_NAME)
                     )
                     .map((cacheName) => caches.delete(cacheName))
             )

@@ -75,7 +75,7 @@ export type CoachResumablePhase =
     | 'mistake';
 
 export type CoachSessionSnapshot = {
-    version: 2;
+    version: 3;
     sessionKey: string;
     ownerId: string;
     savedAt: number;
@@ -85,6 +85,7 @@ export type CoachSessionSnapshot = {
     opponentId: OpponentProfileId;
     opponentElo: number | null;
     opponentEngineRevision: string;
+    tacticalGuardCp: number | null;
     thresholdCp: number;
     gameFen: string;
     moves: CoachPlayedMove[];

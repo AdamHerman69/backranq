@@ -206,7 +206,11 @@ const server = http.createServer(async (request, response) => {
         response.end('<!doctype html><title>Coach benchmark</title>');
         return;
     }
-    const asset = assets.get(request.url ?? '');
+    const assetPath = new URL(
+        request.url ?? '/',
+        'http://127.0.0.1'
+    ).pathname;
+    const asset = assets.get(assetPath);
     if (!asset) {
         response.writeHead(404).end();
         return;

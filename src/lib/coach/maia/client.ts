@@ -70,7 +70,7 @@ export class MaiaOpponentClient {
     private workerPreparation: Promise<Worker> | null = null;
     private status = idleStatus();
     private pending = new Map<string, PendingRequest>();
-    private initializationPermission: boolean | null = null;
+    private initializationKey: string | null = null;
     private terminated = false;
 
     getStatus(): MaiaEngineStatus {
@@ -97,18 +97,21 @@ export class MaiaOpponentClient {
             return Promise.resolve(this.getStatus());
         }
         const allowDownload = options.allowDownload === true;
+        const forceRefresh =
+            allowDownload && options.forceRefresh === true;
+        const nextInitializationKey = `${allowDownload}:${forceRefresh}`;
         if (
-            this.initializationPermission !== null &&
-            this.initializationPermission !== allowDownload
+            this.initializationKey !== null &&
+            this.initializationKey !== nextInitializationKey
         ) {
             return Promise.reject(
                 new MaiaOpponentError(
                     'BAD_REQUEST',
-                    'Maia initialization is already running with different download permission.'
+                    'Maia initialization is already running with different preparation options.'
                 )
             );
         }
-        this.initializationPermission = allowDownload;
+        this.initializationKey = nextInitializationKey;
 
         const id = requestId();
         return new Promise<MaiaEngineStatus>((resolve, reject) => {
@@ -133,8 +136,9 @@ export class MaiaOpponentClient {
                     type: 'initialize',
                     id,
                     allowDownload,
+                    forceRefresh,
                 };
-                void this.prepareWorker(allowDownload)
+                void this.prepareWorker(allowDownload, forceRefresh)
                         .then((worker) => {
                             if (this.pending.has(id)) {
                                 worker.postMessage(message);
@@ -288,15 +292,21 @@ export class MaiaOpponentClient {
     }
 
     private prepareWorker(
-        allowDownload: boolean
+        allowDownload: boolean,
+        forceRefresh: boolean
     ): Promise<Worker> {
         if (this.worker) return Promise.resolve(this.worker);
         if (this.workerPreparation) return this.workerPreparation;
-        const operation = (
-            allowDownload
-                ? this.downloadWorker()
-                : this.loadCachedWorker()
-        ).finally(() => {
+        const operation = (async () => {
+            if (!forceRefresh) {
+                try {
+                    return await this.loadCachedWorker();
+                } catch (error) {
+                    if (!allowDownload) throw error;
+                }
+            }
+            return this.downloadWorker();
+        })().finally(() => {
             if (this.workerPreparation === operation) {
                 this.workerPreparation = null;
             }
@@ -309,16 +319,9 @@ export class MaiaOpponentClient {
         if (typeof Worker === 'undefined') {
             throw new Error('Web Workers are not available in this browser.');
         }
-        if (typeof caches === 'undefined') {
-            throw new MaiaOpponentError(
-                'CACHE_ERROR',
-                'This browser cannot save the Maia runtime for offline play.'
-            );
-        }
         const workerUrl = maiaRuntimeAssetUrl(
             'backranq-maia.worker.js'
         );
-        await caches.delete(MAIA_MODEL.runtimeCacheName);
         const response = await fetch(
             maiaRuntimeRefreshUrl('backranq-maia.worker.js'),
             {
@@ -339,17 +342,30 @@ export class MaiaOpponentClient {
                 `Maia worker download failed with HTTP ${response.status}.`
             );
         }
-        const cache = await caches.open(
-            MAIA_MODEL.runtimeCacheName
-        );
-        if (this.terminated) {
-            throw new MaiaOpponentError(
-                'TERMINATED',
-                'Maia was terminated.',
-                { recoverable: false }
-            );
+        if (typeof caches !== 'undefined') {
+            try {
+                const cache = await caches.open(
+                    MAIA_MODEL.runtimeCacheName
+                );
+                if (this.terminated) {
+                    throw new MaiaOpponentError(
+                        'TERMINATED',
+                        'Maia was terminated.',
+                        { recoverable: false }
+                    );
+                }
+                await cache.put(workerUrl, response.clone());
+            } catch (error) {
+                if (
+                    error instanceof MaiaOpponentError &&
+                    error.code === 'TERMINATED'
+                ) {
+                    throw error;
+                }
+                // The fetched worker can still run from memory. Offline
+                // persistence is reported separately by the worker.
+            }
         }
-        await cache.put(workerUrl, response.clone());
         if (this.terminated) {
             throw new MaiaOpponentError(
                 'TERMINATED',
@@ -371,7 +387,7 @@ export class MaiaOpponentClient {
         if (typeof caches === 'undefined') {
             throw new MaiaOpponentError(
                 'MODEL_NOT_CACHED',
-                'The saved Maia worker is unavailable. Download Maia again to replace it.'
+                'The saved Maia worker is unavailable on this device.'
             );
         }
         const workerUrl = maiaRuntimeAssetUrl(
@@ -384,7 +400,7 @@ export class MaiaOpponentClient {
         if (!response) {
             throw new MaiaOpponentError(
                 'MODEL_NOT_CACHED',
-                'The saved Maia worker is missing. Download Maia again to replace it.'
+                'The saved Maia worker is missing on this device.'
             );
         }
         if (this.terminated) {
@@ -463,7 +479,7 @@ export class MaiaOpponentClient {
                 (candidate) => candidate.kind === 'initialize'
             )
         ) {
-            this.initializationPermission = null;
+            this.initializationKey = null;
         }
         clearTimeout(pending.timeoutId);
         pending.abortCleanup?.();

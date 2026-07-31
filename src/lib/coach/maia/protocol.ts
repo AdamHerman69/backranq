@@ -10,6 +10,7 @@ export type MaiaWorkerRequest =
           type: 'initialize';
           id: string;
           allowDownload: boolean;
+          forceRefresh: boolean;
       }
     | {
           type: 'select-move';

@@ -1,8 +1,16 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
     isStructurallyCompleteMultiPvBundle,
+    normalizeRestrictedRootMoves,
     type MultiPvLine,
 } from '@/lib/analysis/stockfishClient';
+import {
+    STOCKFISH_BROWSER_CACHE_NAME,
+    STOCKFISH_BROWSER_REVISION,
+    STOCKFISH_BROWSER_WORKER_URL,
+} from '@/lib/analysis/stockfishMetadata';
 
 function line(multipv: number, move: string): MultiPvLine {
     return {
@@ -50,5 +58,44 @@ describe('browser Stockfish MultiPV completeness', () => {
                 2
             )
         ).toBe(false);
+    });
+});
+
+describe('browser Stockfish asset revision', () => {
+    it('versions both the worker request and its service-worker cache', () => {
+        expect(STOCKFISH_BROWSER_WORKER_URL).toContain(
+            encodeURIComponent(STOCKFISH_BROWSER_REVISION)
+        );
+        expect(STOCKFISH_BROWSER_CACHE_NAME).toContain(
+            STOCKFISH_BROWSER_REVISION
+        );
+        expect(
+            readFileSync(
+                resolve(
+                    process.cwd(),
+                    'public/vendor/stockfish/backranq-engine.worker.js'
+                ),
+                'utf8'
+            )
+        ).toContain(
+            `const runtimeRevision = '${STOCKFISH_BROWSER_REVISION}'`
+        );
+    });
+});
+
+describe('restricted Stockfish roots', () => {
+    it('normalizes exact roots and rejects empty, duplicate, or malformed sets', () => {
+        expect(
+            normalizeRestrictedRootMoves([' E2E4 ', 'd2d4'])
+        ).toEqual(['e2e4', 'd2d4']);
+        expect(() => normalizeRestrictedRootMoves([])).toThrow(
+            'between 1 and 8'
+        );
+        expect(() =>
+            normalizeRestrictedRootMoves(['e2e4', 'E2E4'])
+        ).toThrow('unique');
+        expect(() =>
+            normalizeRestrictedRootMoves(['e2e4junk'])
+        ).toThrow('unique');
     });
 });

@@ -83,7 +83,11 @@ const server = http.createServer(async (request, response) => {
         response.end('<!doctype html><title>Stockfish smoke</title>');
         return;
     }
-    const asset = assets.get(request.url ?? '');
+    const assetPath = new URL(
+        request.url ?? '/',
+        'http://127.0.0.1'
+    ).pathname;
+    const asset = assets.get(assetPath);
     if (!asset) {
         response.writeHead(404).end();
         return;
@@ -138,6 +142,7 @@ try {
                     {
                         id: 'protocol-after-e4',
                         fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1',
+                        rootMoves: ['e7e5', 'd7d5'],
                     },
                 ];
                 let completed = 0;
@@ -147,8 +152,9 @@ try {
                         type: 'start',
                         id: job.id,
                         fen: job.fen,
-                        multiPv: 1,
+                        multiPv: job.rootMoves?.length ?? 1,
                         maxNodes: 2_000,
+                        rootMoves: job.rootMoves,
                     });
                 };
                 worker.onmessage = (event) => {
@@ -207,10 +213,10 @@ try {
         'isready',
         'position fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
         'go nodes 2000',
-        'setoption name MultiPV value 1',
+        'setoption name MultiPV value 2',
         'isready',
         'position fen rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1',
-        'go nodes 2000',
+        'go nodes 2000 searchmoves e7e5 d7d5',
     ];
     if (
         !Array.isArray(protocol?.commands) ||
