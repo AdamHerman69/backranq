@@ -44,6 +44,8 @@ export type MaiaProgressCallback = (status: MaiaEngineStatus) => void;
 export type MaiaInitializeOptions = {
     /** False guarantees that initialization will not fetch missing assets. */
     allowDownload?: boolean;
+    /** Bypass saved runtime assets and repair them from immutable sources. */
+    forceRefresh?: boolean;
     onProgress?: MaiaProgressCallback;
     signal?: AbortSignal;
 };
@@ -57,6 +59,11 @@ export type MaiaMoveRequest = {
     signal?: AbortSignal;
 };
 
+export type MaiaMoveCandidate = {
+    moveUci: string;
+    probability: number;
+};
+
 export type MaiaMoveResult = {
     moveUci: string;
     /** Probability after legal masking, temperature and top-p truncation. */
@@ -67,6 +74,11 @@ export type MaiaMoveResult = {
     engineRevision: typeof MAIA_MODEL.engineRevision;
     samplerVersion: typeof MAIA_MODEL.samplerVersion;
     seed: number;
+    /**
+     * Highest-probability moves from the sampled nucleus. Tactical guard uses
+     * the original Maia weights for conditional resampling after verification.
+     */
+    candidates: MaiaMoveCandidate[];
 };
 
 export class MaiaOpponentError extends Error {

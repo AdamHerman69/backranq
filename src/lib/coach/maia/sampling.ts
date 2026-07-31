@@ -6,6 +6,10 @@ export type MaiaPolicySample = MaiaLegalMove & {
     seed: number;
 };
 
+export type MaiaPolicyCandidate = MaiaLegalMove & {
+    probability: number;
+};
+
 export function normalizeMaiaSeed(seed: number): number {
     if (!Number.isFinite(seed)) {
         throw new Error('Maia seed must be a finite number.');
@@ -20,13 +24,12 @@ function seededRandom(seed: number): number {
     return ((value ^ (value >>> 14)) >>> 0) / 4_294_967_296;
 }
 
-export function sampleMaiaPolicy(args: {
+export function buildMaiaPolicyCandidates(args: {
     logits: ArrayLike<number>;
     legalMoves: readonly MaiaLegalMove[];
-    seed: number;
     temperature: number;
     topP: number;
-}): MaiaPolicySample {
+}): MaiaPolicyCandidate[] {
     if (args.legalMoves.length === 0) {
         throw new Error('Cannot sample Maia policy without legal moves.');
     }
@@ -95,11 +98,49 @@ export function sampleMaiaPolicy(args: {
         candidate.probability /= nucleusTotal;
     }
 
-    const seed = normalizeMaiaSeed(args.seed);
+    return nucleus.map(({ moveUci, modelIndex, probability }) => ({
+        moveUci,
+        modelIndex,
+        probability,
+    }));
+}
+
+export function sampleWeightedMaiaCandidate<
+    T extends { probability: number },
+>(
+    candidates: readonly T[],
+    seedValue: number
+): {
+    candidate: T;
+    probability: number;
+    seed: number;
+} {
+    if (candidates.length === 0) {
+        throw new Error('Cannot sample an empty Maia candidate set.');
+    }
+    let total = 0;
+    for (const candidate of candidates) {
+        if (
+            !Number.isFinite(candidate.probability) ||
+            candidate.probability < 0
+        ) {
+            throw new Error(
+                'Maia candidate probability must be finite and non-negative.'
+            );
+        }
+        total += candidate.probability;
+    }
+    if (!(total > 0) || !Number.isFinite(total)) {
+        throw new Error(
+            'Maia candidate probabilities must have positive mass.'
+        );
+    }
+
+    const seed = normalizeMaiaSeed(seedValue);
     let cursor = seededRandom(seed);
-    let selected = nucleus[nucleus.length - 1]!;
-    for (const candidate of nucleus) {
-        cursor -= candidate.probability;
+    let selected = candidates[candidates.length - 1]!;
+    for (const candidate of candidates) {
+        cursor -= candidate.probability / total;
         if (cursor < 0) {
             selected = candidate;
             break;
@@ -107,10 +148,33 @@ export function sampleMaiaPolicy(args: {
     }
 
     return {
-        moveUci: selected.moveUci,
-        modelIndex: selected.modelIndex,
-        probability: selected.probability,
-        candidateCount: nucleus.length,
+        candidate: selected,
+        probability: selected.probability / total,
         seed,
+    };
+}
+
+export function sampleMaiaPolicy(args: {
+    logits: ArrayLike<number>;
+    legalMoves: readonly MaiaLegalMove[];
+    seed: number;
+    temperature: number;
+    topP: number;
+}): MaiaPolicySample {
+    const candidates = buildMaiaPolicyCandidates(args);
+    return sampleMaiaPolicyCandidates(candidates, args.seed);
+}
+
+export function sampleMaiaPolicyCandidates(
+    candidates: readonly MaiaPolicyCandidate[],
+    seed: number
+): MaiaPolicySample {
+    const selected = sampleWeightedMaiaCandidate(candidates, seed);
+    return {
+        moveUci: selected.candidate.moveUci,
+        modelIndex: selected.candidate.modelIndex,
+        probability: selected.probability,
+        candidateCount: candidates.length,
+        seed: selected.seed,
     };
 }

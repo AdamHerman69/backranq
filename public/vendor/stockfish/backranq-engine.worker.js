@@ -9,6 +9,7 @@
 let enginePromise = null;
 let engine = null;
 let needsNewGameBoundary = false;
+const runtimeRevision = 'stockfish-18.0.8-bridge-v2';
 let identity = {
     name: 'Stockfish 18',
     version: '18.0.8',
@@ -28,6 +29,7 @@ function ensureEngine() {
             'stockfish-18-lite-single.js',
             self.location.href
         );
+        workerUrl.searchParams.set('v', runtimeRevision);
         const raw = new Worker(workerUrl);
         const listeners = new Set();
         const protocolWaiters = new Set();
@@ -219,6 +221,29 @@ function parseInfoLine(line) {
     };
 }
 
+function normalizeRootMoves(value) {
+    if (value == null) return null;
+    if (!Array.isArray(value) || value.length === 0 || value.length > 8) {
+        throw new Error(
+            'Restricted Stockfish search requires between 1 and 8 root moves'
+        );
+    }
+    const seen = new Set();
+    return value.map((rawMove) => {
+        const move = String(rawMove).trim().toLowerCase();
+        if (
+            !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move) ||
+            seen.has(move)
+        ) {
+            throw new Error(
+                'Restricted Stockfish root moves must be unique exact UCI moves'
+            );
+        }
+        seen.add(move);
+        return move;
+    });
+}
+
 function buildSnapshot(job) {
     const depthBuckets = Array.from(job.linesByDepth.entries()).sort(
         ([depthA], [depthB]) => depthB - depthA
@@ -299,6 +324,7 @@ function setActive(job) {
         id: job.id,
         fen: job.fen,
         multiPv: Math.max(1, Math.min(8, job.multiPv | 0)),
+        rootMoves: job.rootMoves,
         minDepth:
             job.minDepth == null ? null : Math.max(1, Math.trunc(job.minDepth)),
         maxDepth:
@@ -366,19 +392,23 @@ async function startJob(job) {
         await e.waitUntilReady();
         if (!activeJob || activeJob.id !== j.id || j.stopRequested) return;
         e.postMessage(`position fen ${j.fen}`);
+        const searchMoves =
+            j.rootMoves && j.rootMoves.length > 0
+                ? ` searchmoves ${j.rootMoves.join(' ')}`
+                : '';
 
         // Choose go mode.
         if (j.mode === 'nodes') {
-            e.postMessage(`go nodes ${j.maxNodes}`);
+            e.postMessage(`go nodes ${j.maxNodes}${searchMoves}`);
         } else if (j.mode === 'depth') {
-            e.postMessage(`go depth ${j.maxDepth}`);
+            e.postMessage(`go depth ${j.maxDepth}${searchMoves}`);
         } else if (j.mode === 'movetime') {
-            e.postMessage(`go movetime ${j.maxTimeMs}`);
+            e.postMessage(`go movetime ${j.maxTimeMs}${searchMoves}`);
         } else {
             // A long bounded search streams like interactive infinite analysis
             // while retaining a hard engine-side limit.
             const fallbackMs = 10 * 60 * 1000;
-            e.postMessage(`go movetime ${fallbackMs}`);
+            e.postMessage(`go movetime ${fallbackMs}${searchMoves}`);
         }
     } catch (error) {
         if (activeJob?.id === j.id) activeJob = null;
@@ -534,7 +564,27 @@ self.onmessage = (ev) => {
     if (!msg || typeof msg !== 'object') return;
 
     if (msg.type === 'start') {
-        const multiPv = Math.max(1, Math.min(8, Math.trunc(msg.multiPv ?? 1)));
+        let rootMoves;
+        try {
+            rootMoves = normalizeRootMoves(msg.rootMoves);
+        } catch (error) {
+            postMessage({
+                type: 'error',
+                id: String(msg.id ?? ''),
+                message:
+                    error instanceof Error
+                        ? error.message
+                        : String(error),
+            });
+            return;
+        }
+        const multiPv = Math.max(
+            1,
+            Math.min(
+                rootMoves?.length ?? 8,
+                Math.trunc(msg.multiPv ?? 1)
+            )
+        );
         const maxDepth =
             msg.maxDepth == null ? null : Math.max(1, Math.trunc(msg.maxDepth));
         const maxNodes =
@@ -563,6 +613,7 @@ self.onmessage = (ev) => {
             maxNodes,
             maxTimeMs,
             emitIntervalMs: msg.emitIntervalMs ?? 150,
+            rootMoves,
             mode,
         }).catch((err) => {
             postMessage({

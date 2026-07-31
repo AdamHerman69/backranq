@@ -20,9 +20,8 @@ export const {
             revision: `coach-offline-shell-${offlineShellRevision}`,
         },
     ],
-    // Maia is an explicit, roughly 56 MiB opt-in download. Keep its local
-    // ONNX Runtime assets out of the install-time coach precache and let the
-    // runtime route cache them only after the user selects Maia.
+    // Maia is roughly 56 MiB. Keep its local ONNX Runtime assets out of the
+    // install-time coach precache; selecting Maia prepares and caches them.
     globIgnores: ['public/vendor/maia/**/*'],
     maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
     swSrc: 'src/app/sw.ts',

@@ -22,13 +22,17 @@ import type {
     MaiaWorkerRequest,
     MaiaWorkerResponse,
 } from '@/lib/coach/maia/protocol';
-import { sampleMaiaPolicy } from '@/lib/coach/maia/sampling';
+import {
+    buildMaiaPolicyCandidates,
+    sampleMaiaPolicyCandidates,
+} from '@/lib/coach/maia/sampling';
 import type {
     MaiaEngineStatus,
     MaiaErrorCode,
     MaiaModelSource,
     MaiaMoveResult,
 } from '@/lib/coach/maia/types';
+import { MAIA_TACTICAL_GUARD_CANDIDATES } from '@/lib/coach/profiles';
 
 type WorkerScope = {
     caches?: CacheStorage;
@@ -95,7 +99,7 @@ class MaiaWorkerFault extends Error {
 
 let session: ort.InferenceSession | null = null;
 let initialization: Promise<MaiaEngineStatus> | null = null;
-let initializationAllowDownload: boolean | null = null;
+let initializationKey: string | null = null;
 let modelSource: MaiaModelSource = null;
 let inferenceQueue: Promise<void> = Promise.resolve();
 let status: MaiaEngineStatus = {
@@ -250,10 +254,14 @@ async function pruneStaleModels(
     await transactionComplete(transaction);
 }
 
-async function persistRuntimeAssets(
-    allowDownload: boolean
-): Promise<boolean> {
-    if (!scope.caches) return false;
+type MaiaLocalRuntime = {
+    mjsUrl: string;
+    wasmBinary: Uint8Array;
+    persisted: boolean;
+};
+
+async function pruneStaleRuntimeCaches(): Promise<void> {
+    if (!scope.caches) return;
     try {
         const cacheNames = await scope.caches.keys();
         await Promise.all(
@@ -270,70 +278,143 @@ async function persistRuntimeAssets(
                     scope.caches!.delete(cacheName)
                 )
         );
-        const cache = await scope.caches.open(
-            MAIA_MODEL.runtimeCacheName
-        );
-        const assetUrls = [
-            absoluteRuntimeAssetUrl('backranq-maia.worker.js'),
-            absoluteRuntimeAssetUrl('ort-wasm-simd-threaded.mjs'),
-            absoluteRuntimeAssetUrl('ort-wasm-simd-threaded.wasm'),
-        ];
-        for (const [index, assetUrl] of assetUrls.entries()) {
-            const cached = await cache.match(assetUrl);
-            if (cached && (!allowDownload || index === 0)) {
-                continue;
-            }
-            if (!allowDownload) return false;
-            await cache.delete(assetUrl);
-            const response = await fetch(
-                absoluteRuntimeRefreshUrl(
-                    MAIA_RUNTIME_FILES[index]!
-                ),
-                {
-                    cache: 'no-store',
-                    credentials: 'same-origin',
-                }
-            );
-            if (!response.ok) return false;
-            await cache.put(assetUrl, response);
-        }
-        return true;
     } catch {
-        return false;
+        // Old caches are best-effort cleanup only.
     }
 }
 
-async function readCachedRuntime(): Promise<{
-    mjsUrl: string;
-    wasmBinary: Uint8Array;
-} | null> {
+async function readCachedRuntime(): Promise<MaiaLocalRuntime | null> {
     if (!scope.caches) return null;
     try {
         const cache = await scope.caches.open(
             MAIA_MODEL.runtimeCacheName
         );
-        const [mjsResponse, wasmResponse] = await Promise.all([
-            cache.match(
-                absoluteRuntimeAssetUrl(
-                    'ort-wasm-simd-threaded.mjs'
-                )
-            ),
-            cache.match(
-                absoluteRuntimeAssetUrl(
-                    'ort-wasm-simd-threaded.wasm'
-                )
-            ),
-        ]);
+        const [workerResponse, mjsResponse, wasmResponse] =
+            await Promise.all([
+                cache.match(
+                    absoluteRuntimeAssetUrl(
+                        'backranq-maia.worker.js'
+                    )
+                ),
+                cache.match(
+                    absoluteRuntimeAssetUrl(
+                        'ort-wasm-simd-threaded.mjs'
+                    )
+                ),
+                cache.match(
+                    absoluteRuntimeAssetUrl(
+                        'ort-wasm-simd-threaded.wasm'
+                    )
+                ),
+            ]);
         if (!mjsResponse || !wasmResponse) return null;
         return {
             mjsUrl: URL.createObjectURL(await mjsResponse.blob()),
             wasmBinary: new Uint8Array(
                 await wasmResponse.arrayBuffer()
             ),
+            persisted: Boolean(workerResponse),
         };
     } catch {
         return null;
     }
+}
+
+async function persistRuntimeResponses(
+    mjsResponse: Response,
+    wasmResponse: Response
+): Promise<boolean> {
+    if (!scope.caches) return false;
+    try {
+        const cache = await scope.caches.open(
+            MAIA_MODEL.runtimeCacheName
+        );
+        await Promise.all([
+            cache.put(
+                absoluteRuntimeAssetUrl(
+                    'ort-wasm-simd-threaded.mjs'
+                ),
+                mjsResponse
+            ),
+            cache.put(
+                absoluteRuntimeAssetUrl(
+                    'ort-wasm-simd-threaded.wasm'
+                ),
+                wasmResponse
+            ),
+        ]);
+        const storedAssets = await Promise.all(
+            MAIA_RUNTIME_FILES.map((fileName) =>
+                cache.match(absoluteRuntimeAssetUrl(fileName))
+            )
+        );
+        return storedAssets.every(Boolean);
+    } catch {
+        return false;
+    }
+}
+
+async function fetchRuntimeAsset(
+    fileName: 'ort-wasm-simd-threaded.mjs' | 'ort-wasm-simd-threaded.wasm'
+): Promise<Response> {
+    let response: Response;
+    try {
+        response = await fetch(absoluteRuntimeRefreshUrl(fileName), {
+            cache: 'no-store',
+            credentials: 'same-origin',
+        });
+    } catch (error) {
+        const offline = scope.navigator?.onLine === false;
+        throw new MaiaWorkerFault(
+            offline ? 'MODEL_UNAVAILABLE_OFFLINE' : 'DOWNLOAD_FAILED',
+            offline
+                ? 'The Maia runtime is not saved yet and this device is offline.'
+                : 'Could not prepare the Maia runtime.',
+            true,
+            error
+        );
+    }
+    if (!response.ok) {
+        throw new MaiaWorkerFault(
+            'DOWNLOAD_FAILED',
+            `Maia runtime preparation failed with HTTP ${response.status}.`
+        );
+    }
+    return response;
+}
+
+async function prepareRuntime(
+    allowDownload: boolean,
+    forceRefresh: boolean
+): Promise<MaiaLocalRuntime> {
+    await pruneStaleRuntimeCaches();
+    if (!forceRefresh) {
+        const cached = await readCachedRuntime();
+        if (cached) return cached;
+    }
+    if (!allowDownload) {
+        throw new MaiaWorkerFault(
+            'MODEL_NOT_CACHED',
+            'The saved Maia runtime is incomplete on this device.'
+        );
+    }
+
+    const [mjsResponse, wasmResponse] = await Promise.all([
+        fetchRuntimeAsset('ort-wasm-simd-threaded.mjs'),
+        fetchRuntimeAsset('ort-wasm-simd-threaded.wasm'),
+    ]);
+    const mjsForCache = mjsResponse.clone();
+    const wasmForCache = wasmResponse.clone();
+    const [mjsBlob, wasmBuffer, persisted] = await Promise.all([
+        mjsResponse.blob(),
+        wasmResponse.arrayBuffer(),
+        persistRuntimeResponses(mjsForCache, wasmForCache),
+    ]);
+    return {
+        mjsUrl: URL.createObjectURL(mjsBlob),
+        wasmBinary: new Uint8Array(wasmBuffer),
+        persisted,
+    };
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -454,7 +535,8 @@ async function downloadModel(): Promise<ArrayBuffer> {
 }
 
 async function loadVerifiedModel(
-    allowDownload: boolean
+    allowDownload: boolean,
+    forceRefresh: boolean
 ): Promise<MaiaEngineStatus> {
     publishStatus({
         phase: 'checking-cache',
@@ -515,7 +597,7 @@ async function loadVerifiedModel(
                 modelSource = null;
                 throw new MaiaWorkerFault(
                     'MODEL_NOT_CACHED',
-                    'The saved Maia model is missing or invalid. Download Maia again to replace it.'
+                    'The saved Maia model is missing or invalid on this device.'
                 );
             }
             modelSource = 'network';
@@ -549,30 +631,16 @@ async function loadVerifiedModel(
     } finally {
         database?.close();
     }
-    const runtimePersisted =
-        await persistRuntimeAssets(allowDownload);
-    if (!runtimePersisted && !allowDownload) {
-        throw new MaiaWorkerFault(
-            'MODEL_NOT_CACHED',
-            'The saved Maia runtime is incomplete. Download Maia again to replace it.'
-        );
-    }
-
     publishStatus({
         phase: 'loading',
         progress: null,
         source: modelSource,
         message: 'Starting the Maia engine.',
     });
-    const localRuntime = await readCachedRuntime();
-    if (!localRuntime) {
-        throw new MaiaWorkerFault(
-            allowDownload ? 'CACHE_ERROR' : 'MODEL_NOT_CACHED',
-            allowDownload
-                ? 'The freshly downloaded Maia runtime could not be read from local storage.'
-                : 'The saved Maia runtime could not be read. Download Maia again to replace it.'
-        );
-    }
+    const localRuntime = await prepareRuntime(
+        allowDownload,
+        forceRefresh
+    );
     try {
         ort.env.wasm.numThreads = 1;
         ort.env.wasm.proxy = false;
@@ -599,9 +667,9 @@ async function loadVerifiedModel(
         phase: 'ready',
         progress: 1,
         source: modelSource,
-        offlineReady: modelPersisted && runtimePersisted,
+        offlineReady: modelPersisted && localRuntime.persisted,
         message:
-            modelPersisted && runtimePersisted
+            modelPersisted && localRuntime.persisted
                 ? modelSource === 'cache'
                     ? 'Maia is ready offline.'
                     : 'Maia is ready and saved for offline play.'
@@ -610,26 +678,31 @@ async function loadVerifiedModel(
 }
 
 function ensureInitialized(
-    allowDownload: boolean
+    allowDownload: boolean,
+    forceRefresh: boolean
 ): Promise<MaiaEngineStatus> {
     if (session && status.phase === 'ready') {
         return Promise.resolve(status);
     }
+    const nextInitializationKey = `${allowDownload}:${forceRefresh}`;
     if (initialization) {
-        if (initializationAllowDownload !== allowDownload) {
+        if (initializationKey !== nextInitializationKey) {
             return Promise.reject(
                 new MaiaWorkerFault(
                     'BAD_REQUEST',
-                    'Maia initialization is already running with different download permission.'
+                    'Maia initialization is already running with different preparation options.'
                 )
             );
         }
         return initialization;
     }
-    initializationAllowDownload = allowDownload;
-    initialization = loadVerifiedModel(allowDownload).finally(() => {
+    initializationKey = nextInitializationKey;
+    initialization = loadVerifiedModel(
+        allowDownload,
+        forceRefresh
+    ).finally(() => {
         initialization = null;
-        initializationAllowDownload = null;
+        initializationKey = null;
     });
     return initialization;
 }
@@ -711,13 +784,16 @@ async function selectMove(
             false
         );
     }
-    const sample = sampleMaiaPolicy({
+    const candidates = buildMaiaPolicyCandidates({
         logits: policy.data as ArrayLike<number>,
         legalMoves: message.legalMoves,
-        seed: message.seed,
         temperature: MAIA_MODEL.sampling.temperature,
         topP: MAIA_MODEL.sampling.topP,
     });
+    const sample = sampleMaiaPolicyCandidates(
+        candidates,
+        message.seed
+    );
     return {
         moveUci: sample.moveUci,
         probability: sample.probability,
@@ -727,6 +803,12 @@ async function selectMove(
         engineRevision: MAIA_MODEL.engineRevision,
         samplerVersion: MAIA_MODEL.samplerVersion,
         seed: sample.seed,
+        candidates: candidates
+            .slice(0, MAIA_TACTICAL_GUARD_CANDIDATES)
+            .map(({ moveUci, probability }) => ({
+                moveUci,
+                probability,
+            })),
     };
 }
 
@@ -741,7 +823,10 @@ scope.onmessage = (event) => {
     }
 
     if (message.type === 'initialize') {
-        ensureInitialized(message.allowDownload === true)
+        ensureInitialized(
+            message.allowDownload === true,
+            message.forceRefresh === true
+        )
             .then((readyStatus) => {
                 post({
                     type: 'initialized',

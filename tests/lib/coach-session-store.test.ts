@@ -18,6 +18,7 @@ import {
 } from '@/lib/coach/verification';
 import {
     MAIA_OPPONENT_DEFAULT_ELO,
+    MAIA_TACTICAL_GUARD_REVISION,
     STOCKFISH_OPPONENT_REVISION,
 } from '@/lib/coach/profiles';
 
@@ -85,7 +86,7 @@ function snapshot(
     overrides: Partial<CoachSessionSnapshot> = {}
 ): CoachSessionSnapshot {
     return {
-        version: 2,
+        version: 3,
         sessionKey: 'coach-session-1',
         ownerId: 'user-1',
         savedAt: NOW,
@@ -95,6 +96,7 @@ function snapshot(
         opponentId: 'club',
         opponentElo: null,
         opponentEngineRevision: STOCKFISH_OPPONENT_REVISION,
+        tacticalGuardCp: null,
         thresholdCp: 100,
         gameFen: START_FEN,
         moves: [],
@@ -228,11 +230,12 @@ describe('coach session snapshot sanitization', () => {
         );
 
         expect(restored).toMatchObject({
-            version: 2,
+            version: 3,
             opponentModel: 'stockfish',
             opponentId: 'club',
             opponentElo: null,
             opponentEngineRevision: STOCKFISH_OPPONENT_REVISION,
+            tacticalGuardCp: null,
         });
     });
 
@@ -253,6 +256,47 @@ describe('coach session snapshot sanitization', () => {
             opponentEngineRevision: 'maia3-engine-v1',
         });
         expect(restored?.opponentElo).toBe(MAIA_OPPONENT_DEFAULT_ELO);
+    });
+
+    it('migrates v2 sessions and persists a normalized tactical guard threshold only for the hybrid model', () => {
+        const previous = {
+            ...snapshot(),
+            version: 2,
+            opponentModel: 'maia3',
+            opponentElo: 1_600,
+            opponentEngineRevision: 'maia3-engine-v1',
+        };
+        delete (previous as { tacticalGuardCp?: unknown }).tacticalGuardCp;
+        const restoredPrevious = sanitizeCoachSessionSnapshot(
+            previous,
+            NOW
+        );
+        expect(restoredPrevious).toMatchObject({
+            version: 3,
+            opponentModel: 'maia3',
+            opponentElo: 1_600,
+            tacticalGuardCp: null,
+        });
+
+        const guarded = sanitizeCoachSessionSnapshot(
+            {
+                ...snapshot(),
+                opponentModel: 'maia3-tactical',
+                opponentElo: 1_725,
+                opponentEngineRevision:
+                    MAIA_TACTICAL_GUARD_REVISION,
+                tacticalGuardCp: 147,
+            },
+            NOW
+        );
+        expect(guarded).toMatchObject({
+            version: 3,
+            opponentModel: 'maia3-tactical',
+            opponentElo: 1_750,
+            opponentEngineRevision:
+                MAIA_TACTICAL_GUARD_REVISION,
+            tacticalGuardCp: 150,
+        });
     });
 
     it('restores a valid player checkpoint and normalizes untrusted preferences', () => {
@@ -448,7 +492,7 @@ describe('coach session snapshot sanitization', () => {
     it('rejects unsupported, stale, future, oversized, and invalid-profile snapshots', () => {
         expect(
             sanitizeCoachSessionSnapshot(
-                { ...snapshot(), version: 3 },
+                { ...snapshot(), version: 4 },
                 NOW
             )
         ).toBeNull();

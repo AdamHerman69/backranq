@@ -6,12 +6,12 @@ export const MAIA_RECOMMENDED_ELO_MAX = 2_800;
 export const MAIA_RECOMMENDED_ELO_DEFAULT = 1_500;
 
 export const MAIA_ENGINE_REVISION =
-    'maia3-sf16-v3:405bf76c:worker-v6:prep-v1:mulberry32-p95-t1-v1';
+    'maia3-sf16-v3:405bf76c:worker-v8:prep-v1:mulberry32-p95-t1-v1';
 
 /**
- * This is intentionally a remote, opt-in model. Its exact immutable source,
- * size and digest are part of the runtime contract and are checked before the
- * bytes can be cached or passed to ONNX Runtime.
+ * The model is prepared automatically after the user selects Maia. Its exact
+ * immutable source, size and digest are part of the runtime contract and are
+ * checked before the bytes can be cached or passed to ONNX Runtime.
  */
 export const MAIA_MODEL = {
     id: 'maia3-simplified-browser',
@@ -31,7 +31,7 @@ export const MAIA_MODEL = {
     inputHistoryPositions: 1,
     runtime: 'onnxruntime-web',
     runtimeVersion: '1.27.0',
-    workerVersion: 'backranq-maia-worker-v6',
+    workerVersion: 'backranq-maia-worker-v8',
     preprocessingVersion: 'maia3-current-position-v1',
     engineRevision: MAIA_ENGINE_REVISION,
     runtimeCacheName: `coach-maia-runtime-${MAIA_ENGINE_REVISION}`,

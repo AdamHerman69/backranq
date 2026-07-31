@@ -59,10 +59,6 @@ test('plays and resumes a real Maia move after a cold offline start', async ({
     await page
         .getByRole('option', { name: /^Maia 3 · human-like/ })
         .click();
-    await expect(page.locator('[data-maia-phase="idle"]')).toBeVisible();
-    await page
-        .getByRole('button', { name: /Download Maia ·/ })
-        .click();
     await expect(
         page.locator(
             '[data-maia-phase="ready"], [data-maia-phase="error"]'
@@ -74,7 +70,7 @@ test('plays and resumes a real Maia move after a cold offline start', async ({
             .isVisible()
     ) {
         throw new Error(
-            `Initial Maia install failed: ${await page
+            `Initial Maia preparation failed: ${await page
                 .locator('[data-maia-phase="error"]')
                 .innerText()}`
         );
@@ -125,9 +121,6 @@ test('plays and resumes a real Maia move after a cold offline start', async ({
     await expect(page.getByText('Continue your saved game')).toBeVisible({
         timeout: 30_000,
     });
-    await page
-        .getByRole('button', { name: 'Load Maia from this device' })
-        .click();
     await expect(
         page.locator('[data-maia-phase="ready"]')
     ).toBeVisible({ timeout: 60_000 });
@@ -139,9 +132,6 @@ test('plays and resumes a real Maia move after a cold offline start', async ({
     await expect(page.getByText('Continue your saved game')).toBeVisible({
         timeout: 30_000,
     });
-    await page
-        .getByRole('button', { name: 'Load Maia from this device' })
-        .click();
     await expect(
         page.locator('[data-maia-phase="ready"]')
     ).toBeVisible({ timeout: 60_000 });
@@ -189,15 +179,12 @@ test('plays and resumes a real Maia move after a cold offline start', async ({
     await page
         .getByRole('option', { name: /^Maia 3 · human-like/ })
         .click();
-    await page
-        .getByRole('button', { name: 'Load Maia from this device' })
-        .click();
     await expect(
         page.locator('[data-maia-phase="error"]')
     ).toBeVisible({ timeout: 60_000 });
     await page
         .getByRole('button', {
-            name: /Download Maia again ·/,
+            name: 'Retry Maia preparation',
         })
         .click();
     await expect(
@@ -216,9 +203,9 @@ test('plays and resumes a real Maia move after a cold offline start', async ({
         .getByRole('alertdialog')
         .getByRole('button', { name: 'Remove Maia data' })
         .click();
-    await expect(
-        page.getByRole('button', { name: /Download Maia ·/ })
-    ).toBeVisible();
+    await expect(page.getByLabel('Opponent model')).toContainText(
+        'Stockfish'
+    );
     expect(
         await page.evaluate(async () => ({
             maiaCaches: (await caches.keys()).filter((name) =>

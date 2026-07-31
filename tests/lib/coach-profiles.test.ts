@@ -3,10 +3,16 @@ import { describe, expect, it } from 'vitest';
 import {
     deriveMaiaOpponentSeed,
     getOpponentProfile,
+    isMaiaOpponentModel,
+    isMaiaTacticalGuardModel,
+    MAIA_TACTICAL_GUARD_DEFAULT_CP,
+    MAIA_TACTICAL_GUARD_MAX_CP,
+    MAIA_TACTICAL_GUARD_MIN_CP,
     MAIA_OPPONENT_DEFAULT_ELO,
     MAIA_OPPONENT_MAX_ELO,
     MAIA_OPPONENT_MIN_ELO,
     normalizeMaiaOpponentElo,
+    normalizeMaiaTacticalGuardCp,
     OPPONENT_PROFILE_IDS,
     OPPONENT_PROFILES,
 } from '@/lib/coach/profiles';
@@ -82,4 +88,21 @@ describe('coach profiles', () => {
         expect(first).toBeLessThanOrEqual(0xffff_ffff);
     });
 
+    it('exposes the hybrid as a Maia model and normalizes its exact cp control', () => {
+        expect(isMaiaOpponentModel('maia3')).toBe(true);
+        expect(isMaiaOpponentModel('maia3-tactical')).toBe(true);
+        expect(isMaiaOpponentModel('stockfish')).toBe(false);
+        expect(isMaiaTacticalGuardModel('maia3-tactical')).toBe(true);
+        expect(isMaiaTacticalGuardModel('maia3')).toBe(false);
+        expect(normalizeMaiaTacticalGuardCp('invalid')).toBe(
+            MAIA_TACTICAL_GUARD_DEFAULT_CP
+        );
+        expect(normalizeMaiaTacticalGuardCp(0)).toBe(
+            MAIA_TACTICAL_GUARD_MIN_CP
+        );
+        expect(normalizeMaiaTacticalGuardCp(10_000)).toBe(
+            MAIA_TACTICAL_GUARD_MAX_CP
+        );
+        expect(normalizeMaiaTacticalGuardCp(147)).toBe(150);
+    });
 });

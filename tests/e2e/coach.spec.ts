@@ -12,7 +12,9 @@ async function installDeterministicCoachEngine(page: Page) {
             id?: string;
             fen?: string;
             multiPv?: number;
+            rootMoves?: string[];
             seed?: number;
+            maxNodes?: number;
         };
 
         class DeterministicCoachWorker {
@@ -143,10 +145,16 @@ async function installDeterministicCoachEngine(page: Page) {
                                             modelVersion:
                                                 'maia3-simplified-fp16-v3',
                                             engineRevision:
-                                                'maia3-sf16-v3:405bf76c:worker-v6:prep-v1:mulberry32-p95-t1-v1',
+                                                'maia3-sf16-v3:405bf76c:worker-v8:prep-v1:mulberry32-p95-t1-v1',
                                             samplerVersion:
                                                 'mulberry32-top-p-v1',
                                             seed: message.seed,
+                                            candidates: [
+                                                {
+                                                    moveUci: 'e2e4',
+                                                    probability: 1,
+                                                },
+                                            ],
                                         },
                                     },
                                 })
@@ -181,6 +189,25 @@ async function installDeterministicCoachEngine(page: Page) {
                         (counters.__coachStockfishOpponentSearches ?? 0) +
                         1;
                 }
+                if (message.rootMoves?.length) {
+                    const counters = window as typeof window & {
+                        __coachTacticalGuardSearches?: number;
+                    };
+                    counters.__coachTacticalGuardSearches =
+                        (counters.__coachTacticalGuardSearches ?? 0) +
+                        1;
+                }
+                if (
+                    !message.rootMoves?.length &&
+                    message.maxNodes === 180_000
+                ) {
+                    const counters = window as typeof window & {
+                        __coachTacticalGuardSeedSearches?: number;
+                    };
+                    counters.__coachTacticalGuardSeedSearches =
+                        (counters.__coachTacticalGuardSeedSearches ??
+                            0) + 1;
+                }
 
                 const fen = String(message.fen ?? '');
                 const side = fen.split(' ')[1] === 'b' ? 'b' : 'w';
@@ -195,23 +222,31 @@ async function installDeterministicCoachEngine(page: Page) {
                         'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/'
                     );
                 const roots =
-                    side === 'w'
-                        ? ['e2e4', 'd2d4', 'g1f3', 'c2c4', 'b1c3']
-                        : afterF3 || afterE4
+                    message.rootMoves?.length
+                        ? message.rootMoves
+                        : side === 'w'
                           ? [
-                                'e7e5',
-                                'd7d5',
-                                'g8f6',
-                                'c7c5',
-                                'e7e6',
+                                'e2e4',
+                                'd2d4',
+                                'g1f3',
+                                'c2c4',
+                                'b1c3',
                             ]
-                          : [
-                                'g8f6',
-                                'd7d5',
-                                'e7e6',
-                                'c7c5',
-                                'b8c6',
-                            ];
+                          : afterF3 || afterE4
+                            ? [
+                                  'e7e5',
+                                  'd7d5',
+                                  'g8f6',
+                                  'c7c5',
+                                  'e7e6',
+                              ]
+                            : [
+                                  'g8f6',
+                                  'd7d5',
+                                  'e7e6',
+                                  'c7c5',
+                                  'b8c6',
+                              ];
                 const baseCp = afterF3 ? 300 : afterE4 ? -30 : 30;
                 const baseWdl = afterF3
                     ? { win: 850, draw: 100, loss: 50 }
@@ -423,16 +458,6 @@ test.describe('offline coach game', () => {
             })
             .click();
         await expect(
-            page
-                .locator('[data-maia-phase="idle"]')
-                .getByRole('status')
-        ).toContainText(
-            'Maia is not saved on this device. Choose Download Maia'
-        );
-        await page
-            .getByRole('button', { name: /Download Maia ·/ })
-            .click();
-        await expect(
             page.locator('[data-maia-phase="ready"]')
         ).toBeVisible();
         await expect(
@@ -471,11 +496,8 @@ test.describe('offline coach game', () => {
             page.getByText(/Maia 3 · 1750 Elo.*100 cp threshold/)
         ).toBeVisible();
         await expect(
-            page.getByRole('button', { name: /Prepare Maia below/ })
-        ).toBeDisabled();
-        await page
-            .getByRole('button', { name: /Download Maia ·/ })
-            .click();
+            page.locator('[data-maia-phase="ready"]')
+        ).toBeVisible();
         await page
             .getByRole('button', { name: 'Continue game' })
             .click();
@@ -483,6 +505,59 @@ test.describe('offline coach game', () => {
         await expect(
             page.getByText('Maia 3 · 1750 Elo · stop at ≥ 100 cp')
         ).toBeVisible();
+    });
+
+    test('offers Maia with a configurable tactical guard and verifies candidates locally', async ({
+        page,
+    }) => {
+        await page.getByLabel('Opponent model').click();
+        await page
+            .getByRole('option', {
+                name: /^Maia \+ tactical guard/,
+            })
+            .click();
+        await expect(
+            page.getByLabel('Tactical guard centipawn threshold')
+        ).toHaveValue('100');
+        await page
+            .getByLabel('Tactical guard centipawn threshold')
+            .fill('120');
+        await page.getByLabel('Maia opponent Elo').fill('1650');
+        await expect(
+            page.locator('[data-maia-phase="ready"]')
+        ).toBeVisible();
+        await page.getByLabel('Your color').click();
+        await page.getByRole('option', { name: 'Black' }).click();
+        await page
+            .getByRole('button', { name: 'Start coach game' })
+            .click();
+
+        await expect(page.locator('[data-coach-phase="player"]')).toBeVisible();
+        await expect(
+            page.getByText(
+                'Maia + tactical guard · 1650 Elo · guard at 120 cp · stop at ≥ 100 cp'
+            )
+        ).toBeVisible();
+        expect(
+            await page.evaluate(
+                () =>
+                    (
+                        window as typeof window & {
+                            __coachTacticalGuardSearches?: number;
+                        }
+                    ).__coachTacticalGuardSearches ?? 0
+            )
+        ).toBe(1);
+        expect(
+            await page.evaluate(
+                () =>
+                    (
+                        window as typeof window & {
+                            __coachTacticalGuardSeedSearches?: number;
+                        }
+                    ).__coachTacticalGuardSeedSearches ?? 0
+            )
+        ).toBe(1);
     });
 
     test('shows a recoverable Maia load error and retries successfully', async ({
@@ -501,10 +576,6 @@ test.describe('offline coach game', () => {
                 name: /^Maia 3 · human-like/,
             })
             .click();
-        await page
-            .getByRole('button', { name: /Download Maia ·/ })
-            .click();
-
         await expect(
             page.locator('[data-maia-phase="error"]')
         ).toBeVisible();
@@ -516,7 +587,7 @@ test.describe('offline coach game', () => {
         ).toBeVisible();
         await page
             .getByRole('button', {
-                name: /Download Maia again ·/,
+                name: 'Retry Maia preparation',
             })
             .click();
 
@@ -537,9 +608,9 @@ test.describe('offline coach game', () => {
                 name: /^Maia 3 · human-like/,
             })
             .click();
-        await page
-            .getByRole('button', { name: /Download Maia ·/ })
-            .click();
+        await expect(
+            page.locator('[data-maia-phase="ready"]')
+        ).toBeVisible();
         await page.getByLabel('Your color').click();
         await page.getByRole('option', { name: 'Black' }).click();
         await page.evaluate(() => {
@@ -582,9 +653,9 @@ test.describe('offline coach game', () => {
                 name: /^Maia 3 · human-like/,
             })
             .click();
-        await page
-            .getByRole('button', { name: /Download Maia ·/ })
-            .click();
+        await expect(
+            page.locator('[data-maia-phase="ready"]')
+        ).toBeVisible();
         await page.getByLabel('Your color').click();
         await page.getByRole('option', { name: 'Black' }).click();
         await page.evaluate(() => {
@@ -639,12 +710,6 @@ test.describe('offline coach game', () => {
             })
             .click();
         await expect(
-            page.locator('[data-maia-phase="idle"]')
-        ).toBeVisible();
-        await page
-            .getByRole('button', { name: /Download Maia ·/ })
-            .click();
-        await expect(
             page.locator('[data-maia-phase="ready"]')
         ).toBeVisible();
 
@@ -663,7 +728,7 @@ test.describe('offline coach game', () => {
         ).toBeVisible();
     });
 
-    test('removes the optional Maia download and requires a fresh opt-in', async ({
+    test('removes saved Maia data and returns to Stockfish', async ({
         page,
     }) => {
         await page.getByLabel('Opponent model').click();
@@ -671,12 +736,6 @@ test.describe('offline coach game', () => {
             .getByRole('option', {
                 name: /^Maia 3 · human-like/,
             })
-            .click();
-        await expect(
-            page.locator('[data-maia-phase="idle"]')
-        ).toBeVisible();
-        await page
-            .getByRole('button', { name: /Download Maia ·/ })
             .click();
         await expect(
             page.getByText('Human-like opponent saved offline')
@@ -692,15 +751,10 @@ test.describe('offline coach game', () => {
             .getByRole('button', { name: 'Remove Maia data' })
             .click();
 
-        await expect(
-            page.locator('[data-maia-phase="idle"]')
-        ).toBeVisible();
-        await expect(
-            page.getByRole('button', { name: /Download Maia ·/ })
-        ).toBeVisible();
-        await expect(
-            page.getByRole('button', { name: 'Download Maia to start' })
-        ).toBeDisabled();
+        await expect(page.getByLabel('Opponent model')).toContainText(
+            'Stockfish'
+        );
+        await expect(page.locator('[data-maia-phase]')).toHaveCount(0);
     });
 
     test('restores a paused decision after reload without letting the bot reply', async ({

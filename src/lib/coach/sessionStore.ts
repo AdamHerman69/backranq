@@ -11,7 +11,9 @@ import {
     COACH_OPPONENT_MODEL_IDS,
     OPPONENT_PROFILE_IDS,
     STOCKFISH_OPPONENT_REVISION,
+    isMaiaOpponentModel,
     normalizeMaiaOpponentElo,
+    normalizeMaiaTacticalGuardCp,
 } from '@/lib/coach/profiles';
 import type {
     MultiPvResult,
@@ -23,7 +25,7 @@ const DATABASE_NAME = 'backranq-coach';
 const DATABASE_VERSION = 1;
 const STORE_NAME = 'coach-sessions';
 const ACTIVE_SESSION_KEY = 'active';
-const SNAPSHOT_VERSION = 2;
+const SNAPSHOT_VERSION = 3;
 const MAX_SESSION_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const EXACT_UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
 const ownerOperationQueues = new Map<string, Promise<void>>();
@@ -358,8 +360,10 @@ export function sanitizeCoachSessionSnapshot(
     const candidate = value as Partial<CoachSessionSnapshot>;
     const candidateVersion = (value as { version?: unknown }).version;
     const isLegacyStockfishSnapshot = candidateVersion === 1;
+    const isPreviousSnapshot = candidateVersion === 2;
     if (
         (!isLegacyStockfishSnapshot &&
+            !isPreviousSnapshot &&
             candidateVersion !== SNAPSHOT_VERSION) ||
         typeof candidate.sessionKey !== 'string' ||
         !candidate.sessionKey ||
@@ -383,15 +387,25 @@ export function sanitizeCoachSessionSnapshot(
     }
     const opponentModel = isLegacyStockfishSnapshot
         ? 'stockfish'
-        : COACH_OPPONENT_MODEL_IDS.includes(
+        : isPreviousSnapshot &&
+            (candidate.opponentModel === 'stockfish' ||
+                candidate.opponentModel === 'maia3')
+          ? candidate.opponentModel
+          : COACH_OPPONENT_MODEL_IDS.includes(
                 candidate.opponentModel as (typeof COACH_OPPONENT_MODEL_IDS)[number]
             )
           ? candidate.opponentModel!
           : null;
     if (!opponentModel) return null;
     const opponentElo =
-        opponentModel === 'maia3'
+        isMaiaOpponentModel(opponentModel)
             ? normalizeMaiaOpponentElo(candidate.opponentElo)
+            : null;
+    const tacticalGuardCp =
+        opponentModel === 'maia3-tactical'
+            ? normalizeMaiaTacticalGuardCp(
+                  candidate.tacticalGuardCp
+              )
             : null;
     const opponentEngineRevision = isLegacyStockfishSnapshot
         ? STOCKFISH_OPPONENT_REVISION
@@ -475,6 +489,7 @@ export function sanitizeCoachSessionSnapshot(
         opponentId: candidate.opponentId!,
         opponentElo,
         opponentEngineRevision,
+        tacticalGuardCp,
         thresholdCp: normalizeCoachThresholdCp(candidate.thresholdCp),
         gameFen: replayed.chess.fen(),
         moves: replayed.moves,
