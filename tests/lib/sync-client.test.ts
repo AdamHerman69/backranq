@@ -349,7 +349,7 @@ describe('incremental sync client', () => {
         });
         expect(automationBlockAction('reserve')).toEqual({
             label: 'Manage automation',
-            href: '/settings#automatic-analysis',
+            href: '/settings#game-automation',
         });
     });
 });

@@ -6,9 +6,9 @@ import { saveNormalizedGamesForUser } from '@/lib/services/gameImport';
 import { prisma } from '@/lib/prisma';
 import { requestAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
 import {
-    defaultPreferences,
-    mergePreferences,
-    type PartialPreferences,
+    canonicalPreferences,
+    providerImportPolicyHash,
+    providerImportTimeControls,
     type PreferencesSchema,
 } from '@/lib/preferences';
 
@@ -30,6 +30,7 @@ export type SyncProviderResult = {
     complete: boolean;
     skipped: boolean;
     identityChanged?: boolean;
+    policyChanged?: boolean;
     error?: string;
 };
 
@@ -40,8 +41,8 @@ export type SyncLinkedAccountsResult = {
 
 type SyncState = {
     id: string;
-    enabled: boolean;
     providerUsernameNormalized: string | null;
+    importPolicyHash: string | null;
     lastSyncedPlayedAt: Date | null;
     cursorSincePlayedAt: Date | null;
     cursorUntilPlayedAt: Date | null;
@@ -61,6 +62,13 @@ class ProviderIdentityChangedError extends Error {
     constructor() {
         super('Provider identity changed while sync was running');
         this.name = 'ProviderIdentityChangedError';
+    }
+}
+
+class ProviderSyncPolicyChangedError extends Error {
+    constructor() {
+        super('Automatic import rules changed while sync was running');
+        this.name = 'ProviderSyncPolicyChangedError';
     }
 }
 
@@ -119,14 +127,14 @@ function incrementalSyncSince(
         : archiveReplaySince;
 }
 
-function autoEnabledForProvider(
+function automationImportsProvider(
     prefs: PreferencesSchema,
-    provider: Provider,
-    stateEnabled: boolean
+    provider: Provider
 ) {
-    if (!prefs.autoSyncEnabled) return false;
-    if (!stateEnabled) return false;
-    return !!prefs.autoSyncProviders[providerKey(provider)];
+    return providerImportTimeControls(
+        prefs.gameAutomation,
+        providerKey(provider)
+    ).length > 0;
 }
 
 function syncWindow(
@@ -171,6 +179,7 @@ async function prepareSyncState(args: {
     provider: Provider;
     username: string;
     usernameNormalized: string;
+    importPolicyHash: string;
     now: Date;
 }): Promise<SyncState> {
     let state = (await prisma.providerSyncState.upsert({
@@ -184,6 +193,7 @@ async function prepareSyncState(args: {
             userId: args.userId,
             provider: args.provider,
             providerUsernameNormalized: args.usernameNormalized,
+            importPolicyHash: args.importPolicyHash,
             lastAttemptAt: args.now,
         },
         update: { lastAttemptAt: args.now },
@@ -204,6 +214,7 @@ async function prepareSyncState(args: {
             },
             data: {
                 providerUsernameNormalized: args.usernameNormalized,
+                importPolicyHash: args.importPolicyHash,
                 lastSyncedPlayedAt: null,
                 cursorSincePlayedAt: null,
                 cursorUntilPlayedAt: null,
@@ -218,6 +229,7 @@ async function prepareSyncState(args: {
         state = {
             ...state,
             providerUsernameNormalized: args.usernameNormalized,
+            importPolicyHash: args.importPolicyHash,
             lastSyncedPlayedAt: null,
             cursorSincePlayedAt: null,
             cursorUntilPlayedAt: null,
@@ -240,6 +252,7 @@ async function prepareSyncState(args: {
             },
             data: {
                 providerUsernameNormalized: args.usernameNormalized,
+                importPolicyHash: args.importPolicyHash,
                 lastSyncedPlayedAt: null,
                 cursorSincePlayedAt: null,
                 cursorUntilPlayedAt: null,
@@ -254,6 +267,36 @@ async function prepareSyncState(args: {
         state = {
             ...state,
             providerUsernameNormalized: args.usernameNormalized,
+            importPolicyHash: args.importPolicyHash,
+            lastSyncedPlayedAt: null,
+            cursorSincePlayedAt: null,
+            cursorUntilPlayedAt: null,
+            cursorWindowEnd: null,
+            etag: null,
+            lastModified: null,
+        };
+    } else if (state.importPolicyHash !== args.importPolicyHash) {
+        const reset = await prisma.providerSyncState.updateMany({
+            where: {
+                id: state.id,
+                importPolicyHash: state.importPolicyHash,
+            },
+            data: {
+                importPolicyHash: args.importPolicyHash,
+                lastSyncedPlayedAt: null,
+                cursorSincePlayedAt: null,
+                cursorUntilPlayedAt: null,
+                cursorWindowEnd: null,
+                etag: null,
+                lastModified: null,
+                lastSuccessAt: null,
+                lastError: null,
+            },
+        });
+        if (reset.count !== 1) throw new ProviderSyncPolicyChangedError();
+        state = {
+            ...state,
+            importPolicyHash: args.importPolicyHash,
             lastSyncedPlayedAt: null,
             cursorSincePlayedAt: null,
             cursorUntilPlayedAt: null,
@@ -291,10 +334,12 @@ function stateIdentityWhere(args: {
     provider: Provider;
     username: string;
     usernameNormalized: string;
+    importPolicyHash: string;
 }) {
     return {
         id: args.stateId,
         providerUsernameNormalized: args.usernameNormalized,
+        importPolicyHash: args.importPolicyHash,
         user: {
             is:
                 args.provider === 'LICHESS'
@@ -364,6 +409,7 @@ async function fetchProviderBatch(args: {
     provider: Provider;
     username: string;
     window: SyncWindow;
+    timeClasses: ReturnType<typeof providerImportTimeControls>;
     lichessAccessToken?: string | null;
     timeoutMs?: number;
 }): Promise<ProviderBatchFetchResult> {
@@ -374,6 +420,7 @@ async function fetchProviderBatch(args: {
         firstSyncMaxGames: args.window.firstSync
             ? FIRST_SYNC_MAX_GAMES
             : undefined,
+        timeClasses: args.timeClasses,
     };
     const controller = new AbortController();
     const timeout = setTimeout(
@@ -424,10 +471,7 @@ export async function syncLinkedAccounts(): Promise<SyncLinkedAccountsResult> {
 
     const providers: SyncProviderResult[] = [];
     for (const user of users) {
-        const prefs = mergePreferences(
-            defaultPreferences(),
-            (user.preferences ?? {}) as PartialPreferences
-        );
+        const prefs = canonicalPreferences(user.preferences ?? {});
         for (const provider of ['LICHESS', 'CHESSCOM'] as const) {
             // Each provider is isolated: one provider's failure is a result,
             // never a reason to stop attempting the other linked provider.
@@ -467,6 +511,15 @@ export async function syncUserProvider(args: {
 
     const now = args.now ?? new Date();
     const usernameNormalized = normalizeProviderUsername(username);
+    const automationProvider = providerKey(args.provider);
+    const timeClasses = providerImportTimeControls(
+        args.prefs.gameAutomation,
+        automationProvider
+    );
+    const importPolicyHash = providerImportPolicyHash(
+        args.prefs.gameAutomation,
+        automationProvider
+    );
     let state: SyncState | null = null;
     let fetchedCount = 0;
     let savedCount = 0;
@@ -481,11 +534,15 @@ export async function syncUserProvider(args: {
             provider: args.provider,
             username,
             usernameNormalized,
+            importPolicyHash,
             now,
         });
+        if (timeClasses.length === 0) {
+            return skippedResult(args.provider, username);
+        }
         if (
             !args.force &&
-            !autoEnabledForProvider(args.prefs, args.provider, state.enabled)
+            !automationImportsProvider(args.prefs, args.provider)
         ) {
             return skippedResult(args.provider, username);
         }
@@ -496,6 +553,7 @@ export async function syncUserProvider(args: {
             provider: args.provider,
             username,
             window,
+            timeClasses,
             lichessAccessToken: args.lichessAccessToken,
             timeoutMs: args.fetchTimeoutMs,
         });
@@ -544,6 +602,7 @@ export async function syncUserProvider(args: {
                     where: {
                         id: preparedState.id,
                         providerUsernameNormalized: usernameNormalized,
+                        importPolicyHash,
                     },
                     data: {
                         ...(!saveIncomplete ? { lastSuccessAt: now } : {}),
@@ -567,7 +626,7 @@ export async function syncUserProvider(args: {
                     },
                 });
                 if (advanced.count !== 1) {
-                    throw new ProviderIdentityChangedError();
+                    throw new ProviderSyncPolicyChangedError();
                 }
                 return { saved, complete, saveError };
             },
@@ -616,6 +675,7 @@ export async function syncUserProvider(args: {
                         provider: args.provider,
                         username,
                         usernameNormalized,
+                        importPolicyHash,
                     }),
                     data: { lastError: message.slice(0, 2_000) },
                 });
@@ -638,6 +698,9 @@ export async function syncUserProvider(args: {
             skipped: false,
             ...(error instanceof ProviderIdentityChangedError
                 ? { identityChanged: true }
+                : {}),
+            ...(error instanceof ProviderSyncPolicyChangedError
+                ? { policyChanged: true }
                 : {}),
             error: message,
         };

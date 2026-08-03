@@ -20,6 +20,27 @@ async function importSyncJobs(): Promise<SyncJobsModule> {
     return import('@/lib/services/syncJobs');
 }
 
+function automationPreferences(args: {
+    lichess: 'IGNORE' | 'IMPORT_ONLY';
+    chesscom: 'IGNORE' | 'IMPORT_ONLY';
+}) {
+    const providerRules = (mode: 'IGNORE' | 'IMPORT_ONLY') => ({
+        bullet: mode,
+        blitz: mode,
+        rapid: mode,
+        classical: mode,
+        unknown: mode,
+    });
+    return {
+        gameAutomation: {
+            rules: {
+                lichess: providerRules(args.lichess),
+                chesscom: providerRules(args.chesscom),
+            },
+        },
+    };
+}
+
 describe('sync job planning', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -29,10 +50,10 @@ describe('sync job planning', () => {
         prismaMock.user.findMany.mockResolvedValue([
             {
                 id: 'user-1',
-                preferences: {
-                    autoSyncEnabled: true,
-                    autoSyncProviders: { lichess: true, chesscom: false },
-                },
+                preferences: automationPreferences({
+                    lichess: 'IMPORT_ONLY',
+                    chesscom: 'IGNORE',
+                }),
                 lichessUsername: 'Ada',
                 chesscomUsername: 'ada-chess',
                 providerSyncStates: [],
@@ -84,10 +105,10 @@ describe('sync job planning', () => {
         prismaMock.user.findMany.mockResolvedValue([
             {
                 id: 'user-1',
-                preferences: {
-                    autoSyncEnabled: true,
-                    autoSyncProviders: { lichess: true, chesscom: true },
-                },
+                preferences: automationPreferences({
+                    lichess: 'IMPORT_ONLY',
+                    chesscom: 'IMPORT_ONLY',
+                }),
                 lichessUsername: 'Ada',
                 chesscomUsername: null,
                 providerSyncStates: [],
@@ -119,10 +140,10 @@ describe('sync job planning', () => {
         prismaMock.user.findMany.mockResolvedValue([
             {
                 id: 'user-1',
-                preferences: {
-                    autoSyncEnabled: true,
-                    autoSyncProviders: { lichess: true, chesscom: false },
-                },
+                preferences: automationPreferences({
+                    lichess: 'IMPORT_ONLY',
+                    chesscom: 'IGNORE',
+                }),
                 lichessUsername: 'Ada',
                 chesscomUsername: null,
                 providerSyncStates: [],
@@ -161,10 +182,10 @@ describe('sync job planning', () => {
     it('reuses an active job before applying the stale threshold', async () => {
         prismaMock.user.findUnique.mockResolvedValue({
             id: 'user-1',
-            preferences: {
-                autoSyncEnabled: true,
-                autoSyncProviders: { lichess: true, chesscom: true },
-            },
+            preferences: automationPreferences({
+                lichess: 'IMPORT_ONLY',
+                chesscom: 'IMPORT_ONLY',
+            }),
             lichessUsername: 'Ada',
             chesscomUsername: null,
             providerSyncStates: [
@@ -267,10 +288,10 @@ describe('sync job planning', () => {
     it('skips a fresh provider for an app-open stale request', async () => {
         prismaMock.user.findUnique.mockResolvedValue({
             id: 'user-1',
-            preferences: {
-                autoSyncEnabled: true,
-                autoSyncProviders: { lichess: true, chesscom: true },
-            },
+            preferences: automationPreferences({
+                lichess: 'IMPORT_ONLY',
+                chesscom: 'IMPORT_ONLY',
+            }),
             lichessUsername: 'Ada',
             chesscomUsername: null,
             providerSyncStates: [
@@ -301,10 +322,10 @@ describe('sync job planning', () => {
     it('honors automation preferences for stale requests but lets an explicit manual sync override them', async () => {
         prismaMock.user.findUnique.mockResolvedValue({
             id: 'user-1',
-            preferences: {
-                autoSyncEnabled: false,
-                autoSyncProviders: { lichess: false, chesscom: false },
-            },
+            preferences: automationPreferences({
+                lichess: 'IGNORE',
+                chesscom: 'IGNORE',
+            }),
             lichessUsername: 'Ada',
             chesscomUsername: null,
             providerSyncStates: [],

@@ -472,7 +472,7 @@ export function automationBlockAction(
     }
     return {
         label: 'Manage automation',
-        href: '/settings#automatic-analysis',
+        href: '/settings#game-automation',
     };
 }
 

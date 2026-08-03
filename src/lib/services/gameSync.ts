@@ -1,5 +1,6 @@
 import type { NormalizedGame, TimeClass } from '@/lib/types/game';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
+import type { GameAutomationRules } from '@/lib/preferences';
 
 export type SyncProvider = 'lichess' | 'chesscom';
 
@@ -20,9 +21,9 @@ export type SyncStatus = {
         lichess: string | null; // ISO
         chesscom: string | null; // ISO
     };
-    autoSync?: {
-        enabled: boolean;
-        providers: { lichess: boolean; chesscom: boolean };
+    gameAutomation?: {
+        paused: boolean;
+        rules: GameAutomationRules;
         schedule: string;
         states: {
             lichess: SyncProviderState | null;
@@ -49,7 +50,6 @@ export type SyncStatus = {
 };
 
 export type SyncProviderState = {
-    enabled: boolean;
     lastSyncedPlayedAt: string | null;
     lastAttemptAt: string | null;
     lastSuccessAt: string | null;
@@ -75,7 +75,6 @@ export type SyncProviderActivity = {
     linked: boolean;
     username: string | null;
     state: {
-        enabled: boolean;
         providerUsernameNormalized: string | null;
         lastSyncedPlayedAt: string | null;
         lastAttemptAt: string | null;

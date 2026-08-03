@@ -51,9 +51,12 @@ test('Home shows one dominant connection action when no account is linked', asyn
                     chesscomUsername: null,
                 },
                 lastSync: { lichess: null, chesscom: null },
-                autoSync: {
-                    enabled: false,
-                    providers: { lichess: true, chesscom: true },
+                gameAutomation: {
+                    paused: true,
+                    rules: {
+                        lichess: { rapid: 'IMPORT_ONLY' },
+                        chesscom: { rapid: 'IMPORT_ONLY' },
+                    },
                     schedule: '0 3 * * *',
                     states: { lichess: null, chesscom: null },
                 },

@@ -7,7 +7,9 @@ import { after } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import {
     canonicalPreferences,
+    gameAutomationHasAutomaticAnalysis,
     mergePreferences,
+    resolveAutoAnalysisPolicy,
     type AutoAnalysisPolicy,
 } from '@/lib/preferences';
 import {
@@ -604,7 +606,11 @@ export async function dispatchAutoAnalysisPolicySweep(options: {
     }> = [];
 
     for (const user of page) {
-        if (!canonicalPreferences(user.preferences ?? {}).autoAnalysis.enabled) {
+        if (
+            !gameAutomationHasAutomaticAnalysis(
+                canonicalPreferences(user.preferences ?? {}).gameAutomation
+            )
+        ) {
             continue;
         }
         try {
@@ -686,15 +692,15 @@ async function loadContext(
         },
     });
     let preferences = canonicalPreferences(user?.preferences ?? {});
-    let policy = preferences.autoAnalysis;
+    let policy = resolveAutoAnalysisPolicy(preferences);
     const missingNewBacklogBoundary =
         policy.enabled &&
-        policy.backlogMode === 'new' &&
+        policy.existingGames === 'new' &&
         policy.enabledAt === null;
     if (missingNewBacklogBoundary) {
         const enabledAt = now.toISOString();
         const patched = mergePreferences(preferences, {
-            autoAnalysis: { enabledAt },
+            gameAutomation: { analysis: { enabledAt } },
         });
         if (options.initializeMissingEnabledAt) {
             await prisma.user.update({
@@ -705,17 +711,19 @@ async function loadContext(
                 },
             });
             preferences = patched;
-            policy = patched.autoAnalysis;
+            policy = resolveAutoAnalysisPolicy(patched);
         }
     }
     const eligibilityPreferences = missingNewBacklogBoundary
         ? mergePreferences(preferences, {
-              autoAnalysis: {
-                  enabledAt: policy.enabledAt ?? now.toISOString(),
+              gameAutomation: {
+                  analysis: {
+                      enabledAt: policy.enabledAt ?? now.toISOString(),
+                  },
               },
           })
         : preferences;
-    const eligibilityPolicy = eligibilityPreferences.autoAnalysis;
+    const eligibilityPolicy = resolveAutoAnalysisPolicy(eligibilityPreferences);
     const candidateWhere: Prisma.AnalyzedGameWhereInput = {
         userId,
         analyzedAt: null,
@@ -724,7 +732,7 @@ async function loadContext(
             lichessUsername: user?.lichessUsername,
             chesscomUsername: user?.chesscomUsername,
         }),
-        ...(eligibilityPolicy.backlogMode === 'new' &&
+        ...(eligibilityPolicy.existingGames === 'new' &&
         eligibilityPolicy.enabledAt
             ? { createdAt: { gte: new Date(eligibilityPolicy.enabledAt) } }
             : {}),
@@ -933,7 +941,9 @@ function metadataEligibilityWhere(args: {
     lichessUsername?: string | null;
     chesscomUsername?: string | null;
 }): Prisma.AnalyzedGameWhereInput {
-    const timeClasses = (
+    const timeClassesForProvider = (
+        provider: 'lichess' | 'chesscom'
+    ) => (
         [
             ['bullet', 'BULLET'],
             ['blitz', 'BLITZ'],
@@ -942,33 +952,39 @@ function metadataEligibilityWhere(args: {
             ['unknown', 'UNKNOWN'],
         ] as const
     )
-        .filter(([key]) => args.policy.timeControls[key])
+        .filter(
+            ([key]) =>
+                args.policy.rules[provider][key] === 'AUTO_ANALYZE'
+        )
         .map(([, value]) => value);
     const providerBranches: Prisma.AnalyzedGameWhereInput[] = [];
-    if (args.policy.providers.lichess && args.lichessUsername) {
+    const lichessTimeClasses = timeClassesForProvider('lichess');
+    if (lichessTimeClasses.length > 0 && args.lichessUsername) {
         providerBranches.push(
             ...providerResultBranches({
                 provider: 'LICHESS',
                 username: args.lichessUsername,
                 scope: args.policy.resultScope,
+                timeClasses: lichessTimeClasses,
             })
         );
     }
-    if (args.policy.providers.chesscom && args.chesscomUsername) {
+    const chesscomTimeClasses = timeClassesForProvider('chesscom');
+    if (chesscomTimeClasses.length > 0 && args.chesscomUsername) {
         providerBranches.push(
             ...providerResultBranches({
                 provider: 'CHESSCOM',
                 username: args.chesscomUsername,
                 scope: args.policy.resultScope,
+                timeClasses: chesscomTimeClasses,
             })
         );
     }
-    if (providerBranches.length === 0 || timeClasses.length === 0) {
+    if (providerBranches.length === 0) {
         return { id: { in: [] } };
     }
     return {
         OR: providerBranches,
-        timeClass: { in: timeClasses },
         ...(args.policy.ratedOnly ? { rated: true } : {}),
     };
 }
@@ -977,6 +993,9 @@ function providerResultBranches(args: {
     provider: 'LICHESS' | 'CHESSCOM';
     username: string;
     scope: AutoAnalysisPolicy['resultScope'];
+    timeClasses: Array<
+        'BULLET' | 'BLITZ' | 'RAPID' | 'CLASSICAL' | 'UNKNOWN'
+    >;
 }): Prisma.AnalyzedGameWhereInput[] {
     const name = {
         equals: args.username,
@@ -985,11 +1004,13 @@ function providerResultBranches(args: {
     const branches: Prisma.AnalyzedGameWhereInput[] = [
         {
             provider: args.provider,
+            timeClass: { in: args.timeClasses },
             whiteName: name,
             result: '0-1',
         },
         {
             provider: args.provider,
+            timeClass: { in: args.timeClasses },
             blackName: name,
             result: '1-0',
         },
@@ -997,6 +1018,7 @@ function providerResultBranches(args: {
     if (args.scope === 'draws' || args.scope === 'all') {
         branches.push({
             provider: args.provider,
+            timeClass: { in: args.timeClasses },
             result: '1/2-1/2',
             OR: [{ whiteName: name }, { blackName: name }],
         });
@@ -1005,11 +1027,13 @@ function providerResultBranches(args: {
         branches.push(
             {
                 provider: args.provider,
+                timeClass: { in: args.timeClasses },
                 whiteName: name,
                 result: '1-0',
             },
             {
                 provider: args.provider,
+                timeClass: { in: args.timeClasses },
                 blackName: name,
                 result: '0-1',
             }

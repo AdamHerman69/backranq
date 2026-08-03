@@ -27,13 +27,10 @@ async function importRoute() {
         getAutoAnalysisStatus: vi.fn(async () => ({
             policy: {
                 enabled: true,
-                providers: { lichess: true, chesscom: false },
-                timeControls: {
-                    bullet: false,
-                    blitz: false,
-                    rapid: true,
-                    classical: true,
-                    unknown: false,
+                paused: false,
+                rules: {
+                    lichess: { rapid: 'AUTO_ANALYZE' },
+                    chesscom: { rapid: 'IGNORE' },
                 },
                 ratedOnly: true,
                 resultScope: 'losses',
@@ -41,7 +38,7 @@ async function importRoute() {
                 dailyCap: 10,
                 monthlyCap: 50,
                 reserveCredits: 10,
-                backlogMode: 'new',
+                existingGames: 'new',
                 enabledAt: '2026-07-20T00:00:00.000Z',
             },
             inventory: {
@@ -98,6 +95,13 @@ describe('GET /api/sync/status', () => {
         expect(response.status).toBe(200);
         expect(body).toMatchObject({
             ownerId: 'user-1',
+            gameAutomation: {
+                paused: false,
+                rules: {
+                    lichess: { rapid: 'IMPORT_ONLY' },
+                    chesscom: { rapid: 'IMPORT_ONLY' },
+                },
+            },
             inventory: {
                 totalImported: 20,
                 analyzed: 8,
@@ -107,7 +111,7 @@ describe('GET /api/sync/status', () => {
                 policy: {
                     enabled: true,
                     reserveCredits: 10,
-                    backlogMode: 'new',
+                    existingGames: 'new',
                 },
                 backlog: {
                     eligible: 9,

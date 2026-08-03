@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { ProfileForm, type UserProfile } from '@/components/settings/ProfileForm';
 import { PageHeader } from '@/components/app/PageHeader';
 import { AnalysisDefaultsCard } from '@/components/settings/AnalysisDefaultsCard';
-import { AutoSyncSettingsCard } from '@/components/settings/AutoSyncSettingsCard';
+import { GameAutomationSettingsCard } from '@/components/settings/AutoSyncSettingsCard';
 import { BillingSettingsCard } from '@/components/settings/BillingSettingsCard';
 import { getOrCreateDefaultBillingAccount } from '@/lib/services/billingAccounts';
 import { PracticeDefaultsCard } from '@/components/settings/PracticeDefaultsCard';
@@ -69,7 +69,7 @@ export default async function SettingsPage() {
                 them separately.
             </p>
 
-            <AutoSyncSettingsCard ownerId={initialUser.id} />
+            <GameAutomationSettingsCard ownerId={initialUser.id} />
 
             <section id="billing" className="scroll-mt-24">
                 <BillingSettingsCard

@@ -137,15 +137,20 @@ async function fetchLibraryCounts(): Promise<LibraryCounts> {
 
 function enabledLinkedProviders(status: SyncStatus) {
     const providers: Array<'lichess' | 'chesscom'> = [];
+    const providerEnabled = (provider: 'lichess' | 'chesscom') =>
+        status.gameAutomation?.paused !== true &&
+        Object.values(status.gameAutomation?.rules[provider] ?? {}).some(
+            (mode) => mode !== 'IGNORE'
+        );
     if (
         status.linked.lichessUsername &&
-        status.autoSync?.providers.lichess !== false
+        providerEnabled('lichess')
     ) {
         providers.push('lichess');
     }
     if (
         status.linked.chesscomUsername &&
-        status.autoSync?.providers.chesscom !== false
+        providerEnabled('chesscom')
     ) {
         providers.push('chesscom');
     }
@@ -402,7 +407,7 @@ export function SyncGamesWidget({
             !ownerId ||
             !currentStatus ||
             !hasLinked ||
-            currentStatus.autoSync?.enabled === false ||
+            currentStatus.gameAutomation?.paused === true ||
             appOpenAttemptedFor.current === ownerId
         ) {
             return;
@@ -564,7 +569,7 @@ export function SyncGamesWidget({
         );
     }
 
-    const providerStates = currentStatus.autoSync?.states;
+    const providerStates = currentStatus.gameAutomation?.states;
     const latestActivity = mostRecentProviderActivity([
         providerStates?.lichess?.lastSuccessAt,
         providerStates?.chesscom?.lastSuccessAt,
@@ -639,7 +644,7 @@ export function SyncGamesWidget({
                                     <Badge variant="secondary">Chess.com</Badge>
                                 ) : null}
                                 <span className="text-xs text-muted-foreground">
-                                    {currentStatus.autoSync?.enabled === false
+                                    {currentStatus.gameAutomation?.paused === true
                                         ? 'Automatic updates off'
                                         : formatSyncTime(latestActivity)}
                                 </span>
@@ -852,7 +857,7 @@ export function SyncGamesWidget({
                                             size="sm"
                                             variant="outline"
                                         >
-                                            <Link href="/settings#automatic-analysis">
+                                            <Link href="/settings#game-automation">
                                                 Manage automation
                                             </Link>
                                         </Button>
