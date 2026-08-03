@@ -3,7 +3,7 @@ import {
     autoAnalysisRulesFromPreferences,
     evaluateAutoAnalysisEligibility,
 } from '@/lib/services/analysisEligibility';
-import { defaultPreferences } from '@/lib/preferences';
+import { defaultPreferences, mergePreferences } from '@/lib/preferences';
 
 const longLoss = {
     provider: 'lichess' as const,
@@ -15,70 +15,65 @@ const longLoss = {
     black: { name: 'Bob' },
 };
 
+function enabledPreferences() {
+    return mergePreferences(defaultPreferences(), {
+        gameAutomation: {
+            rules: {
+                lichess: { rapid: 'AUTO_ANALYZE' },
+            },
+            analysis: {
+                resultScope: 'draws',
+                ratedOnly: true,
+                minPlies: 10,
+                existingGames: 'all',
+            },
+        },
+    });
+}
+
 describe('auto analysis eligibility', () => {
     it('is disabled by default', () => {
         const rules = autoAnalysisRulesFromPreferences(defaultPreferences());
         expect(rules.enabled).toBe(false);
-
-        const result = evaluateAutoAnalysisEligibility({
-            preferences: defaultPreferences(),
-            game: longLoss,
-            username: 'Ada',
-        });
-
-        expect(result).toMatchObject({ eligible: false, reason: 'disabled' });
+        expect(
+            evaluateAutoAnalysisEligibility({
+                preferences: defaultPreferences(),
+                game: longLoss,
+                username: 'Ada',
+            })
+        ).toMatchObject({ eligible: false, reason: 'disabled' });
     });
 
-    it('accepts matching losses and draws when explicitly enabled', () => {
-        const preferences = {
-            ...defaultPreferences(),
-            autoAnalysis: {
-                enabled: true,
-                resultScope: 'draws',
-                ratedOnly: true,
-                minPlies: 10,
-                providers: { lichess: true, chesscom: false },
-                timeControls: { rapid: true },
-            },
-        };
-
+    it('accepts matching losses when the exact cell is Import + analyze', () => {
         const result = evaluateAutoAnalysisEligibility({
-            preferences,
+            preferences: enabledPreferences(),
             game: longLoss,
             username: 'Ada',
         });
-
         expect(result.eligible).toBe(true);
         expect(result.priority).toBeGreaterThan(0);
     });
 
-    it('rejects games outside provider, time, rated, and length rules', () => {
-        const preferences = {
-            ...defaultPreferences(),
-            autoAnalysis: {
-                enabled: true,
-                resultScope: 'all',
-                ratedOnly: true,
-                minPlies: 20,
-                providers: { lichess: true, chesscom: false },
-                timeControls: { rapid: true },
-            },
-        };
-
+    it('rejects Import only and provider-specific mismatches', () => {
+        const preferences = enabledPreferences();
+        expect(
+            evaluateAutoAnalysisEligibility({
+                preferences,
+                game: { ...longLoss, timeClass: 'blitz' },
+                username: 'Ada',
+            }).reason
+        ).toBe('automation-mode');
         expect(
             evaluateAutoAnalysisEligibility({
                 preferences,
                 game: { ...longLoss, provider: 'chesscom' },
                 username: 'Ada',
             }).reason
-        ).toBe('provider');
-        expect(
-            evaluateAutoAnalysisEligibility({
-                preferences,
-                game: { ...longLoss, timeClass: 'bullet' },
-                username: 'Ada',
-            }).reason
-        ).toBe('time-control');
+        ).toBe('automation-mode');
+    });
+
+    it('rejects games outside rated and length rules', () => {
+        const preferences = enabledPreferences();
         expect(
             evaluateAutoAnalysisEligibility({
                 preferences,
@@ -95,116 +90,51 @@ describe('auto analysis eligibility', () => {
         ).toBe('min-plies');
     });
 
-    it('keeps analysis providers independent from sync providers', () => {
-        const preferences = {
-            ...defaultPreferences(),
-            autoSyncProviders: { lichess: false, chesscom: true },
-            autoAnalysis: {
-                ...defaultPreferences().autoAnalysis,
-                enabled: true,
-                backlogMode: 'all' as const,
-                providers: { lichess: true, chesscom: false },
-                timeControls: {
-                    ...defaultPreferences().autoAnalysis.timeControls,
-                    rapid: true,
-                },
-                minPlies: 10,
-            },
-        };
-
-        expect(
-            evaluateAutoAnalysisEligibility({
-                preferences,
-                game: longLoss,
-                usernameByProvider: { lichess: 'Ada' },
-            }).eligible
-        ).toBe(true);
-        expect(
-            evaluateAutoAnalysisEligibility({
-                preferences,
-                game: { ...longLoss, provider: 'chesscom' },
-                usernameByProvider: { chesscom: 'Ada' },
-            }).reason
-        ).toBe('provider');
-    });
-
-    it('uses enabledAt only for the new-games backlog mode', () => {
+    it('uses enabledAt only for new imported games', () => {
         const enabledAt = '2026-07-10T00:00:00.000Z';
-        const base = {
-            ...defaultPreferences(),
-            autoAnalysis: {
-                ...defaultPreferences().autoAnalysis,
-                enabled: true,
-                enabledAt,
-                providers: { lichess: true, chesscom: false },
-                minPlies: 10,
+        const base = mergePreferences(enabledPreferences(), {
+            gameAutomation: {
+                analysis: { enabledAt, existingGames: 'new' },
             },
+        });
+        const game = {
+            ...longLoss,
+            createdAt: '2026-07-09T23:59:59.000Z',
         };
 
         expect(
             evaluateAutoAnalysisEligibility({
-                preferences: {
-                    ...base,
-                    autoAnalysis: {
-                        ...base.autoAnalysis,
-                        backlogMode: 'new',
-                    },
-                },
-                game: {
-                    ...longLoss,
-                    createdAt: '2026-07-09T23:59:59.000Z',
-                },
+                preferences: base,
+                game,
                 username: 'Ada',
             }).reason
         ).toBe('before-enabled');
         expect(
             evaluateAutoAnalysisEligibility({
-                preferences: {
-                    ...base,
-                    autoAnalysis: {
-                        ...base.autoAnalysis,
-                        backlogMode: 'all',
+                preferences: mergePreferences(base, {
+                    gameAutomation: {
+                        analysis: { existingGames: 'all' },
                     },
-                },
-                game: {
-                    ...longLoss,
-                    createdAt: '2026-07-09T23:59:59.000Z',
-                },
+                }),
+                game,
                 username: 'Ada',
             }).eligible
         ).toBe(true);
     });
 
     it('does not classify a draw until provider identity matches a player', () => {
-        const preferences = {
-            ...defaultPreferences(),
-            autoAnalysis: {
-                ...defaultPreferences().autoAnalysis,
-                enabled: true,
-                backlogMode: 'all' as const,
-                resultScope: 'draws' as const,
-                ratedOnly: false,
-                minPlies: 0,
-            },
-        };
-
+        const game = { ...longLoss, result: '1/2-1/2' };
         expect(
             evaluateAutoAnalysisEligibility({
-                preferences,
-                game: {
-                    ...longLoss,
-                    result: '1/2-1/2',
-                },
+                preferences: enabledPreferences(),
+                game,
                 username: 'SomeoneElse',
             }).reason
         ).toBe('result-scope');
         expect(
             evaluateAutoAnalysisEligibility({
-                preferences,
-                game: {
-                    ...longLoss,
-                    result: '1/2-1/2',
-                },
+                preferences: enabledPreferences(),
+                game,
                 username: 'Ada',
             }).eligible
         ).toBe(true);

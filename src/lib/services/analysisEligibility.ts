@@ -1,14 +1,14 @@
 import type { Provider, TimeClass } from '@prisma/client';
 import {
-    canonicalPreferences,
+    resolveAutoAnalysisPolicy,
     type AutoAnalysisPolicy,
-    type AutoAnalysisProviderKey,
+    type GameAutomationProviderKey,
     type AutoAnalysisResultScope,
-    type AutoAnalysisTimeControlKey,
+    type GameAutomationTimeControlKey,
 } from '@/lib/preferences';
 
-export type ProviderKey = AutoAnalysisProviderKey;
-export type TimeControlKey = AutoAnalysisTimeControlKey;
+export type ProviderKey = GameAutomationProviderKey;
+export type TimeControlKey = GameAutomationTimeControlKey;
 export type AutoAnalysisRules = AutoAnalysisPolicy;
 
 export type AutoAnalysisGameCandidate = {
@@ -35,7 +35,7 @@ export type AutoAnalysisEligibility = {
 export function autoAnalysisRulesFromPreferences(
     preferences: unknown
 ): AutoAnalysisRules {
-    return canonicalPreferences(preferences).autoAnalysis;
+    return resolveAutoAnalysisPolicy(preferences);
 }
 
 export function evaluateAutoAnalysisEligibility(args: {
@@ -55,7 +55,7 @@ export function evaluateAutoAnalysisEligibility(args: {
 
     if (!rules.enabled) return ineligible(rules, 'disabled');
     if (
-        rules.backlogMode === 'new' &&
+        rules.existingGames === 'new' &&
         rules.enabledAt &&
         (!args.game.createdAt ||
             new Date(args.game.createdAt).getTime() <
@@ -63,9 +63,8 @@ export function evaluateAutoAnalysisEligibility(args: {
     ) {
         return ineligible(rules, 'before-enabled');
     }
-    if (!rules.providers[provider]) return ineligible(rules, 'provider');
-    if (!rules.timeControls[timeControl]) {
-        return ineligible(rules, 'time-control');
+    if (rules.rules[provider][timeControl] !== 'AUTO_ANALYZE') {
+        return ineligible(rules, 'automation-mode');
     }
     if (rules.ratedOnly && args.game.rated !== true) {
         return ineligible(rules, 'rated-only');

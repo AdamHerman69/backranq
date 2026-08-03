@@ -11,40 +11,58 @@ import type { TrainingSourceKind } from '@/lib/training/contracts';
 
 export type RatedFilter = 'any' | 'rated' | 'casual';
 export const AUTO_ANALYSIS_RESULT_SCOPES = ['losses', 'draws', 'all'] as const;
-export const AUTO_ANALYSIS_BACKLOG_MODES = ['all', 'new'] as const;
-export const AUTO_ANALYSIS_PROVIDER_KEYS = ['lichess', 'chesscom'] as const;
-export const AUTO_ANALYSIS_TIME_CONTROL_KEYS = [
+export const GAME_AUTOMATION_EXISTING_GAME_SCOPES = ['all', 'new'] as const;
+export const GAME_AUTOMATION_PROVIDER_KEYS = ['lichess', 'chesscom'] as const;
+export const GAME_AUTOMATION_TIME_CONTROL_KEYS = [
     'bullet',
     'blitz',
     'rapid',
     'classical',
     'unknown',
 ] as const;
+export const GAME_AUTOMATION_MODES = [
+    'IGNORE',
+    'IMPORT_ONLY',
+    'AUTO_ANALYZE',
+] as const;
 export type AutoAnalysisResultScope =
     (typeof AUTO_ANALYSIS_RESULT_SCOPES)[number];
-export type AutoAnalysisBacklogMode =
-    (typeof AUTO_ANALYSIS_BACKLOG_MODES)[number];
-export type AutoAnalysisProviderKey =
-    (typeof AUTO_ANALYSIS_PROVIDER_KEYS)[number];
-export type AutoAnalysisTimeControlKey =
-    (typeof AUTO_ANALYSIS_TIME_CONTROL_KEYS)[number];
+export type GameAutomationExistingGameScope =
+    (typeof GAME_AUTOMATION_EXISTING_GAME_SCOPES)[number];
+export type GameAutomationProviderKey =
+    (typeof GAME_AUTOMATION_PROVIDER_KEYS)[number];
+export type GameAutomationTimeControlKey =
+    (typeof GAME_AUTOMATION_TIME_CONTROL_KEYS)[number];
+export type GameAutomationMode = (typeof GAME_AUTOMATION_MODES)[number];
+export type GameAutomationRules = Record<
+    GameAutomationProviderKey,
+    Record<GameAutomationTimeControlKey, GameAutomationMode>
+>;
 
-export type AutoAnalysisPolicy = {
+export type GameAutomationPolicy = {
+    paused: boolean;
+    rules: GameAutomationRules;
+    analysis: {
+        ratedOnly: boolean;
+        resultScope: AutoAnalysisResultScope;
+        minPlies: number;
+        dailyCap: number | null;
+        monthlyCap: number | null;
+        reserveCredits: number;
+        existingGames: GameAutomationExistingGameScope;
+        /**
+         * Controlled by the preferences route. For `existingGames: "new"`, only
+         * games imported at or after this instant are eligible.
+         */
+        enabledAt: string | null;
+    };
+};
+
+/** A derived server-side view used by auto-analysis eligibility and budgets. */
+export type AutoAnalysisPolicy = GameAutomationPolicy['analysis'] & {
     enabled: boolean;
-    providers: Record<AutoAnalysisProviderKey, boolean>;
-    timeControls: Record<AutoAnalysisTimeControlKey, boolean>;
-    ratedOnly: boolean;
-    resultScope: AutoAnalysisResultScope;
-    minPlies: number;
-    dailyCap: number | null;
-    monthlyCap: number | null;
-    reserveCredits: number;
-    backlogMode: AutoAnalysisBacklogMode;
-    /**
-     * Controlled by the preferences route. For `backlogMode: "new"`, only
-     * games imported at or after this instant are eligible.
-     */
-    enabledAt: string | null;
+    paused: boolean;
+    rules: GameAutomationRules;
 };
 export const TRAINING_SESSION_MIXES = [
     'ALL',
@@ -68,13 +86,8 @@ export type Filters = {
 export type PreferencesSchema = {
     filters: Filters;
 
-    // server-side automation
-    autoSyncEnabled: boolean;
-    autoSyncProviders: {
-        lichess: boolean;
-        chesscom: boolean;
-    };
-    autoAnalysis: AutoAnalysisPolicy;
+    // A single source of truth for automatic import and analysis.
+    gameAutomation: GameAutomationPolicy;
 
     // Deterministic extraction work budgets and metadata lookahead. Coverage
     // and grading policy live in the canonical training configuration.
@@ -88,16 +101,19 @@ export type PreferencesSchema = {
 
 export type PartialPreferences = Omit<
     Partial<PreferencesSchema>,
-    'filters' | 'autoSyncProviders' | 'autoAnalysis'
+    'filters' | 'gameAutomation'
 > & {
     filters?: Partial<Filters>;
-    autoSyncProviders?: Partial<PreferencesSchema['autoSyncProviders']>;
-    autoAnalysis?: Omit<
-        Partial<AutoAnalysisPolicy>,
-        'providers' | 'timeControls'
+    gameAutomation?: Omit<
+        Partial<GameAutomationPolicy>,
+        'rules' | 'analysis'
     > & {
-        providers?: Partial<AutoAnalysisPolicy['providers']>;
-        timeControls?: Partial<AutoAnalysisPolicy['timeControls']>;
+        rules?: Partial<{
+            [P in GameAutomationProviderKey]: Partial<
+                Record<GameAutomationTimeControlKey, GameAutomationMode>
+            >;
+        }>;
+        analysis?: Partial<GameAutomationPolicy['analysis']>;
     };
 };
 
@@ -163,32 +179,34 @@ export function defaultPreferences(): PreferencesSchema {
             maxElo: '',
             max: '100',
         },
-        autoSyncEnabled: true,
-        autoSyncProviders: {
-            lichess: true,
-            chesscom: true,
-        },
-        autoAnalysis: {
-            enabled: false,
-            providers: {
-                lichess: true,
-                chesscom: true,
+        gameAutomation: {
+            paused: false,
+            rules: {
+                lichess: {
+                    bullet: 'IMPORT_ONLY',
+                    blitz: 'IMPORT_ONLY',
+                    rapid: 'IMPORT_ONLY',
+                    classical: 'IMPORT_ONLY',
+                    unknown: 'IMPORT_ONLY',
+                },
+                chesscom: {
+                    bullet: 'IMPORT_ONLY',
+                    blitz: 'IMPORT_ONLY',
+                    rapid: 'IMPORT_ONLY',
+                    classical: 'IMPORT_ONLY',
+                    unknown: 'IMPORT_ONLY',
+                },
             },
-            resultScope: 'draws',
-            timeControls: {
-                bullet: false,
-                blitz: false,
-                rapid: true,
-                classical: true,
-                unknown: false,
+            analysis: {
+                resultScope: 'draws',
+                ratedOnly: true,
+                minPlies: 20,
+                dailyCap: 10,
+                monthlyCap: 50,
+                reserveCredits: 10,
+                existingGames: 'new',
+                enabledAt: null,
             },
-            ratedOnly: true,
-            minPlies: 20,
-            dailyCap: 10,
-            monthlyCap: 50,
-            reserveCredits: 10,
-            backlogMode: 'new',
-            enabledAt: null,
         },
         trainingCoveragePreset: 'ALL_CONFIRMED',
         trainingGradingTolerance: 'PRACTICAL',
@@ -203,12 +221,13 @@ export function defaultPreferences(): PreferencesSchema {
  * Single defensive reader for persisted preference JSON. Write-time validation
  * remains strict and only the current nested policy is recognized.
  */
-export function canonicalPreferences(rawPreferences: unknown): PreferencesSchema {
+export function canonicalPreferences(
+    rawPreferences: unknown
+): PreferencesSchema {
     const raw = preferenceRecord(rawPreferences);
     const currentTopLevelKeys = new Set([
         'filters',
-        'autoSyncEnabled',
-        'autoSyncProviders',
+        'gameAutomation',
         'trainingCoveragePreset',
         'trainingGradingTolerance',
         'trainingSessionMix',
@@ -216,75 +235,139 @@ export function canonicalPreferences(rawPreferences: unknown): PreferencesSchema
         'confirmationNodes',
         'themeLookaheadPlies',
     ]);
+    const base = defaultPreferences();
     const withoutAutomation = Object.fromEntries(
-        Object.entries(raw).filter(([key]) => currentTopLevelKeys.has(key))
+        Object.entries(raw).filter(
+            ([key]) => currentTopLevelKeys.has(key) && key !== 'gameAutomation'
+        )
     );
-    const base = mergePreferences(
-        defaultPreferences(),
+    const common = mergePreferences(
+        base,
         withoutAutomation as PartialPreferences
     );
-    const nested = optionalPreferenceRecord(raw.autoAnalysis) ?? {};
-    const defaults = defaultPreferences().autoAnalysis;
-    const enabled =
-        typeof nested.enabled === 'boolean'
-            ? nested.enabled
-            : defaults.enabled;
-    const providerSource = optionalPreferenceRecord(nested.providers) ?? {};
-    const timeControlSource = nested.timeControls;
-
-    const autoAnalysis: AutoAnalysisPolicy = {
-        enabled,
-        providers: canonicalBooleanRecord(
-            defaults.providers,
-            providerSource
-        ),
-        timeControls: canonicalSelectionRecord(
-            defaults.timeControls,
-            timeControlSource,
-            AUTO_ANALYSIS_TIME_CONTROL_KEYS
-        ),
-        ratedOnly: canonicalBoolean(
-            nested.ratedOnly,
-            defaults.ratedOnly
-        ),
-        resultScope: AUTO_ANALYSIS_RESULT_SCOPES.includes(
-            nested.resultScope as AutoAnalysisResultScope
-        )
-            ? (nested.resultScope as AutoAnalysisResultScope)
-            : defaults.resultScope,
-        minPlies: canonicalInteger(
-            nested.minPlies,
-            defaults.minPlies,
-            0,
-            1_000
-        ),
-        dailyCap: canonicalNullablePositiveInteger(
-            nested.dailyCap,
-            defaults.dailyCap,
-            10_000
-        ),
-        monthlyCap: canonicalNullablePositiveInteger(
-            nested.monthlyCap,
-            defaults.monthlyCap,
-            100_000
-        ),
-        reserveCredits: canonicalInteger(
-            nested.reserveCredits,
-            defaults.reserveCredits,
-            0,
-            100_000
-        ),
-        backlogMode: AUTO_ANALYSIS_BACKLOG_MODES.includes(
-            nested.backlogMode as AutoAnalysisBacklogMode
-        )
-            ? (nested.backlogMode as AutoAnalysisBacklogMode)
-            : defaults.backlogMode,
-        enabledAt: canonicalIsoTimestamp(nested.enabledAt),
+    const nested = optionalPreferenceRecord(raw.gameAutomation) ?? {};
+    const defaults = base.gameAutomation;
+    const ruleSource = optionalPreferenceRecord(nested.rules) ?? {};
+    const analysisSource = optionalPreferenceRecord(nested.analysis) ?? {};
+    const rules = Object.fromEntries(
+        GAME_AUTOMATION_PROVIDER_KEYS.map((provider) => {
+            const providerSource =
+                optionalPreferenceRecord(ruleSource[provider]) ?? {};
+            return [
+                provider,
+                Object.fromEntries(
+                    GAME_AUTOMATION_TIME_CONTROL_KEYS.map((timeControl) => {
+                        const rawMode = providerSource[timeControl];
+                        return [
+                            timeControl,
+                            GAME_AUTOMATION_MODES.includes(
+                                rawMode as GameAutomationMode
+                            )
+                                ? rawMode
+                                : defaults.rules[provider][timeControl],
+                        ];
+                    })
+                ),
+            ];
+        })
+    ) as GameAutomationRules;
+    const gameAutomation: GameAutomationPolicy = {
+        paused: canonicalBoolean(nested.paused, defaults.paused),
+        rules,
+        analysis: {
+            ratedOnly: canonicalBoolean(
+                analysisSource.ratedOnly,
+                defaults.analysis.ratedOnly
+            ),
+            resultScope: AUTO_ANALYSIS_RESULT_SCOPES.includes(
+                analysisSource.resultScope as AutoAnalysisResultScope
+            )
+                ? (analysisSource.resultScope as AutoAnalysisResultScope)
+                : defaults.analysis.resultScope,
+            minPlies: canonicalInteger(
+                analysisSource.minPlies,
+                defaults.analysis.minPlies,
+                0,
+                1_000
+            ),
+            dailyCap: canonicalNullablePositiveInteger(
+                analysisSource.dailyCap,
+                defaults.analysis.dailyCap,
+                10_000
+            ),
+            monthlyCap: canonicalNullablePositiveInteger(
+                analysisSource.monthlyCap,
+                defaults.analysis.monthlyCap,
+                100_000
+            ),
+            reserveCredits: canonicalInteger(
+                analysisSource.reserveCredits,
+                defaults.analysis.reserveCredits,
+                0,
+                100_000
+            ),
+            existingGames: GAME_AUTOMATION_EXISTING_GAME_SCOPES.includes(
+                analysisSource.existingGames as GameAutomationExistingGameScope
+            )
+                ? (analysisSource.existingGames as GameAutomationExistingGameScope)
+                : defaults.analysis.existingGames,
+            enabledAt: canonicalIsoTimestamp(analysisSource.enabledAt),
+        },
     };
 
-    return mergePreferences(base, {
-        autoAnalysis,
+    return mergePreferences(common, {
+        gameAutomation,
     });
+}
+
+export function automationModeImports(mode: GameAutomationMode) {
+    return mode === 'IMPORT_ONLY' || mode === 'AUTO_ANALYZE';
+}
+
+export function automationModeAnalyzes(mode: GameAutomationMode) {
+    return mode === 'AUTO_ANALYZE';
+}
+
+export function providerImportTimeControls(
+    policy: GameAutomationPolicy,
+    provider: GameAutomationProviderKey
+) {
+    if (policy.paused) return [];
+    return GAME_AUTOMATION_TIME_CONTROL_KEYS.filter((timeControl) =>
+        automationModeImports(policy.rules[provider][timeControl])
+    );
+}
+
+export function gameAutomationHasAutomaticAnalysis(policy: GameAutomationPolicy) {
+    return (
+        !policy.paused &&
+        GAME_AUTOMATION_PROVIDER_KEYS.some((provider) =>
+            GAME_AUTOMATION_TIME_CONTROL_KEYS.some((timeControl) =>
+                automationModeAnalyzes(policy.rules[provider][timeControl])
+            )
+        )
+    );
+}
+
+export function resolveAutoAnalysisPolicy(
+    preferences: unknown
+): AutoAnalysisPolicy {
+    const policy = canonicalPreferences(preferences).gameAutomation;
+    return {
+        ...policy.analysis,
+        enabled: gameAutomationHasAutomaticAnalysis(policy),
+        paused: policy.paused,
+        rules: policy.rules,
+    };
+}
+
+export function providerImportPolicyHash(
+    policy: GameAutomationPolicy,
+    provider: GameAutomationProviderKey
+) {
+    return `v1:${provider}:${GAME_AUTOMATION_TIME_CONTROL_KEYS.filter((timeControl) =>
+        automationModeImports(policy.rules[provider][timeControl])
+    ).join(',')}`;
 }
 
 export function pickAnalysisDefaults(
@@ -371,31 +454,26 @@ export function mergePreferences(
     base: PreferencesSchema,
     patch: PartialPreferences
 ): PreferencesSchema {
-    const patchHasCanonicalEnabled =
-        patch.autoAnalysis != null &&
-        Object.prototype.hasOwnProperty.call(patch.autoAnalysis, 'enabled');
-    const enabled = patchHasCanonicalEnabled
-        ? patch.autoAnalysis?.enabled === true
-        : base.autoAnalysis.enabled;
     const merged: PreferencesSchema = {
         ...base,
         ...patch,
         filters: { ...base.filters, ...(patch.filters ?? {}) },
-        autoSyncProviders: {
-            ...base.autoSyncProviders,
-            ...(patch.autoSyncProviders ?? {}),
-        },
-        autoAnalysis: {
-            ...base.autoAnalysis,
-            ...(patch.autoAnalysis ?? {}),
-            enabled,
-            providers: {
-                ...base.autoAnalysis.providers,
-                ...(patch.autoAnalysis?.providers ?? {}),
+        gameAutomation: {
+            ...base.gameAutomation,
+            ...(patch.gameAutomation ?? {}),
+            rules: {
+                lichess: {
+                    ...base.gameAutomation.rules.lichess,
+                    ...(patch.gameAutomation?.rules?.lichess ?? {}),
+                },
+                chesscom: {
+                    ...base.gameAutomation.rules.chesscom,
+                    ...(patch.gameAutomation?.rules?.chesscom ?? {}),
+                },
             },
-            timeControls: {
-                ...base.autoAnalysis.timeControls,
-                ...(patch.autoAnalysis?.timeControls ?? {}),
+            analysis: {
+                ...base.gameAutomation.analysis,
+                ...(patch.gameAutomation?.analysis ?? {}),
             },
         },
     };
@@ -419,37 +497,6 @@ function optionalPreferenceRecord(
 
 function canonicalBoolean(value: unknown, fallback: boolean) {
     return typeof value === 'boolean' ? value : fallback;
-}
-
-function canonicalBooleanRecord<K extends string>(
-    defaults: Record<K, boolean>,
-    raw: Record<string, unknown>
-) {
-    return Object.fromEntries(
-        (Object.keys(defaults) as K[]).map((key) => [
-            key,
-            canonicalBoolean(raw[key], defaults[key]),
-        ])
-    ) as Record<K, boolean>;
-}
-
-function canonicalSelectionRecord<K extends string>(
-    defaults: Record<K, boolean>,
-    raw: unknown,
-    keys: readonly K[]
-) {
-    if (Array.isArray(raw)) {
-        const selected = new Set(
-            raw.filter(
-                (value): value is K =>
-                    typeof value === 'string' && keys.includes(value as K)
-            )
-        );
-        return Object.fromEntries(
-            keys.map((key) => [key, selected.has(key)])
-        ) as Record<K, boolean>;
-    }
-    return canonicalBooleanRecord(defaults, preferenceRecord(raw));
 }
 
 function canonicalInteger(

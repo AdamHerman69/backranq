@@ -147,6 +147,35 @@ describe('provider pagination', () => {
         expect(result.nextUntil).not.toBeNull();
     });
 
+    it('keeps the unknown bucket exact without excluding it upstream', async () => {
+        const playedAt = Date.parse('2026-07-10T00:00:00.000Z');
+        const rapid = JSON.parse(
+            lichessJson('rapid-game', playedAt)
+        ) as Record<string, unknown>;
+        const unknown = {
+            ...rapid,
+            id: 'correspondence-game',
+            speed: 'correspondence',
+        };
+        vi.mocked(fetch).mockResolvedValueOnce(
+            response([JSON.stringify(rapid), JSON.stringify(unknown)].join('\n'))
+        );
+
+        const result = await fetchLichessGamesBatch({
+            username: 'Ada',
+            until: '2026-07-11T00:00:00.000Z',
+            timeClasses: ['unknown'],
+            maxPages: 1,
+            pageSize: 2,
+        });
+
+        const requestUrl = new URL(String(vi.mocked(fetch).mock.calls[0]?.[0]));
+        expect(requestUrl.searchParams.has('perfType')).toBe(false);
+        expect(result.games.map((game) => game.id)).toEqual([
+            'lichess:correspondence-game',
+        ]);
+    });
+
     it('caps one Lichess export request at the bounded scan limit', async () => {
         vi.mocked(fetch).mockResolvedValueOnce(response(''));
 

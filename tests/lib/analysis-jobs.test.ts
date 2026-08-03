@@ -165,9 +165,13 @@ describe('analysis job enqueue service', () => {
         });
         prismaMock.user.findUnique.mockResolvedValue({
             preferences: {
-                autoAnalysis: {
-                    enabled: true,
-                    reserveCredits: 7,
+                gameAutomation: {
+                    rules: {
+                        lichess: { rapid: 'AUTO_ANALYZE' },
+                    },
+                    analysis: {
+                        reserveCredits: 7,
+                    },
                 },
             },
         });

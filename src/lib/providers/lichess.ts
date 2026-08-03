@@ -224,9 +224,13 @@ async function fetchLichessGamesPage(args: {
     lichessUrl.searchParams.set('opening', 'true');
     lichessUrl.searchParams.set('tags', 'true');
     lichessUrl.searchParams.set('moves', 'true');
-    const providerTimeClasses = args.filters.timeClasses?.filter(
-        (timeClass) => timeClass !== 'unknown'
-    );
+    // Lichess has no perfType value for our `unknown` bucket. If that bucket
+    // is selected, fetch the provider's full set and enforce the exact matrix
+    // locally with passesFilters below. Otherwise the upstream filter keeps
+    // ignored speeds from consuming pagination budget.
+    const providerTimeClasses = args.filters.timeClasses?.includes('unknown')
+        ? undefined
+        : args.filters.timeClasses;
     if (providerTimeClasses && providerTimeClasses.length > 0) {
         lichessUrl.searchParams.set(
             'perfType',

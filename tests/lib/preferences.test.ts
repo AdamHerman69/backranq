@@ -51,21 +51,54 @@ describe('analysis preference bounds', () => {
         expect(options).not.toHaveProperty('requireTactical');
     });
 
-    it('uses the nested auto-analysis policy as the only enabled flag', () => {
+    it('uses one mode as the source of truth for import and analysis', () => {
         const preferences = mergePreferences(defaultPreferences(), {
-            autoAnalysis: { enabled: false },
+            gameAutomation: {
+                rules: {
+                    lichess: {
+                        bullet: 'IGNORE',
+                        rapid: 'AUTO_ANALYZE',
+                    },
+                },
+            },
         });
 
-        expect(preferences.autoAnalysis.enabled).toBe(false);
+        expect(preferences.gameAutomation.rules.lichess).toMatchObject({
+            bullet: 'IGNORE',
+            blitz: 'IMPORT_ONLY',
+            rapid: 'AUTO_ANALYZE',
+        });
     });
 
-    it('canonicalizes the nested auto-analysis policy', () => {
+    it('canonicalizes the unified automation policy', () => {
         const preferences = canonicalPreferences({
-            autoSyncProviders: { lichess: false, chesscom: true },
-            autoAnalysis: {
-                enabled: true,
-                providers: { lichess: true, chesscom: false },
-                timeControls: { rapid: true },
+            gameAutomation: {
+                paused: true,
+                rules: {
+                    lichess: { bullet: 'IGNORE', rapid: 'AUTO_ANALYZE' },
+                    chesscom: { blitz: 'AUTO_ANALYZE' },
+                },
+                analysis: {
+                    resultScope: 'losses',
+                    ratedOnly: false,
+                    minPlies: 14,
+                    dailyCap: 3,
+                    monthlyCap: 20,
+                },
+            },
+        });
+
+        expect(preferences.gameAutomation).toMatchObject({
+            paused: true,
+            rules: {
+                lichess: {
+                    bullet: 'IGNORE',
+                    blitz: 'IMPORT_ONLY',
+                    rapid: 'AUTO_ANALYZE',
+                },
+                chesscom: { blitz: 'AUTO_ANALYZE' },
+            },
+            analysis: {
                 resultScope: 'losses',
                 ratedOnly: false,
                 minPlies: 14,
@@ -73,44 +106,37 @@ describe('analysis preference bounds', () => {
                 monthlyCap: 20,
             },
         });
-
-        expect(preferences.autoAnalysis).toMatchObject({
-            enabled: true,
-            providers: { lichess: true, chesscom: false },
-            timeControls: {
-                bullet: false,
-                blitz: false,
-                rapid: true,
-                classical: true,
-                unknown: false,
-            },
-            resultScope: 'losses',
-            ratedOnly: false,
-            minPlies: 14,
-            dailyCap: 3,
-            monthlyCap: 20,
-        });
     });
 
     it('replaces malformed persisted automation values with safe defaults', () => {
         const preferences = canonicalPreferences({
-            autoAnalysis: {
-                enabled: false,
-                providers: 'all',
-                timeControls: { rapid: 'yes' },
-                minPlies: -1,
-                dailyCap: 0,
-                monthlyCap: Number.POSITIVE_INFINITY,
-                reserveCredits: -5,
-                backlogMode: 'surprise-me',
-                enabledAt: 'not-a-date',
+            gameAutomation: {
+                paused: 'yes',
+                rules: { lichess: { rapid: 'MAYBE' } },
+                analysis: {
+                    minPlies: -1,
+                    dailyCap: 0,
+                    monthlyCap: Number.POSITIVE_INFINITY,
+                    reserveCredits: -5,
+                    existingGames: 'surprise-me',
+                    enabledAt: 'not-a-date',
+                },
             },
         });
 
-        expect(preferences.autoAnalysis).toEqual({
-            ...defaultPreferences().autoAnalysis,
-            enabled: false,
-        });
+        expect(preferences.gameAutomation).toEqual(
+            defaultPreferences().gameAutomation
+        );
     });
 
+    it('does not migrate the removed split automation settings', () => {
+        const preferences = canonicalPreferences({
+            autoSyncEnabled: false,
+            autoAnalysis: { enabled: true },
+        });
+
+        expect(preferences.gameAutomation).toEqual(
+            defaultPreferences().gameAutomation
+        );
+    });
 });

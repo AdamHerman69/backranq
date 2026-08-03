@@ -24,9 +24,12 @@ test('connection changes refresh automation source status', async ({
                     chesscomUsername: null,
                 },
                 lastSync: { lichess: null, chesscom: null },
-                autoSync: {
-                    enabled: true,
-                    providers: { lichess: true, chesscom: false },
+                gameAutomation: {
+                    paused: false,
+                    rules: {
+                        lichess: { rapid: 'IMPORT_ONLY' },
+                        chesscom: { rapid: 'IGNORE' },
+                    },
                     schedule: '0 3 * * *',
                     states: { lichess: null, chesscom: null },
                 },
@@ -37,11 +40,11 @@ test('connection changes refresh automation source status', async ({
 
     await page.goto('/settings');
     await expect(page.getByText('@old-user')).toBeVisible();
-    const autoImport = page.getByRole('checkbox', {
-        name: 'Automatically import new games',
+    const automationPause = page.getByRole('checkbox', {
+        name: 'Pause all game automation',
     });
-    await expect(autoImport).toBeChecked();
-    await autoImport.uncheck();
+    await expect(automationPause).not.toBeChecked();
+    await automationPause.check();
     await expect(
         page.getByText('You have unsaved automation changes.')
     ).toBeVisible();
@@ -53,7 +56,7 @@ test('connection changes refresh automation source status', async ({
     });
 
     await expect(page.getByText('@new-user')).toBeVisible();
-    await expect(autoImport).not.toBeChecked();
+    await expect(automationPause).toBeChecked();
     await expect(
         page.getByText('You have unsaved automation changes.')
     ).toBeVisible();
@@ -95,9 +98,12 @@ test('the newest connection-status request wins', async ({ page }) => {
                     chesscomUsername: null,
                 },
                 lastSync: { lichess: null, chesscom: null },
-                autoSync: {
-                    enabled: true,
-                    providers: { lichess: true, chesscom: false },
+                gameAutomation: {
+                    paused: false,
+                    rules: {
+                        lichess: { rapid: 'IMPORT_ONLY' },
+                        chesscom: { rapid: 'IGNORE' },
+                    },
                     schedule: '0 3 * * *',
                     states: { lichess: null, chesscom: null },
                 },

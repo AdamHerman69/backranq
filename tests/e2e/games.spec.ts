@@ -16,9 +16,12 @@ test.describe('authenticated games library', () => {
                         chesscomUsername: null,
                     },
                     lastSync: { lichess: null, chesscom: null },
-                    autoSync: {
-                        enabled: false,
-                        providers: { lichess: true, chesscom: false },
+                    gameAutomation: {
+                        paused: true,
+                        rules: {
+                            lichess: { rapid: 'IMPORT_ONLY' },
+                            chesscom: { rapid: 'IGNORE' },
+                        },
                         schedule: '0 3 * * *',
                         states: { lichess: null, chesscom: null },
                     },

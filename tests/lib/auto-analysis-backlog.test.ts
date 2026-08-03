@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { defaultPreferences } from '@/lib/preferences';
+import {
+    defaultPreferences,
+    mergePreferences,
+    resolveAutoAnalysisPolicy,
+} from '@/lib/preferences';
 import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
 
 const enqueueAnalysisJobMock = vi.fn();
@@ -43,7 +47,7 @@ function account(serverCreditsBalance: number) {
         stripeLastEventId: null,
         serverCreditsBalance,
         monthlyServerCreditsUsed: 0,
-        serverCreditsRenewAt: new Date('2026-08-01T00:00:00Z'),
+        serverCreditsRenewAt: new Date('2027-08-01T00:00:00Z'),
         monthlyServerCreditsLimit: 100,
         autoAnalysisMonthlyCap: 50,
         autoAnalysisDailyCap: 10,
@@ -54,20 +58,21 @@ function account(serverCreditsBalance: number) {
 }
 
 function enabledPreferences(overrides: Record<string, unknown> = {}) {
-    const defaults = defaultPreferences();
-    return {
-        ...defaults,
-        autoAnalysis: {
-            ...defaults.autoAnalysis,
-            enabled: true,
-            backlogMode: 'all',
-            resultScope: 'all',
-            ratedOnly: false,
-            minPlies: 0,
-            reserveCredits: 0,
-            ...overrides,
+    return mergePreferences(defaultPreferences(), {
+        gameAutomation: {
+            rules: {
+                lichess: { rapid: 'AUTO_ANALYZE' },
+            },
+            analysis: {
+                existingGames: 'all',
+                resultScope: 'all',
+                ratedOnly: false,
+                minPlies: 0,
+                reserveCredits: 0,
+                ...overrides,
+            },
         },
-    };
+    });
 }
 
 function candidate() {
@@ -212,7 +217,7 @@ describe('auto-analysis backlog', () => {
 
     it('establishes a safe boundary before reconciling legacy enabled records', async () => {
         const legacy = enabledPreferences({
-            backlogMode: 'new',
+            existingGames: 'new',
             enabledAt: null,
         });
         prismaMock.user.findUnique.mockResolvedValue({
@@ -240,8 +245,10 @@ describe('auto-analysis backlog', () => {
             where: { id: 'user-1' },
             data: {
                 preferences: expect.objectContaining({
-                    autoAnalysis: expect.objectContaining({
-                        enabledAt: now.toISOString(),
+                    gameAutomation: expect.objectContaining({
+                        analysis: expect.objectContaining({
+                            enabledAt: now.toISOString(),
+                        }),
                     }),
                 }),
             },
@@ -250,13 +257,13 @@ describe('auto-analysis backlog', () => {
 
     it('calculates the lower personal/plan budget and reserve floor', async () => {
         const backlog = await importBacklog();
-        const policy = {
-            ...defaultPreferences().autoAnalysis,
-            enabled: true,
-            dailyCap: 20,
-            monthlyCap: 40,
-            reserveCredits: 4,
-        };
+        const policy = resolveAutoAnalysisPolicy(
+            enabledPreferences({
+                dailyCap: 20,
+                monthlyCap: 40,
+                reserveCredits: 4,
+            })
+        );
 
         const capacity = backlog.calculateAutoAnalysisCapacity({
             policy,

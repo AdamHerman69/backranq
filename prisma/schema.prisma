@@ -344,8 +344,8 @@ model ProviderSyncState {
   id                         String    @id @default(uuid()) @db.Uuid
   userId                     String    @db.Uuid
   provider                   Provider
-  enabled                    Boolean   @default(true)
   providerUsernameNormalized String?
+  importPolicyHash           String?
   lastSyncedPlayedAt         DateTime?
   cursorSincePlayedAt        DateTime?
   cursorUntilPlayedAt        DateTime?
@@ -361,7 +361,6 @@ model ProviderSyncState {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, provider])
-  @@index([provider, enabled])
   @@index([lastAttemptAt])
 }
 

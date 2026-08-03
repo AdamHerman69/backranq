@@ -7,6 +7,7 @@ import {
     CheckCircle2,
     ChevronDown,
     Cloud,
+    Copy,
     Cpu,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -27,6 +28,13 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+import {
     advanceOwnerEpoch,
     captureOwnerRun,
     isOwnerRunCurrent,
@@ -35,14 +43,14 @@ import {
 } from '@/lib/auth/ownerRun';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from '@/components/ui/select';
-import {
-    defaultPreferences,
+    GAME_AUTOMATION_PROVIDER_KEYS,
+    GAME_AUTOMATION_TIME_CONTROL_KEYS,
+    type AutoAnalysisResultScope,
+    type GameAutomationExistingGameScope,
+    type GameAutomationMode,
+    type GameAutomationProviderKey,
+    type GameAutomationRules,
+    type GameAutomationTimeControlKey,
     type PreferencesSchema,
 } from '@/lib/preferences';
 import {
@@ -51,15 +59,6 @@ import {
     type SyncStatus,
 } from '@/lib/services/gameSync';
 
-type ProviderKey = 'lichess' | 'chesscom';
-type TimeControlKey =
-    | 'bullet'
-    | 'blitz'
-    | 'rapid'
-    | 'classical'
-    | 'unknown';
-type ResultScope = 'losses' | 'draws' | 'all';
-type BacklogMode = 'new' | 'all';
 type AutomationSyncStatus = SyncStatus & {
     automation?: {
         capacity?: {
@@ -75,35 +74,45 @@ type AutomationSyncStatus = SyncStatus & {
 };
 
 export type AutomationDraft = {
-    autoSyncEnabled: boolean;
-    autoSyncProviders: Record<ProviderKey, boolean>;
-    autoAnalysis: {
-        enabled: boolean;
-        providers: Record<ProviderKey, boolean>;
-        resultScope: ResultScope;
-        timeControls: Record<TimeControlKey, boolean>;
+    paused: boolean;
+    rules: GameAutomationRules;
+    analysis: {
+        resultScope: AutoAnalysisResultScope;
         ratedOnly: boolean;
         minPlies: string;
         dailyCap: string;
         monthlyCap: string;
         reserveCredits: string;
-        backlogMode: BacklogMode;
+        existingGames: GameAutomationExistingGameScope;
     };
 };
 
-type ExtendedAutoAnalysis = NonNullable<
-    PreferencesSchema['autoAnalysis']
-> & {
-    reserveCredits?: number | string | null;
-    backlogMode?: BacklogMode;
-};
+const PROVIDERS: Array<{
+    key: GameAutomationProviderKey;
+    label: string;
+}> = [
+    { key: 'lichess', label: 'Lichess' },
+    { key: 'chesscom', label: 'Chess.com' },
+];
 
-const TIME_CONTROLS: Array<{ key: TimeControlKey; label: string }> = [
+const TIME_CONTROLS: Array<{
+    key: GameAutomationTimeControlKey;
+    label: string;
+}> = [
     { key: 'bullet', label: 'Bullet' },
     { key: 'blitz', label: 'Blitz' },
     { key: 'rapid', label: 'Rapid' },
     { key: 'classical', label: 'Classical' },
     { key: 'unknown', label: 'Unknown' },
+];
+
+const AUTOMATION_MODES: Array<{
+    value: GameAutomationMode;
+    label: string;
+}> = [
+    { value: 'IGNORE', label: 'Ignore' },
+    { value: 'IMPORT_ONLY', label: 'Import only' },
+    { value: 'AUTO_ANALYZE', label: 'Import + analyze' },
 ];
 
 function inputString(value: number | string | null | undefined) {
@@ -113,71 +122,21 @@ function inputString(value: number | string | null | undefined) {
 export function automationDraftFromPreferences(
     preferences: PreferencesSchema
 ): AutomationDraft {
-    const fallback = defaultPreferences();
-    const raw = (preferences.autoAnalysis ??
-        fallback.autoAnalysis ??
-        {}) as ExtendedAutoAnalysis;
-    const fallbackAnalysis = (fallback.autoAnalysis ??
-        {}) as ExtendedAutoAnalysis;
+    const policy = preferences.gameAutomation;
     return {
-        autoSyncEnabled: preferences.autoSyncEnabled,
-        autoSyncProviders: {
-            lichess: preferences.autoSyncProviders.lichess,
-            chesscom: preferences.autoSyncProviders.chesscom,
+        paused: policy.paused,
+        rules: {
+            lichess: { ...policy.rules.lichess },
+            chesscom: { ...policy.rules.chesscom },
         },
-        autoAnalysis: {
-            enabled: raw.enabled ?? fallbackAnalysis.enabled ?? false,
-            providers: {
-                lichess:
-                    raw.providers?.lichess ??
-                    fallbackAnalysis.providers?.lichess ??
-                    true,
-                chesscom:
-                    raw.providers?.chesscom ??
-                    fallbackAnalysis.providers?.chesscom ??
-                    true,
-            },
-            resultScope:
-                raw.resultScope ??
-                fallbackAnalysis.resultScope ??
-                'draws',
-            timeControls: {
-                bullet:
-                    raw.timeControls?.bullet ??
-                    fallbackAnalysis.timeControls?.bullet ??
-                    false,
-                blitz:
-                    raw.timeControls?.blitz ??
-                    fallbackAnalysis.timeControls?.blitz ??
-                    false,
-                rapid:
-                    raw.timeControls?.rapid ??
-                    fallbackAnalysis.timeControls?.rapid ??
-                    true,
-                classical:
-                    raw.timeControls?.classical ??
-                    fallbackAnalysis.timeControls?.classical ??
-                    true,
-                unknown:
-                    raw.timeControls?.unknown ??
-                    fallbackAnalysis.timeControls?.unknown ??
-                    false,
-            },
-            ratedOnly:
-                raw.ratedOnly ?? fallbackAnalysis.ratedOnly ?? true,
-            minPlies: inputString(
-                raw.minPlies ?? fallbackAnalysis.minPlies
-            ),
-            dailyCap: inputString(
-                raw.dailyCap ?? fallbackAnalysis.dailyCap
-            ),
-            monthlyCap: inputString(
-                raw.monthlyCap ?? fallbackAnalysis.monthlyCap
-            ),
-            reserveCredits: inputString(
-                raw.reserveCredits ?? fallbackAnalysis.reserveCredits ?? 10
-            ),
-            backlogMode: raw.backlogMode ?? 'new',
+        analysis: {
+            resultScope: policy.analysis.resultScope,
+            ratedOnly: policy.analysis.ratedOnly,
+            minPlies: inputString(policy.analysis.minPlies),
+            dailyCap: inputString(policy.analysis.dailyCap),
+            monthlyCap: inputString(policy.analysis.monthlyCap),
+            reserveCredits: inputString(policy.analysis.reserveCredits),
+            existingGames: policy.analysis.existingGames,
         },
     };
 }
@@ -190,69 +149,38 @@ function optionalInteger(
     const trimmed = value.trim();
     if (!trimmed) return null;
     const number = Number(trimmed);
-    if (
-        !Number.isSafeInteger(number) ||
-        number < min ||
-        number > max
-    ) {
+    if (!Number.isSafeInteger(number) || number < min || number > max) {
         return undefined;
     }
     return number;
 }
 
-export function validateAutomationDraft(
-    draft: AutomationDraft
-): string | null {
-    if (
-        !draft.autoSyncProviders.lichess &&
-        !draft.autoSyncProviders.chesscom &&
-        draft.autoSyncEnabled
-    ) {
-        return 'Choose at least one source for automatic game updates.';
-    }
-    if (draft.autoAnalysis.enabled) {
-        if (
-            !draft.autoAnalysis.providers.lichess &&
-            !draft.autoAnalysis.providers.chesscom
-        ) {
-            return 'Choose at least one source for automatic analysis.';
-        }
-        if (!Object.values(draft.autoAnalysis.timeControls).some(Boolean)) {
-            return 'Choose at least one time control for automatic analysis.';
-        }
-    }
-    if (
-        optionalInteger(draft.autoAnalysis.minPlies, 0, 1_000) == null
-    ) {
+function hasAutomaticAnalysis(draft: AutomationDraft) {
+    return GAME_AUTOMATION_PROVIDER_KEYS.some((provider) =>
+        GAME_AUTOMATION_TIME_CONTROL_KEYS.some(
+            (timeControl) =>
+                draft.rules[provider][timeControl] === 'AUTO_ANALYZE'
+        )
+    );
+}
+
+export function validateAutomationDraft(draft: AutomationDraft): string | null {
+    if (optionalInteger(draft.analysis.minPlies, 0, 1_000) == null) {
         return 'Minimum game length must be a whole number from 0 to 1,000 plies.';
     }
-    if (
-        optionalInteger(draft.autoAnalysis.dailyCap, 1, 10_000) === undefined
-    ) {
+    if (optionalInteger(draft.analysis.dailyCap, 1, 10_000) === undefined) {
         return 'Daily personal cap must be a positive whole number or blank.';
     }
     if (
-        optionalInteger(draft.autoAnalysis.monthlyCap, 1, 100_000) ===
-        undefined
+        optionalInteger(draft.analysis.monthlyCap, 1, 100_000) === undefined
     ) {
         return 'Monthly personal cap must be a positive whole number or blank.';
     }
-    if (
-        optionalInteger(draft.autoAnalysis.reserveCredits, 0, 100_000) ==
-        null
-    ) {
+    if (optionalInteger(draft.analysis.reserveCredits, 0, 100_000) == null) {
         return 'Credit reserve must be a whole number of zero or more.';
     }
-    const daily = optionalInteger(
-        draft.autoAnalysis.dailyCap,
-        1,
-        10_000
-    );
-    const monthly = optionalInteger(
-        draft.autoAnalysis.monthlyCap,
-        1,
-        100_000
-    );
+    const daily = optionalInteger(draft.analysis.dailyCap, 1, 10_000);
+    const monthly = optionalInteger(draft.analysis.monthlyCap, 1, 100_000);
     if (
         typeof daily === 'number' &&
         typeof monthly === 'number' &&
@@ -265,35 +193,34 @@ export function validateAutomationDraft(
 
 export function automationPreferencesPatch(draft: AutomationDraft) {
     return {
-        autoSyncEnabled: draft.autoSyncEnabled,
-        autoSyncProviders: draft.autoSyncProviders,
-        autoAnalysis: {
-            enabled: draft.autoAnalysis.enabled,
-            providers: draft.autoAnalysis.providers,
-            resultScope: draft.autoAnalysis.resultScope,
-            timeControls: draft.autoAnalysis.timeControls,
-            ratedOnly: draft.autoAnalysis.ratedOnly,
-            minPlies: optionalInteger(
-                draft.autoAnalysis.minPlies,
-                0,
-                1_000
-            ) as number,
-            dailyCap: optionalInteger(
-                draft.autoAnalysis.dailyCap,
-                1,
-                10_000
-            ),
-            monthlyCap: optionalInteger(
-                draft.autoAnalysis.monthlyCap,
-                1,
-                100_000
-            ),
-            reserveCredits: optionalInteger(
-                draft.autoAnalysis.reserveCredits,
-                0,
-                100_000
-            ) as number,
-            backlogMode: draft.autoAnalysis.backlogMode,
+        gameAutomation: {
+            paused: draft.paused,
+            rules: draft.rules,
+            analysis: {
+                resultScope: draft.analysis.resultScope,
+                ratedOnly: draft.analysis.ratedOnly,
+                minPlies: optionalInteger(
+                    draft.analysis.minPlies,
+                    0,
+                    1_000
+                ) as number,
+                dailyCap: optionalInteger(
+                    draft.analysis.dailyCap,
+                    1,
+                    10_000
+                ),
+                monthlyCap: optionalInteger(
+                    draft.analysis.monthlyCap,
+                    1,
+                    100_000
+                ),
+                reserveCredits: optionalInteger(
+                    draft.analysis.reserveCredits,
+                    0,
+                    100_000
+                ) as number,
+                existingGames: draft.analysis.existingGames,
+            },
         },
     };
 }
@@ -312,7 +239,7 @@ function ProviderStatus({
     state: SyncProviderState | null | undefined;
 }) {
     return (
-        <div className="min-w-0 space-y-1 rounded-md border bg-muted/20 p-3">
+        <div className="min-w-0 space-y-1 rounded-md bg-muted/40 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-medium">{label}</span>
                 <Badge variant={username ? 'secondary' : 'outline'}>
@@ -323,12 +250,7 @@ function ProviderStatus({
                           : 'Not connected'}
                 </Badge>
             </div>
-            {username === undefined ? (
-                <p className="text-xs text-muted-foreground">
-                    Connection status could not be loaded. Saved preferences
-                    were left unchanged.
-                </p>
-            ) : username ? (
+            {username ? (
                 <div className="space-y-0.5 text-xs text-muted-foreground">
                     <div>Last success: {formatDate(state?.lastSuccessAt)}</div>
                     <div>Last checked: {formatDate(state?.lastAttemptAt)}</div>
@@ -340,21 +262,23 @@ function ProviderStatus({
                 </div>
             ) : (
                 <p className="text-xs text-muted-foreground">
-                    Add a username in Linked accounts above.
+                    {username === undefined
+                        ? 'Connection status could not be loaded.'
+                        : 'You can set the rules now and connect this account later.'}
                 </p>
             )}
         </div>
     );
 }
 
-export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
+export function GameAutomationSettingsCard({
+    ownerId: serverOwnerId,
+}: {
     ownerId: string;
 }) {
     const { data: session, status: sessionStatus } = useSession();
     const activeOwnerId =
-        sessionStatus === 'authenticated'
-            ? session?.user?.id ?? null
-            : null;
+        sessionStatus === 'authenticated' ? session?.user?.id ?? null : null;
     const ownerEpochRef = React.useRef<OwnerEpoch>({
         ownerId: null,
         generation: 0,
@@ -364,13 +288,11 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
         activeOwnerId
     );
     const ownerReady =
-        sessionStatus === 'authenticated' &&
-        activeOwnerId === serverOwnerId;
+        sessionStatus === 'authenticated' && activeOwnerId === serverOwnerId;
     const [loading, setLoading] = React.useState(true);
     const [saving, setSaving] = React.useState(false);
     const [loadError, setLoadError] = React.useState<string | null>(null);
-    const [status, setStatus] =
-        React.useState<AutomationSyncStatus | null>(null);
+    const [status, setStatus] = React.useState<AutomationSyncStatus | null>(null);
     const [draft, setDraft] = React.useState<AutomationDraft | null>(null);
     const [saved, setSaved] = React.useState<AutomationDraft | null>(null);
     const [enableConfirmOpen, setEnableConfirmOpen] = React.useState(false);
@@ -391,59 +313,40 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
         const requestId = ++requestIdRef.current;
         setLoading(true);
         setLoadError(null);
-        const preferencesResult = await Promise.resolve(
-            fetch('/api/user/preferences', { cache: 'no-store' }).then(
-                async (response) => {
-                    const body = (await response
-                        .json()
-                        .catch(() => ({}))) as {
-                        ownerId?: string;
-                        preferences?: PreferencesSchema;
-                        error?: string;
-                    };
-                    if (
-                        !response.ok ||
-                        !body.preferences ||
-                        body.ownerId !== run.ownerId
-                    ) {
-                        throw new Error(
-                            body.ownerId &&
-                                body.ownerId !== run.ownerId
-                                ? 'The server returned settings for a different account. Reload Settings.'
-                                : body.error ??
-                                'Could not load automation preferences'
-                        );
-                    }
-                    return body.preferences;
-                }
-            )
-        ).then(
-            (value) => ({ status: 'fulfilled' as const, value }),
-            (reason: unknown) => ({ status: 'rejected' as const, reason })
-        );
-        if (
-            requestId !== requestIdRef.current ||
-            !runIsCurrent(run)
-        ) {
-            return;
-        }
-
-        if (preferencesResult.status === 'fulfilled') {
-            const next = automationDraftFromPreferences(
-                preferencesResult.value
-            );
+        try {
+            const response = await fetch('/api/user/preferences', {
+                cache: 'no-store',
+            });
+            const body = (await response.json().catch(() => ({}))) as {
+                ownerId?: string;
+                preferences?: PreferencesSchema;
+                error?: string;
+            };
+            if (!response.ok || !body.preferences || body.ownerId !== run.ownerId) {
+                throw new Error(
+                    body.ownerId && body.ownerId !== run.ownerId
+                        ? 'The server returned settings for a different account. Reload Settings.'
+                        : body.error ?? 'Could not load automation preferences'
+                );
+            }
+            if (requestId !== requestIdRef.current || !runIsCurrent(run)) return;
+            const next = automationDraftFromPreferences(body.preferences);
             setDraft(next);
             setSaved(next);
-        } else {
+        } catch (error) {
+            if (requestId !== requestIdRef.current || !runIsCurrent(run)) return;
             setDraft(null);
             setSaved(null);
             setLoadError(
-                preferencesResult.reason instanceof Error
-                    ? preferencesResult.reason.message
+                error instanceof Error
+                    ? error.message
                     : 'Could not load automation preferences'
             );
+        } finally {
+            if (requestId === requestIdRef.current && runIsCurrent(run)) {
+                setLoading(false);
+            }
         }
-        setLoading(false);
     }, [runIsCurrent]);
 
     const refreshConnectionStatus = React.useCallback(async () => {
@@ -452,28 +355,19 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
         const requestId = ++statusRequestIdRef.current;
         try {
             const next = (await getSyncStatus()) as AutomationSyncStatus;
-            if (
-                requestId === statusRequestIdRef.current &&
-                runIsCurrent(run)
-            ) {
-                if (next.ownerId !== run.ownerId) {
-                    requestIdRef.current += 1;
-                    setDraft(null);
-                    setSaved(null);
-                    setStatus(null);
-                    setLoadError(
-                        'The server returned source status for a different account. Reload Settings.'
-                    );
-                    setLoading(false);
-                    return;
-                }
-                setStatus(next);
+            if (requestId !== statusRequestIdRef.current || !runIsCurrent(run)) {
+                return;
             }
+            if (next.ownerId !== run.ownerId) {
+                setStatus(null);
+                setLoadError(
+                    'The server returned source status for a different account. Reload Settings.'
+                );
+                return;
+            }
+            setStatus(next);
         } catch {
-            if (
-                requestId === statusRequestIdRef.current &&
-                runIsCurrent(run)
-            ) {
+            if (requestId === statusRequestIdRef.current && runIsCurrent(run)) {
                 setStatus(null);
             }
         }
@@ -503,17 +397,9 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
         return () => {
             requestIdRef.current += 1;
             statusRequestIdRef.current += 1;
-            window.removeEventListener(
-                CHESS_CONNECTIONS_CHANGED_EVENT,
-                reload
-            );
+            window.removeEventListener(CHESS_CONNECTIONS_CHANGED_EVENT, reload);
         };
-    }, [
-        load,
-        ownerReady,
-        refreshConnectionStatus,
-        sessionStatus,
-    ]);
+    }, [load, ownerReady, refreshConnectionStatus, sessionStatus]);
 
     function updateDraft(
         updater: (current: AutomationDraft) => AutomationDraft
@@ -521,13 +407,11 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
         setDraft((current) => (current ? updater(current) : current));
     }
 
-    const validationError = draft
-        ? validateAutomationDraft(draft)
-        : null;
+    const validationError = draft ? validateAutomationDraft(draft) : null;
     const dirty =
         !!draft && !!saved && JSON.stringify(draft) !== JSON.stringify(saved);
 
-    async function save() {
+    async function persistSave() {
         const run = captureOwnerRun(ownerEpochRef.current);
         if (
             !draft ||
@@ -541,7 +425,7 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
         }
         const requestId = ++saveRequestIdRef.current;
         setSaving(true);
-        const toastId = toast.loading('Saving automation settings…');
+        const toastId = toast.loading('Saving game automation…');
         try {
             const response = await fetch('/api/user/preferences', {
                 method: 'PUT',
@@ -556,62 +440,47 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
                 preferences?: PreferencesSchema;
                 error?: string;
             };
-            if (!response.ok) {
-                throw new Error(body.error ?? 'Save failed');
-            }
-            if (
-                body.ownerId !== run.ownerId ||
-                !body.preferences
-            ) {
-                requestIdRef.current += 1;
-                statusRequestIdRef.current += 1;
-                setDraft(null);
-                setSaved(null);
-                setStatus(null);
-                setLoadError(
-                    'The server could not confirm which account was updated. Reload Settings before trying again.'
-                );
-                setLoading(false);
+            if (!response.ok) throw new Error(body.error ?? 'Save failed');
+            if (body.ownerId !== run.ownerId || !body.preferences) {
                 throw new Error(
-                    'The server could not confirm which account was updated. Reload Settings before trying again.'
+                    'The server could not confirm which account was updated. Reload Settings.'
                 );
             }
-            if (
-                requestId !== saveRequestIdRef.current ||
-                !runIsCurrent(run)
-            ) {
+            if (requestId !== saveRequestIdRef.current || !runIsCurrent(run)) {
                 toast.dismiss(toastId);
                 return;
             }
             const next = automationDraftFromPreferences(body.preferences);
             setDraft(next);
             setSaved(next);
-            toast.success('Automation settings saved.', { id: toastId });
-            try {
-                await refreshConnectionStatus();
-            } catch {
-                // Preferences were saved; status can be refreshed separately.
-            }
+            toast.success('Game automation saved.', { id: toastId });
+            await refreshConnectionStatus();
         } catch (error) {
-            if (
-                requestId !== saveRequestIdRef.current ||
-                !runIsCurrent(run)
-            ) {
+            if (requestId !== saveRequestIdRef.current || !runIsCurrent(run)) {
                 toast.dismiss(toastId);
                 return;
             }
-            toast.error(
-                error instanceof Error ? error.message : 'Save failed',
-                { id: toastId }
-            );
+            toast.error(error instanceof Error ? error.message : 'Save failed', {
+                id: toastId,
+            });
         } finally {
-            if (
-                requestId === saveRequestIdRef.current &&
-                runIsCurrent(run)
-            ) {
+            if (requestId === saveRequestIdRef.current && runIsCurrent(run)) {
                 setSaving(false);
             }
         }
+    }
+
+    function requestSave() {
+        if (
+            draft &&
+            saved &&
+            hasAutomaticAnalysis(draft) &&
+            !hasAutomaticAnalysis(saved)
+        ) {
+            setEnableConfirmOpen(true);
+            return;
+        }
+        void persistSave();
     }
 
     if (loading) {
@@ -638,8 +507,7 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
                                 Automation settings unavailable
                             </div>
                             <div className="text-muted-foreground">
-                                {loadError ??
-                                    'Your saved settings were not changed.'}
+                                {loadError ?? 'Your saved settings were not changed.'}
                             </div>
                         </div>
                     </div>
@@ -657,55 +525,52 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
     }
 
     const linked = status?.linked;
-    const syncStates = status?.autoSync?.states;
+    const syncStates = status?.gameAutomation?.states;
     const capacity = status?.automation?.capacity;
     const billing = status?.billing;
+    const analysisEnabled = hasAutomaticAnalysis(draft);
 
     return (
-        <div className="space-y-6">
-            <Card id="connections">
+        <>
+            <Card id="game-automation" className="scroll-mt-24">
                 <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-base">
                         <Cloud className="h-4 w-4" aria-hidden="true" />
-                        Keep games up to date
+                        Game automation
                     </CardTitle>
                     <CardDescription>
-                        Import new public games automatically. Syncing does not
-                        use analysis credits.
+                        Choose one action for every source and time control.
+                        Ignored games are not imported; Import + analyze creates
+                        training positions automatically.
                     </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="space-y-5">
                     <label className="flex items-start justify-between gap-4 rounded-md border p-3 text-sm">
                         <span className="min-w-0">
                             <span className="block font-medium">
-                                Automatically import new games
+                                Pause all game automation
                             </span>
                             <span className="block text-muted-foreground">
-                                Backranq periodically checks the selected
-                                sources. You can still use Sync now at any time.
+                                Keeps your rules intact while stopping scheduled
+                                imports and new automatic analyses.
                             </span>
                         </span>
                         <input
                             type="checkbox"
                             className="mt-1 h-4 w-4 shrink-0 accent-foreground"
-                            checked={draft.autoSyncEnabled}
+                            checked={draft.paused}
                             disabled={saving}
                             onChange={(event) =>
                                 updateDraft((current) => ({
                                     ...current,
-                                    autoSyncEnabled: event.target.checked,
+                                    paused: event.target.checked,
                                 }))
                             }
                         />
                     </label>
 
-                    <div className="grid gap-3 sm:grid-cols-2">
-                        {(
-                            [
-                                ['lichess', 'Lichess'],
-                                ['chesscom', 'Chess.com'],
-                            ] as const
-                        ).map(([provider, label]) => {
+                    <div className="grid gap-4 lg:grid-cols-2">
+                        {PROVIDERS.map(({ key: provider, label }) => {
                             const username =
                                 status === null
                                     ? undefined
@@ -713,373 +578,295 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
                                       ? linked?.lichessUsername ?? null
                                       : linked?.chesscomUsername ?? null;
                             return (
-                                <div key={provider} className="space-y-2">
-                                    <label className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm">
-                                        <span>
-                                            Keep {label} games up to date
-                                        </span>
-                                        <input
-                                            type="checkbox"
-                                            className="h-4 w-4 shrink-0 accent-foreground"
-                                            checked={
-                                                draft.autoSyncProviders[
-                                                    provider
-                                                ]
-                                            }
-                                            disabled={
-                                                saving ||
-                                                !draft.autoSyncEnabled ||
-                                                username === null
-                                            }
-                                            onChange={(event) =>
-                                                updateDraft((current) => ({
-                                                    ...current,
-                                                    autoSyncProviders: {
-                                                        ...current.autoSyncProviders,
-                                                        [provider]:
-                                                            event.target
-                                                                .checked,
-                                                    },
-                                                }))
-                                            }
-                                        />
-                                    </label>
+                                <section
+                                    key={provider}
+                                    className="space-y-3 rounded-lg border p-3"
+                                    aria-labelledby={`${provider}-automation-title`}
+                                >
                                     <ProviderStatus
                                         label={label}
                                         username={username}
                                         state={syncStates?.[provider]}
                                     />
-                                </div>
-                            );
-                        })}
-                    </div>
-                </CardContent>
-            </Card>
-
-            <Card id="automatic-analysis">
-                <CardHeader>
-                    <CardTitle className="flex items-center gap-2 text-base">
-                        <Cpu className="h-4 w-4" aria-hidden="true" />
-                        Automatic analysis
-                    </CardTitle>
-                    <CardDescription>
-                        Decide which imported games may use server analysis.
-                        Importing and analysis remain independent.
-                    </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-5">
-                    <label className="flex items-start justify-between gap-4 rounded-md border p-3 text-sm">
-                        <span className="min-w-0">
-                            <span className="block font-medium">
-                                Analyze matching games on the server
-                            </span>
-                            <span className="block text-muted-foreground">
-                                Explicit opt-in. Server analysis continues when
-                                the app is closed and spends credits within the
-                                limits below.
-                            </span>
-                        </span>
-                        <input
-                            type="checkbox"
-                            className="mt-1 h-4 w-4 shrink-0 accent-foreground"
-                            checked={draft.autoAnalysis.enabled}
-                            disabled={saving}
-                            onChange={(event) => {
-                                if (
-                                    event.target.checked &&
-                                    !draft.autoAnalysis.enabled
-                                ) {
-                                    setEnableConfirmOpen(true);
-                                    return;
-                                }
-                                updateDraft((current) => ({
-                                    ...current,
-                                    autoAnalysis: {
-                                        ...current.autoAnalysis,
-                                        enabled: false,
-                                    },
-                                }));
-                            }}
-                        />
-                    </label>
-
-                    <fieldset
-                        className="space-y-4 disabled:opacity-60"
-                        disabled={!draft.autoAnalysis.enabled || saving}
-                    >
-                        <legend className="sr-only">
-                            Automatic analysis policy
-                        </legend>
-
-                        <div>
-                            <div className="mb-2 text-sm font-medium">
-                                Sources
-                            </div>
-                            <div className="grid gap-2 sm:grid-cols-2">
-                                {(
-                                    [
-                                        ['lichess', 'Lichess'],
-                                        ['chesscom', 'Chess.com'],
-                                    ] as const
-                                ).map(([provider, label]) => {
-                                    const connected =
-                                        status === null
-                                            ? null
-                                            : provider === 'lichess'
-                                              ? !!linked?.lichessUsername
-                                              : !!linked?.chesscomUsername;
-                                    return (
-                                        <label
-                                            key={provider}
-                                            className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"
+                                    <div className="flex items-center justify-between gap-2">
+                                        <h3
+                                            id={`${provider}-automation-title`}
+                                            className="text-sm font-medium"
                                         >
-                                            <span>
-                                                {label}
-                                                {connected === false ? (
-                                                    <span className="ml-1 text-xs text-muted-foreground">
-                                                        (not connected)
-                                                    </span>
-                                                ) : null}
-                                            </span>
-                                            <input
-                                                type="checkbox"
-                                                className="h-4 w-4 accent-foreground"
-                                                checked={
-                                                    draft.autoAnalysis
-                                                        .providers[provider]
-                                                }
-                                                disabled={
-                                                    !draft.autoAnalysis
-                                                        .enabled ||
-                                                    saving ||
-                                                    connected === false
-                                                }
-                                                onChange={(event) =>
+                                            Rules by time control
+                                        </h3>
+                                        {provider === 'chesscom' ? (
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="ghost"
+                                                disabled={saving}
+                                                onClick={() =>
                                                     updateDraft((current) => ({
                                                         ...current,
-                                                        autoAnalysis: {
-                                                            ...current.autoAnalysis,
-                                                            providers: {
-                                                                ...current
-                                                                    .autoAnalysis
-                                                                    .providers,
-                                                                [provider]:
-                                                                    event.target
-                                                                        .checked,
+                                                        rules: {
+                                                            ...current.rules,
+                                                            chesscom: {
+                                                                ...current.rules.lichess,
                                                             },
                                                         },
                                                     }))
                                                 }
-                                            />
-                                        </label>
-                                    );
-                                })}
-                            </div>
-                        </div>
+                                            >
+                                                <Copy
+                                                    className="mr-1.5 h-3.5 w-3.5"
+                                                    aria-hidden="true"
+                                                />
+                                                Same as Lichess
+                                            </Button>
+                                        ) : null}
+                                    </div>
+                                    <div className="divide-y rounded-md border">
+                                        {TIME_CONTROLS.map(
+                                            ({ key: timeControl, label: timeLabel }) => (
+                                                <div
+                                                    key={timeControl}
+                                                    className="flex items-center justify-between gap-3 p-2.5"
+                                                >
+                                                    <span className="text-sm">
+                                                        {timeLabel}
+                                                    </span>
+                                                    <Select
+                                                        value={
+                                                            draft.rules[provider][
+                                                                timeControl
+                                                            ]
+                                                        }
+                                                        disabled={saving}
+                                                        onValueChange={(value) =>
+                                                            updateDraft((current) => ({
+                                                                ...current,
+                                                                rules: {
+                                                                    ...current.rules,
+                                                                    [provider]: {
+                                                                        ...current.rules[
+                                                                            provider
+                                                                        ],
+                                                                        [timeControl]:
+                                                                            value as GameAutomationMode,
+                                                                    },
+                                                                },
+                                                            }))
+                                                        }
+                                                    >
+                                                        <SelectTrigger
+                                                            className="w-36 sm:w-[10.5rem]"
+                                                            aria-label={`${label} ${timeLabel} automation`}
+                                                        >
+                                                            <SelectValue />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {AUTOMATION_MODES.map(
+                                                                (mode) => (
+                                                                    <SelectItem
+                                                                        key={mode.value}
+                                                                        value={mode.value}
+                                                                    >
+                                                                        {mode.label}
+                                                                    </SelectItem>
+                                                                )
+                                                            )}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </div>
+                                            )
+                                        )}
+                                    </div>
+                                </section>
+                            );
+                        })}
+                    </div>
 
-                        <div>
-                            <div className="mb-2 text-sm font-medium">
-                                Time controls
+                    {analysisEnabled ? (
+                        <section className="space-y-4 rounded-lg border p-3">
+                            <div>
+                                <h3 className="flex items-center gap-2 text-sm font-medium">
+                                    <Cpu className="h-4 w-4" aria-hidden="true" />
+                                    Automatic analysis limits
+                                </h3>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                    These limits apply only to rows set to Import
+                                    + analyze. Import-only games never spend credits.
+                                </p>
                             </div>
-                            <div className="flex flex-wrap gap-2">
-                                {TIME_CONTROLS.map(({ key, label }) => (
-                                    <label
-                                        key={key}
-                                        className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+
+                            <div className="grid gap-4 sm:grid-cols-2">
+                                <label className="space-y-1.5 text-sm">
+                                    <span className="font-medium">Results</span>
+                                    <Select
+                                        value={draft.analysis.resultScope}
+                                        disabled={saving}
+                                        onValueChange={(value) =>
+                                            updateDraft((current) => ({
+                                                ...current,
+                                                analysis: {
+                                                    ...current.analysis,
+                                                    resultScope:
+                                                        value as AutoAnalysisResultScope,
+                                                },
+                                            }))
+                                        }
                                     >
-                                        <input
-                                            type="checkbox"
-                                            className="h-4 w-4 accent-foreground"
-                                            checked={
-                                                draft.autoAnalysis.timeControls[
-                                                    key
-                                                ]
-                                            }
-                                            onChange={(event) =>
-                                                updateDraft((current) => ({
-                                                    ...current,
-                                                    autoAnalysis: {
-                                                        ...current.autoAnalysis,
-                                                        timeControls: {
-                                                            ...current
-                                                                .autoAnalysis
-                                                                .timeControls,
-                                                            [key]:
-                                                                event.target
-                                                                    .checked,
-                                                        },
-                                                    },
-                                                }))
-                                            }
-                                        />
-                                        {label}
-                                    </label>
-                                ))}
+                                        <SelectTrigger aria-label="Games by result">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="losses">
+                                                Losses only
+                                            </SelectItem>
+                                            <SelectItem value="draws">
+                                                Losses and draws
+                                            </SelectItem>
+                                            <SelectItem value="all">
+                                                All results
+                                            </SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </label>
+
+                                <label className="flex items-center justify-between gap-3 self-end rounded-md border px-3 py-2 text-sm">
+                                    <span>Rated games only</span>
+                                    <input
+                                        type="checkbox"
+                                        className="h-4 w-4 accent-foreground"
+                                        checked={draft.analysis.ratedOnly}
+                                        disabled={saving}
+                                        onChange={(event) =>
+                                            updateDraft((current) => ({
+                                                ...current,
+                                                analysis: {
+                                                    ...current.analysis,
+                                                    ratedOnly: event.target.checked,
+                                                },
+                                            }))
+                                        }
+                                    />
+                                </label>
                             </div>
-                        </div>
 
-                        <div className="grid gap-4 sm:grid-cols-2">
-                            <label className="space-y-1.5 text-sm">
-                                <span className="font-medium">Results</span>
-                                <Select
-                                    value={draft.autoAnalysis.resultScope}
-                                    onValueChange={(value) =>
-                                        updateDraft((current) => ({
-                                            ...current,
-                                            autoAnalysis: {
-                                                ...current.autoAnalysis,
-                                                resultScope:
-                                                    value as ResultScope,
-                                            },
-                                        }))
-                                    }
-                                >
-                                    <SelectTrigger aria-label="Games by result">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="losses">
-                                            Losses only
-                                        </SelectItem>
-                                        <SelectItem value="draws">
-                                            Losses and draws
-                                        </SelectItem>
-                                        <SelectItem value="all">
-                                            All results
-                                        </SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </label>
-
-                            <label className="flex items-center justify-between gap-3 self-end rounded-md border px-3 py-2 text-sm">
-                                <span>Rated games only</span>
-                                <input
-                                    type="checkbox"
-                                    className="h-4 w-4 accent-foreground"
-                                    checked={draft.autoAnalysis.ratedOnly}
-                                    onChange={(event) =>
-                                        updateDraft((current) => ({
-                                            ...current,
-                                            autoAnalysis: {
-                                                ...current.autoAnalysis,
-                                                ratedOnly:
-                                                    event.target.checked,
-                                            },
-                                        }))
-                                    }
-                                />
-                            </label>
-                        </div>
-
-                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                            <NumericField
-                                label="Daily personal cap"
-                                value={draft.autoAnalysis.dailyCap}
-                                placeholder="No personal cap"
-                                onChange={(value) =>
-                                    updateDraft((current) => ({
-                                        ...current,
-                                        autoAnalysis: {
-                                            ...current.autoAnalysis,
-                                            dailyCap: value,
-                                        },
-                                    }))
-                                }
-                            />
-                            <NumericField
-                                label="Monthly personal cap"
-                                value={draft.autoAnalysis.monthlyCap}
-                                placeholder="No personal cap"
-                                onChange={(value) =>
-                                    updateDraft((current) => ({
-                                        ...current,
-                                        autoAnalysis: {
-                                            ...current.autoAnalysis,
-                                            monthlyCap: value,
-                                        },
-                                    }))
-                                }
-                            />
-                            <NumericField
-                                label="Keep credits in reserve"
-                                value={draft.autoAnalysis.reserveCredits}
-                                placeholder="0"
-                                onChange={(value) =>
-                                    updateDraft((current) => ({
-                                        ...current,
-                                        autoAnalysis: {
-                                            ...current.autoAnalysis,
-                                            reserveCredits: value,
-                                        },
-                                    }))
-                                }
-                            />
-                            <label className="space-y-1.5 text-sm">
-                                <span className="font-medium">
-                                    Apply policy to
-                                </span>
-                                <Select
-                                    value={draft.autoAnalysis.backlogMode}
-                                    onValueChange={(value) =>
-                                        updateDraft((current) => ({
-                                            ...current,
-                                            autoAnalysis: {
-                                                ...current.autoAnalysis,
-                                                backlogMode:
-                                                    value as BacklogMode,
-                                            },
-                                        }))
-                                    }
-                                >
-                                    <SelectTrigger aria-label="Automatic analysis backlog policy">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="new">
-                                            New games only
-                                        </SelectItem>
-                                        <SelectItem value="all">
-                                            Include eligible games already in
-                                            your library
-                                        </SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </label>
-                        </div>
-
-                        <details className="rounded-md border">
-                            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                                Advanced eligibility
-                                <ChevronDown
-                                    className="h-4 w-4"
-                                    aria-hidden="true"
-                                />
-                            </summary>
-                            <div className="border-t p-3">
+                            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                                 <NumericField
-                                    label="Minimum game length (plies)"
-                                    value={draft.autoAnalysis.minPlies}
-                                    placeholder="20"
+                                    label="Daily personal cap"
+                                    value={draft.analysis.dailyCap}
+                                    placeholder="No personal cap"
+                                    disabled={saving}
                                     onChange={(value) =>
                                         updateDraft((current) => ({
                                             ...current,
-                                            autoAnalysis: {
-                                                ...current.autoAnalysis,
-                                                minPlies: value,
+                                            analysis: {
+                                                ...current.analysis,
+                                                dailyCap: value,
                                             },
                                         }))
                                     }
                                 />
-                                <p className="mt-2 text-xs text-muted-foreground">
-                                    Very short or aborted games can remain in
-                                    your library without spending analysis
-                                    credits.
-                                </p>
+                                <NumericField
+                                    label="Monthly personal cap"
+                                    value={draft.analysis.monthlyCap}
+                                    placeholder="No personal cap"
+                                    disabled={saving}
+                                    onChange={(value) =>
+                                        updateDraft((current) => ({
+                                            ...current,
+                                            analysis: {
+                                                ...current.analysis,
+                                                monthlyCap: value,
+                                            },
+                                        }))
+                                    }
+                                />
+                                <NumericField
+                                    label="Keep credits in reserve"
+                                    value={draft.analysis.reserveCredits}
+                                    placeholder="0"
+                                    disabled={saving}
+                                    onChange={(value) =>
+                                        updateDraft((current) => ({
+                                            ...current,
+                                            analysis: {
+                                                ...current.analysis,
+                                                reserveCredits: value,
+                                            },
+                                        }))
+                                    }
+                                />
+                                <label className="space-y-1.5 text-sm">
+                                    <span className="font-medium">
+                                        Apply policy to
+                                    </span>
+                                    <Select
+                                        value={draft.analysis.existingGames}
+                                        disabled={saving}
+                                        onValueChange={(value) =>
+                                            updateDraft((current) => ({
+                                                ...current,
+                                                analysis: {
+                                                    ...current.analysis,
+                                                    existingGames:
+                                                        value as GameAutomationExistingGameScope,
+                                                },
+                                            }))
+                                        }
+                                    >
+                                        <SelectTrigger aria-label="Automatic analysis existing games policy">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="new">
+                                                New games only
+                                            </SelectItem>
+                                            <SelectItem value="all">
+                                                Include eligible games already imported
+                                            </SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </label>
                             </div>
-                        </details>
-                    </fieldset>
 
-                    {capacity || billing ? (
+                            <details className="rounded-md border">
+                                <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                                    Advanced eligibility
+                                    <ChevronDown
+                                        className="h-4 w-4"
+                                        aria-hidden="true"
+                                    />
+                                </summary>
+                                <div className="border-t p-3">
+                                    <NumericField
+                                        label="Minimum game length (plies)"
+                                        value={draft.analysis.minPlies}
+                                        placeholder="20"
+                                        disabled={saving}
+                                        onChange={(value) =>
+                                            updateDraft((current) => ({
+                                                ...current,
+                                                analysis: {
+                                                    ...current.analysis,
+                                                    minPlies: value,
+                                                },
+                                            }))
+                                        }
+                                    />
+                                    <p className="mt-2 text-xs text-muted-foreground">
+                                        Very short or aborted games stay in your
+                                        library without spending analysis credits.
+                                    </p>
+                                </div>
+                            </details>
+                        </section>
+                    ) : (
+                        <div className="rounded-md bg-muted/60 p-3 text-sm text-muted-foreground">
+                            No row is set to Import + analyze, so automatic
+                            server analysis is off and cannot spend credits.
+                        </div>
+                    )}
+
+                    {analysisEnabled && (capacity || billing) ? (
                         <div className="rounded-md bg-muted/60 p-3 text-sm">
                             <div className="flex flex-wrap gap-x-4 gap-y-1">
                                 <span>
@@ -1103,39 +890,16 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
                                             billing?.monthlyRemaining}
                                     </strong>
                                 </span>
-                                {capacity?.dailyRemaining != null ? (
-                                    <span>
-                                        Personal daily remaining:{' '}
-                                        <strong>
-                                            {capacity.dailyRemaining}
-                                        </strong>
-                                    </span>
-                                ) : null}
-                                {capacity?.monthlyRemaining != null ? (
-                                    <span>
-                                        Personal monthly remaining:{' '}
-                                        <strong>
-                                            {capacity.monthlyRemaining}
-                                        </strong>
-                                    </span>
-                                ) : null}
                             </div>
-                            {capacity?.blockingReason ||
-                            billing?.limitingReason ? (
+                            {capacity?.blockingReason || billing?.limitingReason ? (
                                 <p className="mt-1 text-xs text-muted-foreground">
                                     {humanizeAutomationBlockReason(
                                         capacity?.blockingReason
-                                    ) ??
-                                        billing?.limitingReason}
+                                    ) ?? billing?.limitingReason}
                                 </p>
                             ) : null}
                         </div>
-                    ) : (
-                        <p className="text-sm text-muted-foreground">
-                            Current plan limits are temporarily unavailable.
-                            They will still be enforced by the server.
-                        </p>
-                    )}
+                    ) : null}
 
                     {validationError ? (
                         <p className="text-sm text-destructive" role="alert">
@@ -1165,10 +929,8 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
                             ) : null}
                             <Button
                                 type="button"
-                                disabled={
-                                    !dirty || !!validationError || saving
-                                }
-                                onClick={() => void save()}
+                                disabled={!dirty || !!validationError || saving}
+                                onClick={requestSave}
                             >
                                 {saving ? 'Saving…' : 'Save automation'}
                             </Button>
@@ -1181,17 +943,11 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
                 open={enableConfirmOpen}
                 onOpenChange={setEnableConfirmOpen}
                 title="Enable automatic server analysis?"
-                description="Matching games may spend server credits while Backranq is closed. Your personal caps, credit reserve and plan limits are always enforced. Importing games remains free."
-                confirmLabel="Enable automatic analysis"
+                description="Rows set to Import + analyze may spend server credits while Backranq is closed. Personal caps, your credit reserve and plan limits are always enforced."
+                confirmLabel="Save and enable analysis"
                 onConfirm={() => {
-                    updateDraft((current) => ({
-                        ...current,
-                        autoAnalysis: {
-                            ...current.autoAnalysis,
-                            enabled: true,
-                        },
-                    }));
                     setEnableConfirmOpen(false);
+                    void persistSave();
                 }}
             >
                 <div className="flex items-start gap-2 rounded-md bg-muted p-3 text-sm">
@@ -1200,12 +956,12 @@ export function AutoSyncSettingsCard({ ownerId: serverOwnerId }: {
                         aria-hidden="true"
                     />
                     <span>
-                        Browser analysis is still free and is never enabled by
-                        this setting.
+                        Import-only games remain free and browser analysis is
+                        never enabled by this setting.
                     </span>
                 </div>
             </ActionConfirmDialog>
-        </div>
+        </>
     );
 }
 
@@ -1213,11 +969,13 @@ function NumericField({
     label,
     value,
     placeholder,
+    disabled,
     onChange,
 }: {
     label: string;
     value: string;
     placeholder: string;
+    disabled?: boolean;
     onChange: (value: string) => void;
 }) {
     return (
@@ -1230,6 +988,7 @@ function NumericField({
                 step={1}
                 value={value}
                 placeholder={placeholder}
+                disabled={disabled}
                 onChange={(event) => onChange(event.target.value)}
             />
         </label>

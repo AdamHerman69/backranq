@@ -3,9 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
 import { prisma } from '@/lib/prisma';
 import {
-    defaultPreferences,
-    mergePreferences,
-    type PartialPreferences,
+    canonicalPreferences,
+    providerImportTimeControls,
+    type PreferencesSchema,
 } from '@/lib/preferences';
 import {
     StaleSyncJobLeaseError,
@@ -27,7 +27,6 @@ type SyncJobUser = {
     chesscomUsername: string | null;
     providerSyncStates?: Array<{
         provider: Provider;
-        enabled: boolean;
         lastSuccessAt?: Date | null;
         lastAttemptAt?: Date | null;
         cursorUntilPlayedAt?: Date | null;
@@ -48,7 +47,6 @@ export type UserSyncProviderActivity = {
     linked: boolean;
     username: string | null;
     state: {
-        enabled: boolean;
         providerUsernameNormalized: string | null;
         lastSyncedPlayedAt: Date | null;
         lastAttemptAt: Date | null;
@@ -138,7 +136,6 @@ export async function planSyncJobs(args: { scheduledFor?: Date; now?: Date } = {
             providerSyncStates: {
                 select: {
                     provider: true,
-                    enabled: true,
                     lastSuccessAt: true,
                     lastAttemptAt: true,
                     cursorUntilPlayedAt: true,
@@ -190,7 +187,6 @@ export async function planUserSyncJobs(args: {
             providerSyncStates: {
                 select: {
                     provider: true,
-                    enabled: true,
                     lastSuccessAt: true,
                     lastAttemptAt: true,
                     cursorUntilPlayedAt: true,
@@ -269,7 +265,6 @@ export async function getUserSyncActivity(
             where: { userId },
             select: {
                 provider: true,
-                enabled: true,
                 providerUsernameNormalized: true,
                 lastSyncedPlayedAt: true,
                 cursorSincePlayedAt: true,
@@ -346,7 +341,6 @@ export async function getUserSyncActivity(
                     }) ?? null,
                 state: state
                     ? {
-                          enabled: state.enabled,
                           providerUsernameNormalized:
                               state.providerUsernameNormalized,
                           lastSyncedPlayedAt: state.lastSyncedPlayedAt,
@@ -495,10 +489,7 @@ export async function processSyncJob(
 
     const heartbeat = startSyncJobHeartbeat(job.id, leaseToken);
     try {
-        const prefs = mergePreferences(
-            defaultPreferences(),
-            (job.user.preferences ?? {}) as PartialPreferences
-        );
+        const prefs = canonicalPreferences(job.user.preferences ?? {});
         const result = await syncUserProvider({
             user: job.user,
             provider: job.provider,
@@ -517,7 +508,9 @@ export async function processSyncJob(
                 error: result.error,
                 now,
                 result,
-                immediate: result.identityChanged === true,
+                immediate:
+                    result.identityChanged === true ||
+                    result.policyChanged === true,
             });
             if (retried.stale) return staleProcessResult(job);
             if (retried.status === 'QUEUED') {
@@ -690,15 +683,11 @@ async function planUserProviderSyncJob(args: {
         (item) => item.provider === args.provider
     );
     if (args.respectAutoSyncPreferences) {
-        const prefs = mergePreferences(
-            defaultPreferences(),
-            (args.user.preferences ?? {}) as PartialPreferences
-        );
+        const prefs = canonicalPreferences(args.user.preferences ?? {});
         if (
-            !autoSyncEnabledForProvider(
+            !automationImportsProvider(
                 prefs,
-                args.provider,
-                state?.enabled ?? true
+                args.provider
             )
         ) {
             return skipped(args.user.id, args.provider, 'disabled');
@@ -844,16 +833,16 @@ function providerUsername(
         : user.chesscomUsername;
 }
 
-function autoSyncEnabledForProvider(
-    prefs: ReturnType<typeof mergePreferences>,
-    provider: Provider,
-    stateEnabled: boolean
+function automationImportsProvider(
+    prefs: PreferencesSchema,
+    provider: Provider
 ) {
-    if (!prefs.autoSyncEnabled) return false;
-    if (!stateEnabled) return false;
-    return !!prefs.autoSyncProviders[
-        provider === 'LICHESS' ? 'lichess' : 'chesscom'
-    ];
+    return (
+        providerImportTimeControls(
+            prefs.gameAutomation,
+            provider === 'LICHESS' ? 'lichess' : 'chesscom'
+        ).length > 0
+    );
 }
 
 async function recoverExpiredSyncJobForProvider(args: {

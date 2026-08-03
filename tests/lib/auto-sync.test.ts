@@ -33,6 +33,7 @@ function syncState(overrides: Record<string, unknown> = {}) {
         provider: 'LICHESS',
         enabled: true,
         providerUsernameNormalized: 'ada',
+        importPolicyHash: 'v1:lichess:bullet,blitz,rapid,classical,unknown',
         lastSyncedPlayedAt: new Date('2026-07-01T00:00:00.000Z'),
         cursorSincePlayedAt: null,
         cursorUntilPlayedAt: null,
@@ -142,7 +143,6 @@ describe('reliable provider auto-sync', () => {
             provider: 'LICHESS',
             prefs: {
                 ...(await import('@/lib/preferences')).defaultPreferences(),
-                autoSyncEnabled: true,
             },
             now: new Date('2026-07-10T00:00:00.000Z'),
         });
@@ -281,21 +281,22 @@ describe('reliable provider auto-sync', () => {
             unavailableReason: 'disabled',
         });
         const prefs = (await import('@/lib/preferences')).defaultPreferences();
-        prefs.autoAnalysis = {
-            ...prefs.autoAnalysis,
-            enabled: true,
+        prefs.gameAutomation.analysis = {
+            ...prefs.gameAutomation.analysis,
             resultScope: 'losses',
-            timeControls: {
-                ...prefs.autoAnalysis?.timeControls,
-                bullet: false,
-                blitz: false,
-                rapid: true,
-                classical: false,
-                unknown: false,
-            },
             ratedOnly: true,
             minPlies: 4,
         };
+        prefs.gameAutomation.rules.lichess = {
+            bullet: 'IGNORE',
+            blitz: 'IGNORE',
+            rapid: 'AUTO_ANALYZE',
+            classical: 'IGNORE',
+            unknown: 'IGNORE',
+        };
+        prismaMock.providerSyncState.upsert.mockResolvedValue(
+            syncState({ importPolicyHash: 'v1:lichess:rapid' })
+        );
         const { syncUserProvider } = await importAutoSync();
 
         const result = await syncUserProvider({
@@ -318,6 +319,9 @@ describe('reliable provider auto-sync', () => {
             complete: true,
         });
         expect(result.error).toBeUndefined();
+        expect(fetchLichessGamesBatchMock).toHaveBeenCalledWith(
+            expect.objectContaining({ timeClasses: ['rapid'] })
+        );
         expect(
             prismaMock.historyImportQuota.findUnique
         ).not.toHaveBeenCalled();
@@ -380,6 +384,8 @@ describe('reliable provider auto-sync', () => {
         prismaMock.providerSyncState.upsert.mockResolvedValue(
             syncState({
                 provider: 'CHESSCOM',
+                importPolicyHash:
+                    'v1:chesscom:bullet,blitz,rapid,classical,unknown',
                 providerUsernameNormalized: 'adachess',
                 lastSyncedPlayedAt: new Date('2026-07-28T12:00:00.000Z'),
             })
@@ -712,8 +718,24 @@ describe('reliable provider auto-sync', () => {
             {
                 id: 'user-1',
                 preferences: {
-                    autoSyncEnabled: true,
-                    autoSyncProviders: { lichess: true, chesscom: true },
+                    gameAutomation: {
+                        rules: {
+                            lichess: {
+                                bullet: 'IMPORT_ONLY',
+                                blitz: 'IMPORT_ONLY',
+                                rapid: 'IMPORT_ONLY',
+                                classical: 'IMPORT_ONLY',
+                                unknown: 'IMPORT_ONLY',
+                            },
+                            chesscom: {
+                                bullet: 'IMPORT_ONLY',
+                                blitz: 'IMPORT_ONLY',
+                                rapid: 'IMPORT_ONLY',
+                                classical: 'IMPORT_ONLY',
+                                unknown: 'IMPORT_ONLY',
+                            },
+                        },
+                    },
                 },
                 lichessUsername: 'Ada',
                 chesscomUsername: 'AdaChess',

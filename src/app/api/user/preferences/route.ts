@@ -8,12 +8,15 @@ import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import {
     ANALYSIS_NUMERIC_PREFERENCE_RULES,
-    AUTO_ANALYSIS_BACKLOG_MODES,
-    AUTO_ANALYSIS_PROVIDER_KEYS,
     AUTO_ANALYSIS_RESULT_SCOPES,
-    AUTO_ANALYSIS_TIME_CONTROL_KEYS,
     canonicalPreferences,
+    gameAutomationHasAutomaticAnalysis,
+    GAME_AUTOMATION_EXISTING_GAME_SCOPES,
+    GAME_AUTOMATION_MODES,
+    GAME_AUTOMATION_PROVIDER_KEYS,
+    GAME_AUTOMATION_TIME_CONTROL_KEYS,
     mergePreferences,
+    providerImportPolicyHash,
     TRAINING_SESSION_MIXES,
     validateAnalysisNumericPreference,
     type AnalysisNumericPreferenceKey,
@@ -35,9 +38,6 @@ import {
 export const runtime = 'nodejs';
 const MAX_PREFERENCES_BODY_BYTES = 256_000;
 
-const BOOLEAN_PREF_KEYS = new Set<keyof PartialPreferences>([
-    'autoSyncEnabled',
-]);
 const FILTER_STRING_KEYS = new Set(['lichessUsername', 'chesscomUsername']);
 
 function isBlankOrIntegerInRange(
@@ -63,19 +63,13 @@ function validatePreferenceCrossFields(
     if (minElo && maxElo && Number(minElo) > Number(maxElo)) {
         return 'filters.minElo must not exceed filters.maxElo';
     }
-    const auto = preferences.autoAnalysis;
+    const auto = preferences.gameAutomation.analysis;
     if (
         auto.dailyCap !== null &&
         auto.monthlyCap !== null &&
         auto.dailyCap > auto.monthlyCap
     ) {
-        return 'autoAnalysis.dailyCap must not exceed autoAnalysis.monthlyCap';
-    }
-    if (auto.enabled && !Object.values(auto.providers).some(Boolean)) {
-        return 'autoAnalysis requires at least one provider when enabled';
-    }
-    if (auto.enabled && !Object.values(auto.timeControls).some(Boolean)) {
-        return 'autoAnalysis requires at least one time control when enabled';
+        return 'gameAutomation.analysis.dailyCap must not exceed gameAutomation.analysis.monthlyCap';
     }
     return null;
 }
@@ -101,137 +95,176 @@ function validatedInteger(
     return { value: raw };
 }
 
-function validateAutoAnalysisPatch(
+function validateGameAutomationPatch(
     raw: Record<string, unknown>
 ):
-    | { value: NonNullable<PartialPreferences['autoAnalysis']> }
+    | { value: NonNullable<PartialPreferences['gameAutomation']> }
     | { error: string } {
-    const value: NonNullable<PartialPreferences['autoAnalysis']> = {};
+    const value: NonNullable<PartialPreferences['gameAutomation']> = {};
     for (const [key, nestedRaw] of Object.entries(raw)) {
-        if (key === 'enabledAt') {
-            return { error: 'autoAnalysis.enabledAt is server-controlled' };
-        }
-        if (key === 'enabled' || key === 'ratedOnly') {
+        if (key === 'paused') {
             if (typeof nestedRaw !== 'boolean') {
-                return { error: `Invalid autoAnalysis.${key}` };
+                return { error: 'Invalid gameAutomation.paused' };
             }
-            value[key] = nestedRaw;
+            value.paused = nestedRaw;
             continue;
         }
-        if (key === 'providers') {
+        if (key === 'rules') {
             if (!isRecord(nestedRaw)) {
-                return { error: 'Invalid autoAnalysis.providers' };
+                return { error: 'Invalid gameAutomation.rules' };
             }
-            const providers: NonNullable<
-                NonNullable<PartialPreferences['autoAnalysis']>['providers']
+            const rules: NonNullable<
+                NonNullable<PartialPreferences['gameAutomation']>['rules']
             > = {};
-            for (const [provider, enabled] of Object.entries(nestedRaw)) {
+            for (const [provider, rawProviderRules] of Object.entries(
+                nestedRaw
+            )) {
                 if (
-                    !AUTO_ANALYSIS_PROVIDER_KEYS.includes(
-                        provider as (typeof AUTO_ANALYSIS_PROVIDER_KEYS)[number]
+                    !GAME_AUTOMATION_PROVIDER_KEYS.includes(
+                        provider as (typeof GAME_AUTOMATION_PROVIDER_KEYS)[number]
                     )
                 ) {
                     return {
-                        error: `Unknown autoAnalysis.providers.${provider}`,
+                        error: `Unknown gameAutomation.rules.${provider}`,
                     };
                 }
-                if (typeof enabled !== 'boolean') {
+                if (!isRecord(rawProviderRules)) {
                     return {
-                        error: `Invalid autoAnalysis.providers.${provider}`,
+                        error: `Invalid gameAutomation.rules.${provider}`,
                     };
                 }
-                providers[
-                    provider as (typeof AUTO_ANALYSIS_PROVIDER_KEYS)[number]
-                ] = enabled;
+                const providerKey =
+                    provider as (typeof GAME_AUTOMATION_PROVIDER_KEYS)[number];
+                const providerRules: Partial<Record<
+                    (typeof GAME_AUTOMATION_TIME_CONTROL_KEYS)[number],
+                    (typeof GAME_AUTOMATION_MODES)[number]
+                >> = {};
+                for (const [timeControl, mode] of Object.entries(
+                    rawProviderRules
+                )) {
+                    if (
+                        !GAME_AUTOMATION_TIME_CONTROL_KEYS.includes(
+                            timeControl as (typeof GAME_AUTOMATION_TIME_CONTROL_KEYS)[number]
+                        )
+                    ) {
+                        return {
+                            error: `Unknown gameAutomation.rules.${provider}.${timeControl}`,
+                        };
+                    }
+                    if (
+                        typeof mode !== 'string' ||
+                        !GAME_AUTOMATION_MODES.includes(
+                            mode as (typeof GAME_AUTOMATION_MODES)[number]
+                        )
+                    ) {
+                        return {
+                            error: `Invalid gameAutomation.rules.${provider}.${timeControl}`,
+                        };
+                    }
+                    providerRules[
+                        timeControl as (typeof GAME_AUTOMATION_TIME_CONTROL_KEYS)[number]
+                    ] = mode as (typeof GAME_AUTOMATION_MODES)[number];
+                }
+                rules[providerKey] = providerRules;
             }
-            value.providers = providers;
+            value.rules = rules;
             continue;
         }
-        if (key === 'timeControls') {
+        if (key === 'analysis') {
             if (!isRecord(nestedRaw)) {
-                return { error: 'Invalid autoAnalysis.timeControls' };
+                return { error: 'Invalid gameAutomation.analysis' };
             }
-            const controls: NonNullable<
-                NonNullable<PartialPreferences['autoAnalysis']>['timeControls']
+            const analysis: NonNullable<
+                NonNullable<PartialPreferences['gameAutomation']>['analysis']
             > = {};
-            for (const [control, enabled] of Object.entries(nestedRaw)) {
-                if (
-                    !AUTO_ANALYSIS_TIME_CONTROL_KEYS.includes(
-                        control as (typeof AUTO_ANALYSIS_TIME_CONTROL_KEYS)[number]
-                    )
-                ) {
+            for (const [analysisKey, analysisRaw] of Object.entries(nestedRaw)) {
+                if (analysisKey === 'enabledAt') {
                     return {
-                        error: `Unknown autoAnalysis.timeControls.${control}`,
+                        error: 'gameAutomation.analysis.enabledAt is server-controlled',
                     };
                 }
-                if (typeof enabled !== 'boolean') {
-                    return {
-                        error: `Invalid autoAnalysis.timeControls.${control}`,
-                    };
+                if (analysisKey === 'ratedOnly') {
+                    if (typeof analysisRaw !== 'boolean') {
+                        return {
+                            error: 'Invalid gameAutomation.analysis.ratedOnly',
+                        };
+                    }
+                    analysis.ratedOnly = analysisRaw;
+                    continue;
                 }
-                controls[
-                    control as (typeof AUTO_ANALYSIS_TIME_CONTROL_KEYS)[number]
-                ] = enabled;
+                if (analysisKey === 'resultScope') {
+                    if (
+                        typeof analysisRaw !== 'string' ||
+                        !AUTO_ANALYSIS_RESULT_SCOPES.includes(
+                            analysisRaw as (typeof AUTO_ANALYSIS_RESULT_SCOPES)[number]
+                        )
+                    ) {
+                        return {
+                            error: 'Invalid gameAutomation.analysis.resultScope',
+                        };
+                    }
+                    analysis.resultScope =
+                        analysisRaw as (typeof AUTO_ANALYSIS_RESULT_SCOPES)[number];
+                    continue;
+                }
+                if (analysisKey === 'existingGames') {
+                    if (
+                        typeof analysisRaw !== 'string' ||
+                        !GAME_AUTOMATION_EXISTING_GAME_SCOPES.includes(
+                            analysisRaw as (typeof GAME_AUTOMATION_EXISTING_GAME_SCOPES)[number]
+                        )
+                    ) {
+                        return {
+                            error: 'Invalid gameAutomation.analysis.existingGames',
+                        };
+                    }
+                    analysis.existingGames = analysisRaw as (
+                        typeof GAME_AUTOMATION_EXISTING_GAME_SCOPES
+                    )[number];
+                    continue;
+                }
+                const integerRules = {
+                    minPlies: { min: 0, max: 1_000 },
+                    dailyCap: { min: 1, max: 10_000, nullable: true },
+                    monthlyCap: { min: 1, max: 100_000, nullable: true },
+                    reserveCredits: { min: 0, max: 100_000 },
+                } as const;
+                if (analysisKey in integerRules) {
+                    const parsed = validatedInteger(
+                        analysisRaw,
+                        `gameAutomation.analysis.${analysisKey}`,
+                        integerRules[analysisKey as keyof typeof integerRules]
+                    );
+                    if ('error' in parsed) return parsed;
+                    if (analysisKey === 'minPlies' && parsed.value !== null) {
+                        analysis.minPlies = parsed.value;
+                    } else if (analysisKey === 'dailyCap') {
+                        analysis.dailyCap = parsed.value;
+                    } else if (analysisKey === 'monthlyCap') {
+                        analysis.monthlyCap = parsed.value;
+                    } else if (
+                        analysisKey === 'reserveCredits' &&
+                        parsed.value !== null
+                    ) {
+                        analysis.reserveCredits = parsed.value;
+                    }
+                    continue;
+                }
+                return {
+                    error: `Unknown gameAutomation.analysis.${analysisKey}`,
+                };
             }
-            value.timeControls = controls;
+            value.analysis = analysis;
             continue;
         }
-        if (key === 'resultScope') {
-            if (
-                typeof nestedRaw !== 'string' ||
-                !AUTO_ANALYSIS_RESULT_SCOPES.includes(
-                    nestedRaw as (typeof AUTO_ANALYSIS_RESULT_SCOPES)[number]
-                )
-            ) {
-                return { error: 'Invalid autoAnalysis.resultScope' };
-            }
-            value.resultScope =
-                nestedRaw as (typeof AUTO_ANALYSIS_RESULT_SCOPES)[number];
-            continue;
-        }
-        if (key === 'backlogMode') {
-            if (
-                typeof nestedRaw !== 'string' ||
-                !AUTO_ANALYSIS_BACKLOG_MODES.includes(
-                    nestedRaw as (typeof AUTO_ANALYSIS_BACKLOG_MODES)[number]
-                )
-            ) {
-                return { error: 'Invalid autoAnalysis.backlogMode' };
-            }
-            value.backlogMode =
-                nestedRaw as (typeof AUTO_ANALYSIS_BACKLOG_MODES)[number];
-            continue;
-        }
-        const integerRules = {
-            minPlies: { min: 0, max: 1_000 },
-            dailyCap: { min: 1, max: 10_000, nullable: true },
-            monthlyCap: { min: 1, max: 100_000, nullable: true },
-            reserveCredits: { min: 0, max: 100_000 },
-        } as const;
-        if (key in integerRules) {
-            const parsed = validatedInteger(
-                nestedRaw,
-                `autoAnalysis.${key}`,
-                integerRules[key as keyof typeof integerRules]
-            );
-            if ('error' in parsed) return parsed;
-            if (key === 'minPlies' && parsed.value !== null) {
-                value.minPlies = parsed.value;
-            } else if (key === 'dailyCap') {
-                value.dailyCap = parsed.value;
-            } else if (key === 'monthlyCap') {
-                value.monthlyCap = parsed.value;
-            } else if (key === 'reserveCredits' && parsed.value !== null) {
-                value.reserveCredits = parsed.value;
-            }
-            continue;
-        }
-        return { error: `Unknown autoAnalysis.${key}` };
+        return { error: `Unknown gameAutomation.${key}` };
     }
     return { value };
 }
 
-function validatePreferencesPatch(value: unknown): { patch: PartialPreferences } | { error: string; status?: number } {
+function validatePreferencesPatch(
+    value: unknown
+): { patch: PartialPreferences } | { error: string; status?: number } {
     if (!isRecord(value)) return { error: 'Invalid preferences patch' };
 
     const patch = {} as PartialPreferences & Record<string, unknown>;
@@ -257,12 +290,6 @@ function validatePreferencesPatch(value: unknown): { patch: PartialPreferences }
                 };
             }
             patch[key] = normalized;
-            continue;
-        }
-
-        if (BOOLEAN_PREF_KEYS.has(key as keyof PartialPreferences)) {
-            if (typeof raw !== 'boolean') return { error: `Invalid ${key}` };
-            patch[key] = raw;
             continue;
         }
 
@@ -308,28 +335,11 @@ function validatePreferencesPatch(value: unknown): { patch: PartialPreferences }
             continue;
         }
 
-        if (key === 'autoSyncProviders') {
-            if (!isRecord(raw)) return { error: 'Invalid autoSyncProviders' };
-            const providers: NonNullable<PartialPreferences['autoSyncProviders']> =
-                {};
-            for (const [providerKey, providerRaw] of Object.entries(raw)) {
-                if (providerKey !== 'lichess' && providerKey !== 'chesscom') {
-                    return { error: `Unknown autoSyncProviders.${providerKey}` };
-                }
-                if (typeof providerRaw !== 'boolean') {
-                    return { error: `Invalid autoSyncProviders.${providerKey}` };
-                }
-                providers[providerKey] = providerRaw;
-            }
-            patch.autoSyncProviders = providers;
-            continue;
-        }
-
-        if (key === 'autoAnalysis') {
-            if (!isRecord(raw)) return { error: 'Invalid autoAnalysis' };
-            const parsedAutoAnalysis = validateAutoAnalysisPatch(raw);
-            if ('error' in parsedAutoAnalysis) return parsedAutoAnalysis;
-            patch.autoAnalysis = parsedAutoAnalysis.value;
+        if (key === 'gameAutomation') {
+            if (!isRecord(raw)) return { error: 'Invalid gameAutomation' };
+            const parsedAutomation = validateGameAutomationPatch(raw);
+            if ('error' in parsedAutomation) return parsedAutomation;
+            patch.gameAutomation = parsedAutomation.value;
             continue;
         }
 
@@ -339,9 +349,11 @@ function validatePreferencesPatch(value: unknown): { patch: PartialPreferences }
                 Record<string, unknown>;
             for (const [filterKey, filterRaw] of Object.entries(raw)) {
                 if (FILTER_STRING_KEYS.has(filterKey)) {
-                    const parsed = stringValue(filterRaw, `filters.${filterKey}`, {
-                        maxLength: 128,
-                    });
+                    const parsed = stringValue(
+                        filterRaw,
+                        `filters.${filterKey}`,
+                        { maxLength: 128 }
+                    );
                     if (!parsed.ok) return parsed;
                     filters[filterKey] = parsed.value ?? '';
                     continue;
@@ -401,7 +413,11 @@ function validatePreferencesPatch(value: unknown): { patch: PartialPreferences }
                     continue;
                 }
                 if (filterKey === 'rated') {
-                    if (filterRaw !== 'any' && filterRaw !== 'rated' && filterRaw !== 'casual') {
+                    if (
+                        filterRaw !== 'any' &&
+                        filterRaw !== 'rated' &&
+                        filterRaw !== 'casual'
+                    ) {
                         return { error: 'Invalid filters.rated' };
                     }
                     filters.rated = filterRaw;
@@ -479,7 +495,10 @@ export async function PUT(req: Request) {
         );
     }
     const next = result.preferences;
-    if (next.autoAnalysis.enabled && result.automationPolicyChanged) {
+    if (
+        gameAutomationHasAutomaticAnalysis(next.gameAutomation) &&
+        result.automationPolicyChanged
+    ) {
         scheduleAutoAnalysisWakeup(userId, 'preferences');
     }
 
@@ -503,16 +522,27 @@ async function updatePreferencesTransactionally(
                         current?.preferences ?? {}
                     );
                     let next = mergePreferences(previous, requestedPatch);
+                    const previousAnalysisEnabled =
+                        gameAutomationHasAutomaticAnalysis(
+                            previous.gameAutomation
+                        );
+                    const nextAnalysisEnabled =
+                        gameAutomationHasAutomaticAnalysis(
+                            next.gameAutomation
+                        );
                     const needsNewBacklogBoundary =
-                        next.autoAnalysis.enabled &&
-                        ((!previous.autoAnalysis.enabled &&
-                            next.autoAnalysis.enabled) ||
-                            (previous.autoAnalysis.backlogMode !== 'new' &&
-                                next.autoAnalysis.backlogMode === 'new'));
+                        nextAnalysisEnabled &&
+                        ((!previousAnalysisEnabled && nextAnalysisEnabled) ||
+                            (previous.gameAutomation.analysis.existingGames !==
+                                'new' &&
+                                next.gameAutomation.analysis.existingGames ===
+                                    'new'));
                     if (needsNewBacklogBoundary) {
                         next = mergePreferences(next, {
-                            autoAnalysis: {
-                                enabledAt: new Date().toISOString(),
+                            gameAutomation: {
+                                analysis: {
+                                    enabledAt: new Date().toISOString(),
+                                },
                             },
                         });
                     }
@@ -534,20 +564,51 @@ async function updatePreferencesTransactionally(
                                 next as unknown as Prisma.InputJsonValue,
                         },
                     });
-                    if (
-                        previous.autoAnalysis.enabled &&
-                        !next.autoAnalysis.enabled
-                    ) {
+                    if (requestedPatch.gameAutomation !== undefined) {
+                        // Queued auto-analysis jobs may reflect a cell that is
+                        // now Import only or Ignore. Reconciliation recreates
+                        // only jobs allowed by the new matrix.
                         await cancelQueuedAutoAnalysisJobsInTransaction({
                             tx,
                             userId,
                         });
+                        for (const provider of GAME_AUTOMATION_PROVIDER_KEYS) {
+                            const previousHash = providerImportPolicyHash(
+                                previous.gameAutomation,
+                                provider
+                            );
+                            const nextHash = providerImportPolicyHash(
+                                next.gameAutomation,
+                                provider
+                            );
+                            if (previousHash === nextHash) continue;
+                            await tx.providerSyncState.updateMany({
+                                where: {
+                                    userId,
+                                    provider:
+                                        provider === 'lichess'
+                                            ? 'LICHESS'
+                                            : 'CHESSCOM',
+                                },
+                                data: {
+                                    importPolicyHash: nextHash,
+                                    lastSyncedPlayedAt: null,
+                                    cursorSincePlayedAt: null,
+                                    cursorUntilPlayedAt: null,
+                                    cursorWindowEnd: null,
+                                    etag: null,
+                                    lastModified: null,
+                                    lastSuccessAt: null,
+                                    lastError: null,
+                                },
+                            });
+                        }
                     }
                     return {
                         preferences: next,
                         crossFieldError: null,
                         automationPolicyChanged:
-                            requestedPatch.autoAnalysis !== undefined,
+                            requestedPatch.gameAutomation !== undefined,
                     };
                 },
                 {

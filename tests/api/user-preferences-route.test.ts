@@ -10,6 +10,7 @@ import {
 
 type PreferencesRouteModule = typeof import('@/app/api/user/preferences/route');
 const scheduleAutoAnalysisWakeupMock = vi.fn();
+const cancelQueuedAutoAnalysisJobsMock = vi.fn();
 
 async function importRoute(): Promise<PreferencesRouteModule> {
     vi.resetModules();
@@ -18,16 +19,28 @@ async function importRoute(): Promise<PreferencesRouteModule> {
     vi.doMock('@/lib/services/autoAnalysisBacklog', () => ({
         scheduleAutoAnalysisWakeup: scheduleAutoAnalysisWakeupMock,
     }));
+    vi.doMock('@/lib/services/analysisJobs', () => ({
+        cancelQueuedAutoAnalysisJobsInTransaction:
+            cancelQueuedAutoAnalysisJobsMock,
+    }));
     return import('@/app/api/user/preferences/route');
 }
 
 function createPutRequest(body: unknown) {
     return createJsonRequest('http://localhost/api/user/preferences', body, {
         method: 'PUT',
-        headers: {
-            [EXPECTED_OWNER_HEADER]: 'user-1',
-        },
+        headers: { [EXPECTED_OWNER_HEADER]: 'user-1' },
     });
+}
+
+function providerRules(mode: 'IGNORE' | 'IMPORT_ONLY' | 'AUTO_ANALYZE') {
+    return {
+        bullet: mode,
+        blitz: mode,
+        rapid: mode,
+        classical: mode,
+        unknown: mode,
+    };
 }
 
 describe('PUT /api/user/preferences', () => {
@@ -36,6 +49,7 @@ describe('PUT /api/user/preferences', () => {
         setMockUserId('user-1');
         prismaMock.user.findUnique.mockResolvedValue({ preferences: {} });
         prismaMock.user.update.mockResolvedValue({ id: 'user-1' });
+        prismaMock.providerSyncState.updateMany.mockResolvedValue({ count: 1 });
         prismaMock.$transaction.mockImplementation(
             async (callback: unknown) =>
                 (callback as (tx: typeof prismaMock) => Promise<unknown>)(
@@ -47,7 +61,6 @@ describe('PUT /api/user/preferences', () => {
     it('rejects a missing or stale expected owner before parsing or writing', async () => {
         const route = await importRoute();
         const malformedBody = '{';
-
         const missing = await route.PUT(
             new Request('http://localhost/api/user/preferences', {
                 method: 'PUT',
@@ -72,458 +85,181 @@ describe('PUT /api/user/preferences', () => {
             code: 'OWNER_MISMATCH',
         });
         expect(prismaMock.$transaction).not.toHaveBeenCalled();
-        expect(prismaMock.user.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('rejects removed split automation fields instead of migrating them', async () => {
+        const route = await importRoute();
+        for (const body of [
+            { autoSyncEnabled: false },
+            { autoSyncProviders: { lichess: true } },
+            { autoAnalysis: { enabled: true } },
+        ]) {
+            const response = await route.PUT(createPutRequest(body));
+            expect(response.status).toBe(400);
+        }
         expect(prismaMock.user.update).not.toHaveBeenCalled();
     });
 
-    it('rejects unknown preference keys before writing', async () => {
+    it('strictly validates automation providers, time controls and modes', async () => {
         const route = await importRoute();
-
-        const response = await route.PUT(createPutRequest({ admin: true }));
-
-        expect(response.status).toBe(400);
-        await expect(readJson(response)).resolves.toEqual({
-            error: 'Unknown preference admin',
-        });
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
-    });
-
-    it('rejects invalid patch shapes before writing', async () => {
-        const route = await importRoute();
-
-        const response = await route.PUT(createPutRequest(null));
-
-        expect(response.status).toBe(400);
-        await expect(readJson(response)).resolves.toEqual({
-            error: 'Invalid preferences patch',
-        });
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
-    });
-
-    it('rejects extraction settings that can exhaust a server worker', async () => {
-        const route = await importRoute();
-
-        const response = await route.PUT(
-            createPutRequest({ analysisNodesPerPosition: '999999999' })
-        );
-
-        expect(response.status).toBe(400);
-        await expect(readJson(response)).resolves.toEqual({
-            error:
-                'Invalid analysisNodesPerPosition; expected 1000..10000000',
-        });
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
-    });
-
-    it('requires integer values for engine settings', async () => {
-        const route = await importRoute();
-
-        const response = await route.PUT(
-            createPutRequest({ themeLookaheadPlies: '3.5' })
-        );
-
-        expect(response.status).toBe(400);
-        await expect(readJson(response)).resolves.toEqual({
-            error: 'Invalid themeLookaheadPlies; expected 0..32',
-        });
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
-    });
-
-    it('enforces total payload size before reading or writing preferences', async () => {
-        const route = await importRoute();
-
-        const response = await route.PUT(
+        const unknownProvider = await route.PUT(
             createPutRequest({
-                unknownPreference: 'x'.repeat(260_000),
+                gameAutomation: { rules: { other: { rapid: 'IGNORE' } } },
+            })
+        );
+        const unknownTime = await route.PUT(
+            createPutRequest({
+                gameAutomation: { rules: { lichess: { ultrabullet: 'IGNORE' } } },
+            })
+        );
+        const badMode = await route.PUT(
+            createPutRequest({
+                gameAutomation: { rules: { lichess: { rapid: 'MAYBE' } } },
             })
         );
 
-        expect(response.status).toBe(413);
-        expect(prismaMock.user.findUnique).not.toHaveBeenCalled();
+        expect(unknownProvider.status).toBe(400);
+        expect(unknownTime.status).toBe(400);
+        expect(badMode.status).toBe(400);
         expect(prismaMock.user.update).not.toHaveBeenCalled();
     });
 
-    it('requires strict calendar dates and bounded numeric filters', async () => {
+    it('keeps the automatic-analysis boundary server controlled', async () => {
         const route = await importRoute();
-
-        const invalidDate = await route.PUT(
-            createPutRequest({ filters: { since: '2026-02-30' } })
-        );
-        const invalidRating = await route.PUT(
-            createPutRequest({ filters: { minElo: '5001' } })
-        );
-        const invalidLimit = await route.PUT(
-            createPutRequest({ filters: { max: '1001' } })
-        );
-
-        expect(invalidDate.status).toBe(400);
-        expect(invalidRating.status).toBe(400);
-        expect(invalidLimit.status).toBe(400);
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
-    });
-
-    it('rejects inverted date and rating ranges', async () => {
-        const route = await importRoute();
-
-        const dateRange = await route.PUT(
+        const response = await route.PUT(
             createPutRequest({
-                filters: {
-                    since: '2026-08-01',
-                    until: '2026-07-01',
+                gameAutomation: {
+                    analysis: { enabledAt: '2026-08-01T00:00:00.000Z' },
                 },
             })
         );
-        const ratingRange = await route.PUT(
+        expect(response.status).toBe(400);
+        expect(prismaMock.user.update).not.toHaveBeenCalled();
+    });
+
+    it('saves the full unified matrix and resets changed import cursors', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(
             createPutRequest({
-                filters: { minElo: '2000', maxElo: '1500' },
+                gameAutomation: {
+                    paused: false,
+                    rules: {
+                        lichess: {
+                            bullet: 'IGNORE',
+                            blitz: 'IMPORT_ONLY',
+                            rapid: 'AUTO_ANALYZE',
+                            classical: 'AUTO_ANALYZE',
+                            unknown: 'IGNORE',
+                        },
+                        chesscom: providerRules('IGNORE'),
+                    },
+                    analysis: {
+                        resultScope: 'losses',
+                        ratedOnly: false,
+                        minPlies: 12,
+                        dailyCap: 3,
+                        monthlyCap: 20,
+                        reserveCredits: 4,
+                        existingGames: 'all',
+                    },
+                },
+            })
+        );
+        const body = await readJson<{
+            ownerId: string;
+            preferences: {
+                gameAutomation: {
+                    rules: Record<string, Record<string, string>>;
+                    analysis: { resultScope: string; enabledAt: string | null };
+                };
+            };
+        }>(response);
+
+        expect(response.status).toBe(200);
+        expect(body.ownerId).toBe('user-1');
+        expect(body.preferences.gameAutomation.rules.lichess).toMatchObject({
+            bullet: 'IGNORE',
+            blitz: 'IMPORT_ONLY',
+            rapid: 'AUTO_ANALYZE',
+        });
+        expect(body.preferences.gameAutomation.analysis.resultScope).toBe(
+            'losses'
+        );
+        expect(cancelQueuedAutoAnalysisJobsMock).toHaveBeenCalledWith({
+            tx: prismaMock,
+            userId: 'user-1',
+        });
+        expect(prismaMock.providerSyncState.updateMany).toHaveBeenCalledTimes(2);
+        expect(scheduleAutoAnalysisWakeupMock).toHaveBeenCalledWith(
+            'user-1',
+            'preferences'
+        );
+    });
+
+    it('sets a fresh boundary when automatic analysis is first enabled', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(
+            createPutRequest({
+                gameAutomation: {
+                    rules: { lichess: { rapid: 'AUTO_ANALYZE' } },
+                    analysis: { existingGames: 'new' },
+                },
+            })
+        );
+        const body = await readJson<{
+            preferences: {
+                gameAutomation: { analysis: { enabledAt: string | null } };
+            };
+        }>(response);
+
+        expect(response.status).toBe(200);
+        expect(body.preferences.gameAutomation.analysis.enabledAt).toEqual(
+            expect.any(String)
+        );
+    });
+
+    it('does not wake analysis when all selected modes are import-only', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(
+            createPutRequest({
+                gameAutomation: {
+                    rules: { lichess: providerRules('IMPORT_ONLY') },
+                },
             })
         );
 
-        expect(dateRange.status).toBe(400);
-        expect(ratingRange.status).toBe(400);
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
+        expect(response.status).toBe(200);
+        expect(scheduleAutoAnalysisWakeupMock).not.toHaveBeenCalled();
     });
 
-    it('rejects removed library state instead of accepting legacy records', async () => {
+    it('rejects inverted personal analysis caps', async () => {
         const route = await importRoute();
-
-        const response = await route.PUT(
-            createPutRequest({ puzzles: [{ arbitrary: 'json' }] })
-        );
-
-        expect(response.status).toBe(400);
-        await expect(readJson(response)).resolves.toEqual({
-            error: 'Unknown preference puzzles',
-        });
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
-    });
-
-    it('rejects deprecated extraction preferences instead of adapting them', async () => {
-        const route = await importRoute();
-
-        const response = await route.PUT(
-            createPutRequest({ puzzleMode: 'punishBlunder' })
-        );
-
-        expect(response.status).toBe(400);
-        await expect(readJson(response)).resolves.toEqual({
-            error: 'Unknown preference puzzleMode',
-        });
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
-    });
-
-    it('validates the user-facing training controls', async () => {
-        const route = await importRoute();
-
-        const invalidCoverage = await route.PUT(
-            createPutRequest({ trainingCoveragePreset: 'EVERYTHING' })
-        );
-        const invalidTolerance = await route.PUT(
-            createPutRequest({ trainingGradingTolerance: 'ARBITRARY' })
-        );
-        const invalidMix = await route.PUT(
-            createPutRequest({ trainingSessionMix: 'TACTICS_ONLY' })
-        );
-
-        expect(invalidCoverage.status).toBe(400);
-        expect(invalidTolerance.status).toBe(400);
-        expect(invalidMix.status).toBe(400);
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
-    });
-
-    it('saves a validated partial preferences patch', async () => {
-        const route = await importRoute();
-
         const response = await route.PUT(
             createPutRequest({
+                gameAutomation: {
+                    analysis: { dailyCap: 20, monthlyCap: 10 },
+                },
+            })
+        );
+        expect(response.status).toBe(400);
+        expect(prismaMock.user.update).not.toHaveBeenCalled();
+    });
+
+    it('validates extraction settings independently', async () => {
+        const route = await importRoute();
+        const invalid = await route.PUT(
+            createPutRequest({ analysisNodesPerPosition: '999999999' })
+        );
+        const valid = await route.PUT(
+            createPutRequest({
                 analysisNodesPerPosition: '300000',
-                confirmationNodes: '500000',
-                themeLookaheadPlies: '6',
                 trainingCoveragePreset: 'BALANCED',
-                trainingGradingTolerance: 'LENIENT',
-                trainingSessionMix: 'MY_MISTAKES',
                 filters: { timeClass: 'rapid', max: '50' },
             })
         );
-        const body = await readJson<{
-            ownerId: string;
-            preferences: Record<string, unknown>;
-        }>(
-            response
-        );
 
-        expect(response.status).toBe(200);
-        expect(body.ownerId).toBe('user-1');
-        expect(body.preferences).toMatchObject({
-            analysisNodesPerPosition: '300000',
-            confirmationNodes: '500000',
-            themeLookaheadPlies: '6',
-            trainingCoveragePreset: 'BALANCED',
-            trainingGradingTolerance: 'LENIENT',
-            trainingSessionMix: 'MY_MISTAKES',
-            filters: expect.objectContaining({ timeClass: 'rapid', max: '50' }),
-        });
-        expect(prismaMock.user.update).toHaveBeenCalledWith(
-            expect.objectContaining({
-                where: { id: 'user-1' },
-                data: {
-                    preferences: expect.objectContaining({
-                        analysisNodesPerPosition: '300000',
-                    }),
-                },
-            })
-        );
-    });
-
-    it('validates and saves auto-sync preferences', async () => {
-        const route = await importRoute();
-
-        const response = await route.PUT(
-            createPutRequest({
-                autoSyncEnabled: false,
-                autoAnalysis: { enabled: true },
-                autoSyncProviders: { lichess: true, chesscom: false },
-            })
-        );
-        const body = await readJson<{
-            ownerId: string;
-            preferences: Record<string, unknown>;
-        }>(
-            response
-        );
-
-        expect(response.status).toBe(200);
-        expect(body.ownerId).toBe('user-1');
-        expect(body.preferences).toMatchObject({
-            autoSyncEnabled: false,
-            autoSyncProviders: { lichess: true, chesscom: false },
-            autoAnalysis: expect.objectContaining({ enabled: true }),
-        });
-        expect(prismaMock.user.update).toHaveBeenCalledWith(
-            expect.objectContaining({
-                data: {
-                    preferences: expect.objectContaining({
-                        autoSyncEnabled: false,
-                        autoSyncProviders: expect.objectContaining({
-                            chesscom: false,
-                        }),
-                        autoAnalysis: expect.objectContaining({
-                            enabled: true,
-                        }),
-                    }),
-                },
-            })
-        );
-    });
-
-    it('validates and canonicalizes the complete auto-analysis policy', async () => {
-        const route = await importRoute();
-
-        const response = await route.PUT(
-            createPutRequest({
-                autoAnalysis: {
-                    enabled: true,
-                    providers: { lichess: true, chesscom: false },
-                    timeControls: {
-                        bullet: false,
-                        blitz: false,
-                        rapid: true,
-                        classical: false,
-                        unknown: false,
-                    },
-                    ratedOnly: true,
-                    resultScope: 'losses',
-                    minPlies: 12,
-                    dailyCap: 3,
-                    monthlyCap: 20,
-                    reserveCredits: 0,
-                    backlogMode: 'all',
-                },
-            })
-        );
-        const body = await readJson<{
-            ownerId: string;
-            preferences: {
-                autoAnalysis: Record<string, unknown>;
-            };
-        }>(response);
-
-        expect(response.status).toBe(200);
-        expect(body.ownerId).toBe('user-1');
-        expect(body.preferences.autoAnalysis).toMatchObject({
-            enabled: true,
-            reserveCredits: 0,
-            backlogMode: 'all',
-            enabledAt: expect.any(String),
-        });
-        expect(scheduleAutoAnalysisWakeupMock).toHaveBeenCalledWith(
-            'user-1',
-            'preferences'
-        );
-    });
-
-    it('rejects unknown, server-controlled, and removed legacy automation fields', async () => {
-        const route = await importRoute();
-
-        const unknown = await route.PUT(
-            createPutRequest({ autoAnalysis: { arbitrary: true } })
-        );
-        const timestamp = await route.PUT(
-            createPutRequest({
-                autoAnalysis: {
-                    enabledAt: '2026-07-01T00:00:00.000Z',
-                },
-            })
-        );
-        const unknownTopLevel = await route.PUT(
-            createPutRequest({ arbitraryAutomationFlag: true })
-        );
-
-        expect(unknown.status).toBe(400);
-        expect(timestamp.status).toBe(400);
-        expect(unknownTopLevel.status).toBe(400);
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
-    });
-
-    it('enforces automation policy cross-field invariants', async () => {
-        const route = await importRoute();
-
-        const invertedCaps = await route.PUT(
-            createPutRequest({
-                autoAnalysis: { dailyCap: 20, monthlyCap: 10 },
-            })
-        );
-        const noProviders = await route.PUT(
-            createPutRequest({
-                autoAnalysis: {
-                    enabled: true,
-                    providers: { lichess: false, chesscom: false },
-                },
-            })
-        );
-
-        expect(invertedCaps.status).toBe(400);
-        expect(noProviders.status).toBe(400);
-        expect(prismaMock.user.update).not.toHaveBeenCalled();
-    });
-
-    it('disables policy and cancellation in one transaction', async () => {
-        const route = await importRoute();
-        const current = defaultAutoAnalysisEnabled();
-        prismaMock.user.findUnique.mockResolvedValue({
-            preferences: current,
-        });
-        prismaMock.analysisJob.findMany.mockResolvedValue([]);
-        prismaMock.$transaction.mockImplementation(
-            async (callback: unknown) =>
-                (callback as (tx: typeof prismaMock) => Promise<unknown>)(
-                    prismaMock
-                )
-        );
-
-        const response = await route.PUT(
-            createPutRequest({ autoAnalysis: { enabled: false } })
-        );
-
-        expect(response.status).toBe(200);
-        expect(prismaMock.$transaction).toHaveBeenCalledOnce();
-        expect(prismaMock.user.update).toHaveBeenCalledWith(
-            expect.objectContaining({
-                data: {
-                    preferences: expect.objectContaining({
-                        autoAnalysis: expect.objectContaining({
-                            enabled: false,
-                        }),
-                    }),
-                },
-            })
-        );
-    });
-
-    it('wakes reconciliation after changing an enabled policy filter', async () => {
-        const route = await importRoute();
-        prismaMock.user.findUnique.mockResolvedValue({
-            preferences: defaultAutoAnalysisEnabled(),
-        });
-
-        const response = await route.PUT(
-            createPutRequest({
-                autoAnalysis: { ratedOnly: false },
-            })
-        );
-
-        expect(response.status).toBe(200);
-        expect(scheduleAutoAnalysisWakeupMock).toHaveBeenCalledWith(
-            'user-1',
-            'preferences'
-        );
-    });
-
-    it('sets a fresh eligibility boundary when an enabled policy changes from all to new', async () => {
-        const route = await importRoute();
-        prismaMock.user.findUnique.mockResolvedValue({
-            preferences: defaultAutoAnalysisEnabled({
-                backlogMode: 'all',
-                enabledAt: '2026-07-01T00:00:00.000Z',
-            }),
-        });
-
-        const response = await route.PUT(
-            createPutRequest({
-                autoAnalysis: { backlogMode: 'new' },
-            })
-        );
-        const body = await readJson<{
-            ownerId: string;
-            preferences: {
-                autoAnalysis: { backlogMode: string; enabledAt: string };
-            };
-        }>(response);
-
-        expect(response.status).toBe(200);
-        expect(body.preferences.autoAnalysis.backlogMode).toBe('new');
-        expect(body.preferences.autoAnalysis.enabledAt).not.toBe(
-            '2026-07-01T00:00:00.000Z'
-        );
-    });
-
-    it('retries a serializable write conflict and merges against the newly committed preferences', async () => {
-        const route = await importRoute();
-        prismaMock.$transaction
-            .mockRejectedValueOnce({ code: 'P2034' })
-            .mockImplementationOnce(
-                async (callback: unknown) =>
-                    (
-                        callback as (
-                            tx: typeof prismaMock
-                        ) => Promise<unknown>
-                    )(prismaMock)
-            );
-        prismaMock.user.findUnique.mockResolvedValue({
-            preferences: {
-                ...defaultAutoAnalysisEnabled(),
-                analysisNodesPerPosition: '777777',
-            },
-        });
-
-        const response = await route.PUT(
-            createPutRequest({
-                autoAnalysis: { ratedOnly: false },
-            })
-        );
-        const body = await readJson<{
-            preferences: {
-                analysisNodesPerPosition: string;
-                autoAnalysis: { ratedOnly: boolean };
-            };
-        }>(response);
-
-        expect(response.status).toBe(200);
-        expect(prismaMock.$transaction).toHaveBeenCalledTimes(2);
-        expect(body.preferences).toMatchObject({
-            analysisNodesPerPosition: '777777',
-            autoAnalysis: { ratedOnly: false },
-        });
+        expect(invalid.status).toBe(400);
+        expect(valid.status).toBe(200);
     });
 });
 
@@ -533,62 +269,37 @@ describe('GET /api/user/preferences', () => {
         setMockUserId('user-1');
     });
 
-    it('returns the nested canonical policy', async () => {
+    it('returns only the canonical unified automation policy', async () => {
         prismaMock.user.findUnique.mockResolvedValue({
             preferences: {
-                autoAnalysis: {
-                    enabled: false,
-                    providers: { lichess: false, chesscom: true },
-                    timeControls: { blitz: true, rapid: false },
+                gameAutomation: {
+                    paused: true,
+                    rules: {
+                        lichess: { rapid: 'AUTO_ANALYZE' },
+                        chesscom: { bullet: 'IGNORE' },
+                    },
                 },
+                autoAnalysis: { enabled: true },
             },
         });
         const route = await importRoute();
-
         const response = await route.GET();
         const body = await readJson<{
             ownerId: string;
-            preferences: {
-                autoAnalysis: {
-                    enabled: boolean;
-                    providers: Record<string, boolean>;
-                    timeControls: Record<string, boolean>;
+            preferences: Record<string, unknown> & {
+                gameAutomation: {
+                    paused: boolean;
+                    rules: Record<string, Record<string, string>>;
                 };
             };
         }>(response);
 
         expect(body.ownerId).toBe('user-1');
-        expect(body.preferences.autoAnalysis).toMatchObject({
-            enabled: false,
-            providers: { lichess: false, chesscom: true },
-            timeControls: { blitz: true, rapid: false },
-        });
+        expect(body.preferences.gameAutomation.paused).toBe(true);
+        expect(body.preferences.gameAutomation.rules.lichess.rapid).toBe(
+            'AUTO_ANALYZE'
+        );
+        expect(body.preferences).not.toHaveProperty('autoAnalysis');
+        expect(body.preferences).not.toHaveProperty('autoSyncEnabled');
     });
 });
-
-function defaultAutoAnalysisEnabled(
-    overrides: Record<string, unknown> = {}
-) {
-    return {
-        autoAnalysis: {
-            enabled: true,
-            providers: { lichess: true, chesscom: true },
-            timeControls: {
-                bullet: false,
-                blitz: false,
-                rapid: true,
-                classical: true,
-                unknown: false,
-            },
-            ratedOnly: true,
-            resultScope: 'draws',
-            minPlies: 20,
-            dailyCap: 10,
-            monthlyCap: 50,
-            reserveCredits: 10,
-            backlogMode: 'new',
-            enabledAt: '2026-07-01T00:00:00.000Z',
-            ...overrides,
-        },
-    };
-}

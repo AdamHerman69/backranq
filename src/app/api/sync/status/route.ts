@@ -39,7 +39,6 @@ export async function GET() {
         where: { userId },
         select: {
             provider: true,
-            enabled: true,
             lastSyncedPlayedAt: true,
             lastAttemptAt: true,
             lastSuccessAt: true,
@@ -57,7 +56,6 @@ export async function GET() {
         syncStates.map((state) => [
             state.provider === 'LICHESS' ? 'lichess' : 'chesscom',
             {
-                enabled: state.enabled,
                 lastSyncedPlayedAt:
                     state.lastSyncedPlayedAt?.toISOString() ?? null,
                 lastAttemptAt: state.lastAttemptAt?.toISOString() ?? null,
@@ -77,9 +75,9 @@ export async function GET() {
             lichess: lichessLatest?.playedAt?.toISOString() ?? null,
             chesscom: chesscomLatest?.playedAt?.toISOString() ?? null,
         },
-        autoSync: {
-            enabled: prefs.autoSyncEnabled,
-            providers: prefs.autoSyncProviders,
+        gameAutomation: {
+            paused: prefs.gameAutomation.paused,
+            rules: prefs.gameAutomation.rules,
             schedule: '0 3 * * *',
             states: {
                 lichess: stateByProvider.lichess ?? null,
