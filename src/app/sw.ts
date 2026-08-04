@@ -104,6 +104,42 @@ const serwist = new Serwist({
 
 serwist.addEventListeners();
 
+self.addEventListener('push', (event) => {
+    const payload = event.data?.json() as
+        | { title?: string; body?: string; href?: string; notificationId?: string }
+        | undefined;
+    if (!payload?.title) return;
+    event.waitUntil(
+        self.registration.showNotification(payload.title, {
+            body: payload.body,
+            icon: '/web-app-manifest-192x192.png',
+            badge: '/favicon-96x96.png',
+            tag: payload.notificationId,
+            data: {
+                href: payload.href ?? '/home',
+                notificationId: payload.notificationId,
+            },
+        })
+    );
+});
+
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    const href = String(event.notification.data?.href ?? '/home');
+    event.waitUntil(
+        self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (clients) => {
+            const target = new URL(href, self.location.origin).href;
+            for (const client of clients) {
+                if ('focus' in client && client.url.startsWith(self.location.origin)) {
+                    await client.navigate(target);
+                    return client.focus();
+                }
+            }
+            return self.clients.openWindow(target);
+        })
+    );
+});
+
 self.addEventListener('activate', (event) => {
     event.waitUntil(
         caches.keys().then((cacheNames) =>

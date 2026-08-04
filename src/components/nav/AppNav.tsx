@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { signOutAndClearCoachSession } from "@/lib/coach/signOut";
+import { NotificationBell } from "@/components/notifications/NotificationBell";
 
 type NavItem = {
   href: string;
@@ -190,6 +191,7 @@ export function AppNav() {
       </div>
 
       <div className="flex items-center gap-2">
+        <NotificationBell enabled={authed} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-9 px-2">

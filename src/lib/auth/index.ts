@@ -109,4 +109,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         },
     },
     ...authConfig,
+    events: {
+        async createUser({ user }) {
+            if (!user.id) return;
+            const { recordWelcome } = await import('@/lib/notifications/service');
+            const { dispatchPendingNotificationDeliveries } = await import(
+                '@/lib/notifications/delivery'
+            );
+            await recordWelcome(user.id).catch((error) => {
+                console.error('[notifications] welcome event was not recorded', error);
+            });
+            await dispatchPendingNotificationDeliveries().catch((error) => {
+                console.error('[notifications] delivery wakeup failed', error);
+            });
+        },
+    },
 });
