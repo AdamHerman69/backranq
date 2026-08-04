@@ -209,6 +209,41 @@ enum BillingPlan {
   PRO
 }
 
+enum NotificationType {
+  PRACTICE_READY
+  NEW_GAMES_SYNCED
+  ANALYSIS_FAILED
+  SYNC_FAILED
+  LOW_CREDITS
+  BILLING_ACTION_REQUIRED
+  WELCOME
+  WEEKLY_PROGRESS
+  PRODUCT_NEWS
+}
+
+enum NotificationChannel {
+  EMAIL
+  WEB_PUSH
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  PROCESSING
+  SENT
+  DELIVERED
+  FAILED
+  BOUNCED
+  COMPLAINED
+  SUPPRESSED
+  CANCELLED
+}
+
+enum NotificationDigestFrequency {
+  OFF
+  DAILY
+  WEEKLY
+}
+
 model User {
   id               String    @id @default(uuid()) @db.Uuid
   email            String?   @unique
@@ -221,26 +256,120 @@ model User {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  games                   AnalyzedGame[]
-  trainingMoments         TrainingMoment[]
-  trainingAttempts        TrainingAttempt[]
-  practiceExposures       PracticeExposure[]
-  attemptStatusEvents     TrainingAttemptStatusEvent[]
-  practiceReviewStates    PracticeReviewState[]
-  practiceReviewEvents    PracticeReviewEvent[]
-  progressAnalyticsEvents ProgressAnalyticsEvent[]
+  games                       AnalyzedGame[]
+  trainingMoments             TrainingMoment[]
+  trainingAttempts            TrainingAttempt[]
+  practiceExposures           PracticeExposure[]
+  attemptStatusEvents         TrainingAttemptStatusEvent[]
+  practiceReviewStates        PracticeReviewState[]
+  practiceReviewEvents        PracticeReviewEvent[]
+  progressAnalyticsEvents     ProgressAnalyticsEvent[]
   progressAnalyticsRateBucket ProgressAnalyticsRateBucket?
-  providerSyncStates      ProviderSyncState[]
-  historyImportQuotas     HistoryImportQuota[]
-  syncJobs                SyncJob[]
-  analysisJobs            AnalysisJob[]
-  analysisRuns            AnalysisRun[]
-  creditLedgerEntries     CreditLedgerEntry[]
-  billingAccount          BillingAccount?
+  providerSyncStates          ProviderSyncState[]
+  historyImportQuotas         HistoryImportQuota[]
+  syncJobs                    SyncJob[]
+  analysisJobs                AnalysisJob[]
+  analysisRuns                AnalysisRun[]
+  creditLedgerEntries         CreditLedgerEntry[]
+  billingAccount              BillingAccount?
+  notifications               Notification[]
+  notificationPreference      NotificationPreference?
+  notificationDeliveries      NotificationDelivery[]
+  pushSubscriptions           PushSubscription[]
 
   // NextAuth (Auth.js) relations
   accounts Account[]
   sessions Session[]
+}
+
+model NotificationPreference {
+  id                           String                      @id @default(uuid()) @db.Uuid
+  userId                       String                      @unique @db.Uuid
+  emailPracticeReady           Boolean                     @default(true)
+  emailAnalysisFailed          Boolean                     @default(false)
+  emailSyncSummary             Boolean                     @default(false)
+  emailBilling                 Boolean                     @default(true)
+  emailWeeklyProgress          Boolean                     @default(false)
+  emailProductNews             Boolean                     @default(false)
+  pushEnabled                  Boolean                     @default(false)
+  syncDigestFrequency          NotificationDigestFrequency @default(OFF)
+  timezone                     String                      @default("UTC")
+  digestHour                   Int                         @default(9)
+  productNewsConsentedAt       DateTime?
+  optionalEmailsUnsubscribedAt DateTime?
+  emailSuppressedAt            DateTime?
+  createdAt                    DateTime                    @default(now())
+  updatedAt                    DateTime                    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([emailWeeklyProgress, timezone, digestHour])
+  @@index([emailProductNews, productNewsConsentedAt])
+}
+
+model Notification {
+  id             String           @id @default(uuid()) @db.Uuid
+  userId         String           @db.Uuid
+  type           NotificationType
+  title          String
+  body           String           @db.Text
+  href           String?
+  metadata       Json             @default(dbgenerated("'{}'::jsonb"))
+  itemCount      Int              @default(1)
+  secondaryCount Int              @default(0)
+  dedupeKey      String           @unique
+  readAt         DateTime?
+  archivedAt     DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  user       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries NotificationDelivery[]
+
+  @@index([userId, readAt, createdAt])
+  @@index([userId, type, createdAt])
+  @@index([createdAt])
+}
+
+model NotificationDelivery {
+  id                String                     @id @default(uuid()) @db.Uuid
+  notificationId    String                     @db.Uuid
+  userId            String                     @db.Uuid
+  channel           NotificationChannel
+  status            NotificationDeliveryStatus @default(PENDING)
+  recipient         String?
+  scheduledFor      DateTime                   @default(now())
+  lockedUntil       DateTime?
+  attempts          Int                        @default(0)
+  providerMessageId String?                    @unique
+  lastError         String?                    @db.Text
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, channel])
+  @@index([status, scheduledFor])
+  @@index([userId, channel, createdAt])
+  @@index([lockedUntil])
+}
+
+model PushSubscription {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  endpoint  String   @unique @db.Text
+  p256dh    String   @db.Text
+  auth      String   @db.Text
+  userAgent String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model BillingAccount {
@@ -365,15 +494,15 @@ model ProviderSyncState {
 }
 
 model HistoryImportQuota {
-  id                 String   @id @default(uuid()) @db.Uuid
-  userId             String   @db.Uuid
+  id                 String    @id @default(uuid()) @db.Uuid
+  userId             String    @db.Uuid
   provider           Provider
   usernameNormalized String
-  createdCount       Int      @default(0)
+  createdCount       Int       @default(0)
   fetchLeaseToken    String?
   fetchLeaseUntil    DateTime?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

@@ -26,7 +26,18 @@ export type BackranqQueueMessage =
           cursor?: string;
       }
     | { type: 'dispatch-analysis'; requestedAt: string }
-    | { type: 'analysis-job'; jobId: string; dispatchToken: string };
+    | { type: 'analysis-job'; jobId: string; dispatchToken: string }
+    | { type: 'notification-delivery'; deliveryId: string }
+    | { type: 'notification-sweep'; requestedAt: string }
+    | {
+          type: 'notification-maintenance';
+          referenceAt: string;
+          since: string;
+          analysisCursor: string | null;
+          syncCursor: string | null;
+          userCursor: string | null;
+          weeklyCursor: string | null;
+      };
 
 export type BackranqQueuePublishResult = {
     queued: boolean;
@@ -48,7 +59,11 @@ function queueDisabled() {
 
 export async function publishBackranqQueueMessage(
     message: BackranqQueueMessage,
-    opts?: { idempotencyKey?: string; delaySeconds?: number }
+    opts?: {
+        idempotencyKey?: string;
+        delaySeconds?: number;
+        retentionSeconds?: number;
+    }
 ): Promise<BackranqQueuePublishResult> {
     if (queueDisabled()) {
         return {
@@ -61,7 +76,7 @@ export async function publishBackranqQueueMessage(
     try {
         const result = await queue.send(BACKRANQ_QUEUE_TOPIC, message, {
             idempotencyKey: opts?.idempotencyKey,
-            retentionSeconds: 24 * 60 * 60,
+            retentionSeconds: opts?.retentionSeconds ?? 24 * 60 * 60,
             delaySeconds: opts?.delaySeconds,
         });
         return { queued: true, messageId: result.messageId };

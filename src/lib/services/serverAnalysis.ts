@@ -23,6 +23,7 @@ import {
     releaseServerAnalysisCredits,
 } from '@/lib/services/billingAccounts';
 import { recordStaleAnalysisDelivery } from '@/lib/services/analysisOps';
+import { recordAnalysisFailed } from '@/lib/notifications/service';
 
 export type AnalyzeGameJobResult = {
     jobId: string;
@@ -278,6 +279,14 @@ export async function analyzeGameJob(
                 });
             }
         }
+        await recordAnalysisFailed({
+            userId: running.userId,
+            jobId: running.id,
+            gameId: running.gameId,
+            error: errorMessage(error),
+        }).catch((notificationError) => {
+            console.error('[notifications] analysis failure event was not recorded', notificationError);
+        });
         return {
             jobId: running.id,
             gameId: running.gameId,
