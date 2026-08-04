@@ -1,8 +1,5 @@
 import { NextResponse } from 'next/server';
-import {
-    generateDueWeeklyProgressNotifications,
-    reconcileRecentNotificationEvents,
-} from '@/lib/notifications/campaigns';
+import { runNotificationMaintenance } from '@/lib/notifications/campaigns';
 import { dispatchPendingNotificationDeliveries } from '@/lib/notifications/delivery';
 
 export const runtime = 'nodejs';
@@ -13,15 +10,14 @@ export async function GET(req: Request) {
     if (!secret || req.headers.get('authorization') !== `Bearer ${secret}`) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    const [weekly, reconciled] = await Promise.all([
-        generateDueWeeklyProgressNotifications(),
-        reconcileRecentNotificationEvents(),
-    ]);
+    const { weekly, reconciled, continuationQueued } =
+        await runNotificationMaintenance();
     const deliveries = await dispatchPendingNotificationDeliveries(100);
     return NextResponse.json({
         ok: true,
         weekly,
         reconciled,
+        continuationQueued,
         deliveries: deliveries.length,
     });
 }

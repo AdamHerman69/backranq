@@ -17,6 +17,8 @@ type Smtp2GoWebhook = {
     event?: string;
     email_id?: string;
     bounce?: string;
+    'X-Backranq-Delivery-Id'?: string;
+    'x-backranq-delivery-id'?: string;
 };
 
 export async function POST(req: Request) {
@@ -47,7 +49,7 @@ export async function POST(req: Request) {
     } catch {
         return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
     }
-    if (!event.email_id || !event.event) {
+    if (!event.event) {
         return NextResponse.json({ received: true });
     }
 
@@ -56,29 +58,54 @@ export async function POST(req: Request) {
     const mapping = deliveryMapping(event.event, hardBounce);
     if (!mapping) return NextResponse.json({ received: true });
 
-    const delivery = await prisma.notificationDelivery.findUnique({
-        where: { providerMessageId: event.email_id },
-        select: { userId: true },
-    });
-    if (!delivery) return NextResponse.json({ received: true });
+    const backranqDeliveryId =
+        event['X-Backranq-Delivery-Id'] ?? event['x-backranq-delivery-id'];
+    const delivery = event.email_id
+        ? await prisma.notificationDelivery.findUnique({
+              where: { providerMessageId: event.email_id },
+              select: { id: true, userId: true, status: true },
+          })
+        : null;
+    const resolvedDelivery =
+        delivery ??
+        (backranqDeliveryId
+            ? await prisma.notificationDelivery.findUnique({
+                  where: { id: backranqDeliveryId },
+                  select: { id: true, userId: true, status: true },
+              })
+            : null);
+    if (!resolvedDelivery) return NextResponse.json({ received: true });
 
     await prisma.$transaction(async (tx) => {
-        await tx.notificationDelivery.update({
-            where: { providerMessageId: event.email_id },
-            data: mapping,
+        await tx.notificationDelivery.updateMany({
+            where: {
+                id: resolvedDelivery.id,
+                status: { in: statusesPreceding(mapping.status) },
+            },
+            data: {
+                ...mapping,
+                ...(!delivery
+                    ? {
+                          sentAt: new Date(),
+                          ...(event.email_id
+                              ? { providerMessageId: event.email_id }
+                              : {}),
+                      }
+                    : {}),
+            },
         });
         if (hardBounce || event.event === 'spam') {
             await tx.notificationPreference.upsert({
-                where: { userId: delivery.userId },
+                where: { userId: resolvedDelivery.userId },
                 create: {
-                    userId: delivery.userId,
+                    userId: resolvedDelivery.userId,
                     emailSuppressedAt: new Date(),
                 },
                 update: { emailSuppressedAt: new Date() },
             });
             await tx.notificationDelivery.updateMany({
                 where: {
-                    userId: delivery.userId,
+                    userId: resolvedDelivery.userId,
                     channel: 'EMAIL',
                     status: 'PENDING',
                 },
@@ -86,9 +113,9 @@ export async function POST(req: Request) {
             });
         } else if (event.event === 'unsubscribe') {
             await tx.notificationPreference.upsert({
-                where: { userId: delivery.userId },
+                where: { userId: resolvedDelivery.userId },
                 create: {
-                    userId: delivery.userId,
+                    userId: resolvedDelivery.userId,
                     emailPracticeReady: false,
                     emailAnalysisFailed: false,
                     emailSyncSummary: false,
@@ -107,7 +134,7 @@ export async function POST(req: Request) {
             });
             await tx.notificationDelivery.updateMany({
                 where: {
-                    userId: delivery.userId,
+                    userId: resolvedDelivery.userId,
                     channel: 'EMAIL',
                     status: 'PENDING',
                     notification: { type: { in: [...OPTIONAL_TYPES] } },
@@ -117,6 +144,25 @@ export async function POST(req: Request) {
         }
     });
     return NextResponse.json({ received: true });
+}
+
+const STATUS_PRECEDENCE = {
+    PENDING: 0,
+    PROCESSING: 0,
+    SENT: 1,
+    FAILED: 2,
+    DELIVERED: 3,
+    BOUNCED: 4,
+    COMPLAINED: 5,
+    SUPPRESSED: 5,
+    CANCELLED: 5,
+} as const;
+
+function statusesPreceding(incoming: keyof typeof STATUS_PRECEDENCE) {
+    const incomingPrecedence = STATUS_PRECEDENCE[incoming];
+    return (Object.keys(STATUS_PRECEDENCE) as Array<keyof typeof STATUS_PRECEDENCE>).filter(
+        (status) => STATUS_PRECEDENCE[status] < incomingPrecedence
+    );
 }
 
 function authorized(header: string | null, secret: string) {

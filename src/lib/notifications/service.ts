@@ -1,4 +1,5 @@
 import type {
+    Notification,
     NotificationChannel,
     NotificationPreference,
     NotificationType,
@@ -80,7 +81,11 @@ function emailAllowed(
 export async function recordNotification(
     args: RecordNotificationArgs,
     db: DbClient = prisma
-) {
+): Promise<Notification> {
+    if (db === prisma) {
+        return prisma.$transaction((tx) => recordNotification(args, tx));
+    }
+
     const user = await db.user.findUnique({
         where: { id: args.userId },
         select: { email: true },

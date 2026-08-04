@@ -45,10 +45,15 @@ Connect it with a narrowly scoped API key stored in Vercel instead:
    - `BACKRANQ_APP_URL=https://app.example.com`
    - `NOTIFICATION_UNSUBSCRIBE_SECRET=<dedicated random secret>`
    - `SMTP2GO_WEBHOOK_SECRET=<another dedicated random secret>`
+   - `SMTP2GO_DAILY_SEND_LIMIT=30`
+   - `SMTP2GO_EMAILS_PER_DISPATCH=20`
+   - `SMTP2GO_TRANSACTIONAL_RESERVE=5`
 
    Mark secrets as sensitive. Existing `CRON_SECRET` and
    `BACKRANQ_ADMIN_API_SECRET` must also be configured.
-4. Deploy the application and its notification database migration so the
+4. Apply the additive production migration with `pnpm db:migrate:deploy`
+   **before** promoting or deploying application code that uses notifications.
+   The Vercel build does not run migrations. Then deploy the application so the
    production webhook URL exists.
 5. In **SMTP2GO → Settings → Webhooks → Manage Webhooks**, add:
 
@@ -58,6 +63,7 @@ Connect it with a narrowly scoped API key stored in Vercel instead:
    - Output type: `JSON`
    - User: the API key created for Backranq
    - Events: `Delivered`, `Bounce`, `Spam`, `Reject`, and `Unsubscribe`
+   - Email headers: `X-Backranq-Delivery-Id`
 
    Leave SMTP2GO's optional unsubscribe footer disabled. Backranq already adds
    its own visible link and one-click unsubscribe headers.
@@ -82,9 +88,17 @@ configuration is completed.
 
 The hourly `/api/cron/notifications` job creates due weekly summaries and wakes
 pending deliveries. Vercel Queue processes each delivery independently. The
-database claim lease and provider idempotency key make retries safe. Delivery
-webhooks update final status and suppress future email after a bounce, spam
-complaint, or provider suppression.
+database claim lease prevents normal concurrent retries. SMTP2GO does not offer
+a provider idempotency key for this endpoint, so any email whose request times
+out or loses its response is marked failed instead of retried and risking a
+duplicate. Explicit quota responses are deferred until the next UTC day. The
+configurable daily safety limit (30 by default, leaving headroom under the free
+monthly allowance) and per-dispatch cap (20 by default) pace traffic below the
+provider allowance. Five daily slots are reserved for billing-action messages,
+which are selected ahead of optional campaigns. Delivery webhooks use both
+SMTP2GO's email ID and the requested `X-Backranq-Delivery-Id` callback field,
+apply monotonic status precedence, and suppress future email after a hard bounce
+or spam complaint.
 
 The same hourly job reconciles recent terminal analysis/sync jobs and newly
 created users into deduplicated notifications. This repairs the outbox if a

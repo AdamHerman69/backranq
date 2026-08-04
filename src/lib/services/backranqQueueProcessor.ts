@@ -22,6 +22,7 @@ import {
     dispatchPendingNotificationDeliveries,
     processNotificationDelivery,
 } from '@/lib/notifications/delivery';
+import { runNotificationMaintenance } from '@/lib/notifications/campaigns';
 
 export async function processBackranqQueueMessage(message: BackranqQueueMessage) {
     if (message.type === 'notification-delivery') {
@@ -29,6 +30,16 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
     }
     if (message.type === 'notification-sweep') {
         return dispatchPendingNotificationDeliveries();
+    }
+    if (message.type === 'notification-maintenance') {
+        return runNotificationMaintenance({
+            referenceAt: new Date(message.referenceAt),
+            since: new Date(message.since),
+            analysisCursor: message.analysisCursor,
+            syncCursor: message.syncCursor,
+            userCursor: message.userCursor,
+            weeklyCursor: message.weeklyCursor,
+        });
     }
     if (message.type === 'sync-all') {
         const [sync, automation] = await Promise.all([
