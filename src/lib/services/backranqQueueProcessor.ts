@@ -18,8 +18,18 @@ import {
     reconcileAndDispatchAutoAnalysisBacklog,
     requestAutoAnalysisContinuationAfterTerminalJob,
 } from '@/lib/services/autoAnalysisBacklog';
+import {
+    dispatchPendingNotificationDeliveries,
+    processNotificationDelivery,
+} from '@/lib/notifications/delivery';
 
 export async function processBackranqQueueMessage(message: BackranqQueueMessage) {
+    if (message.type === 'notification-delivery') {
+        return processNotificationDelivery(message.deliveryId);
+    }
+    if (message.type === 'notification-sweep') {
+        return dispatchPendingNotificationDeliveries();
+    }
     if (message.type === 'sync-all') {
         const [sync, automation] = await Promise.all([
             dispatchPlannedSyncJobs(),
@@ -32,7 +42,8 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
     if (message.type === 'sync-job') {
         const sync = await processSyncJob(message.jobId);
         const dispatch = await dispatchQueuedAnalysisJobs();
-        return { sync, dispatch };
+        const notificationDispatch = await safeNotificationDispatch();
+        return { sync, dispatch, notificationDispatch };
     }
     if (message.type === 'reconcile-auto-analysis') {
         return reconcileAndDispatchAutoAnalysisBacklog(message.userId, {
@@ -87,14 +98,25 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
                       retryAt: analysis.retryAt,
                   })
                 : null;
+        const notificationDispatch = await safeNotificationDispatch();
         return {
             analysis,
             dispatch,
             autoAnalysisContinuation,
             retryWakeup,
+            notificationDispatch,
         };
     }
     throw new Error('Unknown queue message');
+}
+
+async function safeNotificationDispatch() {
+    try {
+        return await dispatchPendingNotificationDeliveries();
+    } catch (error) {
+        console.error('[notifications] delivery wakeup failed', error);
+        return [];
+    }
 }
 
 async function scheduleRetryWakeup(args: { jobId: string; retryAt: Date }) {

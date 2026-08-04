@@ -26,7 +26,9 @@ export type BackranqQueueMessage =
           cursor?: string;
       }
     | { type: 'dispatch-analysis'; requestedAt: string }
-    | { type: 'analysis-job'; jobId: string; dispatchToken: string };
+    | { type: 'analysis-job'; jobId: string; dispatchToken: string }
+    | { type: 'notification-delivery'; deliveryId: string }
+    | { type: 'notification-sweep'; requestedAt: string };
 
 export type BackranqQueuePublishResult = {
     queued: boolean;

@@ -8,6 +8,10 @@ import {
     type PreferencesSchema,
 } from '@/lib/preferences';
 import {
+    recordSyncCompleted,
+    recordSyncFailed,
+} from '@/lib/notifications/service';
+import {
     StaleSyncJobLeaseError,
     syncUserProvider,
     type SyncProviderResult,
@@ -515,6 +519,15 @@ export async function processSyncJob(
             if (retried.stale) return staleProcessResult(job);
             if (retried.status === 'QUEUED') {
                 await publishSyncJobWakeup(job.id, now);
+            } else {
+                await recordSyncFailed({
+                    userId: job.userId,
+                    jobId: job.id,
+                    provider: job.provider,
+                    error: result.error,
+                }).catch((notificationError) => {
+                    console.error('[notifications] sync failure event was not recorded', notificationError);
+                });
             }
             return { jobId: job.id, provider: job.provider, result };
         }
@@ -547,26 +560,40 @@ export async function processSyncJob(
             await publishSyncJobWakeup(job.id, now);
             return { jobId: job.id, provider: job.provider, result };
         }
-        const completed = await prisma.syncJob.updateMany({
-            where: {
-                id: job.id,
-                status: 'RUNNING',
-                leaseToken,
-            },
-            data: {
-                status: 'SUCCEEDED',
-                completedAt: now,
-                lockedUntil: null,
-                leaseToken: null,
-                lastError: null,
-                fetchedCount: { increment: result.fetched },
-                savedCount: { increment: result.saved },
-                createdCount: { increment: result.created },
-                updatedCount: { increment: result.updated },
-                queuedAnalysisCount: {
-                    increment: result.queuedAnalysis,
+        const completed = await prisma.$transaction(async (tx) => {
+            const updated = await tx.syncJob.updateMany({
+                where: {
+                    id: job.id,
+                    status: 'RUNNING',
+                    leaseToken,
                 },
-            },
+                data: {
+                    status: 'SUCCEEDED',
+                    completedAt: now,
+                    lockedUntil: null,
+                    leaseToken: null,
+                    lastError: null,
+                    fetchedCount: { increment: result.fetched },
+                    savedCount: { increment: result.saved },
+                    createdCount: { increment: result.created },
+                    updatedCount: { increment: result.updated },
+                    queuedAnalysisCount: {
+                        increment: result.queuedAnalysis,
+                    },
+                },
+            });
+            if (updated.count === 1) {
+                await recordSyncCompleted(
+                    {
+                        userId: job.userId,
+                        jobId: job.id,
+                        provider: job.provider,
+                        newGames: job.createdCount + result.created,
+                    },
+                    tx
+                );
+            }
+            return updated;
         });
         if (completed.count !== 1) return staleProcessResult(job);
         return { jobId: job.id, provider: job.provider, result };
@@ -583,6 +610,15 @@ export async function processSyncJob(
         if (retried.stale) return staleProcessResult(job);
         if (retried.status === 'QUEUED') {
             await publishSyncJobWakeup(job.id, now);
+        } else {
+            await recordSyncFailed({
+                userId: job.userId,
+                jobId: job.id,
+                provider: job.provider,
+                error: errorMessage(error),
+            }).catch((notificationError) => {
+                console.error('[notifications] sync failure event was not recorded', notificationError);
+            });
         }
         return {
             jobId: job.id,

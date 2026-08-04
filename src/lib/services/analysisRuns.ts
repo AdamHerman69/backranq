@@ -14,6 +14,7 @@ import {
 } from '@/lib/api/trainingMomentPersistence';
 import { hashSourcePgn } from '@/lib/chess/pgn';
 import { prisma } from '@/lib/prisma';
+import { recordPracticeReadyInTransaction } from '@/lib/notifications/service';
 import type { AnalysisDispatchFence } from '@/lib/services/analysisDispatchFence';
 import type { TrainingMomentCandidate } from '@/lib/training/contracts';
 
@@ -26,6 +27,11 @@ type AnalysisRunTransactionClient = Pick<
     | 'solutionRevision'
     | 'solutionMoveAssessment'
     | 'trainingMomentObservation'
+    | 'user'
+    | 'notificationPreference'
+    | 'notification'
+    | 'notificationDelivery'
+    | 'pushSubscription'
 >;
 
 type AnalysisRunEngineInput = {
@@ -469,6 +475,13 @@ export async function completeAnalysisRunWithGameAnalysisInTransaction(
     if (runWrite.count !== 1) {
         throw new Error('Analysis run is not current or running');
     }
+    await recordPracticeReadyInTransaction({
+        tx: args.tx,
+        userId: run.userId,
+        gameId: run.gameId,
+        practicePositions: args.trainingMoments.length,
+        completedAt,
+    });
     const updatedRun = await args.tx.analysisRun.findUniqueOrThrow({
         where: { id: run.id },
     });

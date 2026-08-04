@@ -8,6 +8,8 @@ import {
     applyStripeSubscription,
     markStripeSubscriptionDeleted,
 } from '@/lib/services/stripeBilling';
+import { recordBillingNotification } from '@/lib/notifications/service';
+import { dispatchPendingNotificationDeliveries } from '@/lib/notifications/delivery';
 
 export const runtime = 'nodejs';
 const STRIPE_WEBHOOK_PROCESSING_LEASE_MS = 5 * 60 * 1_000;
@@ -209,12 +211,43 @@ async function handleStripeEvent(event: Stripe.Event) {
             );
             return;
         case 'invoice.paid':
-        case 'invoice.payment_failed':
             await syncSubscriptionFromInvoice(
                 event.data.object as Stripe.Invoice,
                 eventFence
             );
             return;
+        case 'invoice.payment_failed': {
+            const invoice = event.data.object as Stripe.Invoice;
+            await syncSubscriptionFromInvoice(invoice, eventFence);
+            const customerId =
+                typeof invoice.customer === 'string'
+                    ? invoice.customer
+                    : invoice.customer?.id;
+            if (customerId) {
+                const account = await prisma.billingAccount.findUnique({
+                    where: { stripeCustomerId: customerId },
+                    select: { userId: true },
+                });
+                if (account) {
+                    await recordBillingNotification({
+                        userId: account.userId,
+                        eventId: event.id,
+                        type: 'BILLING_ACTION_REQUIRED',
+                        title: 'Your Backranq payment failed',
+                        body: 'Update your payment method to keep paid features active.',
+                    });
+                    await dispatchPendingNotificationDeliveries().catch(
+                        (notificationError) => {
+                            console.error(
+                                '[notifications] delivery wakeup failed',
+                                notificationError
+                            );
+                        }
+                    );
+                }
+            }
+            return;
+        }
         default:
             return;
     }

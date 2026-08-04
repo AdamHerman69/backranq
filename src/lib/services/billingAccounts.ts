@@ -6,6 +6,7 @@ import type {
 } from '@prisma/client';
 import { Prisma as PrismaRuntime } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { recordBillingNotification } from '@/lib/notifications/service';
 import {
     CreditLedgerError,
     InsufficientConsumedCreditsError,
@@ -26,7 +27,13 @@ const AUTO_ANALYSIS_LEDGER_REASONS = ['auto-sync', 'auto-analysis'];
 
 export type BillingTransactionClient = Pick<
     Prisma.TransactionClient,
-    'billingAccount' | 'creditLedgerEntry'
+    | 'billingAccount'
+    | 'creditLedgerEntry'
+    | 'user'
+    | 'notificationPreference'
+    | 'notification'
+    | 'notificationDelivery'
+    | 'pushSubscription'
 >;
 
 type CreditLedgerReference = {
@@ -186,6 +193,22 @@ export async function reserveServerAnalysisCreditsInTransaction(
     const updatedAccount = await tx.billingAccount.findUniqueOrThrow({
         where: { userId: writeArgs.userId },
     });
+    if (
+        updatedAccount.serverCreditsBalance <=
+        updatedAccount.stopWhenCreditsBelow
+    ) {
+        const month = now.toISOString().slice(0, 7);
+        await recordBillingNotification(
+            {
+                userId: writeArgs.userId,
+                eventId: `low-credits:${month}`,
+                type: 'LOW_CREDITS',
+                title: 'Automatic analysis is paused',
+                body: `Your balance reached the ${updatedAccount.stopWhenCreditsBelow}-credit reserve. Add credits or lower the reserve to resume automatic analysis.`,
+            },
+            tx
+        );
+    }
     return createLedgerResult(tx, updatedAccount, 'RESERVED', writeArgs);
 }
 

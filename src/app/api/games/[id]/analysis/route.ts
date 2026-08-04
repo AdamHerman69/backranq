@@ -12,6 +12,7 @@ import {
     hashAnalysisConfig,
     SourcePgnChangedError,
 } from '@/lib/services/analysisRuns';
+import { dispatchPendingNotificationDeliveries } from '@/lib/notifications/delivery';
 import { Chess } from 'chess.js';
 import { moveToUci } from '@/lib/chess/utils';
 import {
@@ -438,6 +439,9 @@ export async function PUT(
                 trainingMoments: trainingMomentValidation.moments,
                 extractionManifest,
             },
+        });
+        await dispatchPendingNotificationDeliveries().catch((notificationError) => {
+            console.error('[notifications] delivery wakeup failed', notificationError);
         });
 
         return NextResponse.json({

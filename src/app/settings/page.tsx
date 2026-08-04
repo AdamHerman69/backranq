@@ -8,6 +8,7 @@ import { GameAutomationSettingsCard } from '@/components/settings/AutoSyncSettin
 import { BillingSettingsCard } from '@/components/settings/BillingSettingsCard';
 import { getOrCreateDefaultBillingAccount } from '@/lib/services/billingAccounts';
 import { PracticeDefaultsCard } from '@/components/settings/PracticeDefaultsCard';
+import { NotificationSettingsCard } from '@/components/settings/NotificationSettingsCard';
 
 export default async function SettingsPage() {
     const session = await auth();
@@ -70,6 +71,7 @@ export default async function SettingsPage() {
             </p>
 
             <GameAutomationSettingsCard ownerId={initialUser.id} />
+            <NotificationSettingsCard />
 
             <section id="billing" className="scroll-mt-24">
                 <BillingSettingsCard
