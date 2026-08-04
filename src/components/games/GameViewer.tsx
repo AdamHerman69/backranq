@@ -9,6 +9,7 @@ import {
     type MoveClassification,
     type GameAnalysis,
 } from '@/lib/analysis/classification';
+import type { ExtractionDecisionReason } from '@/lib/analysis/extractionReceipt';
 import {
     StockfishClient,
 } from '@/lib/analysis/stockfishClient';
@@ -159,6 +160,23 @@ function classificationAccent(c: MoveClassification): {
     }
 }
 
+function extractionReasonLabel(reason: ExtractionDecisionReason): string {
+    switch (reason) {
+        case 'SAVED':
+            return 'Saved as a practice position';
+        case 'FORCED_MOVE':
+            return 'Not saved: there was only one legal move';
+        case 'BELOW_COVERAGE_THRESHOLD':
+            return 'Not saved: the outcome difference was below your coverage threshold';
+        case 'BELOW_THRESHOLD_AFTER_CONFIRMATION':
+            return 'Not saved: deeper confirmation put the difference below your threshold';
+        case 'ANALYSIS_INCOMPLETE':
+            return 'Not saved: engine evidence was incomplete';
+        case 'VERIFICATION_UNSTABLE':
+            return 'Not saved yet: deeper verification remained unstable';
+    }
+}
+
 export function GameViewer({
     pgn,
     metaLabel,
@@ -260,6 +278,19 @@ export function GameViewer({
         if (!parsed) return 0;
         return clamp(ply, 0, parsed.positions.length - 1);
     }, [ply, parsed]);
+    const extractionReceiptByPly = useMemo(
+        () =>
+            new Map(
+                (analysis?.trainingExtraction?.decisions ?? []).map(
+                    (decision) => [decision.ply, decision] as const
+                )
+            ),
+        [analysis?.trainingExtraction?.decisions]
+    );
+    const activeExtractionReceipt =
+        clampedPly > 0
+            ? extractionReceiptByPly.get(clampedPly - 1)
+            : undefined;
 
     // Keep the active move visible in the move list, without scrolling the page.
     // `scrollIntoView()` can scroll the *window* which feels like the page is jumping.
@@ -553,16 +584,67 @@ export function GameViewer({
                         </div>
                     ) : null}
                     {analysis ? (
-                        <div className="flex flex-wrap items-center gap-2">
-                            <Badge variant="outline">
-                                ♔ {analysis.whiteAccuracy?.toFixed(1) ?? '—'}%
-                            </Badge>
-                            <Badge variant="outline">
-                                ♚ {analysis.blackAccuracy?.toFixed(1) ?? '—'}%
-                            </Badge>
+                        <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="outline">
+                                    ♔ {analysis.whiteAccuracy?.toFixed(1) ?? '—'}%
+                                </Badge>
+                                <Badge variant="outline">
+                                    ♚ {analysis.blackAccuracy?.toFixed(1) ?? '—'}%
+                                </Badge>
+                                {analysis.trainingExtraction ? (
+                                    <Badge variant="secondary">
+                                        {
+                                            analysis.trainingExtraction.summary
+                                                .savedPositions
+                                        }{' '}
+                                        practice positions from{' '}
+                                        {
+                                            analysis.trainingExtraction.summary
+                                                .userDecisions
+                                        }{' '}
+                                        decisions
+                                    </Badge>
+                                ) : null}
+                            </div>
+                            {analysis.trainingExtraction?.summary
+                                .unresolvedDecisions ? (
+                                <p className="text-xs text-amber-700 dark:text-amber-300">
+                                    {
+                                        analysis.trainingExtraction.summary
+                                            .unresolvedDecisions
+                                    }{' '}
+                                    decision(s) need stronger stable evidence.
+                                </p>
+                            ) : null}
                         </div>
                     ) : null}
                 </div>
+
+                {activeExtractionReceipt ? (
+                    <Card>
+                        <CardContent className="space-y-1 pt-4 text-sm">
+                            <div className="font-medium">
+                                {extractionReasonLabel(
+                                    activeExtractionReceipt.reason
+                                )}
+                            </div>
+                            {activeExtractionReceipt.winChanceLoss != null ||
+                            activeExtractionReceipt.cpLoss != null ? (
+                                <div className="text-xs text-muted-foreground">
+                                    {activeExtractionReceipt.winChanceLoss != null
+                                        ? `${(
+                                              activeExtractionReceipt.winChanceLoss *
+                                              100
+                                          ).toFixed(1)}% winning-chance loss`
+                                        : `${Math.round(
+                                              activeExtractionReceipt.cpLoss ?? 0
+                                          )} cp loss`}
+                                </div>
+                            ) : null}
+                        </CardContent>
+                    </Card>
+                ) : null}
 
                 <Card>
                     <CardHeader className="pb-3">
@@ -775,6 +857,15 @@ export function GameViewer({
                                             tooltipParts.push(
                                                 '📋 Personal practice position'
                                             );
+                                        const extractionReceipt =
+                                            extractionReceiptByPly.get(idx);
+                                        if (extractionReceipt) {
+                                            tooltipParts.push(
+                                                extractionReasonLabel(
+                                                    extractionReceipt.reason
+                                                )
+                                            );
+                                        }
 
                                         const accent = analyzedMove
                                             ? classificationAccent(

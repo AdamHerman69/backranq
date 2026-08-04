@@ -360,7 +360,7 @@ export class ServerStockfishClient implements StockfishEngine {
             opts.movetimeMs == null
                 ? undefined
                 : Math.max(1, Math.trunc(opts.movetimeMs));
-        const multiPv = Math.max(1, Math.min(8, Math.trunc(opts.multiPv ?? 1)));
+        const multiPv = Math.max(1, Math.min(16, Math.trunc(opts.multiPv ?? 1)));
         const timeoutMs = Math.max(
             1_000,
             Math.trunc(

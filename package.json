@@ -25,6 +25,10 @@
         "smoke:auth-session": "node scripts/seed-local-auth-session.mjs",
         "smoke:stockfish-browser": "node scripts/smoke-stockfish-browser.mjs",
         "benchmark:coach-engine": "node scripts/benchmark-coach-engine.mjs",
+        "quality:extract:refresh": "node scripts/run-extraction-quality-lab.mjs refresh",
+        "quality:extract:smoke": "node scripts/run-extraction-quality-lab.mjs smoke",
+        "quality:extract": "node scripts/run-extraction-quality-lab.mjs full",
+        "quality:extract:confirmation": "node scripts/run-extraction-quality-lab.mjs confirmation",
         "load:analysis-queue": "node scripts/simulate-analysis-queue-load.mjs",
         "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
         "postinstall": "prisma generate && node scripts/copy-stockfish-browser.mjs && node scripts/build-maia-browser.mjs"

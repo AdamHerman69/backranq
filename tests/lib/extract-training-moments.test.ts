@@ -119,6 +119,133 @@ const baseOptions: TrainingMomentExtractionOptions = {
 };
 
 describe('canonical training-moment extraction v2', () => {
+    it('escalates near-threshold confirmation and records a saved-decision receipt', async () => {
+        const start = new Chess().fen();
+        const requestedConfirmationNodes: number[] = [];
+        const engine = new FixtureEngine(
+            ({ fen }) =>
+                fen === start
+                    ? result({
+                          fen,
+                          bestMove: 'd2d4',
+                          pv: ['d2d4'],
+                          cp: 100,
+                      })
+                    : result({
+                          fen,
+                          bestMove: 'e7e5',
+                          pv: ['e7e5'],
+                          cp: 0,
+                      }),
+            ({ fen, nodes }) => {
+                requestedConfirmationNodes.push(nodes ?? 0);
+                return multi(fen, [
+                    { move: 'd2d4', cp: 100 },
+                    { move: 'g1f3', cp: 60 },
+                ]);
+            }
+        );
+
+        const output = await extractTrainingMomentsFromGames({
+            games: [game({ id: 'adaptive-confirmation', pgn: '1. e4 *' })],
+            selectedGameIds: new Set(['adaptive-confirmation']),
+            usernameByProvider: { lichess: 'adam' },
+            engine,
+            options: {
+                nodesPerPosition: 100,
+                confirmNodes: 200,
+                maxConfirmationNodes: 800,
+                minWinningChanceLoss: 0.09,
+                fallbackMinCpLoss: 100,
+                returnAnalysis: true,
+                verifyContinuations: false,
+            },
+        });
+
+        expect(requestedConfirmationNodes).toEqual([200, 400, 800]);
+        expect(output.moments).toHaveLength(1);
+        expect(
+            output.analysis?.get('adaptive-confirmation')
+                ?.trainingExtraction.decisions
+        ).toMatchObject([
+            {
+                ply: 0,
+                status: 'SAVED',
+                reason: 'SAVED',
+                confirmation: {
+                    stable: true,
+                    termination: 'STABLE',
+                    passes: [
+                        { nodes: 200 },
+                        { nodes: 400 },
+                        { nodes: 800 },
+                    ],
+                },
+            },
+        ]);
+    });
+
+    it('keeps a repeatedly disagreeing confirmation unresolved at the hard cap', async () => {
+        const start = new Chess().fen();
+        const scores = new Map([
+            [200, 100],
+            [400, 20],
+            [800, 100],
+        ]);
+        const engine = new FixtureEngine(
+            ({ fen }) =>
+                fen === start
+                    ? result({
+                          fen,
+                          bestMove: 'd2d4',
+                          pv: ['d2d4'],
+                          cp: 100,
+                      })
+                    : result({
+                          fen,
+                          bestMove: 'e7e5',
+                          pv: ['e7e5'],
+                          cp: 0,
+                      }),
+            ({ fen, nodes }) =>
+                multi(fen, [
+                    {
+                        move: 'd2d4',
+                        cp: scores.get(nodes ?? 0) ?? 100,
+                    },
+                ])
+        );
+
+        const output = await extractTrainingMomentsFromGames({
+            games: [game({ id: 'unstable-confirmation', pgn: '1. e4 *' })],
+            selectedGameIds: new Set(['unstable-confirmation']),
+            usernameByProvider: { lichess: 'adam' },
+            engine,
+            options: {
+                nodesPerPosition: 100,
+                confirmNodes: 200,
+                maxConfirmationNodes: 800,
+                minWinningChanceLoss: 0.09,
+                fallbackMinCpLoss: 100,
+                returnAnalysis: true,
+                verifyContinuations: false,
+            },
+        });
+
+        expect(output.moments).toHaveLength(0);
+        expect(
+            output.analysis?.get('unstable-confirmation')
+                ?.trainingExtraction.decisions[0]
+        ).toMatchObject({
+            status: 'UNRESOLVED',
+            reason: 'VERIFICATION_UNSTABLE',
+            confirmation: {
+                stable: false,
+                termination: 'MAX_BUDGET_UNSTABLE',
+            },
+        });
+    });
+
     it('recognizes en passant as a capture when tagging themes', () => {
         const fen =
             'rnbqkbnr/1pp1pppp/p7/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3';
@@ -896,17 +1023,20 @@ describe('canonical training-moment extraction v2', () => {
                 }),
             ],
         ]);
+        const requestedConfirmationNodes: number[] = [];
         const engine = new FixtureEngine(
             ({ fen }) => {
                 const value = evals.get(fen);
                 if (!value) throw new Error(`Unexpected FEN ${fen}`);
                 return value;
             },
-            ({ fen }) =>
-                multi(fen, [
+            ({ fen, nodes }) => {
+                requestedConfirmationNodes.push(nodes ?? 0);
+                return multi(fen, [
                     { move: 'd2d4', pv: ['d2d4', 'e5d4'], cp: 300 },
                     { move: 'f1c4', pv: ['f1c4', 'b8c6'], cp: 280 },
-                ])
+                ]);
+            }
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -914,9 +1044,15 @@ describe('canonical training-moment extraction v2', () => {
             selectedGameIds: new Set(['merged']),
             usernameByProvider: { lichess: 'adam' },
             engine,
-            options: baseOptions,
+            options: {
+                ...baseOptions,
+                confirmNodes: 200,
+                maxConfirmationNodes: 800,
+                returnAnalysis: true,
+            },
         });
 
+        expect(requestedConfirmationNodes).toEqual([200]);
         expect(output.moments).toHaveLength(1);
         expect(output.moments[0]).toMatchObject({
             decisionPly: 2,
@@ -926,6 +1062,20 @@ describe('canonical training-moment extraction v2', () => {
         expect(output.moments[0]?.lessonKinds).toEqual(
             expect.arrayContaining(['AVOID_MISTAKE', 'PUNISH_MISTAKE'])
         );
+        expect(
+            output.analysis
+                ?.get('merged')
+                ?.trainingExtraction.decisions.find(
+                    (decision) => decision.ply === 2
+                )
+        ).toMatchObject({
+            ply: 2,
+            status: 'SAVED',
+            confirmation: {
+                stable: true,
+                termination: 'STABLE',
+            },
+        });
     });
 
     it('confirms the user response loss rather than only the preceding opponent mistake', async () => {

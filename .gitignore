@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/artifacts/extraction-quality-lab/
 /playwright-report/
 /test-results/
 /.playwright-mcp/

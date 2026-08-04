@@ -249,13 +249,19 @@ try {
                         id: 'browser-smoke-endgame',
                         fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1',
                     },
+                    {
+                        id: 'browser-smoke-wide-frontier',
+                        fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                        multiPv: 10,
+                        maxNodes: 20_000,
+                    },
                 ];
                 const start = (job) => {
                     worker.postMessage({
                         type: 'start',
                         id: job.id,
                         fen: job.fen,
-                        multiPv: 2,
+                        multiPv: job.multiPv ?? 2,
                         maxNodes: job.maxNodes ?? 10_000,
                         emitIntervalMs: 50,
                     });
@@ -393,6 +399,11 @@ try {
             ? cancelled.map((entry) => entry.id)
             : []
     );
+    const wideFrontierSearch = Array.isArray(searches)
+        ? searches.find(
+              (search) => search.id === 'browser-smoke-wide-frontier'
+          )
+        : null;
     if (
         !result ||
         typeof result !== 'object' ||
@@ -407,7 +418,7 @@ try {
         result.identity.options?.UCI_ShowWDL !== true ||
         !String(result.identity.evalFile ?? '').endsWith('.nnue') ||
         !Array.isArray(searches) ||
-        searches.length !== 4 ||
+        searches.length !== 5 ||
         !Array.isArray(cancelled) ||
         cancelled.length !== 4 ||
         ![
@@ -424,7 +435,9 @@ try {
                 !Array.isArray(search.final?.lines) ||
                 search.final.lines.length < 1 ||
                 !(search.final.nodes >= 10_000)
-        )
+        ) ||
+        !wideFrontierSearch ||
+        wideFrontierSearch.final.lines.length < 9
     ) {
         throw new Error(
             `Unexpected browser engine result: ${JSON.stringify(result)}`

@@ -9,7 +9,7 @@
 let enginePromise = null;
 let engine = null;
 let needsNewGameBoundary = false;
-const runtimeRevision = 'stockfish-18.0.8-bridge-v2';
+const runtimeRevision = 'stockfish-18.0.8-bridge-v3';
 let identity = {
     name: 'Stockfish 18',
     version: '18.0.8',
@@ -323,7 +323,7 @@ function setActive(job) {
     activeJob = {
         id: job.id,
         fen: job.fen,
-        multiPv: Math.max(1, Math.min(8, job.multiPv | 0)),
+        multiPv: Math.max(1, Math.min(16, job.multiPv | 0)),
         rootMoves: job.rootMoves,
         minDepth:
             job.minDepth == null ? null : Math.max(1, Math.trunc(job.minDepth)),
@@ -581,7 +581,7 @@ self.onmessage = (ev) => {
         const multiPv = Math.max(
             1,
             Math.min(
-                rootMoves?.length ?? 8,
+                rootMoves?.length ?? 16,
                 Math.trunc(msg.multiPv ?? 1)
             )
         );

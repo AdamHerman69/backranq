@@ -130,7 +130,7 @@ export function isStructurallyCompleteMultiPvBundle(
 ): boolean {
     const requested = Math.max(
         1,
-        Math.min(8, Math.trunc(requestedMultiPv))
+        Math.min(16, Math.trunc(requestedMultiPv))
     );
     if (lines.length !== requested) return false;
 
@@ -420,7 +420,7 @@ export class StockfishClient implements StockfishEngine {
         const multiPv = Math.max(
             1,
             Math.min(
-                rootMoves?.length ?? 8,
+                rootMoves?.length ?? 16,
                 Math.trunc(opts.multiPv ?? 3)
             )
         );
@@ -478,7 +478,7 @@ export class StockfishClient implements StockfishEngine {
 
     startAnalyzeMultiPvStreaming(opts: {
         fen: string;
-        multiPv: number; // 1..8
+        multiPv: number; // 1..16
         minDepth?: number;
         maxDepth?: number;
         maxTimeMs?: number;
@@ -488,7 +488,7 @@ export class StockfishClient implements StockfishEngine {
         onDone?(): void;
     }): StreamingAnalysisHandle {
         const id = uid();
-        const multiPv = Math.max(1, Math.min(8, Math.trunc(opts.multiPv)));
+        const multiPv = Math.max(1, Math.min(16, Math.trunc(opts.multiPv)));
         const emitIntervalMs = Math.max(
             50,
             Math.trunc(opts.emitIntervalMs ?? 150)

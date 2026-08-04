@@ -1,5 +1,6 @@
 import type { Score } from './stockfishClient';
 import { scoreToOrderingCp } from './evaluation';
+import type { TrainingExtractionReceipt } from './extractionReceipt';
 
 /**
  * Move classification similar to chess.com game review.
@@ -48,6 +49,7 @@ export type GameAnalysis = {
     moves: AnalyzedMove[];
     whiteAccuracy?: number; // Overall accuracy percentage (0-100)
     blackAccuracy?: number;
+    trainingExtraction: TrainingExtractionReceipt;
     analyzedAt: string; // ISO timestamp
 };
 

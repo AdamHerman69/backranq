@@ -44,6 +44,43 @@ const validAnalysis: GameAnalysis = {
     analyzedAt: '2026-07-04T12:00:00.000Z',
     whiteAccuracy: 91.2,
     blackAccuracy: 84.5,
+    trainingExtraction: {
+        version: 1,
+        trainingSide: 'WHITE',
+        thresholds: {
+            minWinChanceLoss: 0.03,
+            fallbackMinCpLoss: 30,
+        },
+        budgets: {
+            scanNodes: 100_000,
+            confirmationBaseNodes: 200_000,
+            confirmationMaxNodes: 800_000,
+            multiPvStart: 5,
+            multiPvMax: 16,
+        },
+        summary: {
+            userDecisions: 1,
+            savedPositions: 0,
+            unresolvedDecisions: 0,
+            reasons: {
+                SAVED: 0,
+                FORCED_MOVE: 0,
+                BELOW_COVERAGE_THRESHOLD: 1,
+                BELOW_THRESHOLD_AFTER_CONFIRMATION: 0,
+                ANALYSIS_INCOMPLETE: 0,
+                VERIFICATION_UNSTABLE: 0,
+            },
+        },
+        decisions: [
+            {
+                ply: 0,
+                status: 'NOT_SAVED',
+                reason: 'BELOW_COVERAGE_THRESHOLD',
+                cpLoss: 2,
+                winChanceLoss: 0.001,
+            },
+        ],
+    },
     moves: [
         {
             ply: 0,
@@ -207,6 +244,28 @@ describe('PUT /api/games/[id]/analysis', () => {
         expect(
             (prismaMock as PrismaMockWithTransaction).$transaction
         ).not.toHaveBeenCalled();
+    });
+
+    it('rejects analysis without the required extraction receipt', async () => {
+        const route = await importRoute();
+        const analysisWithoutReceipt: Partial<GameAnalysis> = {
+            ...validAnalysis,
+        };
+        delete analysisWithoutReceipt.trainingExtraction;
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: analysisWithoutReceipt,
+                trainingMoments: [],
+                extractionManifest: validManifest,
+            }),
+            routeParams()
+        );
+
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Invalid analysis',
+        });
+        expect(response.status).toBe(400);
+        expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
     });
 
     it('rejects non-sequential or fractional analyzed plies before any write', async () => {

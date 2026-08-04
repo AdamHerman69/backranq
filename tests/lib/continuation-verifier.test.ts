@@ -75,6 +75,48 @@ function after(fen: string, moveUci: string): string {
 }
 
 describe('bounded conditional continuation verifier', () => {
+    it('expands a still-acceptable MultiPV frontier beyond four moves', async () => {
+        const root = new Chess().fen();
+        const engine = new VerifierFixtureEngine(
+            new Map([
+                [
+                    root,
+                    [
+                        { move: 'e2e4', cp: 100 },
+                        { move: 'd2d4', cp: 95 },
+                        { move: 'g1f3', cp: 90 },
+                        { move: 'c2c4', cp: 80 },
+                        { move: 'g2g3', cp: 70 },
+                        { move: 'b2b3', cp: 0 },
+                    ],
+                ],
+            ])
+        );
+
+        const verified = await verifyConditionalContinuation({
+            fen: root,
+            engine,
+            options: {
+                maxPlies: 1,
+                multiPv: 5,
+                maxMultiPv: 16,
+                maxUserBranches: 16,
+                fallbackMaxAcceptedCpLoss: 50,
+            },
+        });
+
+        expect(engine.calls.map((call) => call.multiPv)).toEqual([5, 10]);
+        expect(verified.acceptedMovesUci).toEqual([
+            'e2e4',
+            'd2d4',
+            'g1f3',
+            'c2c4',
+            'g2g3',
+        ]);
+        expect(verified.solutionShape).toBe('MULTIPLE');
+        expect(verified.bounds.largestMultiPvRequested).toBe(10);
+    });
+
     it('records practical alternatives at every user decision and best defense at opponent nodes', async () => {
         const root = new Chess().fen();
         const e4 = after(root, 'e2e4');

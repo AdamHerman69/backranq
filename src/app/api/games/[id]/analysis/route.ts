@@ -24,6 +24,7 @@ import {
     validateTrainingMomentCandidates,
 } from '@/lib/training/candidateValidation';
 import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainingMoments';
+import { isTrainingExtractionReceipt } from '@/lib/analysis/extractionReceipt';
 
 export const runtime = 'nodejs';
 
@@ -148,7 +149,8 @@ function isGameAnalysis(value: unknown): value is GameAnalysis {
         (value.blackAccuracy === undefined ||
             (isFiniteNumber(value.blackAccuracy) &&
                 value.blackAccuracy >= 0 &&
-                value.blackAccuracy <= 100))
+                value.blackAccuracy <= 100)) &&
+        isTrainingExtractionReceipt(value.trainingExtraction)
     );
 }
 

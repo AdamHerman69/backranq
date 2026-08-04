@@ -49,6 +49,12 @@ import {
     assessmentPositionKey,
 } from '@/lib/training/assessmentIdentity';
 import { metricsFromPovScores } from '@/lib/training/gradingEvidence';
+import {
+    emptyExtractionReasonCounts,
+    type AdaptiveConfirmationEvidence,
+    type TrainingDecisionReceipt,
+    type TrainingExtractionReceipt,
+} from '@/lib/analysis/extractionReceipt';
 
 type MistakeSeverity = 'small' | 'medium' | 'big';
 
@@ -90,10 +96,16 @@ export type TrainingMomentExtractionOptions = {
      * the second pass explicitly.
      */
     confirmNodes?: number | null;
+    /**
+     * Hard cap for adaptive confirmation. When omitted it is derived as four
+     * times confirmNodes, bounded to 20m nodes.
+     */
+    maxConfirmationNodes?: number | null;
 
     /** Practical alternatives and played responses use one outcome tolerance. */
-    multiPv?: number; // default 5
-    maxAcceptedMoves?: number; // default 4
+    multiPv?: number; // initial frontier, default 5
+    maxMultiPv?: number; // adaptive frontier cap, default 16
+    maxAcceptedMoves?: number; // default 16
     maxAcceptedWinningChanceLoss?: number; // default 0.05
     fallbackMaxAcceptedCpLoss?: number; // default 50
 
@@ -998,8 +1010,10 @@ type ResolvedOptions = {
     themeLookaheadPlies: number;
     confirmMovetimeMs: number | null;
     confirmNodes: number | null;
+    maxConfirmationNodes: number | null;
     returnAnalysis: boolean;
     multiPv: number;
+    maxMultiPv: number;
     maxAcceptedMoves: number;
     maxAcceptedWinningChanceLoss: number;
     fallbackMaxAcceptedCpLoss: number;
@@ -1013,6 +1027,34 @@ type ResolvedOptions = {
 function resolveOptions(
     options?: TrainingMomentExtractionOptions
 ): ResolvedOptions {
+    const confirmNodes =
+        options?.confirmNodes === null
+            ? null
+            : Math.max(
+                  1,
+                  Math.trunc(options?.confirmNodes ?? 200_000)
+              );
+    const maxConfirmationNodes =
+        confirmNodes == null || options?.maxConfirmationNodes === null
+            ? null
+            : Math.max(
+                  confirmNodes,
+                  Math.min(
+                      20_000_000,
+                      Math.trunc(
+                          options?.maxConfirmationNodes ??
+                              confirmNodes * 4
+                      )
+                  )
+              );
+    const multiPv = Math.max(
+        1,
+        Math.min(16, Math.trunc(options?.multiPv ?? 5))
+    );
+    const maxMultiPv = Math.max(
+        multiPv,
+        Math.min(16, Math.trunc(options?.maxMultiPv ?? 16))
+    );
     return {
         movetimeMs: Math.max(1, Math.trunc(options?.movetimeMs ?? 200)),
         nodesPerPosition:
@@ -1041,21 +1083,19 @@ function resolveOptions(
         gradingPolicy: normalizeGradingPolicy(options?.gradingPolicy),
         themeLookaheadPlies: options?.themeLookaheadPlies ?? 4,
         confirmMovetimeMs: options?.confirmMovetimeMs ?? null,
-        confirmNodes:
-            options?.confirmNodes === null
-                ? null
-                : Math.max(
-                      1,
-                      Math.trunc(options?.confirmNodes ?? 200_000)
-                  ),
+        confirmNodes,
+        maxConfirmationNodes,
         returnAnalysis: options?.returnAnalysis ?? false,
-        multiPv: Math.max(
-            1,
-            Math.min(8, Math.trunc(options?.multiPv ?? 5))
-        ),
+        multiPv,
+        maxMultiPv,
         maxAcceptedMoves: Math.max(
             1,
-            Math.min(8, Math.trunc(options?.maxAcceptedMoves ?? 4))
+            Math.min(
+                16,
+                Math.trunc(
+                    options?.maxAcceptedMoves ?? maxMultiPv
+                )
+            )
         ),
         maxAcceptedWinningChanceLoss: Math.max(
             0,
@@ -1394,6 +1434,17 @@ async function evaluatePlayedMoveLoss(args: {
  * Re-check the event's before/after loss and the solution alternatives at the
  * confirmation budget. A changed but equivalent best move is not a rejection.
  */
+type ConfirmationCandidateResult = {
+    confirmed: boolean;
+    newEval?: EvalResult;
+    beforeEval?: EvalResult;
+    afterEval?: EvalResult;
+    loss?: ReturnType<typeof evaluationLoss>;
+    multiPvResult?: MultiPvResult;
+    confirmedLossCp?: number;
+    confirmedWinningChanceLoss?: number;
+};
+
 async function confirmCandidate(args: {
     engine: StockfishEngine;
     beforeFen: string;
@@ -1404,16 +1455,7 @@ async function confirmCandidate(args: {
     multiPv: number;
     limit: ReturnType<typeof analysisLimit>;
     previousFens?: string[];
-}): Promise<{
-    confirmed: boolean;
-    newEval?: EvalResult;
-    beforeEval?: EvalResult;
-    afterEval?: EvalResult;
-    loss?: ReturnType<typeof evaluationLoss>;
-    multiPvResult?: MultiPvResult;
-    confirmedLossCp?: number;
-    confirmedWinningChanceLoss?: number;
-}> {
+}): Promise<ConfirmationCandidateResult> {
     const multiPvResult = mergeRepetitionDrawMultiPv({
         result: await args.engine.analyzeMultiPv({
             fen: args.solutionFen,
@@ -1489,8 +1531,199 @@ async function confirmCandidate(args: {
     };
 }
 
+function confirmationBudgets(baseNodes: number, maxNodes: number): number[] {
+    const budgets = [Math.max(1, Math.trunc(baseNodes))];
+    const cap = Math.max(budgets[0]!, Math.trunc(maxNodes));
+    while (budgets.at(-1)! < cap) {
+        const current = budgets.at(-1)!;
+        budgets.push(Math.min(cap, current * 2));
+    }
+    return budgets;
+}
+
+function nearCoverageThreshold(
+    loss: ReturnType<typeof evaluationLoss>,
+    args: {
+        minimumWinningChanceLoss: number;
+        fallbackMinimumLossCp: number;
+    }
+): boolean {
+    if (loss.winningChance != null) {
+        const margin = Math.max(
+            0.01,
+            args.minimumWinningChanceLoss * 0.5
+        );
+        return (
+            Math.abs(
+                loss.winningChance - args.minimumWinningChanceLoss
+            ) <= margin
+        );
+    }
+    if (loss.cp != null) {
+        const margin = Math.max(20, args.fallbackMinimumLossCp * 0.25);
+        return Math.abs(loss.cp - args.fallbackMinimumLossCp) <= margin;
+    }
+    return true;
+}
+
+function confirmationLossesDisagree(
+    previous: ReturnType<typeof evaluationLoss>,
+    current: ReturnType<typeof evaluationLoss>
+): boolean {
+    if (
+        previous.winningChance != null &&
+        current.winningChance != null
+    ) {
+        return (
+            Math.abs(previous.winningChance - current.winningChance) >
+            0.015
+        );
+    }
+    if (previous.cp != null && current.cp != null) {
+        return Math.abs(previous.cp - current.cp) > 40;
+    }
+    return true;
+}
+
+async function confirmCandidateAdaptively(args: {
+    engine: StockfishEngine;
+    beforeFen: string;
+    afterFen: string;
+    solutionFen: string;
+    minimumWinningChanceLoss: number;
+    fallbackMinimumLossCp: number;
+    multiPv: number;
+    baseNodes: number;
+    maxNodes: number;
+    timeoutMs: number;
+    previousFens?: string[];
+    initialBestMoveUci: string;
+    initialLoss: ReturnType<typeof evaluationLoss>;
+}): Promise<
+    ConfirmationCandidateResult & {
+        confirmationEvidence: AdaptiveConfirmationEvidence;
+    }
+> {
+    const budgets = confirmationBudgets(args.baseNodes, args.maxNodes);
+    let previousLoss = args.initialLoss;
+    let previousQualifies = true;
+    let previousBestMove = normalizeUci(args.initialBestMoveUci);
+    let latest: ConfirmationCandidateResult = { confirmed: false };
+    const passes: AdaptiveConfirmationEvidence['passes'] = [];
+
+    for (const [index, nodes] of budgets.entries()) {
+        latest = await confirmCandidate({
+            engine: args.engine,
+            beforeFen: args.beforeFen,
+            afterFen: args.afterFen,
+            solutionFen: args.solutionFen,
+            minimumWinningChanceLoss: args.minimumWinningChanceLoss,
+            fallbackMinimumLossCp: args.fallbackMinimumLossCp,
+            multiPv: args.multiPv,
+            limit: { nodes, timeoutMs: args.timeoutMs },
+            previousFens: args.previousFens,
+        });
+        const complete = Boolean(
+            latest.newEval &&
+                latest.beforeEval &&
+                latest.afterEval &&
+                latest.loss
+        );
+        const currentBestMove = normalizeUci(
+            latest.newEval?.bestMoveUci ?? ''
+        );
+        passes.push({
+            nodes,
+            bestMoveUci: currentBestMove || null,
+            qualifies: latest.confirmed,
+            cpLoss: latest.loss?.cp ?? null,
+            winChanceLoss: latest.loss?.winningChance ?? null,
+        });
+
+        const disagreement =
+            !complete ||
+            previousQualifies !== latest.confirmed ||
+            (latest.loss != null &&
+                confirmationLossesDisagree(previousLoss, latest.loss));
+        const bestMoveChanged =
+            Boolean(previousBestMove) &&
+            Boolean(currentBestMove) &&
+            previousBestMove !== currentBestMove;
+        const nearThreshold = latest.loss
+            ? nearCoverageThreshold(latest.loss, args)
+            : true;
+        const isLast = index === budgets.length - 1;
+        const needsMore =
+            !isLast &&
+            (disagreement || bestMoveChanged || nearThreshold);
+
+        if (needsMore) {
+            if (latest.loss) previousLoss = latest.loss;
+            previousQualifies = latest.confirmed;
+            previousBestMove = currentBestMove || previousBestMove;
+            continue;
+        }
+
+        const stable = complete && !disagreement;
+        const termination: AdaptiveConfirmationEvidence['termination'] =
+            !complete
+                ? 'INCOMPLETE'
+                : !stable
+                  ? 'MAX_BUDGET_UNSTABLE'
+                  : latest.confirmed
+                    ? 'STABLE'
+                    : 'BELOW_THRESHOLD';
+        return {
+            ...latest,
+            confirmed: latest.confirmed && stable,
+            confirmationEvidence: {
+                version: 1,
+                stable,
+                termination,
+                passes,
+            },
+        };
+    }
+
+    return {
+        ...latest,
+        confirmed: false,
+        confirmationEvidence: {
+            version: 1,
+            stable: false,
+            termination: 'INCOMPLETE',
+            passes,
+        },
+    };
+}
+
 function normalizeUci(uci: string): string {
     return (uci ?? '').trim().toLowerCase();
+}
+
+function decisionReceipt(args: {
+    ply: number;
+    reason: TrainingDecisionReceipt['reason'];
+    loss?: ReturnType<typeof evaluationLoss> | null;
+    confirmation?: AdaptiveConfirmationEvidence;
+}): TrainingDecisionReceipt {
+    const status: TrainingDecisionReceipt['status'] =
+        args.reason === 'SAVED'
+            ? 'SAVED'
+            : args.reason === 'ANALYSIS_INCOMPLETE' ||
+                args.reason === 'VERIFICATION_UNSTABLE'
+              ? 'UNRESOLVED'
+              : 'NOT_SAVED';
+    return {
+        ply: args.ply,
+        status,
+        reason: args.reason,
+        cpLoss: args.loss?.cp ?? null,
+        winChanceLoss: args.loss?.winningChance ?? null,
+        ...(args.confirmation
+            ? { confirmation: args.confirmation }
+            : {}),
+    };
 }
 
 function normalizeUciList(
@@ -2060,6 +2293,7 @@ async function buildTrainingMoment(args: {
                     maxPlies: args.opts.verificationMaxPlies,
                     maxPositions: args.opts.verificationMaxPositions,
                     multiPv: args.opts.multiPv,
+                    maxMultiPv: args.opts.maxMultiPv,
                     maxUserBranches: args.opts.maxAcceptedMoves,
                     maxAcceptedWinningChanceLoss:
                         args.opts.maxAcceptedWinningChanceLoss,
@@ -2368,6 +2602,11 @@ export async function extractTrainingMomentsFromGames(args: {
         const whiteMoveAccuracies: number[] = [];
         const blackMoveAccuracies: number[] = [];
         const extractionErrors: string[] = [];
+        const decisionReceipts = new Map<
+            number,
+            TrainingDecisionReceipt
+        >();
+        const lookaheadOwnedUserDecisionPlies = new Set<number>();
 
         for (let ply = 0; ply < plyCount; ply++) {
             args.onProgress?.({
@@ -2391,6 +2630,20 @@ export async function extractTrainingMomentsFromGames(args: {
             const previousFens = movesVerbose
                 .slice(0, ply)
                 .map((move) => move.before);
+            if (
+                isUserMove &&
+                !lookaheadOwnedUserDecisionPlies.has(ply)
+            ) {
+                decisionReceipts.set(
+                    ply,
+                    decisionReceipt({
+                        ply,
+                        reason: hasDecision
+                            ? 'ANALYSIS_INCOMPLETE'
+                            : 'FORCED_MOVE',
+                    })
+                );
+            }
 
             // Eval at position before the move (best play).
             const bestAtBefore =
@@ -2512,6 +2765,22 @@ export async function extractTrainingMomentsFromGames(args: {
                 minWinningChanceLoss: opts.minWinningChanceLoss,
                 fallbackMinCpLoss: opts.fallbackMinCpLoss,
             });
+            if (
+                isUserMove &&
+                hasDecision &&
+                !lookaheadOwnedUserDecisionPlies.has(ply)
+            ) {
+                decisionReceipts.set(
+                    ply,
+                    decisionReceipt({
+                        ply,
+                        reason: isMeaningfulMistake
+                            ? 'ANALYSIS_INCOMPLETE'
+                            : 'BELOW_COVERAGE_THRESHOLD',
+                        loss: moveLoss,
+                    })
+                );
+            }
 
             // Calculate swing from the mover's perspective
             const beforeCpMover = perspectiveCp(bestCpBefore, moverColor, stm);
@@ -2596,7 +2865,8 @@ export async function extractTrainingMomentsFromGames(args: {
             if (
                 isUserMove &&
                 hasDecision &&
-                isMeaningfulMistake
+                isMeaningfulMistake &&
+                !lookaheadOwnedUserDecisionPlies.has(ply)
             ) {
                 {
                     // Themes describe the lesson; they never decide whether a
@@ -2629,6 +2899,9 @@ export async function extractTrainingMomentsFromGames(args: {
                             let verifiedOriginalScoreAfter =
                                 originalScoreAfter;
                             let verifiedOriginalLoss = moveLoss;
+                            let confirmationEvidence:
+                                | AdaptiveConfirmationEvidence
+                                | undefined;
                             if (
                                 opts.confirmNodes != null ||
                                 (opts.confirmMovetimeMs != null &&
@@ -2642,7 +2915,30 @@ export async function extractTrainingMomentsFromGames(args: {
                                     plyCount,
                                     phase: 'confirming',
                                 });
-                                const result = await confirmCandidate({
+                                const result =
+                                    opts.confirmNodes != null &&
+                                    opts.maxConfirmationNodes != null
+                                        ? await confirmCandidateAdaptively({
+                                              engine: args.engine,
+                                              beforeFen: fenBefore,
+                                              afterFen: fenAfter,
+                                              solutionFen: fenBefore,
+                                              minimumWinningChanceLoss:
+                                                  opts.minWinningChanceLoss,
+                                              fallbackMinimumLossCp:
+                                                  opts.fallbackMinCpLoss,
+                                              multiPv: opts.multiPv,
+                                              baseNodes: opts.confirmNodes,
+                                              maxNodes:
+                                                  opts.maxConfirmationNodes,
+                                              timeoutMs:
+                                                  opts.engineTimeoutMs,
+                                              previousFens,
+                                              initialBestMoveUci:
+                                                  bestAtBefore.bestMoveUci,
+                                              initialLoss: moveLoss,
+                                          })
+                                        : await confirmCandidate({
                                     engine: args.engine,
                                     beforeFen: fenBefore,
                                     afterFen: fenAfter,
@@ -2655,6 +2951,14 @@ export async function extractTrainingMomentsFromGames(args: {
                                     limit: analysisLimit(opts, true),
                                     previousFens,
                                 });
+                                confirmationEvidence =
+                                    'confirmationEvidence' in result
+                                        ? (
+                                              result as {
+                                                  confirmationEvidence: AdaptiveConfirmationEvidence;
+                                              }
+                                          ).confirmationEvidence
+                                        : undefined;
                                 confirmed = result.confirmed;
                                 if (
                                     !result.newEval ||
@@ -2801,7 +3105,35 @@ export async function extractTrainingMomentsFromGames(args: {
                                     moments,
                                     moment
                                 );
-
+                                decisionReceipts.set(
+                                    ply,
+                                    decisionReceipt({
+                                        ply,
+                                        reason: moment.solution.trainable
+                                            ? 'SAVED'
+                                            : 'VERIFICATION_UNSTABLE',
+                                        loss: verifiedOriginalLoss,
+                                        confirmation:
+                                            confirmationEvidence,
+                                    })
+                                );
+                            } else {
+                                decisionReceipts.set(
+                                    ply,
+                                    decisionReceipt({
+                                        ply,
+                                        reason:
+                                            confirmationEvidence?.termination ===
+                                                'MAX_BUDGET_UNSTABLE' ||
+                                            confirmationEvidence?.termination ===
+                                                'INCOMPLETE'
+                                                ? 'VERIFICATION_UNSTABLE'
+                                                : 'BELOW_THRESHOLD_AFTER_CONFIRMATION',
+                                        loss: verifiedOriginalLoss,
+                                        confirmation:
+                                            confirmationEvidence,
+                                    })
+                                );
                             }
                         }
                     }
@@ -2824,6 +3156,15 @@ export async function extractTrainingMomentsFromGames(args: {
                         const userResponseUci = `${userResponseMv.from}${
                             userResponseMv.to
                         }${userResponseMv.promotion ?? ''}`;
+                        const userResponsePreviousFens = movesVerbose
+                            .slice(0, nextPly)
+                            .map((move) => move.before);
+                        const userResponseCompletesThreefold =
+                            completesThreefoldRepetition(
+                                userResponsePreviousFens,
+                                fenAfter,
+                                userResponseMv.after
+                            );
 
                         // Grade the actual reply by outcome, not by exact UCI
                         // equality. A second/equivalent engine line is a valid
@@ -2835,9 +3176,7 @@ export async function extractTrainingMomentsFromGames(args: {
                                 moveUci: userResponseUci,
                                 best: bestAtAfter,
                                 limit: analysisLimit(opts),
-                                previousFens: movesVerbose
-                                    .slice(0, nextPly)
-                                    .map((move) => move.before),
+                                previousFens: userResponsePreviousFens,
                             });
                         const userPunished =
                             userResponseAssessment == null ||
@@ -2860,6 +3199,13 @@ export async function extractTrainingMomentsFromGames(args: {
                                 );
 
                                 if (hasUsablePv(bestAtAfter)) {
+                                    // This lookahead owns the next user decision
+                                    // end-to-end. The normal user-ply pass still
+                                    // records game-review data, but must not
+                                    // confirm or extract the same decision again.
+                                    lookaheadOwnedUserDecisionPlies.add(
+                                        nextPly
+                                    );
                                     // Optional confirmation pass
                                     let finalEval = bestAtAfter;
                                     let confirmed = true;
@@ -2872,16 +3218,26 @@ export async function extractTrainingMomentsFromGames(args: {
                                         userResponseAssessment.loss;
                                     let verifiedSwing =
                                         userResponseAssessment.loss.cp ?? 0;
+                                    let confirmationEvidence:
+                                        | AdaptiveConfirmationEvidence
+                                        | undefined;
                                     let responseScoreBefore =
                                         engineScoreToWhitePov(
                                             bestAtAfter.score,
                                             userColor
                                         );
                                     let responseScoreAfter =
-                                        engineScoreToWhitePov(
-                                            userResponseAssessment.after.score,
-                                            otherSide(userColor)
-                                        );
+                                        userResponseCompletesThreefold
+                                            ? ({
+                                                  kind: 'tablebase',
+                                                  wdl: 'DRAW',
+                                                  pov: 'WHITE',
+                                              } satisfies PovScore)
+                                            : engineScoreToWhitePov(
+                                                  userResponseAssessment.after
+                                                      .score,
+                                                  otherSide(userColor)
+                                              );
                                     if (
                                         opts.confirmNodes != null ||
                                         (opts.confirmMovetimeMs != null &&
@@ -2896,7 +3252,39 @@ export async function extractTrainingMomentsFromGames(args: {
                                             plyCount,
                                             phase: 'confirming',
                                         });
-                                        const result = await confirmCandidate({
+                                        const result =
+                                            opts.confirmNodes != null &&
+                                            opts.maxConfirmationNodes != null
+                                                ? await confirmCandidateAdaptively(
+                                                      {
+                                                          engine: args.engine,
+                                                          beforeFen:
+                                                              fenAfter,
+                                                          afterFen:
+                                                              userResponseMv.after,
+                                                          solutionFen:
+                                                              fenAfter,
+                                                          minimumWinningChanceLoss:
+                                                              opts.minWinningChanceLoss,
+                                                          fallbackMinimumLossCp:
+                                                              opts.fallbackMinCpLoss,
+                                                          multiPv:
+                                                              opts.multiPv,
+                                                          baseNodes:
+                                                              opts.confirmNodes,
+                                                          maxNodes:
+                                                              opts.maxConfirmationNodes,
+                                                          timeoutMs:
+                                                              opts.engineTimeoutMs,
+                                                          previousFens:
+                                                              userResponsePreviousFens,
+                                                          initialBestMoveUci:
+                                                              bestAtAfter.bestMoveUci,
+                                                          initialLoss:
+                                                              userResponseAssessment.loss,
+                                                      }
+                                                  )
+                                                : await confirmCandidate({
                                             engine: args.engine,
                                             beforeFen: fenAfter,
                                             afterFen: userResponseMv.after,
@@ -2907,13 +3295,17 @@ export async function extractTrainingMomentsFromGames(args: {
                                                 opts.fallbackMinCpLoss,
                                             multiPv: opts.multiPv,
                                             limit: analysisLimit(opts, true),
-                                            previousFens: movesVerbose
-                                                .slice(0, nextPly)
-                                                .map(
-                                                    (move) =>
-                                                        move.before
-                                                ),
+                                            previousFens:
+                                                userResponsePreviousFens,
                                         });
+                                        confirmationEvidence =
+                                            'confirmationEvidence' in result
+                                                ? (
+                                                      result as {
+                                                          confirmationEvidence: AdaptiveConfirmationEvidence;
+                                                      }
+                                                  ).confirmationEvidence
+                                                : undefined;
                                         confirmed = result.confirmed;
                                         if (
                                             !result.newEval ||
@@ -2946,7 +3338,13 @@ export async function extractTrainingMomentsFromGames(args: {
                                                   )
                                                 : null;
                                         const confirmedAfterScore =
-                                            result.afterEval
+                                            userResponseCompletesThreefold
+                                                ? ({
+                                                      kind: 'tablebase',
+                                                      wdl: 'DRAW',
+                                                      pov: 'WHITE',
+                                                  } satisfies PovScore)
+                                                : result.afterEval
                                                 ? engineScoreToWhitePov(
                                                       result.afterEval.score,
                                                       otherSide(userColor)
@@ -3013,17 +3411,7 @@ export async function extractTrainingMomentsFromGames(args: {
                                                         precomputed:
                                                             confirmedMultiPv,
                                                         previousFens:
-                                                            movesVerbose
-                                                                .slice(
-                                                                    0,
-                                                                    nextPly
-                                                                )
-                                                                .map(
-                                                                    (
-                                                                        move
-                                                                    ) =>
-                                                                        move.before
-                                                                ),
+                                                            userResponsePreviousFens,
                                                     }
                                                 );
                                             acceptedMovesUci =
@@ -3058,9 +3446,40 @@ export async function extractTrainingMomentsFromGames(args: {
                                             !responseScoreBefore ||
                                             !responseScoreAfter
                                         ) {
+                                            decisionReceipts.set(
+                                                nextPly,
+                                                decisionReceipt({
+                                                    ply: nextPly,
+                                                    reason:
+                                                        'ANALYSIS_INCOMPLETE',
+                                                    loss: verifiedResponseLoss,
+                                                    confirmation:
+                                                        confirmationEvidence,
+                                                })
+                                            );
                                             continue;
                                         }
-                                        const moment =
+                                        const responseBeforeCpMover =
+                                            scoreToCp(finalEval.score) ?? 0;
+                                        const responseAfterCpMover =
+                                            -(scoreToCp(
+                                                finalPlayedEval.score
+                                            ) ?? 0);
+                                        const responseLessonKind: TrainingLessonKind =
+                                            Math.abs(responseBeforeCpMover) <=
+                                                DRAWISH_POSITION_ABS_CP &&
+                                            responseAfterCpMover <
+                                                CLEARLY_WORSE_POSITION_CP
+                                                ? 'SAVE_DRAW'
+                                                : verifiedSwing <
+                                                        BIG_MISTAKE_CLASSIFICATION_CP &&
+                                                    responseBeforeCpMover >=
+                                                        PRESERVE_WIN_MIN_POSITION_CP &&
+                                                    verifiedSwing >=
+                                                        PRESERVE_WIN_MIN_LOSS_CP
+                                                  ? 'PRESERVE_WIN'
+                                                  : 'AVOID_MISTAKE';
+                                        const builtMoment =
                                             await buildTrainingMoment({
                                                 game,
                                                 canonicalSourceGameId:
@@ -3077,10 +3496,9 @@ export async function extractTrainingMomentsFromGames(args: {
                                                     responseScoreAfter,
                                                 originalLoss:
                                                     verifiedResponseLoss,
-                                                sourceKind:
-                                                    'MISSED_OPPORTUNITY',
+                                                sourceKind: 'MY_MISTAKE',
                                                 lessonKind:
-                                                    'PUNISH_MISTAKE',
+                                                    responseLessonKind,
                                                 themes: Array.from(tags),
                                                 solutionEval: finalEval,
                                                 acceptedMovesUci:
@@ -3090,18 +3508,61 @@ export async function extractTrainingMomentsFromGames(args: {
                                                 tablebase: args.tablebase,
                                                 opts,
                                                 configHash,
-                                                previousFens: movesVerbose
-                                                    .slice(0, nextPly)
-                                                    .map(
-                                                        (move) => move.before
-                                                    ),
+                                                previousFens:
+                                                    userResponsePreviousFens,
                                                 verificationCache,
                                             });
+                                        const moment: TrainingMomentCandidate = {
+                                            ...builtMoment,
+                                            sourceKinds:
+                                                orderedMetadataUnion(
+                                                    builtMoment.sourceKinds,
+                                                    [
+                                                        'MISSED_OPPORTUNITY',
+                                                    ],
+                                                    SOURCE_KIND_ORDER
+                                                ),
+                                            lessonKinds:
+                                                orderedMetadataUnion(
+                                                    builtMoment.lessonKinds,
+                                                    ['PUNISH_MISTAKE'],
+                                                    LESSON_KIND_ORDER
+                                                ),
+                                        };
                                         storeCanonicalTrainingMoment(
                                             moments,
                                             moment
                                         );
-
+                                        decisionReceipts.set(
+                                            nextPly,
+                                            decisionReceipt({
+                                                ply: nextPly,
+                                                reason:
+                                                    moment.solution.trainable
+                                                        ? 'SAVED'
+                                                        : 'VERIFICATION_UNSTABLE',
+                                                loss: verifiedResponseLoss,
+                                                confirmation:
+                                                    confirmationEvidence,
+                                            })
+                                        );
+                                    } else {
+                                        decisionReceipts.set(
+                                            nextPly,
+                                            decisionReceipt({
+                                                ply: nextPly,
+                                                reason:
+                                                    confirmationEvidence?.termination ===
+                                                        'MAX_BUDGET_UNSTABLE' ||
+                                                    confirmationEvidence?.termination ===
+                                                        'INCOMPLETE'
+                                                        ? 'VERIFICATION_UNSTABLE'
+                                                        : 'BELOW_THRESHOLD_AFTER_CONFIRMATION',
+                                                loss: verifiedResponseLoss,
+                                                confirmation:
+                                                    confirmationEvidence,
+                                            })
+                                        );
                                     }
                                 }
                             }
@@ -3150,6 +3611,7 @@ export async function extractTrainingMomentsFromGames(args: {
             for (const moment of moments) {
                 if (moment.sourceGameId !== canonicalSourceGameIdValue)
                     continue;
+                if (!moment.solution.trainable) continue;
                 const move = gameAnalysis.find(
                     (candidate) => candidate.ply === moment.decisionPly
                 );
@@ -3170,6 +3632,68 @@ export async function extractTrainingMomentsFromGames(args: {
                 moveAccuracies: blackMoveAccuracies,
             });
 
+            const gameMoments = moments.filter(
+                (moment) =>
+                    moment.sourceGameId === canonicalSourceGameIdValue
+            );
+            for (const moment of gameMoments) {
+                const previous = decisionReceipts.get(
+                    moment.decisionPly
+                );
+                const trainable = moment.solution.trainable;
+                decisionReceipts.set(moment.decisionPly, {
+                    ...decisionReceipt({
+                        ply: moment.decisionPly,
+                        reason: trainable
+                            ? 'SAVED'
+                            : 'VERIFICATION_UNSTABLE',
+                        loss: {
+                            cp: moment.originalDecision.cpLoss ?? null,
+                            winningChance:
+                                moment.originalDecision.winChanceLoss ??
+                                null,
+                        },
+                        confirmation: previous?.confirmation,
+                    }),
+                    verificationStatus:
+                        moment.solution.verificationStatus,
+                    sourceKinds: moment.sourceKinds,
+                });
+            }
+            const receiptDecisions = Array.from(
+                decisionReceipts.values()
+            ).sort((left, right) => left.ply - right.ply);
+            const reasonCounts = emptyExtractionReasonCounts();
+            for (const receipt of receiptDecisions) {
+                reasonCounts[receipt.reason] += 1;
+            }
+            const trainingExtraction: TrainingExtractionReceipt = {
+                version: 1,
+                trainingSide: userColor === 'w' ? 'WHITE' : 'BLACK',
+                thresholds: {
+                    minWinChanceLoss: opts.minWinningChanceLoss,
+                    fallbackMinCpLoss: opts.fallbackMinCpLoss,
+                },
+                budgets: {
+                    scanNodes: opts.nodesPerPosition,
+                    confirmationBaseNodes: opts.confirmNodes,
+                    confirmationMaxNodes: opts.maxConfirmationNodes,
+                    multiPvStart: opts.multiPv,
+                    multiPvMax: opts.maxMultiPv,
+                },
+                summary: {
+                    userDecisions: receiptDecisions.length,
+                    savedPositions: receiptDecisions.filter(
+                        (receipt) => receipt.status === 'SAVED'
+                    ).length,
+                    unresolvedDecisions: receiptDecisions.filter(
+                        (receipt) => receipt.status === 'UNRESOLVED'
+                    ).length,
+                    reasons: reasonCounts,
+                },
+                decisions: receiptDecisions,
+            };
+
             analysisMap.set(game.id, {
                 gameId: game.id,
                 moves: gameAnalysis,
@@ -3181,6 +3705,7 @@ export async function extractTrainingMomentsFromGames(args: {
                     typeof blackAccuracy === 'number'
                         ? round1(blackAccuracy)
                         : undefined,
+                trainingExtraction,
                 analyzedAt: new Date().toISOString(),
             });
         }

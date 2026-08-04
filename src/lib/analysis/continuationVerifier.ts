@@ -11,6 +11,7 @@ import type {
     EngineIdentity,
     EngineWdl,
     MultiPvLine,
+    MultiPvResult,
     Score,
     StockfishEngine,
 } from '@/lib/analysis/stockfishClient';
@@ -85,6 +86,7 @@ export type ContinuationVerifierOptions = {
     maxPlies?: number;
     maxPositions?: number;
     multiPv?: number;
+    maxMultiPv?: number;
     maxUserBranches?: number;
     maxAcceptedWinningChanceLoss?: number;
     fallbackMaxAcceptedCpLoss?: number;
@@ -112,6 +114,8 @@ export type ContinuationVerificationResult = {
         maxPlies: number;
         maxPositions: number;
         multiPv: number;
+        maxMultiPv: number;
+        largestMultiPvRequested: number;
         maxUserBranches: number;
         nodesPerPosition: number | null;
         maxDepth: number | null;
@@ -124,6 +128,7 @@ type ResolvedVerifierOptions = {
     maxPlies: number;
     maxPositions: number;
     multiPv: number;
+    maxMultiPv: number;
     maxUserBranches: number;
     maxAcceptedWinningChanceLoss: number;
     fallbackMaxAcceptedCpLoss: number;
@@ -137,6 +142,7 @@ type ResolvedVerifierOptions = {
 
 type BuildState = {
     positionsVisited: number;
+    largestMultiPvRequested: number;
     status: VerificationStatus;
     diagnostics: string[];
 };
@@ -144,16 +150,27 @@ type BuildState = {
 function resolvedOptions(
     options: ContinuationVerifierOptions
 ): ResolvedVerifierOptions {
+    const multiPv = Math.max(
+        2,
+        Math.min(16, Math.trunc(options.multiPv ?? 5))
+    );
     return {
         maxPlies: Math.max(1, Math.min(32, options.maxPlies ?? 8)),
         maxPositions: Math.max(
             1,
             Math.min(128, options.maxPositions ?? 32)
         ),
-        multiPv: Math.max(2, Math.min(8, options.multiPv ?? 5)),
+        multiPv,
+        maxMultiPv: Math.max(
+            multiPv,
+            Math.min(
+                16,
+                Math.trunc(options.maxMultiPv ?? multiPv)
+            )
+        ),
         maxUserBranches: Math.max(
             1,
-            Math.min(8, options.maxUserBranches ?? 4)
+            Math.min(16, options.maxUserBranches ?? 16)
         ),
         maxAcceptedWinningChanceLoss: Math.max(
             0,
@@ -470,6 +487,65 @@ function ruleDrawWithinBestEngineTolerance(
     );
 }
 
+function shouldExpandEngineFrontier(args: {
+    analyzed: MultiPvResult;
+    requestedMultiPv: number;
+    fen: string;
+    repetitionMoves: RepetitionDrawMove[];
+    options: ResolvedVerifierOptions;
+}): boolean {
+    const returned = exactEngineLines(args.analyzed.lines);
+    if (
+        returned.length !== args.requestedMultiPv ||
+        args.analyzed.lines.some((line) => !isExactEngineLine(line)) ||
+        !hasContiguousMultiPvSlots(returned) ||
+        returned.some(
+            (line) =>
+                applyUci(
+                    args.fen,
+                    line.pvUci[0]!.trim().toLowerCase()
+                ) == null
+        )
+    ) {
+        return false;
+    }
+    const lines = canonicalRootMoveLines(returned);
+    if (lines.length !== returned.length || lines.length === 0) {
+        return false;
+    }
+    const frontier = returned.at(-1);
+    if (!frontier) return false;
+    const engineBestIsRuleDraw = args.repetitionMoves.some(
+        (move) =>
+            move.moveUci ===
+            lines[0]?.pvUci[0]?.trim().toLowerCase()
+    );
+    const ruleIsBest =
+        args.repetitionMoves.length > 0 &&
+        (engineBestIsRuleDraw || ruleDrawOutranksEngine(lines[0]));
+    const frontierIsRuleDraw = args.repetitionMoves.some(
+        (move) =>
+            move.moveUci ===
+            frontier.pvUci[0]?.trim().toLowerCase()
+    );
+    if (frontierIsRuleDraw) {
+        return (
+            ruleIsBest ||
+            ruleDrawWithinBestEngineTolerance(
+                lines[0],
+                args.options
+            )
+        );
+    }
+    return ruleIsBest
+        ? engineLineWithinRuleDrawTolerance(frontier, args.options)
+        : engineLineWithinBestEngineTolerance(
+              lines[0],
+              frontier,
+              args.options
+          );
+}
+
 function worsenStatus(
     state: BuildState,
     status: VerificationStatus,
@@ -519,6 +595,7 @@ export async function verifyConditionalContinuation(args: {
     const options = resolvedOptions(args.options ?? {});
     const state: BuildState = {
         positionsVisited: 0,
+        largestMultiPvRequested: 1,
         status: 'VERIFIED',
         diagnostics: [],
     };
@@ -539,6 +616,8 @@ export async function verifyConditionalContinuation(args: {
                 maxPlies: options.maxPlies,
                 maxPositions: options.maxPositions,
                 multiPv: options.multiPv,
+                maxMultiPv: options.maxMultiPv,
+                largestMultiPvRequested: 0,
                 maxUserBranches: options.maxUserBranches,
                 nodesPerPosition: options.nodesPerPosition,
                 maxDepth: options.maxDepth,
@@ -777,26 +856,75 @@ export async function verifyConditionalContinuation(args: {
             }
         }
 
-        const requestedMultiPv =
+        let requestedMultiPv =
             role === 'USER' ? options.multiPv : 1;
-        let analyzed;
-        try {
-            analyzed = await args.engine.analyzeMultiPv({
-                fen,
-                multiPv: requestedMultiPv,
-                ...analysisLimit(options),
-            });
-        } catch (error) {
-            if (options.signal?.aborted) throw error;
-            worsenStatus(
-                state,
-                'UNSTABLE',
-                `Engine analysis failed at ply ${ply}: ${
-                    error instanceof Error ? error.message : 'unknown error'
-                }`
+        let analyzed: MultiPvResult | null = null;
+        let analyzedMultiPv = requestedMultiPv;
+        while (true) {
+            let next: MultiPvResult;
+            try {
+                next = await args.engine.analyzeMultiPv({
+                    fen,
+                    multiPv: requestedMultiPv,
+                    ...analysisLimit(options),
+                });
+            } catch (error) {
+                if (options.signal?.aborted) throw error;
+                if (analyzed) {
+                    state.diagnostics.push(
+                        `Adaptive MultiPV expansion failed at ply ${ply}: ${
+                            error instanceof Error
+                                ? error.message
+                                : 'unknown error'
+                        }`
+                    );
+                    break;
+                }
+                worsenStatus(
+                    state,
+                    'UNSTABLE',
+                    `Engine analysis failed at ply ${ply}: ${
+                        error instanceof Error
+                            ? error.message
+                            : 'unknown error'
+                    }`
+                );
+                return stopNode(
+                    fen,
+                    ply,
+                    'NO_STABLE_LINE',
+                    'ENGINE'
+                );
+            }
+            analyzed = next;
+            analyzedMultiPv = requestedMultiPv;
+            state.largestMultiPvRequested = Math.max(
+                state.largestMultiPvRequested,
+                requestedMultiPv
             );
+            if (
+                role !== 'USER' ||
+                requestedMultiPv >= options.maxMultiPv ||
+                !shouldExpandEngineFrontier({
+                    analyzed,
+                    requestedMultiPv,
+                    fen,
+                    repetitionMoves,
+                    options,
+                })
+            ) {
+                break;
+            }
+            requestedMultiPv = Math.min(
+                options.maxMultiPv,
+                Math.max(requestedMultiPv + 1, requestedMultiPv * 2)
+            );
+        }
+        if (!analyzed) {
+            worsenStatus(state, 'UNSTABLE', `No engine analysis at ply ${ply}`);
             return stopNode(fen, ply, 'NO_STABLE_LINE', 'ENGINE');
         }
+        requestedMultiPv = analyzedMultiPv;
         const rejectedEngineLines = analyzed.lines.filter(
             (line) => !isExactEngineLine(line)
         );
@@ -1071,6 +1199,9 @@ export async function verifyConditionalContinuation(args: {
             maxPlies: options.maxPlies,
             maxPositions: options.maxPositions,
             multiPv: options.multiPv,
+            maxMultiPv: options.maxMultiPv,
+            largestMultiPvRequested:
+                state.largestMultiPvRequested,
             maxUserBranches: options.maxUserBranches,
             nodesPerPosition: options.nodesPerPosition,
             maxDepth: options.maxDepth,
