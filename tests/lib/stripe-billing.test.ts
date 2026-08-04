@@ -83,8 +83,8 @@ describe('stripe billing price mapping', () => {
                 stripeSubscriptionStatus: 'active',
                 stripePriceId: 'price_plus',
                 monthlyServerCreditsLimit: 1000,
-                autoAnalysisMonthlyCap: 500,
-                autoAnalysisDailyCap: 50,
+                autoAnalysisMonthlyGameLimit: 500,
+                autoAnalysisDailyGameLimit: 50,
                 serverCreditsBalance: 1000,
             }),
             create: expect.objectContaining({
@@ -109,8 +109,8 @@ describe('stripe billing price mapping', () => {
             serverCreditsBalance: 0,
             serverCreditsRenewAt: new Date('2020-01-01T00:00:00Z'),
             monthlyServerCreditsLimit: 1000,
-            autoAnalysisMonthlyCap: 500,
-            autoAnalysisDailyCap: 50,
+            autoAnalysisMonthlyGameLimit: 500,
+            autoAnalysisDailyGameLimit: 50,
             stripePriceId: 'price_plus',
             stripeSubscriptionStatus: 'active',
             stripeCurrentPeriodEnd: new Date('2026-12-15T08:00:00Z'),
@@ -126,6 +126,9 @@ describe('stripe billing price mapping', () => {
                 update: expect.objectContaining({
                     serverCreditsBalance: 1000,
                     monthlyServerCreditsUsed: 0,
+                    serverCreditsPeriodStart: new Date(
+                        '2026-12-15T08:00:00.000Z'
+                    ),
                     serverCreditsRenewAt: expect.any(Date),
                 }),
             })
@@ -148,8 +151,8 @@ describe('stripe billing price mapping', () => {
             monthlyServerCreditsUsed: 600,
             serverCreditsRenewAt: new Date('2027-01-15T08:00:00Z'),
             monthlyServerCreditsLimit: 1000,
-            autoAnalysisMonthlyCap: 500,
-            autoAnalysisDailyCap: 50,
+            autoAnalysisMonthlyGameLimit: 500,
+            autoAnalysisDailyGameLimit: 50,
             stripePriceId: 'price_plus',
             stripeSubscriptionStatus: 'active',
             stripeCurrentPeriodEnd: new Date('2027-01-15T08:00:00Z'),
@@ -187,8 +190,8 @@ describe('stripe billing price mapping', () => {
             monthlyServerCreditsUsed: 600,
             serverCreditsRenewAt: storedPeriodEnd,
             monthlyServerCreditsLimit: 1000,
-            autoAnalysisMonthlyCap: 500,
-            autoAnalysisDailyCap: 50,
+            autoAnalysisMonthlyGameLimit: 500,
+            autoAnalysisDailyGameLimit: 50,
             stripePriceId: 'price_plus',
             stripeSubscriptionStatus: 'active',
             stripeCurrentPeriodEnd: storedPeriodEnd,
@@ -225,8 +228,8 @@ describe('stripe billing price mapping', () => {
             monthlyServerCreditsUsed: 1_000,
             serverCreditsRenewAt: new Date('2027-02-15T08:00:00Z'),
             monthlyServerCreditsLimit: 5_000,
-            autoAnalysisMonthlyCap: 5_000,
-            autoAnalysisDailyCap: 250,
+            autoAnalysisMonthlyGameLimit: 5_000,
+            autoAnalysisDailyGameLimit: 250,
             stripePriceId: 'price_pro',
             stripeSubscriptionStatus: 'active',
             stripeSubscriptionId: 'sub_1',
@@ -268,8 +271,8 @@ describe('stripe billing price mapping', () => {
                 update: expect.objectContaining({
                     plan: 'FREE',
                     monthlyServerCreditsLimit: 100,
-                    autoAnalysisMonthlyCap: 50,
-                    autoAnalysisDailyCap: 10,
+                    autoAnalysisMonthlyGameLimit: 50,
+                    autoAnalysisDailyGameLimit: 10,
                     stripeSubscriptionStatus: 'past_due',
                 }),
             })
@@ -355,6 +358,7 @@ describe('stripe billing price mapping', () => {
 function subscription(args: {
     status: string;
     priceId?: string;
+    periodStart?: number;
     periodEnd?: number;
 }) {
     return {
@@ -366,6 +370,8 @@ function subscription(args: {
             data: [
                 {
                     price: { id: args.priceId ?? 'price_plus' },
+                    current_period_start:
+                        args.periodStart ?? 1_797_321_600,
                     current_period_end: args.periodEnd ?? 1_800_000_000,
                 },
             ],

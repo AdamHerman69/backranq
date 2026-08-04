@@ -1,5 +1,6 @@
 import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import type { ManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
+import Link from 'next/link';
 
 type GamesSelectionSummary = {
     analyzed: number;
@@ -32,7 +33,7 @@ export function GamesSelectionReanalysisDialog({
             open={open}
             onOpenChange={onOpenChange}
             title={`Re-analyze ${selectedCount} selected ${selectedCount === 1 ? 'game' : 'games'}?`}
-            description="Server re-analysis runs in the background and can spend one credit per accepted game."
+            description={`Server re-analysis runs in the background and uses ${serverAnalysisCapacity.creditsPerGame} credits per accepted game.`}
             confirmLabel={`Queue up to ${maximumQueueable} ${maximumQueueable === 1 ? 'game' : 'games'}`}
             onConfirm={onConfirm}
             busy={busy}
@@ -48,8 +49,23 @@ export function GamesSelectionReanalysisDialog({
                         Requested maximum cost
                     </dt>
                     <dd className="font-semibold">
-                        {selectedCount}{' '}
-                        {selectedCount === 1 ? 'credit' : 'credits'}
+                        {selectedCount * serverAnalysisCapacity.creditsPerGame}{' '}
+                        credits ({serverAnalysisCapacity.creditsPerGame} per game)
+                    </dd>
+                </div>
+                <div>
+                    <dt className="text-muted-foreground">Quality</dt>
+                    <dd className="font-semibold">
+                        {serverAnalysisCapacity.analysisQuality === 'THOROUGH'
+                            ? 'Thorough'
+                            : 'Standard'}{' '}
+                        ·{' '}
+                        <Link
+                            href="/settings#analysis-defaults"
+                            className="font-normal underline"
+                        >
+                            Change quality
+                        </Link>
                     </dd>
                 </div>
                 <div>
@@ -68,10 +84,10 @@ export function GamesSelectionReanalysisDialog({
                         Manual reservable capacity
                     </dt>
                     <dd className="font-semibold">
-                        {serverAnalysisCapacity.reservableCredits}{' '}
-                        {serverAnalysisCapacity.reservableCredits === 1
-                            ? 'credit'
-                            : 'credits'}
+                        {serverAnalysisCapacity.reservableGames}{' '}
+                        {serverAnalysisCapacity.reservableGames === 1
+                            ? 'game'
+                            : 'games'}
                     </dd>
                 </div>
                 <div>
@@ -139,7 +155,7 @@ export function GamesSelectionReanalysisDialog({
                     <dt className="text-muted-foreground">Capacity note</dt>
                     <dd>{serverAnalysisCapacity.limitingReason}</dd>
                 </div>
-                {selectedCount > serverAnalysisCapacity.reservableCredits ? (
+                {selectedCount > serverAnalysisCapacity.reservableGames ? (
                     <div className="sm:col-span-2">
                         <dt className="font-medium text-amber-700 dark:text-amber-300">
                             Partial queue expected

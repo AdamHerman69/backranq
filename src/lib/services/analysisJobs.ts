@@ -9,12 +9,23 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
     analysisDefaultsToExtractOptions,
-    defaultPreferences,
-    mergePreferences,
+    canonicalPreferences,
     pickAnalysisDefaults,
     type AnalysisDefaults,
-    type PartialPreferences,
 } from '@/lib/preferences';
+import {
+    TRAINING_COVERAGE_PRESETS,
+    TRAINING_GRADING_TOLERANCES,
+    type TrainingCoveragePreset,
+    type TrainingGradingTolerance,
+} from '@/lib/training/config';
+import { stableCanonicalStringify } from '@/lib/training/contracts';
+import {
+    analysisCreditsPerGame,
+    ANALYSIS_QUALITY_PROFILE_VERSION,
+    isAnalysisQuality,
+    type AnalysisQuality,
+} from '@/lib/analysis/quality';
 import {
     createAnalysisRunInTransaction,
     hashAnalysisConfig,
@@ -34,18 +45,37 @@ import { autoAnalysisRulesFromPreferences } from '@/lib/services/analysisEligibi
 import {
     reserveServerAnalysisCreditsInTransaction,
     releaseServerAnalysisCreditsInTransaction,
-    SERVER_ANALYSIS_BILLING_POLICY_V1,
+    SERVER_ANALYSIS_BILLING_POLICY_V2,
 } from '@/lib/services/billingAccounts';
 
 export const SERVER_ANALYSIS_EXECUTION_MODE =
     'SERVER_QUEUE' satisfies AnalysisExecutionMode;
-export const SERVER_ANALYSIS_CONSUMED_CREDITS_V1 = 0;
-export const SERVER_ANALYSIS_ESTIMATED_CREDITS_V1 = 1;
 export const SERVER_ANALYSIS_CREDIT_POLICY =
-    SERVER_ANALYSIS_BILLING_POLICY_V1;
+    SERVER_ANALYSIS_BILLING_POLICY_V2;
 export const AUTO_ANALYSIS_QUEUED_REASONS = [
     'auto-sync',
     'auto-analysis',
+] as const;
+const SERVER_ANALYSIS_ENGINE_SNAPSHOT = {
+    provider: 'stockfish@18.0.8',
+    client: 'ServerStockfishClient',
+    build: 'stockfish-18-lite-single',
+    flavor: 'lite-single-nnue-wasm',
+    options: {
+        Threads: 1,
+        Hash: 64,
+        UCI_ShowWDL: true,
+    },
+} satisfies Prisma.InputJsonObject;
+const SERVER_ANALYSIS_SNAPSHOT_KEYS = [
+    'analysisDefaults',
+    'analysisQuality',
+    'creditCost',
+    'engine',
+    'executionMode',
+    'extractOptions',
+    'qualityProfileVersion',
+    'version',
 ] as const;
 export class AutoAnalysisDisabledError extends Error {
     constructor(message = 'Automatic analysis is disabled') {
@@ -64,6 +94,8 @@ export class AnalysisJobOwnershipError extends Error {
 export type ServerAnalysisConfig = {
     snapshot: Prisma.InputJsonObject;
     hash: string;
+    analysisQuality: AnalysisQuality;
+    creditCost: number;
 };
 
 export type AnalysisRunSummary = {
@@ -76,6 +108,8 @@ export type AnalysisRunSummary = {
     completedAt: Date | null;
     durationMs: number | null;
     consumedCredits: number | null;
+    analysisQuality: AnalysisQuality;
+    creditCost: number;
     lastError: string | null;
 };
 
@@ -96,17 +130,41 @@ export async function enqueueAnalysisJob(args: {
     queuedReason?: string;
     priority?: number;
     scheduledFor?: Date | null;
-    estimatedCredits?: number;
     weight?: number;
     force?: boolean;
     config?: ServerAnalysisConfig;
 }): Promise<EnqueueAnalysisJobResult> {
-    try {
-        return await enqueueAnalysisJobOnce(args);
-    } catch (error) {
-        if (!isPrismaUniqueError(error)) throw error;
-        return enqueueAnalysisJobOnce(args);
+    const config =
+        args.config ?? serverAnalysisConfigFromPreferences(undefined).config;
+    const resolvedConfig = serverAnalysisConfigFromSnapshot({
+        snapshot: config.snapshot,
+        hash: config.hash,
+    });
+    if (
+        !resolvedConfig ||
+        resolvedConfig.config.analysisQuality !== config.analysisQuality ||
+        resolvedConfig.config.creditCost !== config.creditCost
+    ) {
+        throw new Error('Invalid server analysis configuration');
     }
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+            return await enqueueAnalysisJobOnce({
+                ...args,
+                config: resolvedConfig.config,
+            });
+        } catch (error) {
+            if (
+                attempt < 3 &&
+                (isPrismaUniqueError(error) ||
+                    isTransactionWriteConflict(error))
+            ) {
+                continue;
+            }
+            throw error;
+        }
+    }
+    throw new Error('Analysis enqueue retry limit exceeded');
 }
 
 async function enqueueAnalysisJobOnce(args: {
@@ -115,10 +173,9 @@ async function enqueueAnalysisJobOnce(args: {
     queuedReason?: string;
     priority?: number;
     scheduledFor?: Date | null;
-    estimatedCredits?: number;
     weight?: number;
     force?: boolean;
-    config?: ServerAnalysisConfig;
+    config: ServerAnalysisConfig;
 }): Promise<EnqueueAnalysisJobResult> {
     return prisma.$transaction(async (tx) => {
         const existing = await tx.analysisJob.findUnique({
@@ -149,10 +206,6 @@ async function enqueueAnalysisJobOnce(args: {
                     status: 'QUEUED',
                     priority: args.priority ?? existing.priority,
                     scheduledFor: args.scheduledFor ?? null,
-                    estimatedCredits:
-                        args.estimatedCredits ??
-                        existing.estimatedCredits ??
-                        SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
                     weight: args.weight ?? existing.weight ?? 0,
                     lockedAt: null,
                     lockedUntil: null,
@@ -189,8 +242,6 @@ async function enqueueAnalysisJobOnce(args: {
                 analysisRunId: run.id,
                 priority: args.priority ?? 0,
                 scheduledFor: args.scheduledFor ?? null,
-                estimatedCredits:
-                    args.estimatedCredits ?? SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
                 weight: args.weight ?? 0,
                 queuedReason: args.queuedReason,
             },
@@ -378,7 +429,7 @@ export async function markAnalysisJobFailed(
                 data: {
                     status: 'FAILED',
                     completedAt: now,
-                    consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
+                    consumedCredits: null,
                     lastError: errorMessage(error),
                 },
             });
@@ -452,34 +503,29 @@ export async function getNextQueuedAnalysisRetry() {
 }
 
 export function serverAnalysisConfigFromPreferences(
-    preferences: unknown
+    preferences: unknown,
+    analysisDefaultsOverride?: AnalysisDefaults
 ): {
-    prefs: ReturnType<typeof mergePreferences>;
+    prefs: ReturnType<typeof canonicalPreferences>;
     options: ReturnType<typeof analysisDefaultsToExtractOptions>;
     config: ServerAnalysisConfig;
 } {
-    const prefs = mergePreferences(
-        defaultPreferences(),
-        (preferences ?? {}) as PartialPreferences
-    );
-    const analysisDefaults = pickAnalysisDefaults(prefs);
+    const prefs = canonicalPreferences(preferences);
+    const analysisDefaults =
+        analysisDefaultsOverride ?? pickAnalysisDefaults(prefs);
     const extractOptions = analysisDefaultsToExtractOptions(analysisDefaults, {
         returnAnalysis: true,
     });
+    const creditCost = analysisCreditsPerGame(
+        analysisDefaults.analysisQuality
+    );
     const snapshot = {
-        version: 1,
+        version: 2,
         executionMode: SERVER_ANALYSIS_EXECUTION_MODE,
-        engine: {
-            provider: 'stockfish@18.0.8',
-            client: 'ServerStockfishClient',
-            build: 'stockfish-18-lite-single',
-            flavor: 'lite-single-nnue-wasm',
-            options: {
-                Threads: 1,
-                Hash: 64,
-                UCI_ShowWDL: true,
-            },
-        },
+        analysisQuality: analysisDefaults.analysisQuality,
+        qualityProfileVersion: ANALYSIS_QUALITY_PROFILE_VERSION,
+        creditCost,
+        engine: SERVER_ANALYSIS_ENGINE_SNAPSHOT,
         analysisDefaults,
         extractOptions,
     } satisfies Prisma.InputJsonObject;
@@ -490,8 +536,35 @@ export function serverAnalysisConfigFromPreferences(
         config: {
             snapshot,
             hash: hashJson(snapshot),
+            analysisQuality: analysisDefaults.analysisQuality,
+            creditCost,
         },
     };
+}
+
+function isCanonicalAnalysisDefaults(
+    value: unknown,
+    quality: AnalysisQuality
+): value is AnalysisDefaults {
+    if (!isRecord(value)) return false;
+    const keys = Object.keys(value).sort();
+    if (
+        keys.length !== 3 ||
+        keys[0] !== 'analysisQuality' ||
+        keys[1] !== 'trainingCoveragePreset' ||
+        keys[2] !== 'trainingGradingTolerance'
+    ) {
+        return false;
+    }
+    return (
+        value.analysisQuality === quality &&
+        TRAINING_COVERAGE_PRESETS.includes(
+            value.trainingCoveragePreset as TrainingCoveragePreset
+        ) &&
+        TRAINING_GRADING_TOLERANCES.includes(
+            value.trainingGradingTolerance as TrainingGradingTolerance
+        )
+    );
 }
 
 export function serverAnalysisConfigFromSnapshot(args: {
@@ -502,22 +575,61 @@ export function serverAnalysisConfigFromSnapshot(args: {
     config: ServerAnalysisConfig;
 } | null {
     if (!isRecord(args.snapshot)) return null;
+    if (
+        !hasExactKeys(args.snapshot, SERVER_ANALYSIS_SNAPSHOT_KEYS) ||
+        args.snapshot.version !== 2 ||
+        args.snapshot.executionMode !== SERVER_ANALYSIS_EXECUTION_MODE ||
+        args.snapshot.qualityProfileVersion !==
+            ANALYSIS_QUALITY_PROFILE_VERSION ||
+        !isAnalysisQuality(args.snapshot.analysisQuality) ||
+        args.snapshot.creditCost !==
+            analysisCreditsPerGame(args.snapshot.analysisQuality) ||
+        !isCanonicalAnalysisDefaults(
+            args.snapshot.analysisDefaults,
+            args.snapshot.analysisQuality
+        ) ||
+        !isRecord(args.snapshot.extractOptions) ||
+        stableCanonicalStringify(args.snapshot.engine) !==
+            stableCanonicalStringify(SERVER_ANALYSIS_ENGINE_SNAPSHOT)
+    ) {
+        return null;
+    }
+
     const analysisDefaults = args.snapshot.analysisDefaults;
-    if (!isRecord(analysisDefaults)) return null;
+    const canonicalOptions = analysisDefaultsToExtractOptions(
+        analysisDefaults,
+        { returnAnalysis: true }
+    );
+    if (
+        stableCanonicalStringify(args.snapshot.extractOptions) !==
+        stableCanonicalStringify(canonicalOptions)
+    ) {
+        return null;
+    }
 
     const snapshot = args.snapshot as Prisma.InputJsonObject;
     const computedHash = hashJson(snapshot);
     if (args.hash !== computedHash) return null;
     return {
-        options: analysisDefaultsToExtractOptions(
-            analysisDefaults as AnalysisDefaults,
-            { returnAnalysis: true }
-        ),
+        options: canonicalOptions,
         config: {
             snapshot,
             hash: computedHash,
+            analysisQuality: args.snapshot.analysisQuality,
+            creditCost: args.snapshot.creditCost,
         },
     };
+}
+
+function hasExactKeys(
+    value: Record<string, unknown>,
+    expected: readonly string[]
+) {
+    const actual = Object.keys(value).sort();
+    return (
+        actual.length === expected.length &&
+        actual.every((key, index) => key === expected[index])
+    );
 }
 
 export function getAnalysisJobDurationMs(job: {
@@ -529,14 +641,14 @@ export function getAnalysisJobDurationMs(job: {
 }
 
 export function analysisJobCreditsMetadata(
-    run?: Pick<AnalysisRunSummary, 'consumedCredits'> | null
+    run?: Pick<AnalysisRunSummary, 'consumedCredits' | 'creditCost'> | null
 ) {
+    const creditCost = run?.creditCost ?? 0;
     return {
-        consumedCredits:
-            run?.consumedCredits ?? SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
-        estimatedCredits: SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
+        consumedCredits: run?.consumedCredits ?? null,
+        creditCost,
         billable: true,
-        reservedCredits: SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
+        reservedCredits: run?.consumedCredits == null ? creditCost : 0,
         policy: SERVER_ANALYSIS_CREDIT_POLICY,
     };
 }
@@ -545,7 +657,7 @@ async function createAnalysisRunProvenanceInTransaction(args: {
     tx: Parameters<typeof createAnalysisRunInTransaction>[0]['tx'];
     job: Pick<AnalysisJob, 'userId' | 'gameId' | 'startedAt'>;
     queuedReason?: string | null;
-    config?: ServerAnalysisConfig;
+    config: ServerAnalysisConfig;
     status: AnalysisJobStatus;
 }) {
     const run = await createAnalysisRunInTransaction({
@@ -558,13 +670,15 @@ async function createAnalysisRunProvenanceInTransaction(args: {
 function analysisRunProvenancePayload(args: {
     job: Pick<AnalysisJob, 'userId' | 'gameId' | 'startedAt'>;
     queuedReason?: string | null;
-    config?: ServerAnalysisConfig;
+    config: ServerAnalysisConfig;
     status: AnalysisJobStatus;
 }): CreateAnalysisRunArgs {
     return {
         userId: args.job.userId,
         gameId: args.job.gameId,
         executionMode: SERVER_ANALYSIS_EXECUTION_MODE,
+        analysisQuality: args.config.analysisQuality,
+        creditCost: args.config.creditCost,
         status: analysisJobStatusToRunStatus(args.status),
         queuedReason: args.queuedReason,
         engine: {
@@ -578,13 +692,13 @@ function analysisRunProvenancePayload(args: {
                 UCI_ShowWDL: true,
             },
         },
-        configSnapshot: args.config?.snapshot,
-        configHash: args.config?.hash,
+        configSnapshot: args.config.snapshot,
+        configHash: args.config.hash,
         startedAt:
             args.status === 'RUNNING'
                 ? (args.job.startedAt ?? new Date())
                 : null,
-        consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
+        consumedCredits: null,
     };
 }
 
@@ -599,6 +713,13 @@ export async function transitionAnalysisRunForJob(args: {
 }) {
     const run = await getAnalysisRunSummaryForJob(args.jobId);
     if (!run) return null;
+    if (
+        args.config &&
+        (args.config.analysisQuality !== run.analysisQuality ||
+            args.config.creditCost !== run.creditCost)
+    ) {
+        throw new Error('Analysis run configuration cannot change quality or price');
+    }
 
     const startedAt = args.startedAt ?? run.startedAt;
     const completedAt =
@@ -623,15 +744,16 @@ export async function transitionAnalysisRunForJob(args: {
             where: { id: run.id },
             data: pruneUndefined({
                 status: analysisJobStatusToRunStatus(args.status),
-                configSnapshot: args.config?.snapshot,
-                configHash: args.config?.hash,
                 startedAt:
                     args.status === 'RUNNING'
                         ? (startedAt ?? new Date())
                         : undefined,
                 completedAt,
                 durationMs,
-                consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
+                consumedCredits:
+                    args.status === 'SUCCEEDED'
+                        ? run.consumedCredits
+                        : null,
                 lastError,
             }),
         });
@@ -670,6 +792,8 @@ function analysisRunToSummary(run: AnalysisRun): AnalysisRunSummary {
         completedAt: run.completedAt,
         durationMs: run.durationMs,
         consumedCredits: run.consumedCredits,
+        analysisQuality: run.analysisQuality,
+        creditCost: run.creditCost,
         lastError: run.lastError,
     };
 }
@@ -693,6 +817,15 @@ export function isPrismaUniqueError(error: unknown) {
     return (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
+    );
+}
+
+function isTransactionWriteConflict(error: unknown) {
+    return (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: unknown }).code === 'P2034'
     );
 }
 
@@ -724,15 +857,13 @@ async function reserveCreditsForQueuedAnalysisJob(args: {
     tx: Prisma.TransactionClient;
     job: Pick<
         AnalysisJob,
-        'id' | 'userId' | 'gameId' | 'queuedReason' | 'estimatedCredits'
+        'id' | 'userId' | 'gameId' | 'queuedReason'
     >;
     run: AnalysisRunSummary | null;
 }) {
     const { tx, job, run } = args;
-    const credits = Math.max(
-        1,
-        Math.trunc(job.estimatedCredits ?? SERVER_ANALYSIS_ESTIMATED_CREDITS_V1)
-    );
+    if (!run) throw new MissingAnalysisRunProvenanceError(job.id);
+    const credits = run.creditCost;
     const idempotencyKey = run
         ? `analysis-run:${run.id}:reserve`
         : `analysis-job:${job.id}:reserve`;
@@ -740,9 +871,9 @@ async function reserveCreditsForQueuedAnalysisJob(args: {
     const isAutomatic = isAutoAnalysisQueuedReason(job.queuedReason);
     let autoAnalysisBudget:
         | {
-              dailyCap: number | null;
-              monthlyCap: number | null;
-              reserveCredits: number;
+              dailyGameLimit: number | null;
+              monthlyGameLimit: number | null;
+              creditReserve: number;
           }
         | undefined;
     if (isAutomatic) {
@@ -758,9 +889,9 @@ async function reserveCreditsForQueuedAnalysisJob(args: {
         // serializable transaction. A reconciliation snapshot may already be
         // stale if the user tightened or disabled automation.
         autoAnalysisBudget = {
-            dailyCap: rules.dailyCap,
-            monthlyCap: rules.monthlyCap,
-            reserveCredits: rules.reserveCredits,
+            dailyGameLimit: rules.dailyGameLimit,
+            monthlyGameLimit: rules.monthlyGameLimit,
+            creditReserve: rules.creditReserve,
         };
     }
 
@@ -778,7 +909,7 @@ async function reserveCreditsForQueuedAnalysisJob(args: {
         autoAnalysisBudget,
         metadata: {
             executionMode: SERVER_ANALYSIS_EXECUTION_MODE,
-            estimatedCredits: credits,
+            creditCost: credits,
             policy: SERVER_ANALYSIS_CREDIT_POLICY,
         },
     });
@@ -812,7 +943,7 @@ export async function cancelQueuedAutoAnalysisJobsInTransaction(args: {
             userId: true,
             gameId: true,
             analysisRunId: true,
-            estimatedCredits: true,
+            analysisRun: { select: { creditCost: true } },
         },
     });
     let cancelled = 0;
@@ -837,11 +968,12 @@ export async function cancelQueuedAutoAnalysisJobsInTransaction(args: {
             data: {
                 status: 'CANCELLED',
                 completedAt: new Date(),
+                consumedCredits: 0,
                 lastError: null,
             },
         });
 
-        const credits = Math.max(1, Math.trunc(job.estimatedCredits ?? 1));
+        const credits = job.analysisRun.creditCost;
         const entries = await args.tx.creditLedgerEntry.findMany({
             where: { analysisJobId: job.id },
             select: { type: true, credits: true },

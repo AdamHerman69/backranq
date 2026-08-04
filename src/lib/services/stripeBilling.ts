@@ -3,14 +3,15 @@ import type Stripe from 'stripe';
 import { prisma } from '@/lib/prisma';
 import { appUrl, getStripeClient } from '@/lib/stripe';
 import {
-    DEFAULT_AUTO_ANALYSIS_DAILY_CAP,
-    DEFAULT_AUTO_ANALYSIS_MONTHLY_CAP,
+    DEFAULT_AUTO_ANALYSIS_DAILY_GAME_LIMIT,
+    DEFAULT_AUTO_ANALYSIS_MONTHLY_GAME_LIMIT,
     DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT,
     DEFAULT_SERVER_CREDITS_BALANCE,
     DEFAULT_STOP_WHEN_CREDITS_BELOW,
     getOrCreateDefaultBillingAccount,
 } from '@/lib/services/billingAccounts';
 import { scheduleAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
+import { nextMonthlyRenewAt } from '@/lib/billing/periods';
 
 export type PaidBillingPlan = Exclude<BillingPlan, 'FREE'>;
 export type StripeEventFence = {
@@ -21,16 +22,16 @@ export type StripeEventFence = {
 type BillingPlanEntitlements = {
     plan: BillingPlan;
     monthlyServerCreditsLimit: number;
-    autoAnalysisMonthlyCap: number;
-    autoAnalysisDailyCap: number;
+    autoAnalysisMonthlyGameLimit: number;
+    autoAnalysisDailyGameLimit: number;
     stopWhenCreditsBelow: number;
 };
 
 const FREE_ENTITLEMENTS: BillingPlanEntitlements = {
     plan: 'FREE',
     monthlyServerCreditsLimit: DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT,
-    autoAnalysisMonthlyCap: DEFAULT_AUTO_ANALYSIS_MONTHLY_CAP,
-    autoAnalysisDailyCap: DEFAULT_AUTO_ANALYSIS_DAILY_CAP,
+    autoAnalysisMonthlyGameLimit: DEFAULT_AUTO_ANALYSIS_MONTHLY_GAME_LIMIT,
+    autoAnalysisDailyGameLimit: DEFAULT_AUTO_ANALYSIS_DAILY_GAME_LIMIT,
     stopWhenCreditsBelow: DEFAULT_STOP_WHEN_CREDITS_BELOW,
 };
 
@@ -38,15 +39,15 @@ const PAID_PLAN_ENTITLEMENTS: Record<PaidBillingPlan, BillingPlanEntitlements> =
     PLUS: {
         plan: 'PLUS',
         monthlyServerCreditsLimit: 1_000,
-        autoAnalysisMonthlyCap: 500,
-        autoAnalysisDailyCap: 50,
+        autoAnalysisMonthlyGameLimit: 500,
+        autoAnalysisDailyGameLimit: 50,
         stopWhenCreditsBelow: 0,
     },
     PRO: {
         plan: 'PRO',
         monthlyServerCreditsLimit: 5_000,
-        autoAnalysisMonthlyCap: 5_000,
-        autoAnalysisDailyCap: 250,
+        autoAnalysisMonthlyGameLimit: 5_000,
+        autoAnalysisDailyGameLimit: 250,
         stopWhenCreditsBelow: 0,
     },
 };
@@ -191,6 +192,7 @@ export async function applyStripeSubscription(
         subscriptionId: subscription.id,
         subscriptionStatus: subscription.status,
         priceId,
+        currentPeriodStart: subscriptionCurrentPeriodStart(subscription),
         currentPeriodEnd: subscriptionCurrentPeriodEnd(subscription),
         entitlements,
         eventId: overrides.eventId,
@@ -254,6 +256,7 @@ async function upsertBillingAccountFromStripe(args: {
     subscriptionId: string;
     subscriptionStatus: string;
     priceId: string;
+    currentPeriodStart: Date | null;
     currentPeriodEnd: Date | null;
     entitlements: BillingPlanEntitlements;
     eventId?: string | null;
@@ -324,6 +327,8 @@ async function upsertBillingAccountFromStripe(args: {
                           args.entitlements.monthlyServerCreditsLimit
                       ),
                       monthlyServerCreditsUsed: 0,
+                      serverCreditsPeriodStart:
+                          args.currentPeriodStart ?? now,
                       serverCreditsRenewAt:
                           args.currentPeriodEnd ?? nextMonthlyRenewAt(now),
                   }
@@ -336,6 +341,8 @@ async function upsertBillingAccountFromStripe(args: {
                                   serverCreditsRenewAt:
                                       args.currentPeriodEnd ??
                                       nextMonthlyRenewAt(now),
+                                  serverCreditsPeriodStart:
+                                      args.currentPeriodStart ?? now,
                               }
                             : {}),
                     }
@@ -352,6 +359,7 @@ async function upsertBillingAccountFromStripe(args: {
                     args.entitlements.monthlyServerCreditsLimit
                 ),
                 monthlyServerCreditsUsed: 0,
+                serverCreditsPeriodStart: args.currentPeriodStart ?? now,
                 serverCreditsRenewAt:
                     args.currentPeriodEnd ?? nextMonthlyRenewAt(now),
                 ...data,
@@ -363,10 +371,10 @@ async function upsertBillingAccountFromStripe(args: {
                 billingPeriodAdvanced ||
                 balanceGrant > 0 ||
                 (existing !== null &&
-                    (args.entitlements.autoAnalysisDailyCap >
-                        existing.autoAnalysisDailyCap ||
-                        args.entitlements.autoAnalysisMonthlyCap >
-                            existing.autoAnalysisMonthlyCap ||
+                    (args.entitlements.autoAnalysisDailyGameLimit >
+                        existing.autoAnalysisDailyGameLimit ||
+                        args.entitlements.autoAnalysisMonthlyGameLimit >
+                            existing.autoAnalysisMonthlyGameLimit ||
                         args.entitlements.monthlyServerCreditsLimit >
                             existing.monthlyServerCreditsLimit)),
         };
@@ -424,8 +432,10 @@ function billingAccountEntitlementData(
     return {
         plan: entitlements.plan,
         monthlyServerCreditsLimit: entitlements.monthlyServerCreditsLimit,
-        autoAnalysisMonthlyCap: entitlements.autoAnalysisMonthlyCap,
-        autoAnalysisDailyCap: entitlements.autoAnalysisDailyCap,
+        autoAnalysisMonthlyGameLimit:
+            entitlements.autoAnalysisMonthlyGameLimit,
+        autoAnalysisDailyGameLimit:
+            entitlements.autoAnalysisDailyGameLimit,
         stopWhenCreditsBelow: entitlements.stopWhenCreditsBelow,
     };
 }
@@ -456,8 +466,17 @@ function subscriptionCurrentPeriodEnd(subscription: Stripe.Subscription) {
     return typeof periodEnd === 'number' ? new Date(periodEnd * 1_000) : null;
 }
 
-function nextMonthlyRenewAt(now: Date) {
-    const next = new Date(now);
-    next.setUTCMonth(next.getUTCMonth() + 1);
-    return next;
+function subscriptionCurrentPeriodStart(subscription: Stripe.Subscription) {
+    const periodStart =
+        (subscription as unknown as { current_period_start?: number })
+            .current_period_start ??
+        (
+            subscription.items.data[0] as
+                | { current_period_start?: number }
+                | undefined
+        )?.current_period_start ??
+        null;
+    return typeof periodStart === 'number'
+        ? new Date(periodStart * 1_000)
+        : null;
 }

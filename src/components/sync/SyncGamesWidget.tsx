@@ -92,8 +92,10 @@ type ExtendedSyncStatus = SyncStatus & {
         };
         capacity?: {
             reservableCredits: number;
+            reservableGames: number;
+            creditsPerGame: number;
             currentBalance: number;
-            reserveCredits: number;
+            creditReserve: number;
             dailyRemaining: number | null;
             monthlyRemaining: number | null;
             planMonthlyRemaining: number;
@@ -617,8 +619,8 @@ export function SyncGamesWidget({
         ((waitingForCredits > 0 &&
             isCreditOrCapBlockReason(rawBlockedReason)) ||
         ((inventoryCounts?.unanalyzed ?? 0) > 0 &&
-            (currentStatus.automation?.capacity?.reservableCredits ??
-                currentStatus.billing?.reservableCredits) === 0));
+            (currentStatus.automation?.capacity?.reservableGames ??
+                currentStatus.billing?.reservableGames) === 0));
     const waitingForCreditsIsExact =
         backlog?.countsExact !== false;
 

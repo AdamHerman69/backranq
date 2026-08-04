@@ -8,18 +8,15 @@ import {
 } from '@/lib/preferences';
 
 describe('analysis preference bounds', () => {
-    it('defensively replaces unsafe persisted values with bounded defaults', () => {
+    it('resolves the Thorough profile by default', () => {
         const defaults = pickAnalysisDefaults(defaultPreferences());
-        const options = analysisDefaultsToExtractOptions({
-            ...defaults,
-            analysisNodesPerPosition: '999999999',
-            confirmationNodes: '999999999',
-            themeLookaheadPlies: 'NaN',
-        });
+        const options = analysisDefaultsToExtractOptions(defaults);
 
         expect(options).toMatchObject({
             nodesPerPosition: 100_000,
-            confirmNodes: null,
+            confirmNodes: 200_000,
+            maxConfirmationNodes: 1_600_000,
+            verificationNodesPerPosition: 100_000,
             themeLookaheadPlies: 4,
         });
     });
@@ -28,12 +25,13 @@ describe('analysis preference bounds', () => {
         const defaults = pickAnalysisDefaults(defaultPreferences());
         const options = analysisDefaultsToExtractOptions({
             ...defaults,
-            confirmationNodes: '',
+            analysisQuality: 'STANDARD',
             trainingCoveragePreset: 'HIGH_CONFIDENCE',
             trainingGradingTolerance: 'STRICT',
         });
 
-        expect(options.confirmNodes).toBeNull();
+        expect(options.confirmNodes).toBe(200_000);
+        expect(options.maxConfirmationNodes).toBe(800_000);
         expect(options.minWinningChanceLoss).toBe(0.12);
         expect(options.fallbackMinCpLoss).toBe(150);
         expect(options.maxAcceptedWinningChanceLoss).toBe(0.025);
@@ -82,8 +80,8 @@ describe('analysis preference bounds', () => {
                     resultScope: 'losses',
                     ratedOnly: false,
                     minPlies: 14,
-                    dailyCap: 3,
-                    monthlyCap: 20,
+                    dailyGameLimit: 3,
+                    monthlyGameLimit: 20,
                 },
             },
         });
@@ -102,8 +100,8 @@ describe('analysis preference bounds', () => {
                 resultScope: 'losses',
                 ratedOnly: false,
                 minPlies: 14,
-                dailyCap: 3,
-                monthlyCap: 20,
+                dailyGameLimit: 3,
+                monthlyGameLimit: 20,
             },
         });
     });
@@ -115,9 +113,9 @@ describe('analysis preference bounds', () => {
                 rules: { lichess: { rapid: 'MAYBE' } },
                 analysis: {
                     minPlies: -1,
-                    dailyCap: 0,
-                    monthlyCap: Number.POSITIVE_INFINITY,
-                    reserveCredits: -5,
+                    dailyGameLimit: 0,
+                    monthlyGameLimit: Number.POSITIVE_INFINITY,
+                    creditReserve: -5,
                     existingGames: 'surprise-me',
                     enabledAt: 'not-a-date',
                 },

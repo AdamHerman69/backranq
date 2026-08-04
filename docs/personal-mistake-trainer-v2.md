@@ -137,6 +137,12 @@ The clean user-facing controls are therefore based on intent:
 - practical grading tolerance;
 - analysis quality/cost where server credits matter.
 
+The public quality contract has two profiles. Standard costs 7 server credits
+and uses an 800k-node adaptive confirmation ceiling. Thorough is recommended,
+costs 10 credits, and raises that ceiling to 1.6m nodes. Both use deterministic
+node budgets; browser execution is free. Raw engine budgets are internal and
+are never persisted as user preferences.
+
 There is no extraction-type switch, tactical-only requirement, per-game puzzle
 quota, opening skip, eval band, minimum PV length, endgame exclusion, or
 cooldown. Those controls either silently lost training data or exposed

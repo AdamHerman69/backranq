@@ -43,10 +43,11 @@ function billingAccount(overrides: Record<string, unknown> = {}) {
         plan: 'FREE',
         serverCreditsBalance: 99,
         monthlyServerCreditsUsed: 0,
+        serverCreditsPeriodStart: new Date('2026-07-05T00:00:00Z'),
         serverCreditsRenewAt: new Date('2026-08-05T00:00:00Z'),
         monthlyServerCreditsLimit: 100,
-        autoAnalysisMonthlyCap: 50,
-        autoAnalysisDailyCap: 10,
+        autoAnalysisMonthlyGameLimit: 50,
+        autoAnalysisDailyGameLimit: 10,
         stopWhenCreditsBelow: 0,
         createdAt: new Date('2026-07-05T00:00:00Z'),
         updatedAt: new Date('2026-07-05T00:00:00Z'),
@@ -61,28 +62,30 @@ function primeCreditReservationMocks() {
         gameId: 'game-1',
         status: 'QUEUED',
         executionMode: 'SERVER_QUEUE',
+        analysisQuality: 'THOROUGH',
+        creditCost: 10,
         queuedReason: 'manual',
         configHash: null,
         startedAt: null,
         completedAt: null,
         durationMs: null,
-        consumedCredits: 0,
+        consumedCredits: null,
         lastError: null,
     });
     prismaMock.billingAccount.upsert.mockResolvedValue(billingAccount());
     prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);
     prismaMock.creditLedgerEntry.findMany
         .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ type: 'RESERVED', credits: 1 }]);
+        .mockResolvedValueOnce([{ type: 'RESERVED', credits: 10 }]);
     prismaMock.billingAccount.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.billingAccount.findUniqueOrThrow.mockResolvedValue(
-        billingAccount({ serverCreditsBalance: 98 })
+        billingAccount({ serverCreditsBalance: 89 })
     );
     prismaMock.creditLedgerEntry.create.mockResolvedValue({
         id: 'entry-1',
         userId: 'user-1',
         type: 'RESERVED',
-        credits: 1,
+        credits: 10,
         idempotencyKey: 'analysis-run:run-1:reserve',
     });
 }
@@ -208,6 +211,33 @@ describe('POST /api/analysis/jobs', () => {
         expect(dispatchQueuedAnalysisJobsMock).not.toHaveBeenCalled();
     });
 
+    it('rejects legacy or unknown quality fields instead of silently repricing', async () => {
+        const route = await importRoute();
+
+        const response = await route.POST(
+            post({
+                gameIds: [GAME_ID],
+                analysisQuality: 'STANDARD',
+            })
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Invalid analysis request',
+        });
+        expect(prismaMock.analyzedGame.findMany).not.toHaveBeenCalled();
+    });
+
+    it('requires force to be a boolean', async () => {
+        const route = await importRoute();
+        const response = await route.POST(
+            post({ gameIds: [GAME_ID], force: 'true' })
+        );
+
+        expect(response.status).toBe(400);
+        expect(prismaMock.analyzedGame.findMany).not.toHaveBeenCalled();
+    });
+
     it('queues only games owned by the current user', async () => {
         const route = await importRoute();
         prismaMock.analyzedGame.findMany.mockResolvedValue([{ id: GAME_ID }]);
@@ -220,7 +250,6 @@ describe('POST /api/analysis/jobs', () => {
             userId: 'user-1',
             gameId: GAME_ID,
             status: 'QUEUED',
-            estimatedCredits: 1,
             queuedReason: 'manual',
             createdAt: new Date(),
             startedAt: null,
@@ -264,7 +293,6 @@ describe('POST /api/analysis/jobs', () => {
             userId: 'user-1',
             gameId: GAME_ID,
             status: 'QUEUED',
-            estimatedCredits: 1,
             queuedReason: 'manual',
             createdAt: new Date(),
             startedAt: null,
@@ -310,7 +338,6 @@ describe('POST /api/analysis/jobs', () => {
             gameId: GAME_ID,
             status: 'SUCCEEDED',
             priority: 0,
-            estimatedCredits: 1,
             weight: 0,
             queuedReason: 'manual',
         });
@@ -319,7 +346,6 @@ describe('POST /api/analysis/jobs', () => {
             userId: 'user-1',
             gameId: GAME_ID,
             status: 'QUEUED',
-            estimatedCredits: 1,
             queuedReason: 'manual-reanalysis',
             createdAt: new Date(),
             startedAt: null,

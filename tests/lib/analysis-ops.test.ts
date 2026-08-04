@@ -10,7 +10,7 @@ async function importOps(): Promise<AnalysisOpsModule> {
     mockPrismaModule();
     vi.doMock('@/lib/services/billingAccounts', () => ({
         consumeServerAnalysisCredits: consumeCreditsMock,
-        releaseServerAnalysisCredits: releaseCreditsMock,
+        releaseServerAnalysisCreditsAndMarkRunReleased: releaseCreditsMock,
     }));
     prismaMock.$transaction.mockImplementation(
         async (callback: unknown) =>
@@ -188,7 +188,7 @@ describe('analysis ops snapshot', () => {
                 gameId: 'game-1',
                 analysisRunId: 'run-1',
                 status: 'SUCCEEDED',
-                estimatedCredits: 1,
+                analysisRun: { creditCost: 10 },
             },
             {
                 id: 'job-failed',
@@ -196,7 +196,7 @@ describe('analysis ops snapshot', () => {
                 gameId: 'game-2',
                 analysisRunId: 'run-2',
                 status: 'FAILED',
-                estimatedCredits: 1,
+                analysisRun: { creditCost: 10 },
             },
         ]);
         consumeCreditsMock.mockResolvedValue({ created: true });
@@ -235,7 +235,7 @@ describe('analysis ops snapshot', () => {
                 gameId: 'game-1',
                 analysisRunId: 'run-2',
                 status: 'FAILED',
-                estimatedCredits: 1,
+                analysisRun: { creditCost: 10 },
                 lastError: null,
             },
         ]);

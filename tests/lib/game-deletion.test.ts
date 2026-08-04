@@ -20,10 +20,11 @@ function account(overrides: Record<string, unknown> = {}) {
         plan: 'FREE',
         serverCreditsBalance: 9,
         monthlyServerCreditsUsed: 0,
+        serverCreditsPeriodStart: new Date('2026-07-05T00:00:00Z'),
         serverCreditsRenewAt: new Date('2026-08-05T00:00:00Z'),
         monthlyServerCreditsLimit: 10,
-        autoAnalysisMonthlyCap: 5,
-        autoAnalysisDailyCap: 2,
+        autoAnalysisMonthlyGameLimit: 5,
+        autoAnalysisDailyGameLimit: 2,
         stopWhenCreditsBelow: 0,
         createdAt: new Date('2026-07-05T00:00:00Z'),
         updatedAt: new Date('2026-07-05T00:00:00Z'),
@@ -37,7 +38,7 @@ function job(overrides: Record<string, unknown> = {}) {
         status: 'RUNNING',
         analysisRunId: 'run-1',
         lastError: null,
-        creditLedgerEntries: [{ type: 'RESERVED', credits: 1 }],
+        creditLedgerEntries: [{ type: 'RESERVED', credits: 10 }],
         ...overrides,
     };
 }
@@ -50,19 +51,19 @@ function configureSettlement(action: 'consume' | 'release') {
     prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);
     prismaMock.billingAccount.upsert.mockResolvedValue(account());
     prismaMock.creditLedgerEntry.findMany
-        .mockResolvedValueOnce([{ type: 'RESERVED', credits: 1 }])
+        .mockResolvedValueOnce([{ type: 'RESERVED', credits: 10 }])
         .mockResolvedValueOnce([
-            { type: 'RESERVED', credits: 1 },
+            { type: 'RESERVED', credits: 10 },
             {
                 type: action === 'consume' ? 'CONSUMED' : 'RELEASED',
-                credits: 1,
+                credits: 10,
             },
         ]);
     prismaMock.billingAccount.update.mockResolvedValue(
         account(
             action === 'consume'
-                ? { monthlyServerCreditsUsed: 1 }
-                : { serverCreditsBalance: 10 }
+                ? { monthlyServerCreditsUsed: 10 }
+                : { serverCreditsBalance: 19 }
         )
     );
     prismaMock.creditLedgerEntry.create.mockResolvedValue({
@@ -72,7 +73,7 @@ function configureSettlement(action: 'consume' | 'release') {
         analysisRunId: 'run-1',
         gameId: 'game-1',
         type: action === 'consume' ? 'CONSUMED' : 'RELEASED',
-        credits: 1,
+        credits: 10,
         idempotencyKey: `analysis-run:run-1:${action}`,
         reason: 'game-deleted',
         metadata: {},
@@ -98,7 +99,7 @@ describe('safe game deletion', () => {
         expect(result).toEqual({
             cancelledJobs: 1,
             consumedReservations: 0,
-            releasedReservations: 1,
+            releasedReservations: 10,
         });
         expect(prismaMock.creditLedgerEntry.create).toHaveBeenCalledWith({
             data: expect.objectContaining({
@@ -132,7 +133,7 @@ describe('safe game deletion', () => {
 
         expect(result).toEqual({
             cancelledJobs: 0,
-            consumedReservations: 1,
+            consumedReservations: 10,
             releasedReservations: 0,
         });
         expect(prismaMock.analysisJob.update).not.toHaveBeenCalled();

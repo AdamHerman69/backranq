@@ -14,7 +14,7 @@ If you want to automatically link accounts across providers by matching email (a
 
 ### Server analysis, billing, and queues
 
-Server analysis is credit-backed work. Browser analysis stays free and local; server analysis creates `AnalysisJob`, `AnalysisRun`, and `CreditLedgerEntry` records in one serializable transaction. If credit reservation fails, the job is not queued.
+Server analysis is credit-backed work. Browser analysis stays free and local. Standard server analysis costs 7 credits per game; the default Thorough profile costs 10 and uses a larger adaptive confirmation frontier. Quality, exact resolved options, and price are immutable enqueue-time `AnalysisRun` provenance. If the exact reservation fails, the job is not queued.
 
 Required billing env:
 
@@ -37,7 +37,7 @@ Queue recovery is DB-led. Vercel Queue delivery is treated as a transport; retry
 - `QUEUED` analysis jobs are dispatched with per-user fairness and a lease.
 - expired `RUNNING` analysis jobs are recovered by the scheduler and requeued with exponential backoff until max attempts.
 - sync jobs use the same lease/retry pattern and the active provider-job partial index prevents duplicate provider work per user.
-- automatic analysis enforces daily/monthly auto caps plus the stop-when-credits-below threshold.
+- automatic analysis enforces independent daily/monthly game limits plus the credit reserve threshold; a 7- or 10-credit run always occupies one automatic-game slot.
 
 Admin ops endpoint:
 

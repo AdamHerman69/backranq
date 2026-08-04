@@ -6,7 +6,7 @@ import {
     type AnalysisDispatchFence,
 } from '@/lib/services/analysisDispatchFence';
 import {
-    releaseServerAnalysisCredits,
+    releaseServerAnalysisCreditsAndMarkRunReleased,
     releaseServerAnalysisCreditsInTransaction,
 } from '@/lib/services/billingAccounts';
 import {
@@ -127,7 +127,7 @@ export async function cancelUnexecutableAnalysisJobs(args: {
                     id: true,
                     gameId: true,
                     analysisRunId: true,
-                    estimatedCredits: true,
+                    analysisRun: { select: { creditCost: true } },
                 },
             });
             if (!job) return false;
@@ -172,7 +172,7 @@ export async function cancelUnexecutableAnalysisJobs(args: {
                 gameId: job.gameId,
                 analysisJobId: job.id,
                 analysisRunId: job.analysisRunId,
-                credits: Math.max(1, Math.trunc(job.estimatedCredits)),
+                credits: job.analysisRun.creditCost,
                 idempotencyKey: job.analysisRunId
                     ? `analysis-run:${job.analysisRunId}:queue-unavailable-release`
                     : `analysis-job:${job.id}:queue-unavailable-release`,
@@ -459,7 +459,7 @@ export async function recoverExpiredAnalysisJobs(args: {
             userId: true,
             gameId: true,
             analysisRunId: true,
-            estimatedCredits: true,
+            analysisRun: { select: { creditCost: true } },
             attempts: true,
             lockedAt: true,
             dispatchedCount: true,
@@ -503,7 +503,7 @@ export async function recoverExpiredAnalysisJobs(args: {
                         data: {
                             status: 'FAILED',
                             completedAt: now,
-                            consumedCredits: 0,
+                            consumedCredits: null,
                             lastError:
                                 'Analysis job lease expired after maximum attempts',
                         },
@@ -514,12 +514,17 @@ export async function recoverExpiredAnalysisJobs(args: {
             failed += result.count;
             if (result.count === 1) {
                 try {
-                    await releaseServerAnalysisCredits({
+                    if (!job.analysisRunId) {
+                        throw new Error(
+                            'Analysis run is required for credit release'
+                        );
+                    }
+                    await releaseServerAnalysisCreditsAndMarkRunReleased({
                         userId: job.userId,
                         gameId: job.gameId,
                         analysisJobId: job.id,
                         analysisRunId: job.analysisRunId,
-                        credits: Math.max(1, job.estimatedCredits ?? 1),
+                        credits: job.analysisRun.creditCost,
                         idempotencyKey: job.analysisRunId
                             ? `analysis-run:${job.analysisRunId}:release`
                             : `analysis-job:${job.id}:release`,

@@ -19,7 +19,7 @@ async function importScheduler(): Promise<SchedulerModule> {
         publishBackranqQueueMessage: publishMock,
     }));
     vi.doMock('@/lib/services/billingAccounts', () => ({
-        releaseServerAnalysisCredits: releaseCreditsMock,
+        releaseServerAnalysisCreditsAndMarkRunReleased: releaseCreditsMock,
         releaseServerAnalysisCreditsInTransaction:
             releaseCreditsInTransactionMock,
     }));
@@ -216,7 +216,7 @@ describe('analysis scheduler dispatch', () => {
                 userId: 'user-1',
                 gameId: 'game-1',
                 analysisRunId: 'run-1',
-                estimatedCredits: 1,
+                analysisRun: { creditCost: 10 },
                 attempts: 5,
                 dispatchedCount: 2,
                 lockedAt,
@@ -272,7 +272,7 @@ describe('analysis scheduler dispatch', () => {
                 userId: 'user-1',
                 gameId: 'game-1',
                 analysisRunId: 'run-2',
-                estimatedCredits: 1,
+                analysisRun: { creditCost: 10 },
                 attempts: 5,
                 dispatchedCount: 2,
                 lockedAt,
@@ -330,7 +330,7 @@ describe('analysis scheduler dispatch', () => {
             id: 'job-1',
             gameId: 'game-1',
             analysisRunId: 'run-1',
-            estimatedCredits: 1,
+            analysisRun: { creditCost: 10 },
         });
         prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 1 });
         prismaMock.analysisRun.updateMany.mockResolvedValue({ count: 1 });

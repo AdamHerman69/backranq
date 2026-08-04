@@ -29,9 +29,9 @@ describe('automation settings', () => {
             resultScope: 'losses',
             ratedOnly: true,
             minPlies: '24',
-            dailyCap: '5',
-            monthlyCap: '',
-            reserveCredits: '12',
+            dailyGameLimit: '5',
+            monthlyGameLimit: '',
+            creditReserve: '12',
             existingGames: 'all',
         };
 
@@ -41,33 +41,33 @@ describe('automation settings', () => {
                 resultScope: 'losses',
                 ratedOnly: true,
                 minPlies: 24,
-                dailyCap: 5,
-                monthlyCap: null,
-                reserveCredits: 12,
+                dailyGameLimit: 5,
+                monthlyGameLimit: null,
+                creditReserve: 12,
                 existingGames: 'all',
             });
     });
 
     it('requires a bounded credit reserve', () => {
         const draft = automationDraftFromPreferences(defaultPreferences());
-        draft.analysis.reserveCredits = '';
+        draft.analysis.creditReserve = '';
         expect(validateAutomationDraft(draft)).toContain('Credit reserve');
     });
 
     it('matches the canonical personal-cap bounds and cross-field rule', () => {
         const draft = automationDraftFromPreferences(defaultPreferences());
-        draft.analysis.dailyCap = '10001';
+        draft.analysis.dailyGameLimit = '10001';
         expect(validateAutomationDraft(draft)).toContain('Daily personal cap');
 
-        draft.analysis.dailyCap = '100';
-        draft.analysis.monthlyCap = '50';
+        draft.analysis.dailyGameLimit = '100';
+        draft.analysis.monthlyGameLimit = '50';
         expect(validateAutomationDraft(draft)).toContain(
             'cannot exceed the monthly'
         );
 
-        draft.analysis.dailyCap = '50';
-        draft.analysis.monthlyCap = '100000';
-        draft.analysis.reserveCredits = '100000';
+        draft.analysis.dailyGameLimit = '50';
+        draft.analysis.monthlyGameLimit = '100000';
+        draft.analysis.creditReserve = '100000';
         expect(validateAutomationDraft(draft)).toBeNull();
     });
 

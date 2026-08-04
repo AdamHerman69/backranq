@@ -26,6 +26,11 @@ import {
 } from '@/lib/training/candidateValidation';
 import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainingMoments';
 import { isTrainingExtractionReceipt } from '@/lib/analysis/extractionReceipt';
+import {
+    analysisQualityProfile,
+    isAnalysisQuality,
+    type AnalysisQuality,
+} from '@/lib/analysis/quality';
 
 export const runtime = 'nodejs';
 
@@ -204,6 +209,24 @@ function hasBoundedJsonSize(value: unknown, maxBytes: number): boolean {
     }
 }
 
+function configMatchesAnalysisQuality(
+    value: Record<string, unknown>,
+    quality: AnalysisQuality
+): boolean {
+    if (value.version !== 2 || !isObject(value.extractor)) return false;
+    const extractor = value.extractor;
+    const profile = analysisQualityProfile(quality);
+    return (
+        extractor.nodesPerPosition === profile.nodesPerPosition &&
+        extractor.confirmNodes === profile.confirmationNodes &&
+        extractor.maxConfirmationNodes === profile.maxConfirmationNodes &&
+        extractor.verificationNodesPerPosition ===
+            profile.verificationNodesPerPosition &&
+        extractor.themeLookaheadPlies === 4 &&
+        extractor.returnAnalysis === true
+    );
+}
+
 function persistenceErrorCode(error: unknown): string | null {
     if (!isObject(error)) return null;
     return typeof error.code === 'string' ? error.code : null;
@@ -274,6 +297,32 @@ export async function PUT(
         );
     }
     const bodyRecord = body as Record<string, unknown>;
+    const allowedBodyKeys = new Set([
+        'analysis',
+        'trainingMoments',
+        'extractionManifest',
+        'analysisQuality',
+        'configSnapshot',
+        'configHash',
+        'engine',
+        'queuedReason',
+        'appVersion',
+        'startedAt',
+        'consumedCredits',
+    ]);
+    if (Object.keys(bodyRecord).some((key) => !allowedBodyKeys.has(key))) {
+        return NextResponse.json(
+            { error: 'Invalid analysis request' },
+            { status: 400 }
+        );
+    }
+    if (!isAnalysisQuality(bodyRecord.analysisQuality)) {
+        return NextResponse.json(
+            { error: 'Invalid analysisQuality' },
+            { status: 400 }
+        );
+    }
+    const analysisQuality = bodyRecord.analysisQuality;
     const extractionManifest = validateExtractionManifest(
         bodyRecord.extractionManifest
     );
@@ -283,8 +332,7 @@ export async function PUT(
             { status: 400 }
         );
     }
-    const configSnapshot =
-        bodyRecord.configSnapshot ?? bodyRecord.analysisConfigSnapshot ?? {};
+    const configSnapshot = bodyRecord.configSnapshot;
     if (!isObject(configSnapshot)) {
         return NextResponse.json(
             { error: 'Invalid configSnapshot' },
@@ -295,6 +343,12 @@ export async function PUT(
         return NextResponse.json(
             { error: 'configSnapshot is too large' },
             { status: 413 }
+        );
+    }
+    if (!configMatchesAnalysisQuality(configSnapshot, analysisQuality)) {
+        return NextResponse.json(
+            { error: 'Analysis quality does not match configSnapshot' },
+            { status: 400 }
         );
     }
     if (
@@ -332,11 +386,9 @@ export async function PUT(
             { status: 400 }
         );
     }
-    const suppliedConfigHash =
-        optionalString(bodyRecord.configHash) ??
-        optionalString(bodyRecord.analysisConfigHash);
+    const suppliedConfigHash = optionalString(bodyRecord.configHash);
     const computedConfigHash = hashAnalysisConfig(configSnapshot);
-    if (suppliedConfigHash && suppliedConfigHash !== computedConfigHash) {
+    if (!suppliedConfigHash || suppliedConfigHash !== computedConfigHash) {
         return NextResponse.json(
             { error: 'configHash does not match configSnapshot' },
             { status: 400 }
@@ -406,18 +458,13 @@ export async function PUT(
                 userId,
                 gameId: id,
                 executionMode: 'LOCAL_BROWSER',
+                analysisQuality,
+                creditCost: 0,
                 queuedReason: optionalString(bodyRecord.queuedReason),
                 engine: {
-                    name:
-                        optionalString(engine.name) ??
-                        optionalString(bodyRecord.engineName),
-                    version:
-                        optionalString(engine.version) ??
-                        optionalString(bodyRecord.engineVersion),
-                    source:
-                        optionalString(engine.source) ??
-                        optionalString(bodyRecord.engineSource) ??
-                        'local-browser',
+                    name: optionalString(engine.name),
+                    version: optionalString(engine.version),
+                    source: optionalString(engine.source) ?? 'local-browser',
                     flavor: optionalString(engine.flavor),
                     evalFile: optionalString(engine.evalFile, 512),
                     options:
@@ -452,6 +499,8 @@ export async function PUT(
             analysisRun: {
                 id: result.run.id,
                 executionMode: result.run.executionMode,
+                analysisQuality: result.run.analysisQuality,
+                creditCost: result.run.creditCost,
                 status: result.run.status,
                 configHash: result.run.configHash,
             },

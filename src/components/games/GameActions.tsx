@@ -15,6 +15,12 @@ import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import type { ManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 import { registerServerAnalysisEnqueue } from '@/lib/games/serverAnalysisTracking';
 import type { EnqueueServerAnalysisJobsResult } from '@/lib/services/gameSync';
+import {
+    analysisDefaultsToExtractOptions,
+    defaultPreferences,
+    pickAnalysisDefaults,
+    type PreferencesSchema,
+} from '@/lib/preferences';
 
 export function GameActions({
     ownerId,
@@ -75,12 +81,28 @@ export function GameActions({
             return;
         }
 
-        if (mode === 'reanalyze') setBrowserReviewOpen(false);
+        setBrowserReviewOpen(false);
         setBusy(true);
         const id = toast.loading(
             mode === 'reanalyze' ? 'Re-analyzing game…' : 'Analyzing game…'
         );
         try {
+            let analysisDefaults = pickAnalysisDefaults(defaultPreferences());
+            const preferencesResponse = await fetch('/api/user/preferences', {
+                cache: 'no-store',
+            });
+            if (preferencesResponse.ok) {
+                const preferencesJson = (await preferencesResponse
+                    .json()
+                    .catch(() => null)) as {
+                    preferences?: PreferencesSchema;
+                } | null;
+                if (preferencesJson?.preferences) {
+                    analysisDefaults = pickAnalysisDefaults(
+                        preferencesJson.preferences
+                    );
+                }
+            }
             const engine = engineRef.current ?? new StockfishClient();
             engineRef.current = engine;
 
@@ -102,10 +124,9 @@ export function GameActions({
                         phase: p.phase,
                     });
                 },
-                options: {
-                    movetimeMs: 200,
+                options: analysisDefaultsToExtractOptions(analysisDefaults, {
                     returnAnalysis: true,
-                },
+                }),
             });
 
             const analysis = res.analysis?.get(normalizedGame.id);
@@ -129,6 +150,7 @@ export function GameActions({
                     extractionManifest,
                     configSnapshot: res.configSnapshot,
                     configHash: res.configHash,
+                    analysisQuality: analysisDefaults.analysisQuality,
                     engine: engineIdentity,
                 }),
             });
@@ -250,13 +272,7 @@ export function GameActions({
                 <Button
                     type="button"
                     disabled={busy}
-                    onClick={() => {
-                        if (hasAnalysis) {
-                            setBrowserReviewOpen(true);
-                        } else {
-                            void analyze('analyze');
-                        }
-                    }}
+                    onClick={() => setBrowserReviewOpen(true)}
                 >
                     {actionLabel} in browser
                 </Button>
@@ -295,24 +311,41 @@ export function GameActions({
                 </div>
             ) : (
                 <div className="text-sm text-muted-foreground">
-                    Browser analysis is free and this tab must stay open. Server analysis
-                    uses 1 credit and continues in the background.
+                    Browser analysis is free and this tab must stay open. Both
+                    paths use{' '}
+                    {serverAnalysisCapacity.analysisQuality === 'THOROUGH'
+                        ? 'Thorough'
+                        : 'Standard'}{' '}
+                    quality; server analysis costs{' '}
+                    {serverAnalysisCapacity.creditsPerGame} credits per game.{' '}
+                    <Link href="/settings#analysis-defaults" className="underline">
+                        Change quality
+                    </Link>
+                    .
                 </div>
             )}
 
             <ActionConfirmDialog
                 open={browserReviewOpen}
                 onOpenChange={setBrowserReviewOpen}
-                title="Re-analyze this game in the browser?"
+                title={`${hasAnalysis ? 'Re-analyze' : 'Analyze'} this game in the browser?`}
                 description="This tab must remain open until analysis and position extraction finish."
-                confirmLabel="Start free re-analysis"
-                onConfirm={() => analyze('reanalyze')}
+                confirmLabel={`Start free ${hasAnalysis ? 're-analysis' : 'analysis'}`}
+                onConfirm={() => analyze(hasAnalysis ? 'reanalyze' : 'analyze')}
                 busy={busy}
             >
                 <dl className="grid gap-3 rounded-md border bg-muted/30 p-4 text-sm sm:grid-cols-2">
                     <div>
                         <dt className="text-muted-foreground">Credit cost</dt>
                         <dd className="font-semibold">0 credits</dd>
+                    </div>
+                    <div>
+                        <dt className="text-muted-foreground">Quality</dt>
+                        <dd className="font-semibold">
+                            {serverAnalysisCapacity.analysisQuality === 'THOROUGH'
+                                ? 'Thorough'
+                                : 'Standard'}
+                        </dd>
                     </div>
                     <div>
                         <dt className="text-muted-foreground">
@@ -349,12 +382,17 @@ export function GameActions({
                 confirmLabel={`Queue server ${hasAnalysis ? 're-analysis' : 'analysis'}`}
                 onConfirm={queueServerAnalysis}
                 busy={busy}
-                confirmDisabled={serverAnalysisCapacity.reservableCredits < 1}
+                confirmDisabled={serverAnalysisCapacity.reservableGames < 1}
             >
                 <dl className="grid gap-3 rounded-md border bg-muted/30 p-4 text-sm sm:grid-cols-2">
                     <div>
                         <dt className="text-muted-foreground">Credit cost</dt>
-                        <dd className="font-semibold">1 credit</dd>
+                        <dd className="font-semibold">
+                            {serverAnalysisCapacity.creditsPerGame} credits ·{' '}
+                            {serverAnalysisCapacity.analysisQuality === 'THOROUGH'
+                                ? 'Thorough'
+                                : 'Standard'}
+                        </dd>
                     </div>
                     <div>
                         <dt className="text-muted-foreground">
@@ -372,10 +410,10 @@ export function GameActions({
                             Currently reservable
                         </dt>
                         <dd className="font-semibold">
-                            {serverAnalysisCapacity.reservableCredits}{' '}
-                            {serverAnalysisCapacity.reservableCredits === 1
-                                ? 'credit'
-                                : 'credits'}
+                            {serverAnalysisCapacity.reservableGames}{' '}
+                            {serverAnalysisCapacity.reservableGames === 1
+                                ? 'game'
+                                : 'games'}
                         </dd>
                     </div>
                     <div>
@@ -428,7 +466,7 @@ export function GameActions({
                         <dt className="text-muted-foreground">Capacity note</dt>
                         <dd>{serverAnalysisCapacity.limitingReason}</dd>
                     </div>
-                    {serverAnalysisCapacity.reservableCredits < 1 ? (
+                    {serverAnalysisCapacity.reservableGames < 1 ? (
                         <div className="sm:col-span-2">
                             <dt className="font-medium text-amber-700 dark:text-amber-300">
                                 Server analysis unavailable

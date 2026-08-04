@@ -25,34 +25,21 @@ describe('analysis defaults field validation', () => {
         ).toBe(true);
     });
 
-    it('rejects invalid advanced analysis budgets', () => {
+    it('rejects an unknown quality', () => {
         const defaults = pickAnalysisDefaults(defaultPreferences());
-
         expect(
             analysisDefaultsAreValid({
                 ...defaults,
-                analysisNodesPerPosition: '999',
-            })
-        ).toBe(false);
-        expect(
-            analysisDefaultsAreValid({
-                ...defaults,
-                confirmationNodes: '20000001',
-            })
-        ).toBe(false);
-        expect(
-            analysisDefaultsAreValid({
-                ...defaults,
-                themeLookaheadPlies: '3.5',
+                analysisQuality: 'DEEP' as never,
             })
         ).toBe(false);
     });
 
-    it('allows confirmation to be disabled with a blank value', () => {
+    it('accepts both public quality profiles', () => {
         expect(
             analysisDefaultsAreValid({
                 ...pickAnalysisDefaults(defaultPreferences()),
-                confirmationNodes: '',
+                analysisQuality: 'STANDARD',
             })
         ).toBe(true);
     });
@@ -63,7 +50,7 @@ describe('analysis defaults field validation', () => {
         expect(
             analysisDefaultsEqual(defaults, {
                 ...defaults,
-                trainingCoveragePreset: 'HIGH_CONFIDENCE',
+                analysisQuality: 'STANDARD',
             })
         ).toBe(false);
     });

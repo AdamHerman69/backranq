@@ -7,7 +7,6 @@ import {
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import {
-    ANALYSIS_NUMERIC_PREFERENCE_RULES,
     AUTO_ANALYSIS_RESULT_SCOPES,
     canonicalPreferences,
     gameAutomationHasAutomaticAnalysis,
@@ -18,10 +17,9 @@ import {
     mergePreferences,
     providerImportPolicyHash,
     TRAINING_SESSION_MIXES,
-    validateAnalysisNumericPreference,
-    type AnalysisNumericPreferenceKey,
     type PartialPreferences,
 } from '@/lib/preferences';
+import { isAnalysisQuality } from '@/lib/analysis/quality';
 import { cancelQueuedAutoAnalysisJobsInTransaction } from '@/lib/services/analysisJobs';
 import { scheduleAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
 import {
@@ -65,11 +63,11 @@ function validatePreferenceCrossFields(
     }
     const auto = preferences.gameAutomation.analysis;
     if (
-        auto.dailyCap !== null &&
-        auto.monthlyCap !== null &&
-        auto.dailyCap > auto.monthlyCap
+        auto.dailyGameLimit !== null &&
+        auto.monthlyGameLimit !== null &&
+        auto.dailyGameLimit > auto.monthlyGameLimit
     ) {
-        return 'gameAutomation.analysis.dailyCap must not exceed gameAutomation.analysis.monthlyCap';
+        return 'gameAutomation.analysis.dailyGameLimit must not exceed gameAutomation.analysis.monthlyGameLimit';
     }
     return null;
 }
@@ -225,9 +223,9 @@ function validateGameAutomationPatch(
                 }
                 const integerRules = {
                     minPlies: { min: 0, max: 1_000 },
-                    dailyCap: { min: 1, max: 10_000, nullable: true },
-                    monthlyCap: { min: 1, max: 100_000, nullable: true },
-                    reserveCredits: { min: 0, max: 100_000 },
+                    dailyGameLimit: { min: 1, max: 10_000, nullable: true },
+                    monthlyGameLimit: { min: 1, max: 100_000, nullable: true },
+                    creditReserve: { min: 0, max: 100_000 },
                 } as const;
                 if (analysisKey in integerRules) {
                     const parsed = validatedInteger(
@@ -238,15 +236,15 @@ function validateGameAutomationPatch(
                     if ('error' in parsed) return parsed;
                     if (analysisKey === 'minPlies' && parsed.value !== null) {
                         analysis.minPlies = parsed.value;
-                    } else if (analysisKey === 'dailyCap') {
-                        analysis.dailyCap = parsed.value;
-                    } else if (analysisKey === 'monthlyCap') {
-                        analysis.monthlyCap = parsed.value;
+                    } else if (analysisKey === 'dailyGameLimit') {
+                        analysis.dailyGameLimit = parsed.value;
+                    } else if (analysisKey === 'monthlyGameLimit') {
+                        analysis.monthlyGameLimit = parsed.value;
                     } else if (
-                        analysisKey === 'reserveCredits' &&
+                        analysisKey === 'creditReserve' &&
                         parsed.value !== null
                     ) {
-                        analysis.reserveCredits = parsed.value;
+                        analysis.creditReserve = parsed.value;
                     }
                     continue;
                 }
@@ -269,27 +267,11 @@ function validatePreferencesPatch(
 
     const patch = {} as PartialPreferences & Record<string, unknown>;
     for (const [key, raw] of Object.entries(value)) {
-        if (key in ANALYSIS_NUMERIC_PREFERENCE_RULES) {
-            const parsed = stringValue(raw, key, { maxLength: 32 });
-            if (!parsed.ok) return parsed;
-            const normalized = parsed.value ?? '';
-            if (
-                !validateAnalysisNumericPreference(
-                    key as AnalysisNumericPreferenceKey,
-                    normalized
-                )
-            ) {
-                const rule =
-                    ANALYSIS_NUMERIC_PREFERENCE_RULES[
-                        key as AnalysisNumericPreferenceKey
-                    ];
-                return {
-                    error: `Invalid ${key}; expected ${rule.min}..${rule.max}${
-                        rule.allowBlank ? ' or blank' : ''
-                    }`,
-                };
+        if (key === 'analysisQuality') {
+            if (!isAnalysisQuality(raw)) {
+                return { error: 'Invalid analysisQuality' };
             }
-            patch[key] = normalized;
+            patch.analysisQuality = raw;
             continue;
         }
 

@@ -7,7 +7,10 @@ import { EXPECTED_OWNER_HEADER } from "@/lib/auth/ownerContract";
 
 import { providerToUi, timeClassToUi } from "@/lib/api/games";
 import { backgroundAnalysis } from "@/lib/analysis/backgroundAnalysisManager";
-import { enqueueServerAnalysisJobs } from "@/lib/services/gameSync";
+import {
+  enqueueServerAnalysisJobs,
+  type SyncStatus,
+} from "@/lib/services/gameSync";
 import type { Provider, TimeClass } from "@prisma/client";
 import {
   defaultPreferences,
@@ -16,6 +19,7 @@ import {
   type PreferencesSchema,
 } from "@/lib/preferences";
 import { AnalysisDefaultsFields } from "@/components/analysis/AnalysisDefaultsFields";
+import { analysisCreditsPerGame } from "@/lib/analysis/quality";
 import {
   clearLastAnalysisCompletion,
   createServerAnalysisBatch,
@@ -56,6 +60,9 @@ export function AnalyzeGamesModal({
   const [analysisDefaults, setAnalysisDefaults] = React.useState<AnalysisDefaults>(
     () => pickAnalysisDefaults(defaultPreferences())
   );
+  const [serverCapacity, setServerCapacity] = React.useState<
+    SyncStatus["billing"] | null
+  >(null);
 
   React.useEffect(() => {
     if (!open) return;
@@ -65,6 +72,7 @@ export function AnalyzeGamesModal({
     setSelected({});
     setAnalysisMode(null);
     setPrefsLoading(true);
+    setServerCapacity(null);
     setAnalysisDefaults(pickAnalysisDefaults(defaultPreferences()));
 
     fetch("/api/user/preferences", { cache: "no-store" })
@@ -81,6 +89,19 @@ export function AnalyzeGamesModal({
         // ignore: we keep defaults
       })
       .finally(() => setPrefsLoading(false));
+
+    fetch("/api/sync/status", { cache: "no-store" })
+      .then(async (r) => {
+        const json = (await r.json().catch(() => ({}))) as SyncStatus & {
+          error?: string;
+        };
+        if (!r.ok) throw new Error(json.error ?? "Failed to load server capacity");
+        setServerCapacity(json.billing ?? null);
+      })
+      .catch(() => {
+        // The enqueue API remains authoritative if capacity cannot be previewed.
+        setServerCapacity(null);
+      });
 
     fetch("/api/games?hasAnalysis=false&page=1&limit=50", { cache: "no-store" })
       .then(async (r) => {
@@ -101,6 +122,10 @@ export function AnalyzeGamesModal({
       .filter(([, v]) => v)
       .map(([id]) => id);
   }, [selected]);
+  const creditsPerGame = analysisCreditsPerGame(analysisDefaults.analysisQuality);
+  const serverQueueableGames = serverCapacity
+    ? Math.floor(serverCapacity.reservableCredits / creditsPerGame)
+    : null;
 
   if (!open) return null;
 
@@ -161,13 +186,20 @@ export function AnalyzeGamesModal({
       toast.error("Your session changed. Reopen analysis and try again.");
       return;
     }
-    backgroundAnalysis.setOwner(ownerId);
     if (analysisMode === "server") {
+      if (serverQueueableGames !== null && ids.length > serverQueueableGames) {
+        toast.error(
+          `Current server capacity can analyze ${serverQueueableGames} game${serverQueueableGames === 1 ? "" : "s"} at this quality. Select fewer games or use free browser analysis.`
+        );
+        return;
+      }
+      const totalCredits = ids.length * creditsPerGame;
       const ok = window.confirm(
-        `Queue server analysis for ${ids.length} game${ids.length === 1 ? "" : "s"}? This may use up to ${ids.length} server credit${ids.length === 1 ? "" : "s"}.`
+        `Queue ${analysisDefaults.analysisQuality === "THOROUGH" ? "Thorough" : "Standard"} server analysis for ${ids.length} game${ids.length === 1 ? "" : "s"}? This will reserve ${totalCredits} server credits (${creditsPerGame} per game).`
       );
       if (!ok) return;
     }
+    backgroundAnalysis.setOwner(ownerId);
     setBusy(true);
     try {
       if (analysisMode === "browser") {
@@ -178,7 +210,10 @@ export function AnalyzeGamesModal({
           `Browser analysis started for ${ids.length} game${ids.length === 1 ? "" : "s"}. Keep this tab open.`
         );
       } else {
-        const result = await enqueueServerAnalysisJobs({ gameIds: ids });
+        const result = await enqueueServerAnalysisJobs({
+          gameIds: ids,
+          analysisDefaults,
+        });
         clearLastAnalysisCompletion(ownerId);
         publishLibraryChanged(ownerId, { invalidateCompletion: true });
         if (result.queued > 0) {
@@ -268,7 +303,7 @@ export function AnalyzeGamesModal({
             </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="sticky top-0 z-10 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card/95 p-2 shadow-sm backdrop-blur">
             <div className="text-sm text-muted-foreground">
               {loading
                 ? "Loading…"
@@ -296,7 +331,15 @@ export function AnalyzeGamesModal({
                 type="button"
                 className="h-9 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground"
                 onClick={analyzeSelected}
-                disabled={busy || loading || selectedIds.length === 0 || !analysisMode}
+                disabled={
+                  busy ||
+                  loading ||
+                  selectedIds.length === 0 ||
+                  !analysisMode ||
+                  (analysisMode === "server" &&
+                    serverQueueableGames !== null &&
+                    selectedIds.length > serverQueueableGames)
+                }
               >
                 {analysisMode === "browser"
                   ? "Analyze in browser"
@@ -339,7 +382,10 @@ export function AnalyzeGamesModal({
                 <span>
                   <span className="block font-medium">Analyze on server</span>
                   <span className="text-muted-foreground">
-                    Uses up to {selectedIds.length || 0} server credit{selectedIds.length === 1 ? "" : "s"}. Continues in the background.
+                    Uses up to {(selectedIds.length || 0) * creditsPerGame} server credits ({creditsPerGame} per game). Continues in the background.
+                    {serverQueueableGames !== null
+                      ? ` Current capacity: ${serverQueueableGames} game${serverQueueableGames === 1 ? "" : "s"} at this quality.`
+                      : ""}
                   </span>
                 </span>
               </div>

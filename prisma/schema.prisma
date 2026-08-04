@@ -195,6 +195,11 @@ enum AnalysisRunStatus {
   CANCELLED
 }
 
+enum AnalysisQuality {
+  STANDARD
+  THOROUGH
+}
+
 enum CreditLedgerEntryType {
   RESERVED
   CONSUMED
@@ -385,10 +390,11 @@ model BillingAccount {
   stripeLastEventId         String?
   serverCreditsBalance      Int         @default(100)
   monthlyServerCreditsUsed  Int         @default(0)
+  serverCreditsPeriodStart DateTime    @default(now())
   serverCreditsRenewAt      DateTime    @default(dbgenerated("(now() + '1 mon'::interval)"))
   monthlyServerCreditsLimit Int         @default(100)
-  autoAnalysisMonthlyCap    Int         @default(50)
-  autoAnalysisDailyCap      Int         @default(10)
+  autoAnalysisMonthlyGameLimit Int      @default(50)
+  autoAnalysisDailyGameLimit   Int      @default(10)
   stopWhenCreditsBelow      Int         @default(0)
   createdAt                 DateTime    @default(now())
   updatedAt                 DateTime    @updatedAt
@@ -551,7 +557,6 @@ model AnalysisJob {
   lastDispatchedAt DateTime?
   dispatchedCount  Int               @default(0)
   weight           Int               @default(0)
-  estimatedCredits Int               @default(1)
   startedAt        DateTime?
   completedAt      DateTime?
   lastError        String?           @db.Text
@@ -588,6 +593,8 @@ model AnalysisRun {
   userId          String                @db.Uuid
   gameId          String                @db.Uuid
   executionMode   AnalysisExecutionMode
+  analysisQuality AnalysisQuality
+  creditCost      Int
   status          AnalysisRunStatus     @default(QUEUED)
   queuedReason    String?
   engineName      String?

@@ -49,7 +49,7 @@ test.describe('authenticated games library', () => {
                         capacity: {
                             reservableCredits: 0,
                             currentBalance: 0,
-                            reserveCredits: 10,
+                            creditReserve: 10,
                             dailyRemaining: 10,
                             monthlyRemaining: 50,
                             planMonthlyRemaining: 50,

@@ -18,6 +18,12 @@ import {
     boundedJsonBody,
     isRecord,
 } from '@/lib/api/validation';
+import { isAnalysisQuality } from '@/lib/analysis/quality';
+import type { AnalysisDefaults } from '@/lib/preferences';
+import {
+    TRAINING_COVERAGE_PRESETS,
+    TRAINING_GRADING_TOLERANCES,
+} from '@/lib/training/config';
 
 export const runtime = 'nodejs';
 const MAX_POST_BODY_BYTES = 32_768;
@@ -26,6 +32,28 @@ const UUID_PATTERN =
 
 function clampInt(value: number, min: number, max: number) {
     return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
+function parseAnalysisDefaults(value: unknown): AnalysisDefaults | null {
+    if (!isRecord(value)) return null;
+    if (
+        Object.keys(value).some(
+            (key) =>
+                key !== 'analysisQuality' &&
+                key !== 'trainingCoveragePreset' &&
+                key !== 'trainingGradingTolerance'
+        ) ||
+        !isAnalysisQuality(value.analysisQuality) ||
+        !TRAINING_COVERAGE_PRESETS.includes(
+            value.trainingCoveragePreset as (typeof TRAINING_COVERAGE_PRESETS)[number]
+        ) ||
+        !TRAINING_GRADING_TOLERANCES.includes(
+            value.trainingGradingTolerance as (typeof TRAINING_GRADING_TOLERANCES)[number]
+        )
+    ) {
+        return null;
+    }
+    return value as AnalysisDefaults;
 }
 
 type AnalysisJobApiRecord = {
@@ -140,6 +168,16 @@ export async function POST(req: Request) {
     if (!isRecord(body) || !Array.isArray(body.gameIds)) {
         return NextResponse.json({ error: 'Invalid gameIds' }, { status: 400 });
     }
+    const allowedKeys = new Set(['gameIds', 'force', 'analysisDefaults']);
+    if (
+        Object.keys(body).some((key) => !allowedKeys.has(key)) ||
+        ('force' in body && typeof body.force !== 'boolean')
+    ) {
+        return NextResponse.json(
+            { error: 'Invalid analysis request' },
+            { status: 400 }
+        );
+    }
     if (body.gameIds.length === 0) {
         return NextResponse.json({ error: 'No games provided' }, { status: 400 });
     }
@@ -169,11 +207,25 @@ export async function POST(req: Request) {
     }
 
     const force = body.force === true;
+    const parsedAnalysisDefaults =
+        body.analysisDefaults === undefined
+            ? undefined
+            : parseAnalysisDefaults(body.analysisDefaults);
+    if (body.analysisDefaults !== undefined && !parsedAnalysisDefaults) {
+        return NextResponse.json(
+            { error: 'Invalid analysisDefaults' },
+            { status: 400 }
+        );
+    }
+    const analysisDefaults = parsedAnalysisDefaults ?? undefined;
     const user = await prisma.user.findUnique({
         where: { id: userId },
         select: { preferences: true },
     });
-    const { config } = serverAnalysisConfigFromPreferences(user?.preferences);
+    const { config } = serverAnalysisConfigFromPreferences(
+        user?.preferences,
+        analysisDefaults
+    );
     const batch = await enqueueAnalysisJobsForGames({
         userId,
         gameIds: ownedIds,

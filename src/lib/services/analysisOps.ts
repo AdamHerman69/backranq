@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
     consumeServerAnalysisCredits,
-    releaseServerAnalysisCredits,
+    releaseServerAnalysisCreditsAndMarkRunReleased,
 } from '@/lib/services/billingAccounts';
 
 export type AnalysisOpsSnapshot = {
@@ -129,7 +129,7 @@ export async function reconcileAnalysisCreditSettlements(args: {
             gameId: true,
             analysisRunId: true,
             status: true,
-            estimatedCredits: true,
+            analysisRun: { select: { creditCost: true } },
             lastError: true,
         },
     });
@@ -153,7 +153,7 @@ export async function reconcileAnalysisCreditSettlements(args: {
             gameId: job.gameId,
             analysisJobId: job.id,
             analysisRunId: job.analysisRunId,
-            credits: Math.max(1, job.estimatedCredits ?? 1),
+            credits: job.analysisRun.creditCost,
             idempotencyKey: job.analysisRunId
                 ? `analysis-run:${job.analysisRunId}:${action}`
                 : `analysis-job:${job.id}:${action}`,
@@ -164,7 +164,13 @@ export async function reconcileAnalysisCreditSettlements(args: {
                 await consumeServerAnalysisCredits(ref);
                 result.consumed += 1;
             } else {
-                await releaseServerAnalysisCredits(ref);
+                if (!job.analysisRunId) {
+                    throw new Error('Analysis run is required for credit release');
+                }
+                await releaseServerAnalysisCreditsAndMarkRunReleased({
+                    ...ref,
+                    analysisRunId: job.analysisRunId,
+                });
                 result.released += 1;
             }
             await prisma.$transaction(async (tx) => {
@@ -178,7 +184,7 @@ export async function reconcileAnalysisCreditSettlements(args: {
                     },
                     data: { lastError: null },
                 });
-                if (job.analysisRunId) {
+                if (job.analysisRunId && action === 'consume') {
                     await tx.analysisRun.updateMany({
                         where: {
                             id: job.analysisRunId,
@@ -188,9 +194,7 @@ export async function reconcileAnalysisCreditSettlements(args: {
                             },
                         },
                         data: {
-                            ...(action === 'consume'
-                                ? { consumedCredits: ref.credits }
-                                : {}),
+                            consumedCredits: ref.credits,
                             lastError: null,
                         },
                     });

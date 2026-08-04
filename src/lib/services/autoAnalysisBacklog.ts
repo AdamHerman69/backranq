@@ -24,8 +24,8 @@ import {
     AutoAnalysisCapExceededError,
     AutoAnalysisDailyCapExceededError,
     AutoAnalysisMonthlyCapExceededError,
-    DEFAULT_AUTO_ANALYSIS_DAILY_CAP,
-    DEFAULT_AUTO_ANALYSIS_MONTHLY_CAP,
+    DEFAULT_AUTO_ANALYSIS_DAILY_GAME_LIMIT,
+    DEFAULT_AUTO_ANALYSIS_MONTHLY_GAME_LIMIT,
     DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT,
     DEFAULT_SERVER_CREDITS_BALANCE,
     DEFAULT_STOP_WHEN_CREDITS_BELOW,
@@ -33,6 +33,7 @@ import {
     MonthlyServerCreditsLimitExceededError,
     ServerCreditStopThresholdError,
 } from '@/lib/services/billingAccounts';
+import { analysisCreditsPerGame } from '@/lib/analysis/quality';
 import { summarizeCreditLedgerEntries } from '@/lib/services/creditLedger';
 import {
     cancelUnexecutableAnalysisJobs,
@@ -51,8 +52,10 @@ export type AutoAnalysisBlockingReason =
 
 export type AutoAnalysisCapacity = {
     reservableCredits: number;
+    reservableGames: number;
+    creditsPerGame: number;
     currentBalance: number;
-    reserveCredits: number;
+    creditReserve: number;
     dailyRemaining: number;
     monthlyRemaining: number;
     planMonthlyRemaining: number;
@@ -92,6 +95,8 @@ type LedgerRow = {
     reason: string | null;
     createdAt: Date;
     autoAnalysis?: boolean;
+    analysisRunId?: string | null;
+    analysisRunCreatedAt?: Date;
 };
 
 type Candidate = {
@@ -151,10 +156,7 @@ export function calculateAutoAnalysisCapacity(args: {
         args.account != null && args.account.serverCreditsRenewAt <= args.now;
     const monthStart = renewalDue
         ? args.now
-        : previousMonthlyRenewAt(
-              args.account?.serverCreditsRenewAt ??
-                  nextMonthlyRenewAt(args.now)
-          );
+        : (args.account?.serverCreditsPeriodStart ?? args.now);
     const autoEntries = args.ledger.filter((entry) =>
         entry.autoAnalysis === true ||
         AUTO_ANALYSIS_QUEUED_REASONS.includes(
@@ -166,24 +168,44 @@ export function calculateAutoAnalysisCapacity(args: {
         account: args.account,
         allOutstandingReserved: summarizeCreditLedgerEntries(args.ledger)
             .outstandingReserved,
-        monthlyAutoCommitted: summarizeCreditLedgerEntries(
-            autoEntries.filter((entry) => entry.createdAt >= monthStart)
-        ).committed,
-        dailyAutoCommitted: summarizeCreditLedgerEntries(
+        monthlyAutoGames: countCommittedRuns(
             autoEntries.filter(
-                (entry) => entry.createdAt >= startOfUtcDay(args.now)
+                (entry) =>
+                    (entry.analysisRunCreatedAt ?? entry.createdAt) >=
+                    monthStart
             )
-        ).committed,
+        ),
+        dailyAutoGames: countCommittedRuns(
+            autoEntries.filter(
+                (entry) =>
+                    (entry.analysisRunCreatedAt ?? entry.createdAt) >=
+                    startOfUtcDay(args.now)
+            )
+        ),
         now: args.now,
     });
+}
+
+function countCommittedRuns(entries: LedgerRow[]) {
+    const byRun = new Map<string, LedgerRow[]>();
+    entries.forEach((entry, index) => {
+        const key = entry.analysisRunId ?? `unscoped:${index}`;
+        const values = byRun.get(key) ?? [];
+        values.push(entry);
+        byRun.set(key, values);
+    });
+    return Array.from(byRun.values()).filter(
+        (runEntries) =>
+            summarizeCreditLedgerEntries(runEntries).committed > 0
+    ).length;
 }
 
 function calculateAutoAnalysisCapacityFromSummaries(args: {
     policy: AutoAnalysisPolicy;
     account: BillingAccount | null;
     allOutstandingReserved: number;
-    monthlyAutoCommitted: number;
-    dailyAutoCommitted: number;
+    monthlyAutoGames: number;
+    dailyAutoGames: number;
     now: Date;
 }): AutoAnalysisCapacity {
     const renewalDue =
@@ -197,10 +219,10 @@ function calculateAutoAnalysisCapacityFromSummaries(args: {
             : renewalDue
               ? Math.max(args.account.serverCreditsBalance, planMonthlyLimit)
               : args.account.serverCreditsBalance;
-    const reserveCredits = Math.max(
+    const creditReserve = Math.max(
         args.account?.stopWhenCreditsBelow ??
             DEFAULT_STOP_WHEN_CREDITS_BELOW,
-        args.policy.reserveCredits
+        args.policy.creditReserve
     );
     const planMonthlyRemaining = Math.max(
         0,
@@ -210,48 +232,57 @@ function calculateAutoAnalysisCapacityFromSummaries(args: {
                 : (args.account?.monthlyServerCreditsUsed ?? 0)) -
             args.allOutstandingReserved
     );
-    const planDailyCap =
-        args.account?.autoAnalysisDailyCap ?? DEFAULT_AUTO_ANALYSIS_DAILY_CAP;
-    const planMonthlyCap =
-        args.account?.autoAnalysisMonthlyCap ??
-        DEFAULT_AUTO_ANALYSIS_MONTHLY_CAP;
-    const effectiveDailyCap = Math.min(
-        planDailyCap,
-        args.policy.dailyCap ?? planDailyCap
+    const planDailyGameLimit =
+        args.account?.autoAnalysisDailyGameLimit ??
+        DEFAULT_AUTO_ANALYSIS_DAILY_GAME_LIMIT;
+    const planMonthlyGameLimit =
+        args.account?.autoAnalysisMonthlyGameLimit ??
+        DEFAULT_AUTO_ANALYSIS_MONTHLY_GAME_LIMIT;
+    const effectiveDailyGameLimit = Math.min(
+        planDailyGameLimit,
+        args.policy.dailyGameLimit ?? planDailyGameLimit
     );
-    const effectiveMonthlyCap = Math.min(
-        planMonthlyCap,
-        args.policy.monthlyCap ?? planMonthlyCap
+    const effectiveMonthlyGameLimit = Math.min(
+        planMonthlyGameLimit,
+        args.policy.monthlyGameLimit ?? planMonthlyGameLimit
     );
     const dailyRemaining = Math.max(
         0,
-        effectiveDailyCap - args.dailyAutoCommitted
+        effectiveDailyGameLimit - args.dailyAutoGames
     );
     const monthlyRemaining = Math.max(
         0,
-        effectiveMonthlyCap - args.monthlyAutoCommitted
+        effectiveMonthlyGameLimit - args.monthlyAutoGames
     );
-    const balanceRemaining = Math.max(0, currentBalance - reserveCredits);
+    const balanceRemaining = Math.max(0, currentBalance - creditReserve);
     const reservableCredits = Math.min(
         balanceRemaining,
-        planMonthlyRemaining,
+        planMonthlyRemaining
+    );
+    const creditsPerGame = analysisCreditsPerGame(
+        args.policy.analysisQuality
+    );
+    const reservableGames = Math.min(
         dailyRemaining,
-        monthlyRemaining
+        monthlyRemaining,
+        Math.floor(reservableCredits / creditsPerGame)
     );
 
     let blockingReason: AutoAnalysisCapacity['blockingReason'] = null;
-    if (reservableCredits === 0) {
-        if (currentBalance <= 0) blockingReason = 'credits';
-        else if (balanceRemaining <= 0) blockingReason = 'reserve';
-        else if (planMonthlyRemaining <= 0) blockingReason = 'plan-cap';
+    if (reservableGames === 0) {
+        if (currentBalance < creditsPerGame) blockingReason = 'credits';
+        else if (balanceRemaining < creditsPerGame) blockingReason = 'reserve';
+        else if (planMonthlyRemaining < creditsPerGame) blockingReason = 'plan-cap';
         else if (dailyRemaining <= 0) blockingReason = 'daily-cap';
         else if (monthlyRemaining <= 0) blockingReason = 'monthly-cap';
     }
 
     return {
         reservableCredits,
+        reservableGames,
+        creditsPerGame,
         currentBalance,
-        reserveCredits,
+        creditReserve,
         dailyRemaining,
         monthlyRemaining,
         planMonthlyRemaining,
@@ -304,7 +335,7 @@ export async function reconcileAutoAnalysisBacklog(
         0,
         Math.min(
             Math.trunc(options.maxJobs ?? context.eligible.length),
-            status.capacity.reservableCredits,
+            status.capacity.reservableGames,
             context.eligible.length
         )
     );
@@ -352,6 +383,7 @@ export async function reconcileAutoAnalysisBacklog(
                     capacity: {
                         ...status.capacity,
                         reservableCredits: 0,
+                        reservableGames: 0,
                         blockingReason: blocked,
                     },
                 };
@@ -382,10 +414,23 @@ export async function reconcileAutoAnalysisBacklog(
             ...status.capacity,
             reservableCredits: Math.max(
                 0,
-                status.capacity.reservableCredits - queued
+                status.capacity.reservableCredits -
+                    queued * status.capacity.creditsPerGame
+            ),
+            reservableGames: Math.max(
+                0,
+                status.capacity.reservableGames - queued
+            ),
+            dailyRemaining: Math.max(
+                0,
+                status.capacity.dailyRemaining - queued
+            ),
+            monthlyRemaining: Math.max(
+                0,
+                status.capacity.monthlyRemaining - queued
             ),
             blockingReason:
-                status.capacity.reservableCredits - queued <= 0 &&
+                status.capacity.reservableGames - queued <= 0 &&
                 status.backlog.blockedReason !== 'disabled'
                     ? (status.backlog.blockedReason ??
                       status.capacity.blockingReason)
@@ -443,7 +488,7 @@ export async function reconcileAndDispatchAutoAnalysisBacklog(
         reconciliation.queued === 0 &&
         reconciliation.backlog.queued === 0 &&
         reconciliation.backlog.running === 0 &&
-        reconciliation.capacity.reservableCredits > 0
+        reconciliation.capacity.reservableGames > 0
     ) {
         const requestedAt = new Date().toISOString();
         try {
@@ -872,46 +917,25 @@ async function loadAutoAnalysisCapacity(
         account !== null && account.serverCreditsRenewAt <= now;
     const monthStart = renewalDue
         ? now
-        : previousMonthlyRenewAt(
-              account?.serverCreditsRenewAt ?? nextMonthlyRenewAt(now)
-          );
-    const autoReasonWhere = {
-        OR: [
-            { reason: { in: [...AUTO_ANALYSIS_QUEUED_REASONS] } },
-            {
-                analysisRun: {
-                    is: {
-                        queuedReason: {
-                            in: [...AUTO_ANALYSIS_QUEUED_REASONS],
-                        },
-                    },
-                },
-            },
-        ],
-    };
-    const [allTotals, monthlyAutoTotals, dailyAutoTotals] = await Promise.all([
+        : (account?.serverCreditsPeriodStart ?? now);
+    const [allTotals, monthlyAutoRuns] = await Promise.all([
         prisma.creditLedgerEntry.groupBy({
             by: ['type'],
             where: { userId },
             _sum: { credits: true },
         }),
-        prisma.creditLedgerEntry.groupBy({
-            by: ['type'],
+        prisma.analysisRun.findMany({
             where: {
                 userId,
-                ...autoReasonWhere,
+                queuedReason: { in: [...AUTO_ANALYSIS_QUEUED_REASONS] },
                 createdAt: { gte: monthStart },
             },
-            _sum: { credits: true },
-        }),
-        prisma.creditLedgerEntry.groupBy({
-            by: ['type'],
-            where: {
-                userId,
-                ...autoReasonWhere,
-                createdAt: { gte: startOfUtcDay(now) },
+            select: {
+                createdAt: true,
+                creditLedgerEntries: {
+                    select: { type: true, credits: true },
+                },
             },
-            _sum: { credits: true },
         }),
     ]);
     const summary = (
@@ -930,10 +954,29 @@ async function loadAutoAnalysisCapacity(
         policy,
         account,
         allOutstandingReserved: summary(allTotals).outstandingReserved,
-        monthlyAutoCommitted: summary(monthlyAutoTotals).committed,
-        dailyAutoCommitted: summary(dailyAutoTotals).committed,
+        monthlyAutoGames: countCommittedRunRecords(monthlyAutoRuns),
+        dailyAutoGames: countCommittedRunRecords(
+            monthlyAutoRuns.filter(
+                (run) => run.createdAt >= startOfUtcDay(now)
+            )
+        ),
         now,
     });
+}
+
+function countCommittedRunRecords(
+    runs: Array<{
+        creditLedgerEntries: Array<{
+            type: CreditLedgerEntryType;
+            credits: number;
+        }>;
+    }>
+) {
+    return runs.filter(
+        (run) =>
+            summarizeCreditLedgerEntries(run.creditLedgerEntries).committed >
+            0
+    ).length;
 }
 
 function metadataEligibilityWhere(args: {
@@ -1048,7 +1091,7 @@ function statusFromContext(
     const eligibleAtLeast = context.eligible.length;
     const waitingForCreditsAtLeast = Math.max(
         0,
-        eligibleAtLeast - context.capacity.reservableCredits
+        eligibleAtLeast - context.capacity.reservableGames
     );
     const blockedReason = !context.policy.enabled
         ? 'disabled'
@@ -1081,20 +1124,26 @@ function capacityConstraintReason(
     if (capacity.blockingReason) return capacity.blockingReason;
     const balanceRemaining = Math.max(
         0,
-        capacity.currentBalance - capacity.reserveCredits
+        capacity.currentBalance - capacity.creditReserve
+    );
+    const balanceGames = Math.floor(
+        balanceRemaining / capacity.creditsPerGame
+    );
+    const planGames = Math.floor(
+        capacity.planMonthlyRemaining / capacity.creditsPerGame
     );
     const minimum = Math.min(
-        balanceRemaining,
-        capacity.planMonthlyRemaining,
+        balanceGames,
+        planGames,
         capacity.dailyRemaining,
         capacity.monthlyRemaining
     );
-    if (balanceRemaining === minimum) {
-        return capacity.reserveCredits > 0 && capacity.currentBalance > 0
+    if (balanceGames === minimum) {
+        return capacity.creditReserve > 0 && capacity.currentBalance > 0
             ? 'reserve'
             : 'credits';
     }
-    if (capacity.planMonthlyRemaining === minimum) return 'plan-cap';
+    if (planGames === minimum) return 'plan-cap';
     if (capacity.dailyRemaining === minimum) return 'daily-cap';
     return 'monthly-cap';
 }
@@ -1115,18 +1164,6 @@ function billingBlockingReason(
         return 'daily-cap';
     }
     return null;
-}
-
-function nextMonthlyRenewAt(now: Date) {
-    const next = new Date(now);
-    next.setUTCMonth(next.getUTCMonth() + 1);
-    return next;
-}
-
-function previousMonthlyRenewAt(renewAt: Date) {
-    const previous = new Date(renewAt);
-    previous.setUTCMonth(previous.getUTCMonth() - 1);
-    return previous;
 }
 
 function startOfUtcDay(date: Date) {

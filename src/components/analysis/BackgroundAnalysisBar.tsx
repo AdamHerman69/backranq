@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
+import Link from "next/link";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -428,11 +429,11 @@ export function BackgroundAnalysisBar() {
       setSyncStatus(latestStatus);
       if (
         latestStatus.billing &&
-        serverReviewIds.length > latestStatus.billing.reservableCredits
+        serverReviewIds.length > latestStatus.billing.reservableGames
       ) {
         toast.error(
           latestStatus.billing.limitingReason ??
-            `Only ${latestStatus.billing.reservableCredits} server credits can be reserved right now.`
+            `Only ${latestStatus.billing.reservableGames} games can be reserved right now at ${latestStatus.billing.creditsPerGame} credits each.`
         );
         return;
       }
@@ -500,7 +501,7 @@ export function BackgroundAnalysisBar() {
       currentCompletion?.status === "partial");
   const billing = currentSyncStatus?.billing;
   const serverReviewOverCapacity =
-    !billing || serverReviewIds.length > billing.reservableCredits;
+    !billing || serverReviewIds.length > billing.reservableGames;
 
   return (
     <>
@@ -605,7 +606,7 @@ export function BackgroundAnalysisBar() {
         open={serverReviewOpen}
         onOpenChange={setServerReviewOpen}
         title="Queue server analysis?"
-        description={`Analyze ${serverReviewIds.length} game${serverReviewIds.length === 1 ? "" : "s"} on the server. This can use up to ${serverReviewIds.length} credit${serverReviewIds.length === 1 ? "" : "s"}.`}
+        description={`Analyze ${serverReviewIds.length} game${serverReviewIds.length === 1 ? "" : "s"} on the server. This can use up to ${serverReviewIds.length * (billing?.creditsPerGame ?? 10)} credits.`}
         confirmLabel={`Queue ${serverReviewIds.length} game${serverReviewIds.length === 1 ? "" : "s"}`}
         onConfirm={confirmServerAnalysis}
         busy={serverQueueing}
@@ -616,14 +617,20 @@ export function BackgroundAnalysisBar() {
             <>
               <div>
                 Current balance: <strong>{billing.currentBalance}</strong> •
-                Reservable now: <strong>{billing.reservableCredits}</strong> •
+                Reservable now: <strong>{billing.reservableGames} games</strong> •
+                Quality: <strong>{billing.analysisQuality === "THOROUGH" ? "Thorough" : "Standard"}</strong> •
                 Balance after maximum cost:{" "}
-                <strong>{Math.max(0, billing.currentBalance - serverReviewIds.length)}</strong>
+                <strong>{Math.max(0, billing.currentBalance - serverReviewIds.length * billing.creditsPerGame)}</strong>
+              </div>
+              <div>
+                <Link href="/settings#analysis-defaults" className="underline">
+                  Change analysis quality
+                </Link>
               </div>
               {serverReviewOverCapacity ? (
                 <div className="text-destructive">
                   {billing.limitingReason ??
-                    `This batch exceeds the ${billing.reservableCredits} credits currently reservable.`}
+                    `This batch exceeds the ${billing.reservableGames} games currently reservable at ${billing.creditsPerGame} credits each.`}
                 </div>
               ) : null}
             </>
@@ -633,7 +640,7 @@ export function BackgroundAnalysisBar() {
             </div>
           )}
           <div>
-            Server analysis continues after you close this tab. Each accepted game reserves one credit and saves the practice positions it finds.
+            Server analysis continues after you close this tab. Each accepted game reserves {billing?.creditsPerGame ?? 10} credits and saves the practice positions it finds.
           </div>
         </div>
       </ActionConfirmDialog>

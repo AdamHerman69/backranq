@@ -7,8 +7,9 @@ one coherent user policy:
 
 1. **Import** keeps the game library current and never consumes analysis
    credits.
-2. **Automatic analysis** selects eligible imported games and may consume one
-   server credit per game within the user's limits.
+2. **Automatic analysis** selects eligible imported games and consumes the
+   selected server quality's exact price: Standard is 7 credits per game and
+   the default Thorough profile is 10.
 3. **Practice** reads positions produced by completed analysis and remains
    usable regardless of import or analysis backlogs.
 
@@ -81,12 +82,14 @@ the automatic analysis backlog. Shared filters support:
 - rated-only or rated and casual games;
 - losses, losses and draws, or all completed results;
 - minimum game length;
-- personal daily and monthly caps;
+- personal daily and monthly game limits;
 - a credit reserve that automatic work may not cross;
 - existing eligible games or only games imported after analysis was enabled.
 
-Plan entitlements remain hard ceilings. The effective budget is always the
-lower of plan capacity and the personal budget.
+Plan entitlements remain hard ceilings. Game limits are independent from the
+credit balance: Standard and Thorough each occupy one game slot, while credit
+capacity is floored by the selected profile's 7- or 10-credit price. The
+effective game limit is always the lower of plan and personal limits.
 
 Changing the matrix cancels unstarted automatic jobs and releases their
 reservations. Bounded reconciliation then recreates only work allowed by the

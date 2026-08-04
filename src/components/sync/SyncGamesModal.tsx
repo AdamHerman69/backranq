@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useSession } from 'next-auth/react';
+import Link from 'next/link';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import type { NormalizedGame, TimeClass } from '@/lib/types/game';
 import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
@@ -651,7 +652,7 @@ export function SyncGamesModal({
             setStatus(latestStatus);
             setStatusOwnerId(run.ownerId);
             const capacity = latestStatus.billing;
-            if (!capacity || selectedCount > capacity.reservableCredits) {
+            if (!capacity || selectedCount > capacity.reservableGames) {
                 toast.error(
                     capacity?.limitingReason ??
                         'Server credit capacity could not be verified.'
@@ -917,7 +918,9 @@ export function SyncGamesModal({
                                     />
                                     <span>
                                         <span style={{ display: 'block', fontWeight: 650 }}>Analyze in browser after import</span>
-                                        <span style={{ display: 'block', opacity: 0.75 }}>Free. Uses this device and this tab must stay open.</span>
+                                        <span style={{ display: 'block', opacity: 0.75 }}>
+                                            Free {currentStatus?.billing?.analysisQuality === 'STANDARD' ? 'Standard' : 'Thorough'} analysis. Uses this device and this tab must stay open.
+                                        </span>
                                     </span>
                                 </label>
                                 <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
@@ -931,7 +934,12 @@ export function SyncGamesModal({
                                     />
                                     <span>
                                         <span style={{ display: 'block', fontWeight: 650 }}>Queue server analysis for new games</span>
-                                        <span style={{ display: 'block', opacity: 0.75 }}>Uses 1 server credit per game and continues in the background.</span>
+                                        <span style={{ display: 'block', opacity: 0.75 }}>
+                                            Uses {currentStatus?.billing?.analysisQuality === 'STANDARD' ? 'Standard' : 'Thorough'} quality at {currentStatus?.billing?.creditsPerGame ?? 10} server credits per game and continues in the background.{' '}
+                                            <Link href="/settings#analysis-defaults" style={{ textDecoration: 'underline' }}>
+                                                Change quality
+                                            </Link>
+                                        </span>
                                     </span>
                                 </label>
                             </div>
@@ -1404,7 +1412,7 @@ export function SyncGamesModal({
             busy={busy}
             confirmDisabled={
                 !currentStatus?.billing ||
-                selectedCount > currentStatus.billing.reservableCredits
+                selectedCount > currentStatus.billing.reservableGames
             }
         >
             <div
@@ -1418,23 +1426,35 @@ export function SyncGamesModal({
                 {currentStatus?.billing ? (
                     <>
                         <div>
+                            Quality:{' '}
+                            <strong>
+                                {currentStatus.billing.analysisQuality ===
+                                'STANDARD'
+                                    ? 'Standard'
+                                    : 'Thorough'}
+                            </strong>{' '}
+                            · {currentStatus.billing.creditsPerGame} credits per
+                            game
+                        </div>
+                        <div>
                             Current balance:{' '}
                             <strong>{currentStatus.billing.currentBalance}</strong> •
                             Reservable now:{' '}
-                            <strong>{currentStatus.billing.reservableCredits}</strong> •
+                            <strong>{currentStatus.billing.reservableGames}</strong> games •
                             Balance after maximum cost:{' '}
                             <strong>
                                 {Math.max(
                                     0,
                                     currentStatus.billing.currentBalance -
-                                        selectedCount
+                                        selectedCount *
+                                            currentStatus.billing.creditsPerGame
                                 )}
                             </strong>
                         </div>
-                        {selectedCount > currentStatus.billing.reservableCredits ? (
+                        {selectedCount > currentStatus.billing.reservableGames ? (
                             <div style={{ color: 'hsl(var(--destructive, 0 84.2% 60.2%))' }}>
                                 {currentStatus.billing.limitingReason ??
-                                    `This exceeds the ${currentStatus.billing.reservableCredits} credits currently reservable.`}
+                                    `This exceeds the ${currentStatus.billing.reservableGames} games currently reservable at ${currentStatus.billing.creditsPerGame} credits each.`}
                             </div>
                         ) : null}
                     </>
@@ -1444,8 +1464,13 @@ export function SyncGamesModal({
                     </div>
                 )}
                 <div>
-                    Maximum cost: <strong>{selectedCount} server credits</strong>{' '}
-                    (one per accepted game). Import remains saved even if
+                    Maximum cost:{' '}
+                    <strong>
+                        {selectedCount *
+                            (currentStatus?.billing?.creditsPerGame ?? 10)}{' '}
+                        server credits
+                    </strong>{' '}
+                    ({currentStatus?.billing?.creditsPerGame ?? 10} per accepted game). Import remains saved even if
                     analysis cannot be queued. Server analysis continues after
                     this tab is closed.
                 </div>

@@ -2,7 +2,6 @@
 
 import type { ReactNode } from 'react';
 
-import { Input } from '@/components/ui/input';
 import {
     Select,
     SelectContent,
@@ -11,11 +10,11 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import type { AnalysisDefaults } from '@/lib/preferences';
 import {
-    validateAnalysisNumericPreference,
-    type AnalysisDefaults,
-    type AnalysisNumericPreferenceKey,
-} from '@/lib/preferences';
+    ANALYSIS_QUALITY_PROFILES,
+    type AnalysisQuality,
+} from '@/lib/analysis/quality';
 import type {
     TrainingCoveragePreset,
     TrainingGradingTolerance,
@@ -28,27 +27,6 @@ export const TRAINING_COVERAGE_OPTION_LABELS: Record<
     ALL_CONFIRMED: 'Nearly every confirmed position',
     BALANCED: 'Meaningful positions',
     HIGH_CONFIDENCE: 'Major positions only',
-};
-
-const NUMERIC_FIELD_COPY: Record<
-    AnalysisNumericPreferenceKey,
-    { label: string; hint: string; error: string }
-> = {
-    analysisNodesPerPosition: {
-        label: 'Nodes per position',
-        hint: 'Deterministic work budget used while scanning each decision.',
-        error: 'Enter a whole number from 1,000 to 10,000,000.',
-    },
-    confirmationNodes: {
-        label: 'Confirmation nodes',
-        hint: 'Stronger second pass for candidates. Leave blank to disable it.',
-        error: 'Leave blank or enter a whole number from 1,000 to 20,000,000.',
-    },
-    themeLookaheadPlies: {
-        label: 'Theme lookahead (plies)',
-        hint: 'Used only for explanation tags; it never filters a practice position.',
-        error: 'Enter a whole number from 0 to 32.',
-    },
 };
 
 function Field({
@@ -109,20 +87,7 @@ function IntentSetting({
 }
 
 export function analysisDefaultsAreValid(value: AnalysisDefaults): boolean {
-    return (
-        validateAnalysisNumericPreference(
-            'analysisNodesPerPosition',
-            value.analysisNodesPerPosition
-        ) &&
-        validateAnalysisNumericPreference(
-            'confirmationNodes',
-            value.confirmationNodes
-        ) &&
-        validateAnalysisNumericPreference(
-            'themeLookaheadPlies',
-            value.themeLookaheadPlies
-        )
-    );
+    return value.analysisQuality in ANALYSIS_QUALITY_PROFILES;
 }
 
 export function AnalysisDefaultsFields({
@@ -140,14 +105,42 @@ export function AnalysisDefaultsFields({
         onChange({ ...value, ...next });
     }
 
-    function numericError(key: AnalysisNumericPreferenceKey) {
-        return validateAnalysisNumericPreference(key, value[key])
-            ? null
-            : NUMERIC_FIELD_COPY[key].error;
-    }
-
     return (
         <div className={cn(dense ? 'space-y-3' : 'space-y-4')}>
+            <IntentSetting
+                title="Analysis quality"
+                description="Quality controls how deeply uncertain positions are verified. Browser analysis is free; server analysis uses the shown credits per game."
+                dense={dense}
+            >
+                <Field
+                    label="Quality"
+                    hint={ANALYSIS_QUALITY_PROFILES[value.analysisQuality].description}
+                >
+                    <Select
+                        value={value.analysisQuality}
+                        onValueChange={(analysisQuality) =>
+                            patch({
+                                analysisQuality:
+                                    analysisQuality as AnalysisQuality,
+                            })
+                        }
+                        disabled={disabled}
+                    >
+                        <SelectTrigger>
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="STANDARD">
+                                Standard · 7 server credits/game
+                            </SelectItem>
+                            <SelectItem value="THOROUGH">
+                                Thorough · Recommended · 10 server credits/game
+                            </SelectItem>
+                        </SelectContent>
+                    </Select>
+                </Field>
+            </IntentSetting>
+
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <IntentSetting
                     title="Practice positions to keep"
@@ -223,80 +216,6 @@ export function AnalysisDefaultsFields({
                     </Field>
                 </IntentSetting>
             </div>
-
-            <details className="group rounded-lg border">
-                <summary className="cursor-pointer list-none rounded-lg px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&::-webkit-details-marker]:hidden">
-                    <span className="flex items-center justify-between gap-3">
-                        <span>
-                            <span className="block text-sm font-medium">
-                                Advanced analysis
-                            </span>
-                            <span className="block text-xs text-muted-foreground">
-                                Engine budgets and explanation tagging
-                            </span>
-                        </span>
-                        <span
-                            aria-hidden="true"
-                            className="text-muted-foreground transition-transform group-open:rotate-180"
-                        >
-                            ▾
-                        </span>
-                    </span>
-                </summary>
-
-                <div
-                    className={cn(
-                        'grid grid-cols-1 gap-3 border-t',
-                        dense
-                            ? 'p-2.5 md:grid-cols-3'
-                            : 'p-3 md:grid-cols-3'
-                    )}
-                >
-                    {(
-                        [
-                            'analysisNodesPerPosition',
-                            'confirmationNodes',
-                            'themeLookaheadPlies',
-                        ] as const
-                    ).map((key) => {
-                        const copy = NUMERIC_FIELD_COPY[key];
-                        const error = numericError(key);
-                        return (
-                            <Field
-                                key={key}
-                                label={copy.label}
-                                hint={copy.hint}
-                                error={error}
-                            >
-                                <Input
-                                    type="number"
-                                    inputMode="numeric"
-                                    value={value[key]}
-                                    onChange={(event) =>
-                                        patch({ [key]: event.target.value })
-                                    }
-                                    disabled={disabled}
-                                    min={
-                                        key === 'themeLookaheadPlies'
-                                            ? 0
-                                            : 1_000
-                                    }
-                                    max={
-                                        key === 'analysisNodesPerPosition'
-                                            ? 10_000_000
-                                            : key === 'confirmationNodes'
-                                              ? 20_000_000
-                                              : 32
-                                    }
-                                    step={1}
-                                    required={key !== 'confirmationNodes'}
-                                    aria-invalid={error ? true : undefined}
-                                />
-                            </Field>
-                        );
-                    })}
-                </div>
-            </details>
 
             {dense ? null : (
                 <p className="text-xs text-muted-foreground">

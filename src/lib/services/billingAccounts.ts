@@ -14,14 +14,15 @@ import {
     summarizeCreditLedgerEntries,
     type CreditLedgerSummary,
 } from '@/lib/services/creditLedger';
+import { nextMonthlyRenewAt } from '@/lib/billing/periods';
 
-export const SERVER_ANALYSIS_BILLING_POLICY_V1 =
-    'server-analysis-billing-account-v1';
+export const SERVER_ANALYSIS_BILLING_POLICY_V2 =
+    'server-analysis-quality-price-v2';
 
 export const DEFAULT_SERVER_CREDITS_BALANCE = 100;
 export const DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT = 100;
-export const DEFAULT_AUTO_ANALYSIS_MONTHLY_CAP = 50;
-export const DEFAULT_AUTO_ANALYSIS_DAILY_CAP = 10;
+export const DEFAULT_AUTO_ANALYSIS_MONTHLY_GAME_LIMIT = 50;
+export const DEFAULT_AUTO_ANALYSIS_DAILY_GAME_LIMIT = 10;
 export const DEFAULT_STOP_WHEN_CREDITS_BELOW = 0;
 const AUTO_ANALYSIS_LEDGER_REASONS = ['auto-sync', 'auto-analysis'];
 
@@ -29,6 +30,7 @@ export type BillingTransactionClient = Pick<
     Prisma.TransactionClient,
     | 'billingAccount'
     | 'creditLedgerEntry'
+    | 'analysisRun'
     | 'user'
     | 'notificationPreference'
     | 'notification'
@@ -54,9 +56,9 @@ export type ReserveServerAnalysisCreditsArgs = BillingCreditWriteArgs & {
     enforceAutoAnalysisCaps?: boolean;
     enforceStopThreshold?: boolean;
     autoAnalysisBudget?: {
-        dailyCap: number | null;
-        monthlyCap: number | null;
-        reserveCredits: number;
+        dailyGameLimit: number | null;
+        monthlyGameLimit: number | null;
+        creditReserve: number;
     };
     now?: Date;
 };
@@ -66,7 +68,7 @@ export type BillingCreditWriteResult = {
     created: boolean;
     account: BillingAccount | null;
     summary: CreditLedgerSummary | null;
-    policy: typeof SERVER_ANALYSIS_BILLING_POLICY_V1;
+    policy: typeof SERVER_ANALYSIS_BILLING_POLICY_V2;
 };
 
 type LedgerEntryForSummary = Pick<CreditLedgerEntry, 'type' | 'credits'>;
@@ -93,21 +95,21 @@ export class MonthlyServerCreditsLimitExceededError extends BillingAccountError 
 }
 
 export class AutoAnalysisCapExceededError extends BillingAccountError {
-    constructor(message = 'Auto analysis server credit cap exceeded') {
+    constructor(message = 'Automatic analysis game limit exceeded') {
         super(message);
         this.name = 'AutoAnalysisCapExceededError';
     }
 }
 
 export class AutoAnalysisMonthlyCapExceededError extends AutoAnalysisCapExceededError {
-    constructor(message = 'Auto analysis monthly server credit cap exceeded') {
+    constructor(message = 'Automatic analysis monthly game limit exceeded') {
         super(message);
         this.name = 'AutoAnalysisMonthlyCapExceededError';
     }
 }
 
 export class AutoAnalysisDailyCapExceededError extends AutoAnalysisCapExceededError {
-    constructor(message = 'Auto analysis daily server credit cap exceeded') {
+    constructor(message = 'Automatic analysis daily game limit exceeded') {
         super(message);
         this.name = 'AutoAnalysisDailyCapExceededError';
     }
@@ -160,7 +162,7 @@ export async function reserveServerAnalysisCreditsInTransaction(
     const effectiveReserve = writeArgs.autoAnalysisBudget
         ? Math.max(
               account.stopWhenCreditsBelow,
-              nonNegativeInt(writeArgs.autoAnalysisBudget.reserveCredits)
+              nonNegativeInt(writeArgs.autoAnalysisBudget.creditReserve)
           )
         : writeArgs.enforceStopThreshold
           ? account.stopWhenCreditsBelow
@@ -171,7 +173,6 @@ export async function reserveServerAnalysisCreditsInTransaction(
         await assertAutoAnalysisCapsAvailable({
             tx,
             account,
-            credits: writeArgs.credits,
             now,
             personalBudget: writeArgs.autoAnalysisBudget,
         });
@@ -260,6 +261,29 @@ export async function releaseServerAnalysisCredits(
     return writeReservedCreditReturn(args, 'RELEASED');
 }
 
+export async function releaseServerAnalysisCreditsAndMarkRunReleased(
+    args: BillingCreditWriteArgs & { analysisRunId: string }
+) {
+    const result = await prisma.$transaction(async (tx) => {
+        const released = await writeReservedCreditReturnInTransaction(
+            { tx, ...args },
+            'RELEASED'
+        );
+        const run = await tx.analysisRun.updateMany({
+            where: { id: args.analysisRunId },
+            data: { consumedCredits: 0 },
+        });
+        if (run.count !== 1) {
+            throw new BillingAccountError(
+                'Released analysis run could not be marked settled'
+            );
+        }
+        return released;
+    }, serializableTransactionOptions());
+    await wakeAutoAnalysisAfterRelease(args.userId, result.created);
+    return result;
+}
+
 export async function releaseServerAnalysisCreditsInTransaction(
     args: BillingCreditWriteArgs & { tx: BillingTransactionClient }
 ): Promise<BillingCreditWriteResult> {
@@ -310,25 +334,30 @@ async function writeReservedCreditReturn(
             writeReservedCreditReturnInTransaction({ tx, ...args }, type),
         serializableTransactionOptions()
     );
-    if (type === 'RELEASED' && result.created) {
-        try {
-            const { requestAutoAnalysisWakeup } = await import(
-                '@/lib/services/autoAnalysisBacklog'
-            );
-            await requestAutoAnalysisWakeup(
-                args.userId,
-                'capacity-release'
-            );
-        } catch (error) {
-            // Credit settlement is already committed. A wakeup failure must
-            // never make the caller retry or double-release the reservation.
-            console.error(
-                '[auto analysis] capacity-release wakeup failed',
-                error
-            );
-        }
+    if (type === 'RELEASED') {
+        await wakeAutoAnalysisAfterRelease(args.userId, result.created);
     }
     return result;
+}
+
+async function wakeAutoAnalysisAfterRelease(
+    userId: string,
+    releaseCreated: boolean
+) {
+    if (!releaseCreated) return;
+    try {
+        const { requestAutoAnalysisWakeup } = await import(
+            '@/lib/services/autoAnalysisBacklog'
+        );
+        await requestAutoAnalysisWakeup(userId, 'capacity-release');
+    } catch (error) {
+        // Credit settlement is already committed. A wakeup failure must never
+        // make the caller retry or double-release the reservation.
+        console.error(
+            '[auto analysis] capacity-release wakeup failed',
+            error
+        );
+    }
 }
 
 async function writeReservedCreditReturnInTransaction(
@@ -376,10 +405,13 @@ async function getOrCreateDefaultBillingAccountInTransaction(args: {
             plan: 'FREE',
             serverCreditsBalance: DEFAULT_SERVER_CREDITS_BALANCE,
             monthlyServerCreditsUsed: 0,
+            serverCreditsPeriodStart: args.now,
             serverCreditsRenewAt: nextMonthlyRenewAt(args.now),
             monthlyServerCreditsLimit: DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT,
-            autoAnalysisMonthlyCap: DEFAULT_AUTO_ANALYSIS_MONTHLY_CAP,
-            autoAnalysisDailyCap: DEFAULT_AUTO_ANALYSIS_DAILY_CAP,
+            autoAnalysisMonthlyGameLimit:
+                DEFAULT_AUTO_ANALYSIS_MONTHLY_GAME_LIMIT,
+            autoAnalysisDailyGameLimit:
+                DEFAULT_AUTO_ANALYSIS_DAILY_GAME_LIMIT,
             stopWhenCreditsBelow: DEFAULT_STOP_WHEN_CREDITS_BELOW,
         },
     });
@@ -394,6 +426,7 @@ async function getOrCreateDefaultBillingAccountInTransaction(args: {
                 account.monthlyServerCreditsLimit
             ),
             monthlyServerCreditsUsed: 0,
+            serverCreditsPeriodStart: args.now,
             serverCreditsRenewAt: nextMonthlyRenewAt(args.now),
         },
     });
@@ -424,7 +457,7 @@ async function createLedgerResult(
         created: true,
         account,
         summary,
-        policy: SERVER_ANALYSIS_BILLING_POLICY_V1,
+        policy: SERVER_ANALYSIS_BILLING_POLICY_V2,
     };
 }
 
@@ -440,7 +473,7 @@ async function existingResult(
         created: false,
         account,
         summary: null,
-        policy: SERVER_ANALYSIS_BILLING_POLICY_V1,
+        policy: SERVER_ANALYSIS_BILLING_POLICY_V2,
     };
 }
 
@@ -532,44 +565,60 @@ function assertMonthlyLimitAvailable(
 async function assertAutoAnalysisCapsAvailable(args: {
     tx: BillingTransactionClient;
     account: BillingAccount;
-    credits: number;
     now: Date;
     personalBudget?: ReserveServerAnalysisCreditsArgs['autoAnalysisBudget'];
 }) {
-    const monthlyCommitted = await getLedgerSummary(
+    const monthlyCommitted = await countCommittedAutoAnalysisRuns(
         args.tx,
-        { userId: args.account.userId },
-        {
-            createdAtGte: previousMonthlyRenewAt(
-                args.account.serverCreditsRenewAt
-            ),
-            autoAnalysisOnly: true,
-        }
+        args.account.userId,
+        args.account.serverCreditsPeriodStart
     );
-    const monthlyCap = Math.min(
-        args.account.autoAnalysisMonthlyCap,
-        args.personalBudget?.monthlyCap ??
-            args.account.autoAnalysisMonthlyCap
+    const monthlyGameLimit = Math.min(
+        args.account.autoAnalysisMonthlyGameLimit,
+        args.personalBudget?.monthlyGameLimit ??
+            args.account.autoAnalysisMonthlyGameLimit
     );
-    if (monthlyCommitted.committed + args.credits > monthlyCap) {
+    if (monthlyCommitted + 1 > monthlyGameLimit) {
         throw new AutoAnalysisMonthlyCapExceededError();
     }
 
-    const dailyCommitted = await getLedgerSummary(
+    const dailyCommitted = await countCommittedAutoAnalysisRuns(
         args.tx,
-        { userId: args.account.userId },
-        {
-            createdAtGte: startOfUtcDay(args.now),
-            autoAnalysisOnly: true,
-        }
+        args.account.userId,
+        startOfUtcDay(args.now)
     );
-    const dailyCap = Math.min(
-        args.account.autoAnalysisDailyCap,
-        args.personalBudget?.dailyCap ?? args.account.autoAnalysisDailyCap
+    const dailyGameLimit = Math.min(
+        args.account.autoAnalysisDailyGameLimit,
+        args.personalBudget?.dailyGameLimit ??
+            args.account.autoAnalysisDailyGameLimit
     );
-    if (dailyCommitted.committed + args.credits > dailyCap) {
+    if (dailyCommitted + 1 > dailyGameLimit) {
         throw new AutoAnalysisDailyCapExceededError();
     }
+}
+
+async function countCommittedAutoAnalysisRuns(
+    tx: BillingTransactionClient,
+    userId: string,
+    createdAtGte: Date
+) {
+    const runs = await tx.analysisRun.findMany({
+        where: {
+            userId,
+            createdAt: { gte: createdAtGte },
+            queuedReason: { in: AUTO_ANALYSIS_LEDGER_REASONS },
+        },
+        select: {
+            creditLedgerEntries: {
+                select: { type: true, credits: true },
+            },
+        },
+    });
+    return runs.filter(
+        (run) =>
+            summarizeCreditLedgerEntries(run.creditLedgerEntries).committed >
+            0
+    ).length;
 }
 
 function nonNegativeInt(value: number) {
@@ -580,18 +629,6 @@ function assertPositiveCredits(credits: number) {
     if (!Number.isInteger(credits) || credits <= 0) {
         throw new BillingAccountError('Credits must be a positive integer');
     }
-}
-
-function nextMonthlyRenewAt(now: Date) {
-    const next = new Date(now);
-    next.setUTCMonth(next.getUTCMonth() + 1);
-    return next;
-}
-
-function previousMonthlyRenewAt(renewAt: Date) {
-    const previous = new Date(renewAt);
-    previous.setUTCMonth(previous.getUTCMonth() - 1);
-    return previous;
 }
 
 function startOfUtcDay(date: Date) {

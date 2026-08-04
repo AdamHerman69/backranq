@@ -22,9 +22,7 @@ export function analysisDefaultsEqual(
   right: AnalysisDefaults,
 ): boolean {
   return (
-    left.analysisNodesPerPosition === right.analysisNodesPerPosition &&
-    left.confirmationNodes === right.confirmationNodes &&
-    left.themeLookaheadPlies === right.themeLookaheadPlies &&
+    left.analysisQuality === right.analysisQuality &&
     left.trainingCoveragePreset === right.trainingCoveragePreset &&
     left.trainingGradingTolerance === right.trainingGradingTolerance
   );
@@ -123,7 +121,7 @@ export function AnalysisDefaultsCard({ ownerId }: { ownerId: string }) {
   }
 
   return (
-    <Card>
+    <Card id="analysis-defaults" className="scroll-mt-4">
       <CardHeader>
         <CardTitle className="text-base">Analysis defaults</CardTitle>
         <CardDescription>

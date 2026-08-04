@@ -26,10 +26,11 @@ function account(overrides: Record<string, unknown> = {}) {
         plan: 'FREE',
         serverCreditsBalance: 10,
         monthlyServerCreditsUsed: 0,
+        serverCreditsPeriodStart: new Date('2026-07-05T00:00:00Z'),
         serverCreditsRenewAt: new Date('2026-08-05T00:00:00Z'),
         monthlyServerCreditsLimit: 10,
-        autoAnalysisMonthlyCap: 5,
-        autoAnalysisDailyCap: 2,
+        autoAnalysisMonthlyGameLimit: 5,
+        autoAnalysisDailyGameLimit: 2,
         stopWhenCreditsBelow: 0,
         createdAt: new Date('2026-07-05T00:00:00Z'),
         updatedAt: new Date('2026-07-05T00:00:00Z'),
@@ -57,6 +58,7 @@ function ledgerEntry(overrides: Record<string, unknown> = {}) {
 describe('billing account server credit policy', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        prismaMock.analysisRun.findMany.mockResolvedValue([]);
         requestAutoAnalysisWakeupMock.mockResolvedValue({
             queued: true,
             inline: false,
@@ -152,11 +154,14 @@ describe('billing account server credit policy', () => {
         const billing = await importBilling();
         prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);
         prismaMock.billingAccount.upsert.mockResolvedValue(account());
-        prismaMock.creditLedgerEntry.findMany
-            .mockResolvedValueOnce([])
-            .mockResolvedValueOnce([
-                { type: 'RESERVED', credits: 1 },
-            ]);
+        prismaMock.creditLedgerEntry.findMany.mockResolvedValue([]);
+        prismaMock.analysisRun.findMany.mockResolvedValue([
+            {
+                creditLedgerEntries: [
+                    { type: 'RESERVED', credits: 10 },
+                ],
+            },
+        ]);
 
         await expect(
             billing.reserveServerAnalysisCredits({
@@ -166,30 +171,23 @@ describe('billing account server credit policy', () => {
                 reason: 'auto-analysis',
                 enforceAutoAnalysisCaps: true,
                 autoAnalysisBudget: {
-                    dailyCap: 10,
-                    monthlyCap: 1,
-                    reserveCredits: 0,
+                    dailyGameLimit: 10,
+                    monthlyGameLimit: 1,
+                    creditReserve: 0,
                 },
                 now: new Date('2026-07-05T12:00:00Z'),
             })
         ).rejects.toThrow(billing.AutoAnalysisCapExceededError);
         expect(prismaMock.billingAccount.updateMany).not.toHaveBeenCalled();
-        expect(
-            prismaMock.creditLedgerEntry.findMany.mock.calls[1]?.[0]
-        ).toEqual(
+        expect(prismaMock.analysisRun.findMany).toHaveBeenCalledWith(
             expect.objectContaining({
                 where: expect.objectContaining({
-                    OR: expect.arrayContaining([
-                        expect.objectContaining({
-                            analysisRun: {
-                                is: {
-                                    queuedReason: {
-                                        in: ['auto-sync', 'auto-analysis'],
-                                    },
-                                },
-                            },
-                        }),
-                    ]),
+                    queuedReason: {
+                        in: ['auto-sync', 'auto-analysis'],
+                    },
+                    createdAt: {
+                        gte: new Date('2026-07-05T00:00:00Z'),
+                    },
                 }),
             })
         );
@@ -211,9 +209,9 @@ describe('billing account server credit policy', () => {
                 reason: 'auto-analysis',
                 enforceAutoAnalysisCaps: true,
                 autoAnalysisBudget: {
-                    dailyCap: 10,
-                    monthlyCap: 10,
-                    reserveCredits: 3,
+                    dailyGameLimit: 10,
+                    monthlyGameLimit: 10,
+                    creditReserve: 3,
                 },
             })
         ).rejects.toThrow(billing.ServerCreditStopThresholdError);
@@ -240,9 +238,9 @@ describe('billing account server credit policy', () => {
             reason: 'auto-analysis',
             enforceAutoAnalysisCaps: true,
             autoAnalysisBudget: {
-                dailyCap: 10,
-                monthlyCap: 10,
-                reserveCredits: 4,
+                dailyGameLimit: 10,
+                monthlyGameLimit: 10,
+                creditReserve: 4,
             },
         });
 
@@ -294,6 +292,45 @@ describe('billing account server credit policy', () => {
             data: {
                 serverCreditsBalance: { increment: 1 },
             },
+        });
+        expect(requestAutoAnalysisWakeupMock).toHaveBeenCalledWith(
+            'user-1',
+            'capacity-release'
+        );
+    });
+
+    it('atomically releases the full run price and marks provenance settled', async () => {
+        const billing = await importBilling();
+        prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);
+        prismaMock.billingAccount.upsert.mockResolvedValue(
+            account({ serverCreditsBalance: 0 })
+        );
+        prismaMock.creditLedgerEntry.findMany
+            .mockResolvedValueOnce([{ type: 'RESERVED', credits: 10 }])
+            .mockResolvedValueOnce([
+                { type: 'RESERVED', credits: 10 },
+                { type: 'RELEASED', credits: 10 },
+            ]);
+        prismaMock.billingAccount.update.mockResolvedValue(
+            account({ serverCreditsBalance: 10 })
+        );
+        prismaMock.creditLedgerEntry.create.mockResolvedValue(
+            ledgerEntry({ type: 'RELEASED', credits: 10 })
+        );
+        prismaMock.analysisRun.updateMany.mockResolvedValue({ count: 1 });
+
+        await billing.releaseServerAnalysisCreditsAndMarkRunReleased({
+            userId: 'user-1',
+            gameId: 'game-1',
+            analysisJobId: 'job-1',
+            analysisRunId: 'run-1',
+            credits: 10,
+            idempotencyKey: 'analysis-run:run-1:release',
+        });
+
+        expect(prismaMock.analysisRun.updateMany).toHaveBeenCalledWith({
+            where: { id: 'run-1' },
+            data: { consumedCredits: 0 },
         });
         expect(requestAutoAnalysisWakeupMock).toHaveBeenCalledWith(
             'user-1',

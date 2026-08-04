@@ -11,6 +11,7 @@ import {
     type TrainingMomentCandidate,
 } from '@/lib/training/contracts';
 import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
+import { analysisDefaultsToExtractOptions } from '@/lib/preferences';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createJsonRequest, readJson } from '../helpers/route';
 import {
@@ -33,7 +34,18 @@ const ownedGame = {
     pgn: '[Event "Test"]\n\n1. e4 *',
 };
 const sourcePgnHash = hashSourcePgn(ownedGame.pgn);
-const defaultConfigSnapshot = {};
+const standardAnalysisDefaults = {
+    analysisQuality: 'STANDARD',
+    trainingCoveragePreset: 'ALL_CONFIRMED',
+    trainingGradingTolerance: 'PRACTICAL',
+} as const;
+const defaultConfigSnapshot = {
+    version: 2,
+    engine: null,
+    extractor: analysisDefaultsToExtractOptions(standardAnalysisDefaults, {
+        returnAnalysis: true,
+    }),
+};
 const defaultConfigHash = hashAnalysisConfig(defaultConfigSnapshot);
 const rootFen =
     'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -206,9 +218,16 @@ async function importRoute(): Promise<AnalysisRouteModule> {
 }
 
 function createPutRequest(body: Parameters<typeof createJsonRequest>[1]) {
-    return createJsonRequest('http://localhost/api/games/game-1/analysis', body, {
-        method: 'PUT',
-    });
+    return createJsonRequest(
+        'http://localhost/api/games/game-1/analysis',
+        {
+            analysisQuality: 'STANDARD',
+            configSnapshot: defaultConfigSnapshot,
+            configHash: defaultConfigHash,
+            ...(body as Record<string, unknown>),
+        },
+        { method: 'PUT' }
+    );
 }
 
 function routeParams() {
@@ -244,6 +263,100 @@ describe('PUT /api/games/[id]/analysis', () => {
         expect(
             (prismaMock as PrismaMockWithTransaction).$transaction
         ).not.toHaveBeenCalled();
+    });
+
+    it('requires an explicit supported analysis quality', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(
+            createJsonRequest(
+                'http://localhost/api/games/game-1/analysis',
+                {
+                    analysis: validAnalysis,
+                    trainingMoments: [],
+                    extractionManifest: validManifest,
+                    configSnapshot: defaultConfigSnapshot,
+                },
+                { method: 'PUT' }
+            ),
+            routeParams()
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Invalid analysisQuality',
+        });
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('rejects a quality label that does not match the engine budget', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: validAnalysis,
+                trainingMoments: [],
+                extractionManifest: validManifest,
+                analysisQuality: 'THOROUGH',
+            }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Analysis quality does not match configSnapshot',
+        });
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('requires the current config hash contract', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(
+            createJsonRequest(
+                'http://localhost/api/games/game-1/analysis',
+                {
+                    analysis: validAnalysis,
+                    trainingMoments: [],
+                    extractionManifest: validManifest,
+                    analysisQuality: 'STANDARD',
+                    configSnapshot: defaultConfigSnapshot,
+                },
+                { method: 'PUT' }
+            ),
+            routeParams()
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'configHash does not match configSnapshot',
+        });
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('rejects legacy local provenance aliases', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(
+            createJsonRequest(
+                'http://localhost/api/games/game-1/analysis',
+                {
+                    analysis: validAnalysis,
+                    trainingMoments: [],
+                    extractionManifest: validManifest,
+                    analysisQuality: 'STANDARD',
+                    configSnapshot: defaultConfigSnapshot,
+                    configHash: defaultConfigHash,
+                    analysisConfigSnapshot: defaultConfigSnapshot,
+                    analysisConfigHash: defaultConfigHash,
+                    engineName: 'Stockfish',
+                },
+                { method: 'PUT' }
+            ),
+            routeParams()
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Invalid analysis request',
+        });
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
     });
 
     it('rejects analysis without the required extraction receipt', async () => {
@@ -554,6 +667,8 @@ describe('PUT /api/games/[id]/analysis', () => {
             userId: 'user-1',
             gameId: 'game-1',
             executionMode: 'LOCAL_BROWSER',
+            analysisQuality: 'STANDARD',
+            creditCost: 0,
             status: 'SUCCEEDED',
             queuedReason: null,
             engineName: null,
@@ -563,7 +678,7 @@ describe('PUT /api/games/[id]/analysis', () => {
             engineEvalFile: null,
             engineOptions: {},
             appVersion: null,
-            configSnapshot: {},
+            configSnapshot: defaultConfigSnapshot,
             configHash: defaultConfigHash,
             inputPgnHash: sourcePgnHash,
             startedAt: new Date('2026-07-04T12:29:00.000Z'),
@@ -636,6 +751,8 @@ describe('PUT /api/games/[id]/analysis', () => {
                 id: 'run-1',
                 executionMode: 'LOCAL_BROWSER',
                 status: 'SUCCEEDED',
+                analysisQuality: 'STANDARD',
+                creditCost: 0,
                 configHash: defaultConfigHash,
             },
         });
@@ -651,6 +768,8 @@ describe('PUT /api/games/[id]/analysis', () => {
                 userId: 'user-1',
                 gameId: 'game-1',
                 executionMode: 'LOCAL_BROWSER',
+                analysisQuality: 'STANDARD',
+                creditCost: 0,
                 status: 'RUNNING',
                 consumedCredits: 0,
             }),

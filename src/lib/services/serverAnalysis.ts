@@ -7,8 +7,6 @@ import { prisma } from '@/lib/prisma';
 import {
     markAnalysisJobFailed,
     markAnalysisJobRunning,
-    SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
-    SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
     serverAnalysisConfigFromSnapshot,
     transitionAnalysisRunForJob,
     StaleAnalysisDeliveryError,
@@ -20,7 +18,7 @@ import {
 } from '@/lib/services/analysisRuns';
 import {
     consumeServerAnalysisCredits,
-    releaseServerAnalysisCredits,
+    releaseServerAnalysisCreditsAndMarkRunReleased,
 } from '@/lib/services/billingAccounts';
 import { recordStaleAnalysisDelivery } from '@/lib/services/analysisOps';
 import { recordAnalysisFailed } from '@/lib/notifications/service';
@@ -51,6 +49,7 @@ export async function analyzeGameJob(
     let engine: ServerStockfishClient | null = null;
     let analysisRunId: string | null = null;
     let completionCommitted = false;
+    let creditCost = 0;
 
     try {
         const job = await prisma.analysisJob.findUnique({
@@ -62,6 +61,7 @@ export async function analyzeGameJob(
                         id: true,
                         configSnapshot: true,
                         configHash: true,
+                        creditCost: true,
                     },
                 },
                 user: {
@@ -73,9 +73,12 @@ export async function analyzeGameJob(
             },
         });
         if (!job) throw new Error('Analysis job not found');
+        const run = job.analysisRun;
+        analysisRunId = run.id;
+        creditCost = run.creditCost;
         const resolvedConfig = serverAnalysisConfigFromSnapshot({
-            snapshot: job.analysisRun.configSnapshot,
-            hash: job.analysisRun.configHash,
+            snapshot: run.configSnapshot,
+            hash: run.configHash,
         });
         if (!resolvedConfig) {
             throw new Error(
@@ -83,8 +86,6 @@ export async function analyzeGameJob(
             );
         }
         const { options, config } = resolvedConfig;
-        const run = job.analysisRun;
-        analysisRunId = run.id;
         const transitionedRun = await transitionAnalysisRunForJob({
             jobId: job.id,
             status: 'RUNNING',
@@ -103,7 +104,7 @@ export async function analyzeGameJob(
                 runId: run.id,
                 analysisJobId: job.id,
                 fence,
-                consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
+                consumedCredits: 0,
             });
             completionCommitted = true;
             try {
@@ -112,12 +113,13 @@ export async function analyzeGameJob(
                     gameId: job.gameId,
                     analysisJobId: job.id,
                     analysisRunId,
+                    credits: creditCost,
                     reason: 'already-analyzed',
                 });
                 await markSettlementComplete({
                     jobId: job.id,
                     analysisRunId: run.id,
-                    consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
+                    consumedCredits: 0,
                 });
             } catch (error) {
                 await recordSettlementPending({
@@ -184,7 +186,7 @@ export async function analyzeGameJob(
             analysis,
             trainingMoments: trainingMomentsForGame,
             extractionManifest,
-            consumedCredits: SERVER_ANALYSIS_CONSUMED_CREDITS_V1,
+            consumedCredits: null,
             analysisJob: {
                 id: job.id,
                 fence,
@@ -198,12 +200,13 @@ export async function analyzeGameJob(
                 gameId: job.gameId,
                 analysisJobId: job.id,
                 analysisRunId,
+                credits: creditCost,
                 reason: 'analysis-succeeded',
             });
             await markSettlementComplete({
                 jobId: job.id,
                 analysisRunId: run.id,
-                consumedCredits: SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
+                consumedCredits: creditCost,
             });
         } catch (error) {
             await recordSettlementPending({
@@ -267,6 +270,7 @@ export async function analyzeGameJob(
                     gameId: running.gameId,
                     analysisJobId: running.id,
                     analysisRunId,
+                    credits: creditCost,
                     reason: 'analysis-failed',
                 });
             } catch (settlementError) {
@@ -310,6 +314,7 @@ async function consumeAnalysisJobReservation(args: {
     gameId: string;
     analysisJobId: string;
     analysisRunId: string | null;
+    credits: number;
     reason: string;
 }) {
     await consumeServerAnalysisCredits({
@@ -317,7 +322,7 @@ async function consumeAnalysisJobReservation(args: {
         gameId: args.gameId,
         analysisJobId: args.analysisJobId,
         analysisRunId: args.analysisRunId,
-        credits: SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
+        credits: args.credits,
         idempotencyKey: ledgerIdempotencyKey(args, 'consume'),
         reason: args.reason,
     });
@@ -328,14 +333,18 @@ async function releaseAnalysisJobReservation(args: {
     gameId: string;
     analysisJobId: string;
     analysisRunId: string | null;
+    credits: number;
     reason: string;
 }) {
-    await releaseServerAnalysisCredits({
+    if (!args.analysisRunId) {
+        throw new Error('Analysis run is required for credit release');
+    }
+    await releaseServerAnalysisCreditsAndMarkRunReleased({
         userId: args.userId,
         gameId: args.gameId,
         analysisJobId: args.analysisJobId,
         analysisRunId: args.analysisRunId,
-        credits: SERVER_ANALYSIS_ESTIMATED_CREDITS_V1,
+        credits: args.credits,
         idempotencyKey: ledgerIdempotencyKey(args, 'release'),
         reason: args.reason,
     });

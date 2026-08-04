@@ -5,6 +5,12 @@ import {
     DEFAULT_STOP_WHEN_CREDITS_BELOW,
 } from '@/lib/services/billingAccounts';
 import { summarizeCreditLedgerEntries } from '@/lib/services/creditLedger';
+import {
+    DEFAULT_ANALYSIS_QUALITY,
+    analysisCreditsPerGame,
+    type AnalysisQuality,
+} from '@/lib/analysis/quality';
+import { canonicalPreferences } from '@/lib/preferences';
 
 export type ManualServerAnalysisCapacity = {
     currentBalance: number;
@@ -15,6 +21,9 @@ export type ManualServerAnalysisCapacity = {
     outstandingReservations: number;
     monthlyRemaining: number;
     reservableCredits: number;
+    analysisQuality: AnalysisQuality;
+    creditsPerGame: number;
+    reservableGames: number;
     limitingFactor:
         | 'balance'
         | 'stop-threshold'
@@ -29,6 +38,7 @@ export function calculateManualServerAnalysisCapacity(args: {
     monthlyLimit: number;
     monthlyUsed: number;
     outstandingReservations: number;
+    analysisQuality?: AnalysisQuality;
 }): ManualServerAnalysisCapacity {
     const currentBalance = nonNegativeInt(args.currentBalance);
     const stopThreshold = nonNegativeInt(args.stopThreshold);
@@ -43,6 +53,8 @@ export function calculateManualServerAnalysisCapacity(args: {
         monthlyLimit - monthlyUsed - outstandingReservations
     );
     const reservableCredits = Math.min(spendableBalance, monthlyRemaining);
+    const analysisQuality = args.analysisQuality ?? DEFAULT_ANALYSIS_QUALITY;
+    const creditsPerGame = analysisCreditsPerGame(analysisQuality);
 
     const limitingFactor = getLimitingFactor({
         currentBalance,
@@ -60,6 +72,9 @@ export function calculateManualServerAnalysisCapacity(args: {
         outstandingReservations,
         monthlyRemaining,
         reservableCredits,
+        analysisQuality,
+        creditsPerGame,
+        reservableGames: Math.floor(reservableCredits / creditsPerGame),
         limitingFactor,
         limitingReason: capacityReason(limitingFactor, stopThreshold),
     };
@@ -68,12 +83,16 @@ export function calculateManualServerAnalysisCapacity(args: {
 export async function getManualServerAnalysisCapacity(
     userId: string
 ): Promise<ManualServerAnalysisCapacity> {
-    const [account, creditTotals] = await Promise.all([
+    const [account, creditTotals, user] = await Promise.all([
         prisma.billingAccount.findUnique({ where: { userId } }),
         prisma.creditLedgerEntry.groupBy({
             by: ['type'],
             where: { userId },
             _sum: { credits: true },
+        }),
+        prisma.user.findUnique({
+            where: { id: userId },
+            select: { preferences: true },
         }),
     ]);
     const ledger = summarizeCreditLedgerEntries(
@@ -101,6 +120,7 @@ export async function getManualServerAnalysisCapacity(
         monthlyLimit,
         monthlyUsed: renewalDue ? 0 : (account?.monthlyServerCreditsUsed ?? 0),
         outstandingReservations: ledger.outstandingReserved,
+        analysisQuality: canonicalPreferences(user?.preferences).analysisQuality,
     });
 }
 

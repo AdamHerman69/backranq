@@ -63,8 +63,10 @@ type AutomationSyncStatus = SyncStatus & {
     automation?: {
         capacity?: {
             reservableCredits: number;
+            reservableGames: number;
+            creditsPerGame: number;
             currentBalance: number;
-            reserveCredits: number;
+            creditReserve: number;
             dailyRemaining: number | null;
             monthlyRemaining: number | null;
             planMonthlyRemaining: number;
@@ -80,9 +82,9 @@ export type AutomationDraft = {
         resultScope: AutoAnalysisResultScope;
         ratedOnly: boolean;
         minPlies: string;
-        dailyCap: string;
-        monthlyCap: string;
-        reserveCredits: string;
+        dailyGameLimit: string;
+        monthlyGameLimit: string;
+        creditReserve: string;
         existingGames: GameAutomationExistingGameScope;
     };
 };
@@ -133,9 +135,9 @@ export function automationDraftFromPreferences(
             resultScope: policy.analysis.resultScope,
             ratedOnly: policy.analysis.ratedOnly,
             minPlies: inputString(policy.analysis.minPlies),
-            dailyCap: inputString(policy.analysis.dailyCap),
-            monthlyCap: inputString(policy.analysis.monthlyCap),
-            reserveCredits: inputString(policy.analysis.reserveCredits),
+            dailyGameLimit: inputString(policy.analysis.dailyGameLimit),
+            monthlyGameLimit: inputString(policy.analysis.monthlyGameLimit),
+            creditReserve: inputString(policy.analysis.creditReserve),
             existingGames: policy.analysis.existingGames,
         },
     };
@@ -168,19 +170,19 @@ export function validateAutomationDraft(draft: AutomationDraft): string | null {
     if (optionalInteger(draft.analysis.minPlies, 0, 1_000) == null) {
         return 'Minimum game length must be a whole number from 0 to 1,000 plies.';
     }
-    if (optionalInteger(draft.analysis.dailyCap, 1, 10_000) === undefined) {
+    if (optionalInteger(draft.analysis.dailyGameLimit, 1, 10_000) === undefined) {
         return 'Daily personal cap must be a positive whole number or blank.';
     }
     if (
-        optionalInteger(draft.analysis.monthlyCap, 1, 100_000) === undefined
+        optionalInteger(draft.analysis.monthlyGameLimit, 1, 100_000) === undefined
     ) {
         return 'Monthly personal cap must be a positive whole number or blank.';
     }
-    if (optionalInteger(draft.analysis.reserveCredits, 0, 100_000) == null) {
+    if (optionalInteger(draft.analysis.creditReserve, 0, 100_000) == null) {
         return 'Credit reserve must be a whole number of zero or more.';
     }
-    const daily = optionalInteger(draft.analysis.dailyCap, 1, 10_000);
-    const monthly = optionalInteger(draft.analysis.monthlyCap, 1, 100_000);
+    const daily = optionalInteger(draft.analysis.dailyGameLimit, 1, 10_000);
+    const monthly = optionalInteger(draft.analysis.monthlyGameLimit, 1, 100_000);
     if (
         typeof daily === 'number' &&
         typeof monthly === 'number' &&
@@ -204,18 +206,18 @@ export function automationPreferencesPatch(draft: AutomationDraft) {
                     0,
                     1_000
                 ) as number,
-                dailyCap: optionalInteger(
-                    draft.analysis.dailyCap,
+                dailyGameLimit: optionalInteger(
+                    draft.analysis.dailyGameLimit,
                     1,
                     10_000
                 ),
-                monthlyCap: optionalInteger(
-                    draft.analysis.monthlyCap,
+                monthlyGameLimit: optionalInteger(
+                    draft.analysis.monthlyGameLimit,
                     1,
                     100_000
                 ),
-                reserveCredits: optionalInteger(
-                    draft.analysis.reserveCredits,
+                creditReserve: optionalInteger(
+                    draft.analysis.creditReserve,
                     0,
                     100_000
                 ) as number,
@@ -752,7 +754,7 @@ export function GameAutomationSettingsCard({
                             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                                 <NumericField
                                     label="Daily personal cap"
-                                    value={draft.analysis.dailyCap}
+                                    value={draft.analysis.dailyGameLimit}
                                     placeholder="No personal cap"
                                     disabled={saving}
                                     onChange={(value) =>
@@ -760,14 +762,14 @@ export function GameAutomationSettingsCard({
                                             ...current,
                                             analysis: {
                                                 ...current.analysis,
-                                                dailyCap: value,
+                                                dailyGameLimit: value,
                                             },
                                         }))
                                     }
                                 />
                                 <NumericField
                                     label="Monthly personal cap"
-                                    value={draft.analysis.monthlyCap}
+                                    value={draft.analysis.monthlyGameLimit}
                                     placeholder="No personal cap"
                                     disabled={saving}
                                     onChange={(value) =>
@@ -775,14 +777,14 @@ export function GameAutomationSettingsCard({
                                             ...current,
                                             analysis: {
                                                 ...current.analysis,
-                                                monthlyCap: value,
+                                                monthlyGameLimit: value,
                                             },
                                         }))
                                     }
                                 />
                                 <NumericField
                                     label="Keep credits in reserve"
-                                    value={draft.analysis.reserveCredits}
+                                    value={draft.analysis.creditReserve}
                                     placeholder="0"
                                     disabled={saving}
                                     onChange={(value) =>
@@ -790,7 +792,7 @@ export function GameAutomationSettingsCard({
                                             ...current,
                                             analysis: {
                                                 ...current.analysis,
-                                                reserveCredits: value,
+                                                creditReserve: value,
                                             },
                                         }))
                                     }
@@ -877,18 +879,33 @@ export function GameAutomationSettingsCard({
                                     </strong>
                                 </span>
                                 <span>
-                                    Reservable now:{' '}
+                                    Auto games available now:{' '}
                                     <strong>
-                                        {capacity?.reservableCredits ??
-                                            billing?.reservableCredits}
+                                        {capacity?.reservableGames ??
+                                            billing?.reservableGames ??
+                                            0}
                                     </strong>
+                                </span>
+                                <span>
+                                    Analysis quality:{' '}
+                                    <strong>
+                                        {billing?.analysisQuality === 'STANDARD'
+                                            ? 'Standard'
+                                            : 'Thorough'}
+                                    </strong>{' '}
+                                    ·{' '}
+                                    {capacity?.creditsPerGame ??
+                                        billing?.creditsPerGame ??
+                                        10}{' '}
+                                    credits/game
                                 </span>
                                 <span>
                                     Plan monthly remaining:{' '}
                                     <strong>
                                         {capacity?.planMonthlyRemaining ??
                                             billing?.monthlyRemaining}
-                                    </strong>
+                                    </strong>{' '}
+                                    credits
                                 </span>
                             </div>
                             {capacity?.blockingReason || billing?.limitingReason ? (
@@ -943,7 +960,7 @@ export function GameAutomationSettingsCard({
                 open={enableConfirmOpen}
                 onOpenChange={setEnableConfirmOpen}
                 title="Enable automatic server analysis?"
-                description="Rows set to Import + analyze may spend server credits while Backranq is closed. Personal caps, your credit reserve and plan limits are always enforced."
+                description={`Rows set to Import + analyze use ${billing?.analysisQuality === 'STANDARD' ? 'Standard' : 'Thorough'} analysis at ${capacity?.creditsPerGame ?? billing?.creditsPerGame ?? 10} credits per game, even while Backranq is closed. Personal caps, your credit reserve and plan limits are always enforced.`}
                 confirmLabel="Save and enable analysis"
                 onConfirm={() => {
                     setEnableConfirmOpen(false);

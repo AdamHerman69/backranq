@@ -157,9 +157,9 @@ describe('PUT /api/user/preferences', () => {
                         resultScope: 'losses',
                         ratedOnly: false,
                         minPlies: 12,
-                        dailyCap: 3,
-                        monthlyCap: 20,
-                        reserveCredits: 4,
+                        dailyGameLimit: 3,
+                        monthlyGameLimit: 20,
+                        creditReserve: 4,
                         existingGames: 'all',
                     },
                 },
@@ -237,7 +237,10 @@ describe('PUT /api/user/preferences', () => {
         const response = await route.PUT(
             createPutRequest({
                 gameAutomation: {
-                    analysis: { dailyCap: 20, monthlyCap: 10 },
+                    analysis: {
+                        dailyGameLimit: 20,
+                        monthlyGameLimit: 10,
+                    },
                 },
             })
         );
@@ -248,11 +251,11 @@ describe('PUT /api/user/preferences', () => {
     it('validates extraction settings independently', async () => {
         const route = await importRoute();
         const invalid = await route.PUT(
-            createPutRequest({ analysisNodesPerPosition: '999999999' })
+            createPutRequest({ analysisQuality: 'DEEP' })
         );
         const valid = await route.PUT(
             createPutRequest({
-                analysisNodesPerPosition: '300000',
+                analysisQuality: 'STANDARD',
                 trainingCoveragePreset: 'BALANCED',
                 filters: { timeClass: 'rapid', max: '50' },
             })

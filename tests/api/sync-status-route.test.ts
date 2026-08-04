@@ -35,9 +35,9 @@ async function importRoute() {
                 ratedOnly: true,
                 resultScope: 'losses',
                 minPlies: 20,
-                dailyCap: 10,
-                monthlyCap: 50,
-                reserveCredits: 10,
+                dailyGameLimit: 10,
+                monthlyGameLimit: 50,
+                creditReserve: 10,
                 existingGames: 'new',
                 enabledAt: '2026-07-20T00:00:00.000Z',
             },
@@ -62,7 +62,7 @@ async function importRoute() {
             capacity: {
                 reservableCredits: 0,
                 currentBalance: 10,
-                reserveCredits: 10,
+                creditReserve: 10,
                 dailyRemaining: 10,
                 monthlyRemaining: 50,
                 planMonthlyRemaining: 100,
@@ -110,7 +110,7 @@ describe('GET /api/sync/status', () => {
             automation: {
                 policy: {
                     enabled: true,
-                    reserveCredits: 10,
+                    creditReserve: 10,
                     existingGames: 'new',
                 },
                 backlog: {

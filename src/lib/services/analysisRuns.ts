@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type {
     AnalysisExecutionMode,
+    AnalysisQuality,
     AnalysisRun,
     AnalysisRunStatus,
     Prisma,
@@ -17,6 +18,10 @@ import { prisma } from '@/lib/prisma';
 import { recordPracticeReadyInTransaction } from '@/lib/notifications/service';
 import type { AnalysisDispatchFence } from '@/lib/services/analysisDispatchFence';
 import type { TrainingMomentCandidate } from '@/lib/training/contracts';
+import {
+    DEFAULT_ANALYSIS_QUALITY,
+    analysisCreditsPerGame,
+} from '@/lib/analysis/quality';
 
 type AnalysisRunTransactionClient = Pick<
     Prisma.TransactionClient,
@@ -48,6 +53,8 @@ export type CreateAnalysisRunArgs = {
     userId: string;
     gameId: string;
     executionMode: AnalysisExecutionMode;
+    analysisQuality?: AnalysisQuality;
+    creditCost?: number;
     status?: AnalysisRunStatus;
     queuedReason?: string | null;
     engine?: AnalysisRunEngineInput;
@@ -283,12 +290,26 @@ export async function createAnalysisRunInTransaction(
     if (args.inputPgnHash && args.inputPgnHash !== inputPgnHash) {
         throw new SourcePgnChangedError();
     }
+    const analysisQuality =
+        args.analysisQuality ?? DEFAULT_ANALYSIS_QUALITY;
+    const expectedCreditCost =
+        args.executionMode === 'SERVER_QUEUE'
+            ? analysisCreditsPerGame(analysisQuality)
+            : 0;
+    if (
+        args.creditCost !== undefined &&
+        args.creditCost !== expectedCreditCost
+    ) {
+        throw new Error('Analysis run credit cost does not match its quality');
+    }
     const run = await args.tx.analysisRun.create({
         data: {
             ...(args.id ? { id: args.id } : {}),
             userId: args.userId,
             gameId: args.gameId,
             executionMode: args.executionMode,
+            analysisQuality,
+            creditCost: expectedCreditCost,
             status: args.status ?? 'QUEUED',
             queuedReason: args.queuedReason ?? null,
             engineName: args.engine?.name ?? null,

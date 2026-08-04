@@ -246,7 +246,7 @@ export function HomeDashboard() {
         rawAnalysisBlockedReason ??
         ((!automationStatus || automationStatus.policy?.enabled === true) &&
         unanalyzedGameCount > 0 &&
-        dashboardSyncStatus?.billing?.reservableCredits === 0
+        dashboardSyncStatus?.billing?.reservableGames === 0
             ? 'credits'
             : null);
     const productState: HomeProductState = deriveHomeProductState({
@@ -279,7 +279,7 @@ export function HomeDashboard() {
                 : (!automationStatus ||
                       automationStatus.policy?.enabled === true) &&
                     unanalyzedGameCount > 0 &&
-                    dashboardSyncStatus?.billing?.reservableCredits === 0
+                    dashboardSyncStatus?.billing?.reservableGames === 0
                   ? dashboardSyncStatus.billing.limitingReason ??
                     'No server credits are currently available.'
                   : null,

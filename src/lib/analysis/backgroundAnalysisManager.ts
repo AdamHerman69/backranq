@@ -16,6 +16,7 @@ import {
     type AnalysisDefaults,
     type PreferencesSchema,
 } from '@/lib/preferences';
+import type { AnalysisQuality } from '@/lib/analysis/quality';
 import {
     clearLastAnalysisCompletion,
     createBrowserAnalysisCompletion,
@@ -148,8 +149,10 @@ class BackgroundAnalysisManager {
     private lastCompletion: AnalysisCompletionSummary | null = null;
 
     private nextRunAnalysisDefaultsOverride: AnalysisDefaults | null = null;
+    private activeAnalysisDefaults: AnalysisDefaults | null = null;
     private activeExtractOptions: TrainingMomentExtractionOptions | null =
         null;
+    private activeAnalysisQuality: AnalysisQuality | null = null;
 
     subscribe(cb: Listener): () => void {
         this.listeners.add(cb);
@@ -201,7 +204,9 @@ class BackgroundAnalysisManager {
         this.lastCompletion = null;
         this.pendingUnanalyzedCount = null;
         this.nextRunAnalysisDefaultsOverride = null;
+        this.activeAnalysisDefaults = null;
         this.activeExtractOptions = null;
+        this.activeAnalysisQuality = null;
         this.emit();
     }
 
@@ -247,6 +252,20 @@ class BackgroundAnalysisManager {
             .filter(Boolean)
             .filter((id) => !this.queue.includes(id));
         if (unique.length === 0) return;
+
+        if (opts?.analysisDefaults && this.running) {
+            const runningDefaults =
+                this.activeAnalysisDefaults ??
+                this.nextRunAnalysisDefaultsOverride;
+            if (
+                !runningDefaults ||
+                !sameAnalysisDefaults(runningDefaults, opts.analysisDefaults)
+            ) {
+                throw new Error(
+                    'A browser analysis batch is already running with different settings. Wait for it to finish before starting this batch.'
+                );
+            }
+        }
 
         // Only allow setting overrides when a run isn't already in progress; otherwise
         // we'd have a mid-queue option switch which is surprising.
@@ -329,12 +348,17 @@ class BackgroundAnalysisManager {
                     returnAnalysis: true,
                 }
             );
+            this.activeAnalysisDefaults = defaults;
+            this.activeAnalysisQuality = defaults.analysisQuality;
         } catch {
             const prefs = defaultPreferences();
+            const defaults = pickAnalysisDefaults(prefs);
             this.activeExtractOptions = analysisDefaultsToExtractOptions(
-                pickAnalysisDefaults(prefs),
+                defaults,
                 { returnAnalysis: true }
             );
+            this.activeAnalysisDefaults = defaults;
+            this.activeAnalysisQuality = prefs.analysisQuality;
         } finally {
             this.nextRunAnalysisDefaultsOverride = null;
         }
@@ -442,6 +466,9 @@ class BackgroundAnalysisManager {
             this.completed = 0;
             this.percent = 0;
             this.label = '';
+            this.activeAnalysisDefaults = null;
+            this.activeExtractOptions = null;
+            this.activeAnalysisQuality = null;
             this.emit();
             publishAnalysisCompletion(summary);
         }
@@ -468,10 +495,14 @@ class BackgroundAnalysisManager {
         if (!g.pgn) throw new Error('Missing PGN for analysis');
 
         const engine = this.ensureEngine();
-        const extractOptions = this.activeExtractOptions ?? {
-            movetimeMs: 200,
-            returnAnalysis: true,
-        };
+        const fallbackDefaults = pickAnalysisDefaults(defaultPreferences());
+        const extractOptions =
+            this.activeExtractOptions ??
+            analysisDefaultsToExtractOptions(fallbackDefaults, {
+                returnAnalysis: true,
+            });
+        const analysisQuality =
+            this.activeAnalysisQuality ?? fallbackDefaults.analysisQuality;
         const out = await extractTrainingMomentsFromGames({
             games: [g],
             selectedGameIds: new Set([g.id]),
@@ -512,6 +543,7 @@ class BackgroundAnalysisManager {
                         extractionManifest,
                         configSnapshot: out.configSnapshot,
                         configHash: out.configHash,
+                        analysisQuality,
                         engine: engineIdentity,
                     }),
                 }
@@ -549,6 +581,14 @@ class BackgroundAnalysisManager {
             throw new Error(json.error ?? 'Missing preferences');
         return json.preferences;
     }
+}
+
+function sameAnalysisDefaults(a: AnalysisDefaults, b: AnalysisDefaults) {
+    return (
+        a.analysisQuality === b.analysisQuality &&
+        a.trainingCoveragePreset === b.trainingCoveragePreset &&
+        a.trainingGradingTolerance === b.trainingGradingTolerance
+    );
 }
 
 export const backgroundAnalysis = new BackgroundAnalysisManager();

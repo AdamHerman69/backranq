@@ -8,6 +8,12 @@ import {
     type TrainingGradingTolerance,
 } from '@/lib/training/config';
 import type { TrainingSourceKind } from '@/lib/training/contracts';
+import {
+    DEFAULT_ANALYSIS_QUALITY,
+    analysisQualityProfile,
+    isAnalysisQuality,
+    type AnalysisQuality,
+} from '@/lib/analysis/quality';
 
 export type RatedFilter = 'any' | 'rated' | 'casual';
 export const AUTO_ANALYSIS_RESULT_SCOPES = ['losses', 'draws', 'all'] as const;
@@ -46,9 +52,9 @@ export type GameAutomationPolicy = {
         ratedOnly: boolean;
         resultScope: AutoAnalysisResultScope;
         minPlies: number;
-        dailyCap: number | null;
-        monthlyCap: number | null;
-        reserveCredits: number;
+        dailyGameLimit: number | null;
+        monthlyGameLimit: number | null;
+        creditReserve: number;
         existingGames: GameAutomationExistingGameScope;
         /**
          * Controlled by the preferences route. For `existingGames: "new"`, only
@@ -63,6 +69,7 @@ export type AutoAnalysisPolicy = GameAutomationPolicy['analysis'] & {
     enabled: boolean;
     paused: boolean;
     rules: GameAutomationRules;
+    analysisQuality: AnalysisQuality;
 };
 export const TRAINING_SESSION_MIXES = [
     'ALL',
@@ -89,14 +96,12 @@ export type PreferencesSchema = {
     // A single source of truth for automatic import and analysis.
     gameAutomation: GameAutomationPolicy;
 
-    // Deterministic extraction work budgets and metadata lookahead. Coverage
-    // and grading policy live in the canonical training configuration.
+    // Product-level analysis intent. Engine budgets are resolved internally
+    // from the versioned quality profile and are not user-editable.
+    analysisQuality: AnalysisQuality;
     trainingCoveragePreset: TrainingCoveragePreset;
     trainingGradingTolerance: TrainingGradingTolerance;
     trainingSessionMix: TrainingSessionMix;
-    analysisNodesPerPosition: string;
-    confirmationNodes: string;
-    themeLookaheadPlies: string;
 };
 
 export type PartialPreferences = Omit<
@@ -119,52 +124,10 @@ export type PartialPreferences = Omit<
 
 export type AnalysisDefaults = Pick<
     PreferencesSchema,
-    | 'analysisNodesPerPosition'
-    | 'confirmationNodes'
-    | 'themeLookaheadPlies'
+    | 'analysisQuality'
     | 'trainingCoveragePreset'
     | 'trainingGradingTolerance'
 >;
-
-export const ANALYSIS_NUMERIC_PREFERENCE_RULES = {
-    analysisNodesPerPosition: {
-        min: 1_000,
-        max: 10_000_000,
-        integer: true,
-        allowBlank: false,
-    },
-    confirmationNodes: {
-        min: 1_000,
-        max: 20_000_000,
-        integer: true,
-        allowBlank: true,
-    },
-    themeLookaheadPlies: {
-        min: 0,
-        max: 32,
-        integer: true,
-        allowBlank: false,
-    },
-} as const;
-
-export type AnalysisNumericPreferenceKey =
-    keyof typeof ANALYSIS_NUMERIC_PREFERENCE_RULES;
-
-export function validateAnalysisNumericPreference(
-    key: AnalysisNumericPreferenceKey,
-    value: string
-): boolean {
-    const rule = ANALYSIS_NUMERIC_PREFERENCE_RULES[key];
-    const trimmed = value.trim();
-    if (!trimmed) return rule.allowBlank;
-    const number = Number(trimmed);
-    return (
-        Number.isFinite(number) &&
-        (!rule.integer || Number.isInteger(number)) &&
-        number >= rule.min &&
-        number <= rule.max
-    );
-}
 
 export function defaultPreferences(): PreferencesSchema {
     return {
@@ -201,19 +164,17 @@ export function defaultPreferences(): PreferencesSchema {
                 resultScope: 'draws',
                 ratedOnly: true,
                 minPlies: 20,
-                dailyCap: 10,
-                monthlyCap: 50,
-                reserveCredits: 10,
+                dailyGameLimit: 10,
+                monthlyGameLimit: 50,
+                creditReserve: 10,
                 existingGames: 'new',
                 enabledAt: null,
             },
         },
+        analysisQuality: DEFAULT_ANALYSIS_QUALITY,
         trainingCoveragePreset: 'ALL_CONFIRMED',
         trainingGradingTolerance: 'PRACTICAL',
         trainingSessionMix: 'ALL',
-        analysisNodesPerPosition: '100000',
-        confirmationNodes: '200000',
-        themeLookaheadPlies: '4',
     };
 }
 
@@ -228,12 +189,10 @@ export function canonicalPreferences(
     const currentTopLevelKeys = new Set([
         'filters',
         'gameAutomation',
+        'analysisQuality',
         'trainingCoveragePreset',
         'trainingGradingTolerance',
         'trainingSessionMix',
-        'analysisNodesPerPosition',
-        'confirmationNodes',
-        'themeLookaheadPlies',
     ]);
     const base = defaultPreferences();
     const withoutAutomation = Object.fromEntries(
@@ -290,19 +249,19 @@ export function canonicalPreferences(
                 0,
                 1_000
             ),
-            dailyCap: canonicalNullablePositiveInteger(
-                analysisSource.dailyCap,
-                defaults.analysis.dailyCap,
+            dailyGameLimit: canonicalNullablePositiveInteger(
+                analysisSource.dailyGameLimit,
+                defaults.analysis.dailyGameLimit,
                 10_000
             ),
-            monthlyCap: canonicalNullablePositiveInteger(
-                analysisSource.monthlyCap,
-                defaults.analysis.monthlyCap,
+            monthlyGameLimit: canonicalNullablePositiveInteger(
+                analysisSource.monthlyGameLimit,
+                defaults.analysis.monthlyGameLimit,
                 100_000
             ),
-            reserveCredits: canonicalInteger(
-                analysisSource.reserveCredits,
-                defaults.analysis.reserveCredits,
+            creditReserve: canonicalInteger(
+                analysisSource.creditReserve,
+                defaults.analysis.creditReserve,
                 0,
                 100_000
             ),
@@ -316,6 +275,9 @@ export function canonicalPreferences(
     };
 
     return mergePreferences(common, {
+        analysisQuality: isAnalysisQuality(raw.analysisQuality)
+            ? raw.analysisQuality
+            : base.analysisQuality,
         gameAutomation,
     });
 }
@@ -352,12 +314,14 @@ export function gameAutomationHasAutomaticAnalysis(policy: GameAutomationPolicy)
 export function resolveAutoAnalysisPolicy(
     preferences: unknown
 ): AutoAnalysisPolicy {
-    const policy = canonicalPreferences(preferences).gameAutomation;
+    const preferencesValue = canonicalPreferences(preferences);
+    const policy = preferencesValue.gameAutomation;
     return {
         ...policy.analysis,
         enabled: gameAutomationHasAutomaticAnalysis(policy),
         paused: policy.paused,
         rules: policy.rules,
+        analysisQuality: preferencesValue.analysisQuality,
     };
 }
 
@@ -374,36 +338,10 @@ export function pickAnalysisDefaults(
     prefs: PreferencesSchema
 ): AnalysisDefaults {
     return {
-        analysisNodesPerPosition: prefs.analysisNodesPerPosition,
-        confirmationNodes: prefs.confirmationNodes,
-        themeLookaheadPlies: prefs.themeLookaheadPlies,
+        analysisQuality: prefs.analysisQuality,
         trainingCoveragePreset: prefs.trainingCoveragePreset,
         trainingGradingTolerance: prefs.trainingGradingTolerance,
     };
-}
-
-function parseBoundedNumberOrDefault(
-    key: AnalysisNumericPreferenceKey,
-    value: string,
-    fallback: number
-): number {
-    if (!validateAnalysisNumericPreference(key, value)) return fallback;
-    const number = Number(value.trim());
-    return ANALYSIS_NUMERIC_PREFERENCE_RULES[key].integer
-        ? Math.trunc(number)
-        : number;
-}
-
-function parseOptionalBoundedNumber(
-    key: AnalysisNumericPreferenceKey,
-    value: string
-): number | null {
-    if (!value.trim()) return null;
-    if (!validateAnalysisNumericPreference(key, value)) return null;
-    const number = Number(value.trim());
-    return ANALYSIS_NUMERIC_PREFERENCE_RULES[key].integer
-        ? Math.trunc(number)
-        : number;
 }
 
 export function analysisDefaultsToExtractOptions(
@@ -414,21 +352,14 @@ export function analysisDefaultsToExtractOptions(
         coveragePreset: a.trainingCoveragePreset,
         gradingTolerance: a.trainingGradingTolerance,
     });
+    const quality = analysisQualityProfile(a.analysisQuality);
     return {
-        nodesPerPosition: parseBoundedNumberOrDefault(
-            'analysisNodesPerPosition',
-            a.analysisNodesPerPosition,
-            100_000
-        ),
-        themeLookaheadPlies: parseBoundedNumberOrDefault(
-            'themeLookaheadPlies',
-            a.themeLookaheadPlies,
-            4
-        ),
-        confirmNodes: parseOptionalBoundedNumber(
-            'confirmationNodes',
-            a.confirmationNodes
-        ),
+        nodesPerPosition: quality.nodesPerPosition,
+        themeLookaheadPlies: 4,
+        confirmNodes: quality.confirmationNodes,
+        maxConfirmationNodes: quality.maxConfirmationNodes,
+        verificationNodesPerPosition:
+            quality.verificationNodesPerPosition,
         minWinningChanceLoss: trainingConfig.minWinChanceLoss,
         fallbackMinCpLoss: trainingConfig.fallbackMinCpLoss,
         maxAcceptedWinningChanceLoss:

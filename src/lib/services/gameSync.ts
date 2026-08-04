@@ -1,6 +1,6 @@
 import type { NormalizedGame, TimeClass } from '@/lib/types/game';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
-import type { GameAutomationRules } from '@/lib/preferences';
+import type { AnalysisDefaults, GameAutomationRules } from '@/lib/preferences';
 
 export type SyncProvider = 'lichess' | 'chesscom';
 
@@ -44,6 +44,9 @@ export type SyncStatus = {
         outstandingReservations: number;
         monthlyRemaining: number;
         reservableCredits: number;
+        analysisQuality: 'STANDARD' | 'THOROUGH';
+        creditsPerGame: number;
+        reservableGames: number;
         limitingFactor: string | null;
         limitingReason: string | null;
     };
@@ -188,8 +191,8 @@ export type EnqueueServerAnalysisJobsResult = {
         configHash?: string | null;
         durationMs?: number | null;
         credits?: {
-            consumedCredits: number;
-            estimatedCredits: number;
+            consumedCredits: number | null;
+            creditCost: number;
             reservedCredits?: number;
             billable: boolean;
             policy: string;
@@ -202,6 +205,8 @@ export type EnqueueServerAnalysisJobsResult = {
             configHash: string | null;
             durationMs: number | null;
             consumedCredits: number | null;
+            analysisQuality: 'STANDARD' | 'THOROUGH';
+            creditCost: number;
         } | null;
     }>;
 };
@@ -429,6 +434,7 @@ export async function saveHistoricalGamesToLibrary(args: {
 export async function enqueueServerAnalysisJobs(args: {
     gameIds: string[];
     force?: boolean;
+    analysisDefaults?: AnalysisDefaults;
 }): Promise<EnqueueServerAnalysisJobsResult> {
     const res = await fetch('/api/analysis/jobs', {
         method: 'POST',

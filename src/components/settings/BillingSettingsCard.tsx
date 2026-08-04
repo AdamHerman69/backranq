@@ -10,8 +10,8 @@ type BillingSettings = {
     plan: string;
     serverCreditsBalance: number;
     monthlyServerCreditsLimit: number;
-    autoAnalysisMonthlyCap: number;
-    autoAnalysisDailyCap: number;
+    autoAnalysisMonthlyGameLimit: number;
+    autoAnalysisDailyGameLimit: number;
     stripeSubscriptionStatus: string | null;
     stripeCurrentPeriodEnd: string | null;
     canOpenPortal: boolean;
@@ -99,12 +99,12 @@ export function BillingSettingsCard({
                         value={`${billing.serverCreditsBalance}/${billing.monthlyServerCreditsLimit}`}
                     />
                     <Metric
-                        label="Auto monthly"
-                        value={String(billing.autoAnalysisMonthlyCap)}
+                        label="Auto games/month"
+                        value={String(billing.autoAnalysisMonthlyGameLimit)}
                     />
                     <Metric
-                        label="Auto daily"
-                        value={String(billing.autoAnalysisDailyCap)}
+                        label="Auto games/day"
+                        value={String(billing.autoAnalysisDailyGameLimit)}
                     />
                 </div>
 

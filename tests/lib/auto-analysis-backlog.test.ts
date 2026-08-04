@@ -47,10 +47,11 @@ function account(serverCreditsBalance: number) {
         stripeLastEventId: null,
         serverCreditsBalance,
         monthlyServerCreditsUsed: 0,
+        serverCreditsPeriodStart: new Date('2026-07-01T00:00:00Z'),
         serverCreditsRenewAt: new Date('2027-08-01T00:00:00Z'),
         monthlyServerCreditsLimit: 100,
-        autoAnalysisMonthlyCap: 50,
-        autoAnalysisDailyCap: 10,
+        autoAnalysisMonthlyGameLimit: 50,
+        autoAnalysisDailyGameLimit: 10,
         stopWhenCreditsBelow: 0,
         createdAt: new Date('2026-07-01T00:00:00Z'),
         updatedAt: new Date('2026-07-01T00:00:00Z'),
@@ -68,7 +69,7 @@ function enabledPreferences(overrides: Record<string, unknown> = {}) {
                 resultScope: 'all',
                 ratedOnly: false,
                 minPlies: 0,
-                reserveCredits: 0,
+                creditReserve: 0,
                 ...overrides,
             },
         },
@@ -113,6 +114,8 @@ function primeContext(serverCreditsBalance: number) {
 describe('auto-analysis backlog', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        prismaMock.creditLedgerEntry.findMany.mockResolvedValue([]);
+        prismaMock.analysisRun.findMany.mockResolvedValue([]);
         publishBackranqQueueMessageMock.mockResolvedValue({
             queued: true,
             messageId: 'message-1',
@@ -259,29 +262,104 @@ describe('auto-analysis backlog', () => {
         const backlog = await importBacklog();
         const policy = resolveAutoAnalysisPolicy(
             enabledPreferences({
-                dailyCap: 20,
-                monthlyCap: 40,
-                reserveCredits: 4,
+                dailyGameLimit: 20,
+                monthlyGameLimit: 40,
+                creditReserve: 4,
             })
         );
 
         const capacity = backlog.calculateAutoAnalysisCapacity({
             policy,
             account: {
-                ...account(10),
-                autoAnalysisDailyCap: 2,
-                autoAnalysisMonthlyCap: 3,
+                ...account(30),
+                autoAnalysisDailyGameLimit: 2,
+                autoAnalysisMonthlyGameLimit: 3,
             },
             ledger: [],
             now: new Date('2026-07-21T00:00:00Z'),
         });
 
         expect(capacity).toMatchObject({
-            reservableCredits: 2,
+            reservableCredits: 26,
+            reservableGames: 2,
             dailyRemaining: 2,
             monthlyRemaining: 3,
-            reserveCredits: 4,
+            creditReserve: 4,
         });
+    });
+
+    it('counts automatic capacity in games after applying the quality price', async () => {
+        const backlog = await importBacklog();
+        const thorough = backlog.calculateAutoAnalysisCapacity({
+            policy: resolveAutoAnalysisPolicy(
+                enabledPreferences({
+                    dailyGameLimit: 3,
+                    monthlyGameLimit: 3,
+                })
+            ),
+            account: account(30),
+            ledger: [],
+            now: new Date('2026-07-21T00:00:00Z'),
+        });
+        const standardPreferences = enabledPreferences({
+            dailyGameLimit: 3,
+            monthlyGameLimit: 3,
+        });
+        standardPreferences.analysisQuality = 'STANDARD';
+        const standard = backlog.calculateAutoAnalysisCapacity({
+            policy: resolveAutoAnalysisPolicy(standardPreferences),
+            account: account(21),
+            ledger: [],
+            now: new Date('2026-07-21T00:00:00Z'),
+        });
+
+        expect(thorough).toMatchObject({
+            creditsPerGame: 10,
+            reservableCredits: 30,
+            reservableGames: 3,
+        });
+        expect(standard).toMatchObject({
+            creditsPerGame: 7,
+            reservableCredits: 21,
+            reservableGames: 3,
+        });
+    });
+
+    it('uses the stored billing period start across short month boundaries', async () => {
+        const backlog = await importBacklog();
+        const capacity = backlog.calculateAutoAnalysisCapacity({
+            policy: resolveAutoAnalysisPolicy(
+                enabledPreferences({
+                    dailyGameLimit: 10,
+                    monthlyGameLimit: 2,
+                })
+            ),
+            account: {
+                ...account(20),
+                serverCreditsPeriodStart: new Date(
+                    '2026-02-28T12:00:00Z'
+                ),
+                serverCreditsRenewAt: new Date(
+                    '2026-03-31T12:00:00Z'
+                ),
+            },
+            ledger: [
+                {
+                    type: 'RESERVED',
+                    credits: 10,
+                    reason: 'auto-analysis',
+                    createdAt: new Date('2026-03-01T00:00:00Z'),
+                    analysisRunId: 'run-1',
+                    analysisRunCreatedAt: new Date(
+                        '2026-02-28T12:30:00Z'
+                    ),
+                },
+            ],
+            now: new Date('2026-03-30T12:00:00Z'),
+        });
+
+        expect(capacity.monthlyRemaining).toBe(1);
+        expect(capacity.reservableGames).toBe(1);
     });
 
     it('reports partial capacity as a truthful waiting lower bound with a reason', async () => {
@@ -299,7 +377,7 @@ describe('auto-analysis backlog', () => {
             .mockResolvedValueOnce(0);
         prismaMock.analyzedGame.findMany.mockResolvedValue(games);
         prismaMock.analysisJob.count.mockResolvedValue(0);
-        prismaMock.billingAccount.findUnique.mockResolvedValue(account(2));
+        prismaMock.billingAccount.findUnique.mockResolvedValue(account(20));
         prismaMock.creditLedgerEntry.groupBy.mockResolvedValue([]);
         const backlog = await importBacklog();
 
@@ -321,14 +399,14 @@ describe('auto-analysis backlog', () => {
             id: `game-${index}`,
         }));
         prismaMock.user.findUnique.mockResolvedValue({
-            preferences: enabledPreferences({ reserveCredits: 4 }),
+            preferences: enabledPreferences({ creditReserve: 4 }),
             lichessUsername: 'Ada',
             chesscomUsername: null,
         });
         prismaMock.analyzedGame.count.mockResolvedValue(5);
         prismaMock.analyzedGame.findMany.mockResolvedValue(games);
         prismaMock.analysisJob.count.mockResolvedValue(0);
-        prismaMock.billingAccount.findUnique.mockResolvedValue(account(6));
+        prismaMock.billingAccount.findUnique.mockResolvedValue(account(24));
         prismaMock.creditLedgerEntry.groupBy.mockResolvedValue([]);
         const backlog = await importBacklog();
 

@@ -81,10 +81,10 @@ export default async function SettingsPage() {
                             billingAccount.serverCreditsBalance,
                         monthlyServerCreditsLimit:
                             billingAccount.monthlyServerCreditsLimit,
-                        autoAnalysisMonthlyCap:
-                            billingAccount.autoAnalysisMonthlyCap,
-                        autoAnalysisDailyCap:
-                            billingAccount.autoAnalysisDailyCap,
+                        autoAnalysisMonthlyGameLimit:
+                            billingAccount.autoAnalysisMonthlyGameLimit,
+                        autoAnalysisDailyGameLimit:
+                            billingAccount.autoAnalysisDailyGameLimit,
                         stripeSubscriptionStatus:
                             billingAccount.stripeSubscriptionStatus,
                         stripeCurrentPeriodEnd:

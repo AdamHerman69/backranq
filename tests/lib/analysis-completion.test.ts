@@ -220,4 +220,31 @@ describe('owner-scoped analysis persistence', () => {
         ).toThrow(/session changed/i);
         backgroundAnalysis.setOwner(null);
     });
+
+    it('does not merge a new browser batch into different active settings', () => {
+        vi.stubGlobal('fetch', vi.fn(() => new Promise(() => undefined)));
+        backgroundAnalysis.setOwner('user-a');
+        backgroundAnalysis.enqueueGameDbIdsWithOptions('user-a', ['game-a'], {
+            analysisDefaults: {
+                analysisQuality: 'STANDARD',
+                trainingCoveragePreset: 'ALL_CONFIRMED',
+                trainingGradingTolerance: 'PRACTICAL',
+            },
+        });
+
+        expect(() =>
+            backgroundAnalysis.enqueueGameDbIdsWithOptions(
+                'user-a',
+                ['game-b'],
+                {
+                    analysisDefaults: {
+                        analysisQuality: 'THOROUGH',
+                        trainingCoveragePreset: 'ALL_CONFIRMED',
+                        trainingGradingTolerance: 'PRACTICAL',
+                    },
+                }
+            )
+        ).toThrow(/already running with different settings/i);
+        backgroundAnalysis.setOwner(null);
+    });
 });

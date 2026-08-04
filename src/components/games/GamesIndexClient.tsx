@@ -61,7 +61,7 @@ export function GamesIndexClient({
     const selectedCount = selectedIds.length;
     const maximumQueueable = Math.min(
         selectedCount,
-        serverAnalysisCapacity.reservableCredits
+        serverAnalysisCapacity.reservableGames
     );
     const selectedSummary = useMemo(() => {
         const selectedIdSet = new Set(selectedIds);
