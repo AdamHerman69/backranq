@@ -1,10 +1,11 @@
-import { Resend } from 'resend';
 import webpush from 'web-push';
+import { render } from 'react-email';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import NotificationEmail from '@/emails/NotificationEmail';
 import { notificationCopy } from './contracts';
 import { createUnsubscribeToken } from './tokens';
+import { sendSmtp2GoEmail } from './smtp2go';
 import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
 
 const DELIVERY_LEASE_MS = 5 * 60_000;
@@ -36,7 +37,7 @@ function appUrl() {
 }
 
 function emailConfigured() {
-    return !!process.env.RESEND_API_KEY && !!process.env.BACKRANQ_EMAIL_FROM;
+    return !!process.env.SMTP2GO_API_KEY && !!process.env.BACKRANQ_EMAIL_FROM;
 }
 
 function pushConfigured() {
@@ -45,12 +46,6 @@ function pushConfigured() {
         process.env.VAPID_PRIVATE_KEY &&
         process.env.VAPID_SUBJECT
     );
-}
-
-function resendClient() {
-    const key = process.env.RESEND_API_KEY;
-    if (!key) throw new Error('RESEND_API_KEY is not configured');
-    return new Resend(key);
 }
 
 function configureWebPush() {
@@ -188,31 +183,42 @@ async function deliverEmail(delivery: HydratedDelivery) {
             ? { Importance: 'low', 'X-Priority': '5' }
             : {}),
     };
-    const response = await resendClient().emails.send(
-        {
-            from,
-            to: recipient,
-            subject: copy.title,
-            react: NotificationEmail({
-                preview: copy.body,
-                heading: copy.title,
-                body: copy.body,
-                actionLabel:
-                    delivery.notification.type === 'PRACTICE_READY'
-                        ? 'Start practicing'
-                        : 'Open Backranq',
-                actionUrl,
-                settingsUrl: `${base}/settings#notifications`,
-                unsubscribeUrl,
-            }),
-            headers: Object.keys(headers).length > 0 ? headers : undefined,
-        },
-        { idempotencyKey: `notification-${delivery.id}` }
+    const actionLabel =
+        delivery.notification.type === 'PRACTICE_READY'
+            ? 'Start practicing'
+            : 'Open Backranq';
+    const html = await render(
+        NotificationEmail({
+            preview: copy.body,
+            heading: copy.title,
+            body: copy.body,
+            actionLabel,
+            actionUrl,
+            settingsUrl: `${base}/settings#notifications`,
+            unsubscribeUrl,
+        })
     );
-    if (response.error || !response.data?.id) {
-        throw new Error(response.error?.message ?? 'Email provider returned no id');
-    }
-    return response.data.id;
+    const text = [
+        copy.title,
+        '',
+        copy.body,
+        '',
+        `${actionLabel}: ${actionUrl}`,
+        '',
+        `Notification settings: ${base}/settings#notifications`,
+        ...(unsubscribeUrl ? ['', `Unsubscribe: ${unsubscribeUrl}`] : []),
+    ].join('\n');
+    return sendSmtp2GoEmail({
+        from,
+        to: recipient,
+        subject: copy.title,
+        html,
+        text,
+        headers: {
+            ...headers,
+            'X-Backranq-Delivery-Id': delivery.id,
+        },
+    });
 }
 
 async function deliverWebPush(delivery: HydratedDelivery) {

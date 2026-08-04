@@ -29,32 +29,42 @@ as important email alerts.
 
 ## Provider setup
 
-1. In Resend, add a dedicated sending subdomain such as
-   `updates.example.com`. Add the SPF and DKIM records shown by Resend to DNS
-   and wait until the domain is verified. DMARC is recommended as a follow-up.
-2. In the Vercel project, install the Resend Marketplace integration. It creates
-   `RESEND_API_KEY`. Alternatively, create a sending API key in Resend and add
-   it manually under **Project → Settings → Environment Variables**.
-3. Add these Production environment variables in Vercel:
+SMTP2GO does not currently provide a native Vercel Marketplace integration.
+Connect it with a narrowly scoped API key stored in Vercel instead:
 
+1. Create an SMTP2GO account, then open **Sending → Verified Senders → Sender
+   Domains** and add the domain used in the From address. Publish the DNS records
+   shown by SMTP2GO and wait until the sender domain is verified.
+2. Open **Sending → API Keys**, create a dedicated `Backranq Production` key,
+   and grant it only the `/email/send` permission.
+3. In **Vercel project → Settings → Environment Variables**, add these
+   Production variables:
+
+   - `SMTP2GO_API_KEY=<dedicated API key from step 2>`
    - `BACKRANQ_EMAIL_FROM=Backranq <notifications@updates.example.com>`
    - `BACKRANQ_APP_URL=https://app.example.com`
    - `NOTIFICATION_UNSUBSCRIBE_SECRET=<dedicated random secret>`
-   - `RESEND_WEBHOOK_SECRET=<copied in step 5>`
+   - `SMTP2GO_WEBHOOK_SECRET=<another dedicated random secret>`
 
    Mark secrets as sensitive. Existing `CRON_SECRET` and
    `BACKRANQ_ADMIN_API_SECRET` must also be configured.
 4. Deploy the application and its notification database migration so the
    production webhook URL exists.
-5. In **Resend → Webhooks → Add Webhook**, register
-   `https://app.example.com/api/webhooks/resend` and select
-   `email.delivered`, `email.bounced`, `email.complained`,
-   `email.suppressed`, and `email.failed`. Copy its signing secret into
-   `RESEND_WEBHOOK_SECRET` in Vercel, then redeploy because environment-variable
-   changes apply only to new deployments.
-6. Send one real practice-ready test and confirm the email in Resend Events and
-   the webhook request in the Webhooks event list.
-7. Web Push is independent of Resend. If it is wanted, generate VAPID keys with
+5. In **SMTP2GO → Settings → Webhooks → Manage Webhooks**, add:
+
+   - URL: `https://app.example.com/api/webhooks/smtp2go`
+   - Authorization: `Bearer`, with the exact value stored in
+     `SMTP2GO_WEBHOOK_SECRET`
+   - Output type: `JSON`
+   - User: the API key created for Backranq
+   - Events: `Delivered`, `Bounce`, `Spam`, `Reject`, and `Unsubscribe`
+
+   Leave SMTP2GO's optional unsubscribe footer disabled. Backranq already adds
+   its own visible link and one-click unsubscribe headers.
+6. Use **Test this webhook**, then send one real practice-ready test. Confirm the
+   email under SMTP2GO **Reports → Activity** and the callback in the webhook
+   history.
+7. Web Push is independent of SMTP2GO. If it is wanted, generate VAPID keys with
    `pnpm exec web-push generate-vapid-keys` and set the three VAPID variables
    from `env.local.example`.
 
