@@ -259,4 +259,119 @@ describe('notification email delivery safety', () => {
             expect.any(Object)
         );
     });
+
+    it('schedules a delayed queue sweep for the next future delivery', async () => {
+        prismaMock.notificationDelivery.updateMany.mockResolvedValue({ count: 0 });
+        prismaMock.notificationDelivery.findMany.mockResolvedValue([]);
+        prismaMock.notificationDelivery.count.mockResolvedValue(0);
+        prismaMock.notificationDelivery.findFirst.mockReset();
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
+            scheduledFor: new Date('2026-08-04T11:00:00.000Z'),
+        });
+        const { dispatchPendingNotificationDeliveries } = await importDelivery();
+
+        await dispatchPendingNotificationDeliveries();
+
+        expect(publishBackranqQueueMessageMock).toHaveBeenCalledWith(
+            {
+                type: 'notification-sweep',
+                requestedAt: '2026-08-04T10:00:00.000Z',
+            },
+            {
+                idempotencyKey:
+                    'notification-sweep:final:2026-08-04T11:00:00.000Z',
+                delaySeconds: 3600,
+                retentionSeconds: 604800,
+            }
+        );
+    });
+
+    it('deduplicates final sweeps independently of the dispatcher milliseconds', async () => {
+        prismaMock.notificationDelivery.updateMany.mockResolvedValue({ count: 0 });
+        prismaMock.notificationDelivery.findMany.mockResolvedValue([]);
+        prismaMock.notificationDelivery.count.mockResolvedValue(0);
+        prismaMock.notificationDelivery.findFirst.mockReset();
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
+            scheduledFor: new Date('2026-08-04T11:00:00.000Z'),
+        });
+        const { dispatchPendingNotificationDeliveries } = await importDelivery();
+
+        await dispatchPendingNotificationDeliveries();
+        vi.setSystemTime(new Date('2026-08-04T10:00:00.500Z'));
+        await dispatchPendingNotificationDeliveries();
+
+        const sweepOptions = publishBackranqQueueMessageMock.mock.calls
+            .filter(([message]) => message.type === 'notification-sweep')
+            .map(([, options]) => options);
+        expect(sweepOptions).toHaveLength(2);
+        expect(sweepOptions[0].idempotencyKey).toBe(
+            'notification-sweep:final:2026-08-04T11:00:00.000Z'
+        );
+        expect(sweepOptions[1].idempotencyKey).toBe(
+            sweepOptions[0].idempotencyKey
+        );
+    });
+
+    it('caps long sweep delays below queue retention and chains another wake-up', async () => {
+        prismaMock.notificationDelivery.updateMany.mockResolvedValue({ count: 0 });
+        prismaMock.notificationDelivery.findMany.mockResolvedValue([]);
+        prismaMock.notificationDelivery.count.mockResolvedValue(0);
+        prismaMock.notificationDelivery.findFirst.mockReset();
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
+            scheduledFor: new Date('2026-08-14T10:00:00.000Z'),
+        });
+        const { dispatchPendingNotificationDeliveries } = await importDelivery();
+
+        await dispatchPendingNotificationDeliveries();
+
+        expect(publishBackranqQueueMessageMock).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'notification-sweep' }),
+            {
+                idempotencyKey:
+                    'notification-sweep:checkpoint:2026-08-14T10:00:00.000Z:2026-08-04',
+                delaySeconds: 518400,
+                retentionSeconds: 604800,
+            }
+        );
+    });
+
+    it('schedules a new sweep when a practice email moves to its digest hour', async () => {
+        prismaMock.notificationPreference.findUnique.mockResolvedValue({
+            ...preference,
+            digestHour: 11,
+        });
+        prismaMock.notificationDelivery.findFirst.mockReset();
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
+            scheduledFor: new Date('2026-08-04T11:00:00.000Z'),
+        });
+        const { processNotificationDelivery } = await importDelivery();
+
+        await expect(processNotificationDelivery('delivery-1')).resolves.toEqual({
+            status: 'RESCHEDULED',
+        });
+        expect(publishBackranqQueueMessageMock).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'notification-sweep' }),
+            expect.objectContaining({ delaySeconds: 3600 })
+        );
+    });
+
+    it('schedules a new sweep after a retryable provider failure', async () => {
+        prismaMock.notificationDelivery.findFirst.mockReset();
+        prismaMock.notificationDelivery.findFirst
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({ id: 'delivery-1' })
+            .mockResolvedValueOnce({
+                scheduledFor: new Date('2026-08-04T10:02:00.000Z'),
+            });
+        sendSmtp2GoEmailMock.mockRejectedValue(new Error('Temporary failure'));
+        const { processNotificationDelivery } = await importDelivery();
+
+        await expect(processNotificationDelivery('delivery-1')).rejects.toThrow(
+            'Temporary failure'
+        );
+        expect(publishBackranqQueueMessageMock).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'notification-sweep' }),
+            expect.objectContaining({ delaySeconds: 120 })
+        );
+    });
 });

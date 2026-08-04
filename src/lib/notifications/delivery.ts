@@ -17,6 +17,8 @@ const MAX_DELIVERY_ATTEMPTS = 5;
 const DEFAULT_SMTP2GO_DAILY_SEND_LIMIT = 30;
 const DEFAULT_SMTP2GO_EMAILS_PER_DISPATCH = 20;
 const DEFAULT_SMTP2GO_TRANSACTIONAL_RESERVE = 5;
+const MAX_NOTIFICATION_SWEEP_DELAY_SECONDS = 6 * 24 * 60 * 60;
+const NOTIFICATION_SWEEP_RETENTION_SECONDS = 7 * 24 * 60 * 60;
 const PRIORITY_EMAIL_TYPES = new Set<NotificationType>([
     'LOW_CREDITS',
     'BILLING_ACTION_REQUIRED',
@@ -184,7 +186,48 @@ export async function dispatchPendingNotificationDeliveries(limit = 50) {
         }
         results.push({ deliveryId: delivery.id, queued: published.queued });
     }
+    await scheduleNextNotificationSweep(now);
     return results;
+}
+
+async function scheduleNextNotificationSweep(now: Date) {
+    const channels = [
+        ...(emailConfigured() ? (['EMAIL'] as const) : []),
+        ...(pushConfigured() ? (['WEB_PUSH'] as const) : []),
+    ];
+    if (channels.length === 0) return null;
+    const next = await prisma.notificationDelivery.findFirst({
+        where: {
+            status: 'PENDING',
+            channel: { in: channels },
+            scheduledFor: { gt: now },
+        },
+        orderBy: [{ scheduledFor: 'asc' }, { createdAt: 'asc' }],
+        select: { scheduledFor: true },
+    });
+    if (!next) return null;
+    const requestedDelaySeconds = Math.max(
+        1,
+        Math.ceil((next.scheduledFor.getTime() - now.getTime()) / 1_000)
+    );
+    const delaySeconds = Math.min(
+        requestedDelaySeconds,
+        MAX_NOTIFICATION_SWEEP_DELAY_SECONDS
+    );
+    const finalHop = requestedDelaySeconds <= MAX_NOTIFICATION_SWEEP_DELAY_SECONDS;
+    const idempotencyKey = finalHop
+        ? `notification-sweep:final:${next.scheduledFor.toISOString()}`
+        : `notification-sweep:checkpoint:${next.scheduledFor.toISOString()}:${now
+              .toISOString()
+              .slice(0, 10)}`;
+    return publishBackranqQueueMessage(
+        { type: 'notification-sweep', requestedAt: now.toISOString() },
+        {
+            idempotencyKey,
+            delaySeconds,
+            retentionSeconds: NOTIFICATION_SWEEP_RETENTION_SECONDS,
+        }
+    );
 }
 
 export async function processNotificationDelivery(deliveryId: string) {
@@ -253,6 +296,7 @@ export async function processNotificationDelivery(deliveryId: string) {
                 },
             });
             if (transition.count === 0) return { status: 'SKIPPED' as const };
+            await scheduleNextNotificationSweep(new Date());
             return { status: 'RESCHEDULED' as const };
         }
         if (error instanceof Smtp2GoQuotaError) {
@@ -266,6 +310,7 @@ export async function processNotificationDelivery(deliveryId: string) {
                 },
             });
             if (transition.count === 0) return { status: 'SKIPPED' as const };
+            await scheduleNextNotificationSweep(new Date());
             return { status: 'RESCHEDULED' as const };
         }
         const ambiguousEmail =
@@ -284,6 +329,7 @@ export async function processNotificationDelivery(deliveryId: string) {
             },
         });
         if (transition.count === 0) return { status: 'SKIPPED' as const };
+        if (!terminal) await scheduleNextNotificationSweep(new Date());
         throw error;
     }
 }

@@ -86,8 +86,11 @@ configuration is completed.
 
 ## Processing
 
-The hourly `/api/cron/notifications` job creates due weekly summaries and wakes
-pending deliveries. Vercel Queue processes each delivery independently. The
+The daily `/api/cron/notifications` job is a reconciliation fallback that
+creates due weekly summaries and wakes pending deliveries within the Hobby cron
+limit. Normal future delivery times schedule a delayed Vercel Queue sweep, so
+timezone-based digest hours do not wait for the next daily cron. Vercel Queue
+processes each delivery independently. The
 database claim lease prevents normal concurrent retries. SMTP2GO does not offer
 a provider idempotency key for this endpoint, so any email whose request times
 out or loses its response is marked failed instead of retried and risking a
@@ -100,7 +103,7 @@ SMTP2GO's email ID and the requested `X-Backranq-Delivery-Id` callback field,
 apply monotonic status precedence, and suppress future email after a hard bounce
 or spam complaint.
 
-The same hourly job reconciles recent terminal analysis/sync jobs and newly
+The same daily fallback job reconciles recent terminal analysis/sync jobs and newly
 created users into deduplicated notifications. This repairs the outbox if a
 post-transition event write failed without making notification availability a
 precondition for login or for reporting completed core work.
