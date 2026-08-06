@@ -1,51 +1,25 @@
 'use client';
 
 import {
-    useCallback,
     useEffect,
-    useMemo,
     useRef,
     useState,
-    type CSSProperties,
     type ReactNode,
 } from 'react';
-import { Chess, type Square } from 'chess.js';
-import { ExternalLink, FlipHorizontal2, Loader2 } from 'lucide-react';
-import { Chessboard } from 'react-chessboard';
+import { FlipHorizontal2, Loader2 } from 'lucide-react';
 
+import { PostMoveStory } from '@/components/training/PostMoveStory';
+import { PuzzleBoard } from '@/components/training/PuzzleBoard';
 import { ModalDialog } from '@/components/ui/ModalDialog';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { usePublicPuzzleSession } from '@/lib/hooks/usePublicPuzzleSession';
 import type { LandingPuzzleDto } from '@/lib/onboarding/contracts';
-import {
-    lessonLabel,
-    moveLabel,
-    moveLineLabels,
-    sourceLabel,
-    themeLabel,
-} from '@/lib/training/presentation';
+import { legalMoveFromInput } from '@/lib/training/boardInput';
+import { bestMoveReviewArrows } from '@/lib/training/boardPresentation';
 import { feedbackForTrainingState } from '@/lib/training/trainerState';
 import { cn } from '@/lib/utils';
-
-type PromotionPiece = 'q' | 'r' | 'b' | 'n';
-type PendingPromotion = {
-    from: Square;
-    to: Square;
-    choices: PromotionPiece[];
-};
-
-function safeSourceUrl(value: string | null): string | null {
-    if (!value) return null;
-    try {
-        const url = new URL(value);
-        return url.protocol === 'https:' ? url.toString() : null;
-    } catch {
-        return null;
-    }
-}
 
 function feedbackClass(tone: 'neutral' | 'positive' | 'warning' | 'negative') {
     if (tone === 'positive') {
@@ -74,9 +48,6 @@ export function PublicPuzzlePlayer({
     compactLayout?: boolean;
 }) {
     const session = usePublicPuzzleSession(puzzle.prompt);
-    const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
-    const [pendingPromotion, setPendingPromotion] =
-        useState<PendingPromotion | null>(null);
     const [flipped, setFlipped] = useState(false);
     const [revealOpen, setRevealOpen] = useState(false);
     const [keyboardMove, setKeyboardMove] = useState('');
@@ -84,107 +55,13 @@ export function PublicPuzzlePlayer({
     const terminalReportedRef = useRef(false);
 
     useEffect(() => {
-        terminalReportedRef.current = false;
-        setSelectedSquare(null);
-        setPendingPromotion(null);
-        setRevealOpen(false);
-        setKeyboardMove('');
-        setKeyboardError(null);
-    }, [puzzle.id]);
-
-    useEffect(() => {
         if (!session.terminal || terminalReportedRef.current) return;
         terminalReportedRef.current = true;
         onTerminal?.();
     }, [onTerminal, session.terminal]);
 
-    const legalTargets = useMemo(() => {
-        if (!selectedSquare || !session.canMove) return new Set<Square>();
-        try {
-            const chess = new Chess(session.positionFen);
-            return new Set(
-                chess
-                    .moves({ square: selectedSquare, verbose: true })
-                    .map((move) => move.to as Square)
-            );
-        } catch {
-            return new Set<Square>();
-        }
-    }, [selectedSquare, session.canMove, session.positionFen]);
-
-    const squareStyles = useMemo(() => {
-        const styles: Record<string, CSSProperties> = {};
-        if (selectedSquare) {
-            styles[selectedSquare] = {
-                backgroundColor: 'rgba(59, 130, 246, 0.32)',
-            };
-        }
-        for (const square of legalTargets) {
-            styles[square] = {
-                background:
-                    'radial-gradient(circle, rgba(59,130,246,0.52) 0 18%, transparent 20%)',
-            };
-        }
-        return styles;
-    }, [legalTargets, selectedSquare]);
-
-    const reviewArrows = useMemo(() => {
-        const move = session.review?.bestMoveUci.trim().toLowerCase();
-        if (!move || move.length < 4) return [];
-        return [
-            {
-                startSquare: move.slice(0, 2) as Square,
-                endSquare: move.slice(2, 4) as Square,
-                color: 'rgba(16, 185, 129, 0.82)',
-            },
-        ];
-    }, [session.review?.bestMoveUci]);
-
-    const submitLegalMove = useCallback(
-        (from: Square, to: Square, promotion?: PromotionPiece) => {
-            if (!session.canMove) return false;
-            try {
-                const chess = new Chess(session.positionFen);
-                const move = chess.move({ from, to, promotion });
-                if (!move) return false;
-                setSelectedSquare(null);
-                setPendingPromotion(null);
-                onAttemptStarted?.();
-                void session.submitMove({
-                    moveUci: `${move.from}${move.to}${move.promotion ?? ''}`,
-                    fenAfterMove: chess.fen(),
-                });
-                return true;
-            } catch {
-                return false;
-            }
-        },
-        [onAttemptStarted, session]
-    );
-
-    const playOrPromote = useCallback(
-        (from: Square, to: Square) => {
-            if (!session.canMove) return false;
-            try {
-                const chess = new Chess(session.positionFen);
-                const choices = Array.from(
-                    new Set(
-                        chess
-                            .moves({ square: from, verbose: true })
-                            .filter((move) => move.to === to && move.promotion)
-                            .map((move) => move.promotion as PromotionPiece)
-                    )
-                );
-                if (choices.length > 0) {
-                    setPendingPromotion({ from, to, choices });
-                    return true;
-                }
-            } catch {
-                return false;
-            }
-            return submitLegalMove(from, to);
-        },
-        [session.canMove, session.positionFen, submitLegalMove]
+    const reviewArrows = bestMoveReviewArrows(
+        session.review?.bestMoveUci
     );
 
     const feedback = session.reviewFallback
@@ -196,34 +73,20 @@ export function PublicPuzzlePlayer({
               phase: session.phase,
               grade: session.grade,
           });
-    const boardFen = session.review ? puzzle.prompt.fen : session.positionFen;
-    const sourceUrl = safeSourceUrl(puzzle.context.sourceUrl);
-
     const submitKeyboardMove = () => {
         if (!session.canMove || !keyboardMove.trim()) return;
-        try {
-            const chess = new Chess(session.positionFen);
-            const notation = keyboardMove.trim();
-            const normalized = notation.toLowerCase();
-            const move = /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(normalized)
-                ? chess.move({
-                      from: normalized.slice(0, 2),
-                      to: normalized.slice(2, 4),
-                      promotion: normalized.slice(4, 5) || undefined,
-                  })
-                : chess.move(notation);
-            if (!move) throw new Error('Illegal move');
-            setKeyboardMove('');
-            setKeyboardError(null);
-            setSelectedSquare(null);
-            onAttemptStarted?.();
-            void session.submitMove({
-                moveUci: `${move.from}${move.to}${move.promotion ?? ''}`,
-                fenAfterMove: chess.fen(),
-            });
-        } catch {
+        const move = legalMoveFromInput(
+            session.positionFen ?? puzzle.prompt.fen,
+            keyboardMove
+        );
+        if (!move) {
             setKeyboardError('Enter a legal move such as Qf8 or f7f8.');
+            return;
         }
+        setKeyboardMove('');
+        setKeyboardError(null);
+        onAttemptStarted?.();
+        void session.submitMove(move);
     };
 
     return (
@@ -273,67 +136,20 @@ export function PublicPuzzlePlayer({
                 )}
             >
                 <div className="min-w-0">
-                    <div
-                        className="rounded-xl border bg-card p-1 shadow-sm sm:p-2"
-                        role="group"
-                        aria-label={`${puzzle.prompt.sideToMove === 'w' ? 'White' : 'Black'} to move — find the best move`}
-                    >
-                        <Chessboard
-                            options={{
-                                position: boardFen,
-                                boardOrientation:
-                                    (puzzle.prompt.sideToMove === 'w') !== flipped
-                                        ? 'white'
-                                        : 'black',
-                                allowDragging: session.canMove,
-                                allowDrawingArrows: false,
-                                arrows: reviewArrows,
-                                squareStyles,
-                                canDragPiece: ({ square }) => {
-                                    if (!square || !session.canMove) return false;
-                                    try {
-                                        const chess = new Chess(session.positionFen);
-                                        return (
-                                            chess.get(square as Square)?.color ===
-                                            chess.turn()
-                                        );
-                                    } catch {
-                                        return false;
-                                    }
-                                },
-                                onSquareClick: ({ square }) => {
-                                    if (!square || !session.canMove) return;
-                                    const target = square as Square;
-                                    if (
-                                        selectedSquare &&
-                                        legalTargets.has(target)
-                                    ) {
-                                        playOrPromote(selectedSquare, target);
-                                        return;
-                                    }
-                                    try {
-                                        const chess = new Chess(session.positionFen);
-                                        setSelectedSquare(
-                                            chess.get(target)?.color === chess.turn()
-                                                ? target
-                                                : null
-                                        );
-                                    } catch {
-                                        setSelectedSquare(null);
-                                    }
-                                },
-                                onPieceDrop: session.canMove
-                                    ? ({ sourceSquare, targetSquare }) =>
-                                          targetSquare
-                                              ? playOrPromote(
-                                                    sourceSquare as Square,
-                                                    targetSquare as Square
-                                                )
-                                              : false
-                                    : undefined,
-                            }}
-                        />
-                    </div>
+                    <PuzzleBoard
+                        positionFen={
+                            session.displayFen ?? puzzle.prompt.fen
+                        }
+                        sideToMove={puzzle.prompt.sideToMove}
+                        flipped={flipped}
+                        canMove={session.canMove}
+                        arrows={reviewArrows}
+                        ariaLabel={`${puzzle.prompt.sideToMove === 'w' ? 'White' : 'Black'} to move — find the best move`}
+                        onMove={(move) => {
+                            onAttemptStarted?.();
+                            void session.submitMove(move);
+                        }}
+                    />
                     <div
                         className={cn(
                             'mt-3 min-h-11 rounded-lg border px-3 py-2.5 text-sm',
@@ -421,128 +237,20 @@ export function PublicPuzzlePlayer({
             </div>
 
             {session.review ? (
-                <Card role="region" aria-label="Position review">
-                    <CardHeader className="pb-3">
-                        <CardTitle className="text-base">Position review</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4 text-sm">
-                        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                            <div>
-                                <dt className="text-muted-foreground">Your move</dt>
-                                <dd className="mt-1 font-medium">
-                                    {moveLabel(
-                                        puzzle.prompt.fen,
-                                        session.review.submittedMoveUci
-                                    )}
-                                </dd>
-                            </div>
-                            <div>
-                                <dt className="text-muted-foreground">Best move</dt>
-                                <dd className="mt-1 font-medium">
-                                    {moveLabel(
-                                        puzzle.prompt.fen,
-                                        session.review.bestMoveUci
-                                    )}
-                                </dd>
-                            </div>
-                            {puzzle.context.kind !== 'WARMUP' ? (
-                                <div>
-                                    <dt className="text-muted-foreground">
-                                        Move played in the game
-                                    </dt>
-                                    <dd className="mt-1 font-medium">
-                                        {moveLabel(
-                                            puzzle.prompt.fen,
-                                            session.review.originalMoveUci
-                                        )}
-                                    </dd>
-                                </div>
-                            ) : null}
-                        </dl>
-                        <div>
-                            <div className="text-muted-foreground">
-                                Best continuation
-                            </div>
-                            <p className="mt-1 font-medium">
-                                {moveLineLabels(
-                                    puzzle.prompt.fen,
-                                    session.review.bestLineUci
-                                ).join(' ') || 'No continuation needed.'}
-                            </p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                            {session.review.sourceKinds.map((value) => (
-                                <Badge key={value} variant="secondary">
-                                    {sourceLabel(value)}
-                                </Badge>
-                            ))}
-                            {session.review.lessonKinds.map((value) => (
-                                <Badge key={value} variant="outline">
-                                    {lessonLabel(value)}
-                                </Badge>
-                            ))}
-                            {session.review.themes.map((value) => (
-                                <Badge key={value} variant="outline">
-                                    {themeLabel(value)}
-                                </Badge>
-                            ))}
-                        </div>
-                        {sourceUrl ? (
-                            <a
-                                href={sourceUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1 font-medium underline underline-offset-4"
-                            >
-                                Open the public source game
-                                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                            </a>
-                        ) : puzzle.context.kind === 'WARMUP' ? (
-                            <p className="text-xs text-muted-foreground">
-                                This is a curated warm-up, not a claimed celebrity game.
-                            </p>
-                        ) : null}
-                    </CardContent>
-                </Card>
+                <PostMoveStory
+                    review={session.review}
+                    rootFen={puzzle.prompt.fen}
+                    grade={session.grade}
+                    showGameMove={puzzle.context.kind !== 'WARMUP'}
+                    sourceUrl={puzzle.context.sourceUrl}
+                    sourceNotice={
+                        puzzle.context.kind === 'WARMUP'
+                            ? 'This is a curated warm-up, not a claimed celebrity game.'
+                            : null
+                    }
+                    compact
+                />
             ) : null}
-
-            <ModalDialog
-                open={pendingPromotion !== null}
-                onOpenChange={(open) => {
-                    if (!open) setPendingPromotion(null);
-                }}
-                title="Promote pawn to"
-                description="Choose the piece before the move is checked."
-            >
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    {(
-                        [
-                            ['q', 'Queen'],
-                            ['r', 'Rook'],
-                            ['b', 'Bishop'],
-                            ['n', 'Knight'],
-                        ] as const
-                    )
-                        .filter(([piece]) => pendingPromotion?.choices.includes(piece))
-                        .map(([piece, label]) => (
-                            <Button
-                                key={piece}
-                                type="button"
-                                variant="outline"
-                                onClick={() => {
-                                    if (!pendingPromotion) return;
-                                    submitLegalMove(
-                                        pendingPromotion.from,
-                                        pendingPromotion.to,
-                                        piece
-                                    );
-                                }}
-                            >
-                                {label}
-                            </Button>
-                        ))}
-                </div>
-            </ModalDialog>
 
             <ModalDialog
                 open={revealOpen}
