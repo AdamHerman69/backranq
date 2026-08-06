@@ -80,7 +80,7 @@ describe('matched dynamic grading evidence', () => {
         });
         expect(gradeTrainingMove(metrics, policy)).toEqual({
             status: 'GRADED',
-            grade: 'GOOD',
+            grade: 'STRONG',
             accepted: true,
         });
     });

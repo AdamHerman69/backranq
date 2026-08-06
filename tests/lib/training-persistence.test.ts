@@ -24,6 +24,20 @@ function solution(bestMoveUci = 'e2e4'): SolutionRevisionInput {
         trainable: true,
         bestMoveUci,
         acceptedMovesUci: [bestMoveUci],
+        acceptanceFrontier: {
+            version: 1 as const,
+            status: 'STABLE' as const,
+            targetCutoffCp: 100,
+            effectiveCutoffCp: 70,
+            boundaryGapCp: 40,
+            moves: [
+                {
+                    moveUci: bestMoveUci,
+                    tier: 'BEST' as const,
+                },
+            ],
+            firstRejectedMoveUci: null,
+        },
         moveAssessments: [
             {
                 positionKey: rootAssessmentKey,

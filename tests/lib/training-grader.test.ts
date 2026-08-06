@@ -36,7 +36,7 @@ describe('gradeTrainingMove', () => {
     it('accepts a good equivalent without requiring exact bestmove equality', () => {
         expect(gradeTrainingMove(metrics({ bestGapCp: 35 }), policy)).toEqual({
             status: 'GRADED',
-            grade: 'GOOD',
+            grade: 'STRONG',
             accepted: true,
         });
     });
@@ -44,7 +44,7 @@ describe('gradeTrainingMove', () => {
     it('reports a meaningful improvement separately from success', () => {
         expect(
             gradeTrainingMove(
-                metrics({ bestGapCp: 90, recoveredCp: 60 }),
+                metrics({ bestGapCp: 150, recoveredCp: 60 }),
                 policy
             )
         ).toEqual({

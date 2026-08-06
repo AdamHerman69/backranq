@@ -23,8 +23,12 @@ import {
     processNotificationDelivery,
 } from '@/lib/notifications/delivery';
 import { runNotificationMaintenance } from '@/lib/notifications/campaigns';
+import { processWeeklyMasterRun } from '@/lib/master/pipelineRunner';
 
 export async function processBackranqQueueMessage(message: BackranqQueueMessage) {
+    if (message.type === 'weekly-master-run') {
+        return processWeeklyMasterRun(message.runId);
+    }
     if (message.type === 'notification-delivery') {
         return processNotificationDelivery(message.deliveryId);
     }

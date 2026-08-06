@@ -33,23 +33,33 @@ const promptRow = {
     currentSolutionRevision: {
         bestMoveUci: 'e2e3',
         acceptedMovesUci: ['e2e3'],
-        solutionShape: 'OPEN',
+        acceptanceFrontier: {
+            version: 1,
+            status: 'STABLE',
+            targetCutoffCp: 100,
+            effectiveCutoffCp: 70,
+            boundaryGapCp: 40,
+            moves: [{ moveUci: 'e2e3', tier: 'BEST' }],
+            firstRejectedMoveUci: 'e2f2',
+        },
+        solutionShape: 'UNIQUE',
         bestLine: ['e2e3'],
         scoreAtStart: { kind: 'cp', cp: 80, pov: 'WHITE' },
         gradingPolicy: {
-            version: 2,
+            version: 3,
             pov: 'TRAINING_SIDE',
             best: { maxCpLoss: 20, maxWinChanceLoss: 0.03 },
+            strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
             success: {
-                maxCpLoss: 80,
-                maxWinChanceLoss: 0.08,
+                maxCpLoss: 100,
+                maxWinChanceLoss: 0.1,
                 preserveOutcome: true,
             },
             improvement: {
                 minRecoveredCp: 40,
                 minRecoveredWinChance: 0.05,
             },
-            unknownMove: 'DYNAMIC',
+            unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
             matePolicy: 'EXACT',
             tablebasePolicy: 'EXACT',
         },
@@ -58,6 +68,7 @@ const promptRow = {
             ply: 0,
             role: 'USER',
             acceptedMovesUci: ['e2e3'],
+            alternativesComplete: true,
             branches: [
                 {
                     moveUci: 'e2e3',
@@ -66,6 +77,8 @@ const promptRow = {
                         fen: '8/8/8/8/8/4K3/8/6k1 b - - 1 1',
                         ply: 1,
                         role: 'TERMINAL',
+                        acceptedMovesUci: [],
+                        alternativesComplete: true,
                         branches: [],
                     },
                 },
@@ -154,12 +167,51 @@ describe('canonical training API boundary', () => {
         );
         expect(db.trainingMoment.findMany).toHaveBeenCalledWith(
             expect.objectContaining({
+                where: expect.objectContaining({
+                    currentSolutionRevision: {
+                        is: expect.objectContaining({
+                            trainable: true,
+                            verificationStatus: 'VERIFIED',
+                        }),
+                    },
+                }),
                 select: expect.objectContaining({
                     currentSolutionRevision:
                         expect.any(Object),
                 }),
             })
         );
+    });
+
+    it('refuses to serve a prompt whose accepted set is not complete', async () => {
+        const findMany = vi.fn().mockResolvedValue([
+            {
+                ...promptRow,
+                currentSolutionRevision: {
+                    ...promptRow.currentSolutionRevision,
+                    acceptanceFrontier: {
+                        ...promptRow.currentSolutionRevision
+                            .acceptanceFrontier,
+                        status: 'OPEN',
+                        effectiveCutoffCp: null,
+                        boundaryGapCp: null,
+                    },
+                    solutionTree: {
+                        ...promptRow.currentSolutionRevision
+                            .solutionTree,
+                        alternativesComplete: false,
+                    },
+                },
+            },
+        ]);
+
+        await expect(
+            listPracticeFeed({
+                db: { trainingMoment: { findMany } } as never,
+                userId: 'user-1',
+                request: { limit: 10 },
+            })
+        ).rejects.toThrow('invalid grading evidence');
     });
 
     it('schedules unseen moments first and keeps a completed corpus reviewable', async () => {

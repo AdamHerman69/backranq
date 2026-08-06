@@ -31,7 +31,8 @@ import {
 } from '@/lib/analysis/continuationVerifier';
 import type { TablebaseProvider } from '@/lib/analysis/tablebase';
 import type {
-    GradingPolicyV2,
+    AcceptanceFrontier,
+    GradingPolicyV3,
     PovScore,
     SolutionMoveAssessmentInput,
     SolutionRevisionInput,
@@ -39,11 +40,9 @@ import type {
     TrainingMomentCandidate,
     TrainingSourceKind,
 } from '@/lib/training/contracts';
+import { solutionSemanticsHash } from '@/lib/training/contracts';
 import { normalizeGradingPolicy } from '@/lib/training/config';
-import {
-    canonicalMoveAssessmentEvidence,
-    canonicalSolutionTreeSemantics,
-} from '@/lib/training/solutionSemantics';
+import { acceptanceFrontierFromMultiPv } from '@/lib/training/acceptanceFrontier';
 import {
     appendAssessmentHistory,
     assessmentPositionKey,
@@ -80,7 +79,7 @@ export type TrainingMomentExtractionOptions = {
     /** Used only if winning chance cannot be computed. */
     fallbackMinCpLoss?: number; // default 30
     /** Versioned grading tolerance persisted with each solution. */
-    gradingPolicy?: GradingPolicyV2;
+    gradingPolicy?: GradingPolicyV3;
     /** How many plies into the PV to look for tactical moves. Defaults to 4. */
     themeLookaheadPlies?: number;
 
@@ -111,6 +110,10 @@ export type TrainingMomentExtractionOptions = {
 
     /** Bounded conditional verification is enabled by default. */
     verifyContinuations?: boolean;
+    /**
+     * One user decision plus the opponent's best reply. Additional engine PV
+     * moves remain available in review, but never create another grading gate.
+     */
     verificationMaxPlies?: number;
     verificationMaxPositions?: number;
     verificationNodesPerPosition?: number | null;
@@ -123,6 +126,18 @@ export type TrainingMomentExtractionOptions = {
      */
     returnAnalysis?: boolean;
 };
+
+export function isLandingReadyTrainingMoment(
+    moment: TrainingMomentCandidate
+): boolean {
+    return (
+        moment.solution.trainable &&
+        moment.solution.verificationStatus === 'VERIFIED' &&
+        moment.solution.acceptanceFrontier.status === 'STABLE' &&
+        moment.solution.acceptedMovesUci.length > 0 &&
+        moment.solution.bestLineUci.length > 0
+    );
+}
 
 /**
  * Authoritative training-moment extraction result.
@@ -1006,7 +1021,7 @@ type ResolvedOptions = {
     engineTimeoutMs: number;
     minWinningChanceLoss: number;
     fallbackMinCpLoss: number;
-    gradingPolicy: GradingPolicyV2;
+    gradingPolicy: GradingPolicyV3;
     themeLookaheadPlies: number;
     confirmMovetimeMs: number | null;
     confirmNodes: number | null;
@@ -1101,17 +1116,17 @@ function resolveOptions(
             0,
             Math.min(
                 1,
-                options?.maxAcceptedWinningChanceLoss ?? 0.05
+                options?.maxAcceptedWinningChanceLoss ?? 0.1
             )
         ),
         fallbackMaxAcceptedCpLoss: Math.max(
             0,
-            options?.fallbackMaxAcceptedCpLoss ?? 50
+            options?.fallbackMaxAcceptedCpLoss ?? 100
         ),
         verifyContinuations: options?.verifyContinuations ?? true,
         verificationMaxPlies: Math.max(
             1,
-            Math.min(32, options?.verificationMaxPlies ?? 8)
+            Math.min(32, options?.verificationMaxPlies ?? 2)
         ),
         verificationMaxPositions: Math.max(
             1,
@@ -1160,12 +1175,14 @@ function hasUsablePv(evaluation: EvalResult): boolean {
 
 function analysisLimit(
     opts: ResolvedOptions,
-    confirmation = false
+    confirmation = false,
+    signal?: AbortSignal
 ): {
     nodes?: number;
     depth?: number;
     movetimeMs?: number;
     timeoutMs: number;
+    signal?: AbortSignal;
 } {
     const nodes = confirmation
         ? (opts.confirmNodes ?? opts.nodesPerPosition ?? undefined)
@@ -1183,6 +1200,7 @@ function analysisLimit(
         ...(depth != null ? { depth } : {}),
         ...(movetimeMs != null ? { movetimeMs } : {}),
         timeoutMs: opts.engineTimeoutMs,
+        ...(signal ? { signal } : {}),
     };
 }
 
@@ -1599,6 +1617,7 @@ async function confirmCandidateAdaptively(args: {
     previousFens?: string[];
     initialBestMoveUci: string;
     initialLoss: ReturnType<typeof evaluationLoss>;
+    signal?: AbortSignal;
 }): Promise<
     ConfirmationCandidateResult & {
         confirmationEvidence: AdaptiveConfirmationEvidence;
@@ -1620,7 +1639,7 @@ async function confirmCandidateAdaptively(args: {
             minimumWinningChanceLoss: args.minimumWinningChanceLoss,
             fallbackMinimumLossCp: args.fallbackMinimumLossCp,
             multiPv: args.multiPv,
-            limit: { nodes, timeoutMs: args.timeoutMs },
+            limit: { nodes, timeoutMs: args.timeoutMs, signal: args.signal },
             previousFens: args.previousFens,
         });
         const complete = Boolean(
@@ -1894,7 +1913,8 @@ function verifiedEvaluationForLoss(
 
 function assessmentsFromVerifiedTree(
     root: VerifiedSolutionNode,
-    rootPositionHistory: string[]
+    rootPositionHistory: string[],
+    gradingPolicy: GradingPolicyV3
 ): SolutionMoveAssessmentInput[] {
     const assessments: SolutionMoveAssessmentInput[] = [];
     const visit = (
@@ -1945,7 +1965,18 @@ function assessmentsFromVerifiedTree(
                         branch.evaluation.source === 'TABLEBASE'
                             ? 'TABLEBASE'
                             : 'PRECOMPUTED',
-                    grade: branch.best ? 'BEST' : 'GOOD',
+                    grade:
+                        node.acceptanceFrontier?.moves.find(
+                            (move) =>
+                                move.moveUci === branch.moveUci
+                        )?.tier ??
+                        (branch.best
+                            ? 'BEST'
+                            : gap.cp != null &&
+                                gap.cp <=
+                                    gradingPolicy.strong.maxCpLoss
+                              ? 'STRONG'
+                              : 'GOOD'),
                     scoreAfter,
                     evidence: {
                         bestGapCp: gap.cp,
@@ -1979,6 +2010,7 @@ function shallowAssessments(args: {
     acceptedMovesUci: string[];
     evaluatedLines: MultiPvLine[];
     positionHistory: string[];
+    acceptanceFrontier: AcceptanceFrontier;
 }): SolutionMoveAssessmentInput[] {
     const side = sideToMoveFromFen(args.fen);
     const repetitionDraws = new Set(
@@ -2016,10 +2048,14 @@ function shallowAssessments(args: {
             moveUci,
             source: 'PRECOMPUTED',
             grade:
-                normalizeUci(moveUci) ===
+                args.acceptanceFrontier.moves.find(
+                    (move) =>
+                        move.moveUci === normalizeUci(moveUci)
+                )?.tier ??
+                (normalizeUci(moveUci) ===
                 normalizeUci(args.bestMoveUci)
                     ? 'BEST'
-                    : 'GOOD',
+                    : 'GOOD'),
             scoreAfter: isRuleDraw
                 ? {
                       kind: 'tablebase',
@@ -2051,49 +2087,7 @@ function shallowAssessments(args: {
 async function solutionHash(
     input: Omit<SolutionRevisionInput, 'solutionHash' | 'evidence' | 'generatorVersion' | 'configHash'>
 ): Promise<string> {
-    const normalize = (move: string) => normalizeUci(move);
-    return sha256Hex(
-        stableCanonicalStringify({
-            version: 1,
-            verificationStatus: input.verificationStatus,
-            solutionShape: input.solutionShape,
-            gradingStrategy: input.gradingStrategy,
-            continuationShape: input.continuationShape,
-            trainable: input.trainable,
-            bestMoveUci: normalize(input.bestMoveUci),
-            acceptedMovesUci: Array.from(
-                new Set(
-                    [input.bestMoveUci, ...input.acceptedMovesUci]
-                        .map(normalize)
-                        .filter(Boolean)
-                )
-            ).sort(),
-            moveAssessments: input.moveAssessments
-                .map((assessment) => ({
-                    positionKey: assessment.positionKey,
-                    decisionIndex: assessment.decisionIndex,
-                    fen: assessment.fen,
-                    moveUci: normalize(assessment.moveUci),
-                    source: assessment.source,
-                    grade: assessment.grade,
-                    scoreAfter: assessment.scoreAfter,
-                    evidence: canonicalMoveAssessmentEvidence(
-                        assessment.evidence
-                    ),
-                }))
-                .sort((left, right) =>
-                    `${left.decisionIndex}\u0000${left.positionKey}\u0000${left.moveUci}`.localeCompare(
-                        `${right.decisionIndex}\u0000${right.positionKey}\u0000${right.moveUci}`
-                    )
-                ),
-            bestLineUci: input.bestLineUci.map(normalize),
-            solutionTree: canonicalSolutionTreeSemantics(input.solutionTree),
-            scoreAtStart: input.scoreAtStart,
-            playedMoveScore: input.playedMoveScore,
-            targetOutcome: input.targetOutcome,
-            gradingPolicy: input.gradingPolicy,
-        })
-    );
+    return solutionSemanticsHash(input);
 }
 
 const SOURCE_KIND_ORDER: readonly TrainingSourceKind[] = [
@@ -2178,9 +2172,11 @@ async function computeAcceptedMovesForPosition(args: {
     bestMoveUci: string;
     precomputed?: MultiPvResult;
     previousFens?: string[];
+    gradingPolicy: GradingPolicyV3;
 }): Promise<{
     acceptedMovesUci: string[];
     evaluatedLines: MultiPvLine[];
+    acceptanceFrontier: AcceptanceFrontier;
 }> {
     const res = mergeRepetitionDrawMultiPv({
         result:
@@ -2213,31 +2209,32 @@ async function computeAcceptedMovesForPosition(args: {
         return {
             acceptedMovesUci: normalizeUciList(args.bestMoveUci, [], 1),
             evaluatedLines: lines,
+            acceptanceFrontier: {
+                version: 1,
+                status: 'UNSTABLE',
+                targetCutoffCp:
+                    args.gradingPolicy.success.maxCpLoss,
+                effectiveCutoffCp: null,
+                boundaryGapCp: null,
+                moves: [
+                    {
+                        moveUci: normalizeUci(args.bestMoveUci),
+                        tier: 'BEST',
+                    },
+                ],
+                firstRejectedMoveUci: null,
+            },
         };
     }
-
-    const bestScored =
-        scored.find((line) => line.multipv === 1) ?? scored[0];
-    // Winning chance is authoritative; cp is only a fallback.
-    const accepted = scored
-        .filter((line) => {
-            if (!bestScored) return false;
-            return isWithinEvaluationLoss(
-                evaluationLoss(
-                    {
-                        score: bestScored.line.score,
-                        wdl: bestScored.line.wdl,
-                    },
-                    { score: line.line.score, wdl: line.line.wdl }
-                ),
-                {
-                    maxWinningChanceLoss:
-                        args.acceptableWinningChanceLoss,
-                    fallbackMaxCpLoss: args.acceptableLossCp,
-                }
-            );
-        })
-        .map((l) => l.uci);
+    const acceptanceFrontier = acceptanceFrontierFromMultiPv({
+        lines,
+        requestedMultiPv: args.multiPv,
+        alternativesComplete: res.alternativesComplete,
+        policy: args.gradingPolicy,
+    });
+    const accepted = acceptanceFrontier.moves.map(
+        (move) => move.moveUci
+    );
 
     // Always include best move, normalize/dedupe/limit.
     return {
@@ -2247,6 +2244,7 @@ async function computeAcceptedMovesForPosition(args: {
             args.maxAcceptedMoves
         ),
         evaluatedLines: lines,
+        acceptanceFrontier,
     };
 }
 
@@ -2266,6 +2264,7 @@ async function buildTrainingMoment(args: {
     solutionEval: EvalResult;
     acceptedMovesUci: string[];
     evaluatedLines: MultiPvLine[];
+    acceptanceFrontier?: AcceptanceFrontier;
     engine: StockfishEngine;
     tablebase?: TablebaseProvider;
     opts: ResolvedOptions;
@@ -2275,6 +2274,7 @@ async function buildTrainingMoment(args: {
         string,
         Promise<ContinuationVerificationResult>
     >;
+    signal?: AbortSignal;
 }): Promise<TrainingMomentCandidate> {
     let verification: ContinuationVerificationResult | null = null;
     if (args.opts.verifyContinuations) {
@@ -2299,11 +2299,13 @@ async function buildTrainingMoment(args: {
                         args.opts.maxAcceptedWinningChanceLoss,
                     fallbackMaxAcceptedCpLoss:
                         args.opts.fallbackMaxAcceptedCpLoss,
+                    gradingPolicy: args.opts.gradingPolicy,
                     nodesPerPosition:
                         args.opts.verificationNodesPerPosition,
                     maxDepth: args.opts.verificationMaxDepth,
                     movetimeMs: args.opts.movetimeMs,
                     timeoutMs: args.opts.engineTimeoutMs,
+                    signal: args.signal,
                     previousFens: args.previousFens,
                 },
             });
@@ -2313,11 +2315,42 @@ async function buildTrainingMoment(args: {
     }
 
     const verifiedAccepted = verification?.acceptedMovesUci ?? [];
+    let acceptanceFrontier: AcceptanceFrontier =
+        verification?.root.acceptanceFrontier ??
+        (verification?.root.alternativesComplete &&
+        (verification.root.evidenceSource === 'TABLEBASE' ||
+            verification.root.evidenceSource === 'RULE')
+            ? {
+                  version: 1,
+                  status: 'STABLE',
+                  targetCutoffCp:
+                      args.opts.gradingPolicy.success.maxCpLoss,
+                  effectiveCutoffCp: 0,
+                  boundaryGapCp: null,
+                  moves: verification.root.acceptedMovesUci.map(
+                      (moveUci, index) => ({
+                          moveUci,
+                          tier: index === 0 ? 'BEST' : 'GOOD',
+                      })),
+                  firstRejectedMoveUci: null,
+              }
+            : args.acceptanceFrontier ?? {
+                  version: 1,
+                  status: 'UNSTABLE',
+                  targetCutoffCp:
+                      args.opts.gradingPolicy.success.maxCpLoss,
+                  effectiveCutoffCp: null,
+                  boundaryGapCp: null,
+                  moves: [],
+                  firstRejectedMoveUci: null,
+              });
     const acceptedMovesUci = normalizeUciList(
         verification?.bestLineUci[0] ?? args.solutionEval.bestMoveUci,
-        verifiedAccepted.length > 0
-            ? verifiedAccepted
-            : args.acceptedMovesUci,
+        acceptanceFrontier.moves.length > 0
+            ? acceptanceFrontier.moves.map((move) => move.moveUci)
+            : verifiedAccepted.length > 0
+              ? verifiedAccepted
+              : args.acceptedMovesUci,
         args.opts.maxAcceptedMoves
     );
     const bestMoveUci =
@@ -2333,7 +2366,8 @@ async function buildTrainingMoment(args: {
         verification && verification.root.acceptedMovesUci.length > 0
             ? assessmentsFromVerifiedTree(
                   verification.root,
-                  args.previousFens
+                  args.previousFens,
+                  args.opts.gradingPolicy
               )
             : shallowAssessments({
                   fen: args.fen,
@@ -2341,7 +2375,21 @@ async function buildTrainingMoment(args: {
                   acceptedMovesUci,
                   evaluatedLines: args.evaluatedLines,
                   positionHistory: args.previousFens,
+                  acceptanceFrontier,
               });
+    acceptanceFrontier = {
+        ...acceptanceFrontier,
+        moves: acceptanceFrontier.moves.map((move) => ({
+            ...move,
+            tier:
+                moveAssessments.find(
+                    (assessment) =>
+                        assessment.decisionIndex === 0 &&
+                        normalizeUci(assessment.moveUci) ===
+                            normalizeUci(move.moveUci)
+                )?.grade ?? move.tier,
+        })),
+    };
     const rootBestIsRuleDraw = repetitionCompletingMoves(
         args.previousFens,
         args.fen
@@ -2375,10 +2423,16 @@ async function buildTrainingMoment(args: {
                   rootSide
               ));
     const verificationStatus =
-        verification?.status ?? ('AMBIGUOUS' as const);
+        verification?.status ??
+        (acceptanceFrontier.status === 'STABLE'
+            ? ('VERIFIED' as const)
+            : ('AMBIGUOUS' as const));
     const solutionShape =
-        verification?.solutionShape ??
-        (acceptedMovesUci.length > 1 ? 'MULTIPLE' : 'OPEN');
+        acceptanceFrontier.status !== 'STABLE'
+            ? 'OPEN'
+            : acceptedMovesUci.length > 1
+              ? 'MULTIPLE'
+              : 'UNIQUE';
     const solutionCore: Omit<
         SolutionRevisionInput,
         'solutionHash' | 'evidence' | 'generatorVersion' | 'configHash'
@@ -2388,16 +2442,22 @@ async function buildTrainingMoment(args: {
         gradingStrategy:
             verification?.root.evidenceSource === 'TABLEBASE'
                 ? 'TABLEBASE'
-                : 'OUTCOME_TOLERANCE',
+                : 'PRECOMPUTED',
         continuationShape:
             bestLineUci.length > 1
                 ? 'CONDITIONAL_LINE'
                 : 'SINGLE_DECISION',
         trainable:
-            verificationStatus === 'VERIFIED' ||
-            verificationStatus === 'AMBIGUOUS',
+            verificationStatus === 'VERIFIED' &&
+            acceptanceFrontier.status === 'STABLE' &&
+            !acceptedMovesUci.some(
+                (move) =>
+                    normalizeUci(move) ===
+                    normalizeUci(args.originalMoveUci)
+            ),
         bestMoveUci,
         acceptedMovesUci,
+        acceptanceFrontier,
         moveAssessments,
         bestLineUci,
         solutionTree:
@@ -2407,9 +2467,12 @@ async function buildTrainingMoment(args: {
                 role: 'USER',
                 evidenceSource: 'ENGINE',
                 acceptedMovesUci,
-                alternativesComplete: false,
+                alternativesComplete:
+                    acceptanceFrontier.status === 'STABLE',
                 branches: [],
-                stopReason: 'NO_STABLE_LINE',
+                ...(acceptanceFrontier.status === 'STABLE'
+                    ? {}
+                    : { stopReason: 'NO_STABLE_LINE' }),
             },
         scoreAtStart,
         playedMoveScore: args.originalScoreAfter,
@@ -2436,7 +2499,7 @@ async function buildTrainingMoment(args: {
                 },
             },
         },
-        generatorVersion: 'backranq-training-extractor-v2',
+        generatorVersion: 'backranq-training-extractor-v3',
         configHash: args.configHash,
     };
     const confidence =
@@ -2518,7 +2581,15 @@ export async function extractTrainingMomentsFromGames(args: {
         phase?: string;
     }) => void;
     options?: TrainingMomentExtractionOptions;
+    /** Cancels browser/server engine work and prevents stale onboarding runs. */
+    signal?: AbortSignal;
+    /**
+     * Landing-only fast path. Returns immediately after the first fully VERIFIED
+     * candidate is built. Canonical full-game extraction leaves this disabled.
+     */
+    stopAfterFirstVerified?: boolean;
 }): Promise<TrainingMomentExtractionResult> {
+    if (args.signal?.aborted) throw new Error('Analysis aborted');
     const opts = resolveOptions(args.options);
     let engineIdentity: Awaited<
         ReturnType<NonNullable<StockfishEngine['getIdentity']>>
@@ -2529,7 +2600,7 @@ export async function extractTrainingMomentsFromGames(args: {
         // Missing identity is explicit in the config snapshot and never guessed.
     }
     const configSnapshot: Record<string, unknown> = {
-        version: 2,
+        version: 3,
         engine: engineIdentity,
         extractor: opts,
     };
@@ -2546,6 +2617,7 @@ export async function extractTrainingMomentsFromGames(args: {
     const selected = args.games.filter((g) => args.selectedGameIds.has(g.id));
 
     for (let gi = 0; gi < selected.length; gi++) {
+        if (args.signal?.aborted) throw new Error('Analysis aborted');
         const game = selected[gi];
         if (!game) continue;
         const canonicalSourceGameIdValue = canonicalSourceGameId(
@@ -2609,6 +2681,7 @@ export async function extractTrainingMomentsFromGames(args: {
         const lookaheadOwnedUserDecisionPlies = new Set<number>();
 
         for (let ply = 0; ply < plyCount; ply++) {
+            if (args.signal?.aborted) throw new Error('Analysis aborted');
             args.onProgress?.({
                 gameId: game.id,
                 gameIndex: gi,
@@ -2650,7 +2723,7 @@ export async function extractTrainingMomentsFromGames(args: {
                 promoteRepetitionDrawEvaluation({
                     evaluation: await args.engine.evalPosition({
                         fen: fenBefore,
-                        ...analysisLimit(opts),
+                        ...analysisLimit(opts, false, args.signal),
                     }),
                     fen: fenBefore,
                     previousFens,
@@ -2718,7 +2791,7 @@ export async function extractTrainingMomentsFromGames(args: {
                     ? ruleDrawEvaluation(fenAfter)
                     : await args.engine.evalPosition({
                           fen: fenAfter,
-                          ...analysisLimit(opts),
+                          ...analysisLimit(opts, false, args.signal),
                       });
 
             const afterCpStm = scoreToCp(bestAtAfter.score);
@@ -2933,6 +3006,7 @@ export async function extractTrainingMomentsFromGames(args: {
                                                   opts.maxConfirmationNodes,
                                               timeoutMs:
                                                   opts.engineTimeoutMs,
+                                              signal: args.signal,
                                               previousFens,
                                               initialBestMoveUci:
                                                   bestAtBefore.bestMoveUci,
@@ -2948,7 +3022,11 @@ export async function extractTrainingMomentsFromGames(args: {
                                     fallbackMinimumLossCp:
                                         opts.fallbackMinCpLoss,
                                     multiPv: opts.multiPv,
-                                    limit: analysisLimit(opts, true),
+                                    limit: analysisLimit(
+                                        opts,
+                                        true,
+                                        args.signal
+                                    ),
                                     previousFens,
                                 });
                                 confirmationEvidence =
@@ -3025,6 +3103,9 @@ export async function extractTrainingMomentsFromGames(args: {
                                     undefined;
                                 let evaluatedLines: MultiPvLine[] =
                                     confirmedMultiPv?.lines ?? [];
+                                let acceptanceFrontier:
+                                    | AcceptanceFrontier
+                                    | undefined;
                                 let acceptedMovesError = false;
                                 try {
                                     const acceptedRes =
@@ -3032,8 +3113,16 @@ export async function extractTrainingMomentsFromGames(args: {
                                             engine: args.engine,
                                             fen: fenBefore,
                                             limit: confirmedMultiPv
-                                                ? analysisLimit(opts, true)
-                                                : analysisLimit(opts),
+                                                ? analysisLimit(
+                                                      opts,
+                                                      true,
+                                                      args.signal
+                                                  )
+                                                : analysisLimit(
+                                                      opts,
+                                                      false,
+                                                      args.signal
+                                                  ),
                                             multiPv: opts.multiPv,
                                             acceptableLossCp:
                                                 opts.fallbackMaxAcceptedCpLoss,
@@ -3044,11 +3133,15 @@ export async function extractTrainingMomentsFromGames(args: {
                                             bestMoveUci: finalEval.bestMoveUci,
                                             precomputed: confirmedMultiPv,
                                             previousFens,
+                                            gradingPolicy:
+                                                opts.gradingPolicy,
                                         });
                                     acceptedMovesUci =
                                         acceptedRes.acceptedMovesUci;
                                     evaluatedLines =
                                         acceptedRes.evaluatedLines;
+                                    acceptanceFrontier =
+                                        acceptedRes.acceptanceFrontier;
                                 } catch {
                                     // Ignore MultiPV failures; fall back to single-solution.
                                     acceptedMovesError = true;
@@ -3092,6 +3185,7 @@ export async function extractTrainingMomentsFromGames(args: {
                                     solutionEval: finalEval,
                                     acceptedMovesUci: acceptedNormalized,
                                     evaluatedLines,
+                                    acceptanceFrontier,
                                     engine: args.engine,
                                     tablebase: args.tablebase,
                                     opts,
@@ -3100,11 +3194,26 @@ export async function extractTrainingMomentsFromGames(args: {
                                         .slice(0, ply)
                                         .map((move) => move.before),
                                     verificationCache,
+                                    signal: args.signal,
                                 });
                                 storeCanonicalTrainingMoment(
                                     moments,
                                     moment
                                 );
+                                if (
+                                    args.stopAfterFirstVerified &&
+                                    isLandingReadyTrainingMoment(moment)
+                                ) {
+                                    return {
+                                        moments: [moment],
+                                        manifests: [],
+                                        configSnapshot,
+                                        configHash,
+                                        analysis: opts.returnAnalysis
+                                            ? analysisMap
+                                            : undefined,
+                                    };
+                                }
                                 decisionReceipts.set(
                                     ply,
                                     decisionReceipt({
@@ -3175,7 +3284,11 @@ export async function extractTrainingMomentsFromGames(args: {
                                 fen: fenAfter,
                                 moveUci: userResponseUci,
                                 best: bestAtAfter,
-                                limit: analysisLimit(opts),
+                                limit: analysisLimit(
+                                    opts,
+                                    false,
+                                    args.signal
+                                ),
                                 previousFens: userResponsePreviousFens,
                             });
                         const userPunished =
@@ -3276,6 +3389,7 @@ export async function extractTrainingMomentsFromGames(args: {
                                                               opts.maxConfirmationNodes,
                                                           timeoutMs:
                                                               opts.engineTimeoutMs,
+                                                          signal: args.signal,
                                                           previousFens:
                                                               userResponsePreviousFens,
                                                           initialBestMoveUci:
@@ -3294,7 +3408,11 @@ export async function extractTrainingMomentsFromGames(args: {
                                             fallbackMinimumLossCp:
                                                 opts.fallbackMinCpLoss,
                                             multiPv: opts.multiPv,
-                                            limit: analysisLimit(opts, true),
+                                            limit: analysisLimit(
+                                                opts,
+                                                true,
+                                                args.signal
+                                            ),
                                             previousFens:
                                                 userResponsePreviousFens,
                                         });
@@ -3384,6 +3502,9 @@ export async function extractTrainingMomentsFromGames(args: {
                                             | undefined = undefined;
                                         let evaluatedLines: MultiPvLine[] =
                                             confirmedMultiPv?.lines ?? [];
+                                        let acceptanceFrontier:
+                                            | AcceptanceFrontier
+                                            | undefined;
                                         let acceptedMovesError = false;
                                         try {
                                             const acceptedRes =
@@ -3394,10 +3515,13 @@ export async function extractTrainingMomentsFromGames(args: {
                                                         limit: confirmedMultiPv
                                                             ? analysisLimit(
                                                                   opts,
-                                                                  true
+                                                                  true,
+                                                                  args.signal
                                                               )
                                                             : analysisLimit(
-                                                                  opts
+                                                                  opts,
+                                                                  false,
+                                                                  args.signal
                                                               ),
                                                         multiPv: opts.multiPv,
                                                         acceptableLossCp:
@@ -3412,12 +3536,16 @@ export async function extractTrainingMomentsFromGames(args: {
                                                             confirmedMultiPv,
                                                         previousFens:
                                                             userResponsePreviousFens,
+                                                        gradingPolicy:
+                                                            opts.gradingPolicy,
                                                     }
                                                 );
                                             acceptedMovesUci =
                                                 acceptedRes.acceptedMovesUci;
                                             evaluatedLines =
                                                 acceptedRes.evaluatedLines;
+                                            acceptanceFrontier =
+                                                acceptedRes.acceptanceFrontier;
                                         } catch {
                                             // Ignore MultiPV failures; fall back to single-solution.
                                             acceptedMovesError = true;
@@ -3504,6 +3632,7 @@ export async function extractTrainingMomentsFromGames(args: {
                                                 acceptedMovesUci:
                                                     acceptedNormalized,
                                                 evaluatedLines,
+                                                acceptanceFrontier,
                                                 engine: args.engine,
                                                 tablebase: args.tablebase,
                                                 opts,
@@ -3511,6 +3640,7 @@ export async function extractTrainingMomentsFromGames(args: {
                                                 previousFens:
                                                     userResponsePreviousFens,
                                                 verificationCache,
+                                                signal: args.signal,
                                             });
                                         const moment: TrainingMomentCandidate = {
                                             ...builtMoment,
@@ -3533,6 +3663,20 @@ export async function extractTrainingMomentsFromGames(args: {
                                             moments,
                                             moment
                                         );
+                                        if (
+                                            args.stopAfterFirstVerified &&
+                                            isLandingReadyTrainingMoment(moment)
+                                        ) {
+                                            return {
+                                                moments: [moment],
+                                                manifests: [],
+                                                configSnapshot,
+                                                configHash,
+                                                analysis: opts.returnAnalysis
+                                                    ? analysisMap
+                                                    : undefined,
+                                            };
+                                        }
                                         decisionReceipts.set(
                                             nextPly,
                                             decisionReceipt({

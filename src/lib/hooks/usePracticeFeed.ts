@@ -892,6 +892,7 @@ export function usePracticeFeed(
                 grade: aggregateGrade,
                 accepted:
                     aggregateGrade === 'BEST' ||
+                    aggregateGrade === 'STRONG' ||
                     aggregateGrade === 'GOOD',
                 review,
             });

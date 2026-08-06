@@ -14,7 +14,8 @@ import {
     VERIFICATION_STATUSES,
     solutionSemanticsHash,
     stableCanonicalStringify,
-    type GradingPolicyV2,
+    type AcceptanceFrontier,
+    type GradingPolicyV3,
     type PovScore,
     type SolutionMoveAssessmentInput,
     type SolutionRevisionInput,
@@ -68,6 +69,7 @@ type TreeNode = {
     ply: number;
     role: (typeof NODE_ROLES)[number];
     acceptedMovesUci: string[];
+    alternativesComplete: boolean;
     selectedMoveUci?: string;
     branches: TreeBranch[];
 };
@@ -528,6 +530,7 @@ function validateSolutionTree(
             ply: expectedPly,
             role: raw.role,
             acceptedMovesUci: acceptedMoves,
+            alternativesComplete: raw.alternativesComplete,
             ...(selectedMove ? { selectedMoveUci: selectedMove } : {}),
             branches,
         };
@@ -581,7 +584,9 @@ function validateAssessment(
         !allowedMoves?.has(moveUci) ||
         (value.source !== 'PRECOMPUTED' &&
             value.source !== 'TABLEBASE') ||
-        (value.grade !== 'BEST' && value.grade !== 'GOOD') ||
+        (value.grade !== 'BEST' &&
+            value.grade !== 'STRONG' &&
+            value.grade !== 'GOOD') ||
         (value.scoreAfter !== null && !isPovScore(value.scoreAfter)) ||
         (value.source === 'TABLEBASE' &&
             (!isObject(value.scoreAfter) ||
@@ -633,15 +638,16 @@ function validateAssessment(
 
 function validateGradingPolicy(
     value: unknown
-): value is GradingPolicyV2 {
+): value is GradingPolicyV3 {
     if (
         !isObject(value) ||
-        value.version !== 2 ||
+        value.version !== 3 ||
         value.pov !== 'TRAINING_SIDE' ||
-        value.unknownMove !== 'DYNAMIC' ||
+        value.unknownMove !== 'REJECT_OUTSIDE_ACCEPTED_SET' ||
         value.matePolicy !== 'EXACT' ||
         value.tablebasePolicy !== 'EXACT' ||
         !isObject(value.best) ||
+        !isObject(value.strong) ||
         !isObject(value.success) ||
         !isObject(value.improvement)
     ) {
@@ -650,6 +656,8 @@ function validateGradingPolicy(
     if (
         !finiteBetween(value.best.maxCpLoss, 0, 10_000) ||
         !finiteBetween(value.best.maxWinChanceLoss, 0, 1) ||
+        !finiteBetween(value.strong.maxCpLoss, 0, 10_000) ||
+        !finiteBetween(value.strong.maxWinChanceLoss, 0, 1) ||
         !finiteBetween(value.success.maxCpLoss, 0, 10_000) ||
         !finiteBetween(value.success.maxWinChanceLoss, 0, 1) ||
         typeof value.success.preserveOutcome !== 'boolean' ||
@@ -663,10 +671,63 @@ function validateGradingPolicy(
         return false;
     }
     return (
-        value.success.maxCpLoss >= value.best.maxCpLoss &&
+        value.strong.maxCpLoss >= value.best.maxCpLoss &&
+        value.strong.maxWinChanceLoss >=
+            value.best.maxWinChanceLoss &&
+        value.success.maxCpLoss >= value.strong.maxCpLoss &&
         value.success.maxWinChanceLoss >=
-            value.best.maxWinChanceLoss
+            value.strong.maxWinChanceLoss
     );
+}
+
+function validateAcceptanceFrontier(
+    value: unknown,
+    acceptedMovesUci: string[],
+    bestMoveUci: string
+): AcceptanceFrontier | null {
+    if (
+        !isObject(value) ||
+        value.version !== 1 ||
+        (value.status !== 'STABLE' &&
+            value.status !== 'OPEN' &&
+            value.status !== 'UNSTABLE') ||
+        !finiteBetween(value.targetCutoffCp, 0, 10_000) ||
+        (value.effectiveCutoffCp !== null &&
+            !finiteBetween(value.effectiveCutoffCp, 0, 10_000)) ||
+        (value.boundaryGapCp !== null &&
+            !finiteBetween(value.boundaryGapCp, 0, 10_000)) ||
+        (value.firstRejectedMoveUci !== null &&
+            !normalizedUci(value.firstRejectedMoveUci)) ||
+        !Array.isArray(value.moves)
+    ) {
+        return null;
+    }
+    const moves = value.moves.map((rawMove) => {
+        if (!isObject(rawMove)) return null;
+        const moveUci = normalizedUci(rawMove.moveUci);
+        if (
+            !moveUci ||
+            (rawMove.tier !== 'BEST' &&
+                rawMove.tier !== 'STRONG' &&
+                rawMove.tier !== 'GOOD')
+        ) {
+            return null;
+        }
+        return { moveUci, tier: rawMove.tier };
+    });
+    if (
+        moves.some((move) => move == null) ||
+        moves.length !== acceptedMovesUci.length ||
+        moves.some(
+            (move, index) =>
+                move?.moveUci !== acceptedMovesUci[index]
+        ) ||
+        moves[0]?.moveUci !== bestMoveUci ||
+        moves[0]?.tier !== 'BEST'
+    ) {
+        return null;
+    }
+    return value as AcceptanceFrontier;
 }
 
 function validateBestLine(
@@ -755,10 +816,19 @@ function validateSolution(
         rootFen,
         rootPositionHistory
     );
+    const acceptanceFrontier =
+        acceptedMovesUci && bestMoveUci
+            ? validateAcceptanceFrontier(
+                  value.acceptanceFrontier,
+                  acceptedMovesUci,
+                  bestMoveUci
+              )
+            : null;
     if (
         !bestMoveUci ||
         !acceptedMovesUci ||
         !acceptedMovesUci.includes(bestMoveUci) ||
+        !acceptanceFrontier ||
         !tree ||
         tree.root.acceptedMovesUci.length !==
             acceptedMovesUci.length ||
@@ -790,10 +860,16 @@ function validateSolution(
         return null;
     }
     if (
-        value.trainable !==
-            (value.verificationStatus === 'VERIFIED' ||
-                value.verificationStatus === 'AMBIGUOUS') ||
+        (value.trainable &&
+            (value.verificationStatus !== 'VERIFIED' ||
+                acceptanceFrontier.status !== 'STABLE')) ||
         (value.trainable && value.scoreAtStart === null)
+    ) {
+        return null;
+    }
+    if (
+        (acceptanceFrontier.status === 'STABLE') !==
+        tree.root.alternativesComplete
     ) {
         return null;
     }
@@ -811,7 +887,11 @@ function validateSolution(
         (value.solutionShape === 'UNIQUE' &&
             acceptedMovesUci.length !== 1) ||
         (value.solutionShape === 'MULTIPLE' &&
-            acceptedMovesUci.length < 2)
+            acceptedMovesUci.length < 2) ||
+        (acceptanceFrontier.status === 'STABLE' &&
+            value.solutionShape === 'OPEN') ||
+        (acceptanceFrontier.status !== 'STABLE' &&
+            value.solutionShape !== 'OPEN')
     ) {
         return null;
     }
@@ -845,7 +925,10 @@ function validateSolution(
         if (
             !assessment ||
             assessment.grade !==
-                (move === bestMoveUci ? 'BEST' : 'GOOD')
+                acceptanceFrontier.moves.find(
+                    (frontierMove) =>
+                        frontierMove.moveUci === move
+                )?.tier
         ) {
             return null;
         }
@@ -863,7 +946,9 @@ function validateSolution(
                 (bestMoves &&
                     (bestMoves.has(move)
                         ? assessment.grade !== 'BEST'
-                        : assessment.grade !== 'GOOD'))
+                        : assessment.grade !== 'BEST' &&
+                          assessment.grade !== 'STRONG' &&
+                          assessment.grade !== 'GOOD'))
             ) {
                 return null;
             }

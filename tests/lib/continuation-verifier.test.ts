@@ -105,7 +105,11 @@ describe('bounded conditional continuation verifier', () => {
             },
         });
 
-        expect(engine.calls.map((call) => call.multiPv)).toEqual([5, 10]);
+        expect(engine.calls.map((call) => call.multiPv)).toEqual([
+            5,
+            10,
+            10,
+        ]);
         expect(verified.acceptedMovesUci).toEqual([
             'e2e4',
             'd2d4',
@@ -794,7 +798,7 @@ describe('bounded conditional continuation verifier', () => {
 
         expect(verified.bestLineUci).toEqual(['g1g2']);
         expect(verified.stopReasons).toContain('FIFTY_MOVE');
-        expect(engine.calls).toHaveLength(1);
+        expect(engine.calls).toHaveLength(2);
     });
 
     it('rejects an illegal engine PV edge', async () => {
@@ -943,7 +947,7 @@ describe('bounded conditional continuation verifier', () => {
             expect(verified.status).toBe('VERIFIED');
             expect(verified.bestLineUci).toEqual([move]);
             expect(verified.stopReasons).toContain(reason);
-            expect(engine.calls).toHaveLength(1);
+            expect(engine.calls).toHaveLength(2);
         }
     );
 });

@@ -1,6 +1,6 @@
 import type {
     AttemptGrade,
-    GradingPolicyV2,
+    GradingPolicyV3,
 } from '@/lib/training/contracts';
 
 export type TrainingMoveMetrics = {
@@ -53,7 +53,7 @@ function withinLoss(
 
 function isMeaningfulImprovement(
     metrics: TrainingMoveMetrics,
-    policy: GradingPolicyV2
+    policy: GradingPolicyV3
 ): boolean {
     const recoveredChance = finiteNonNegative(metrics.recoveredWinChance);
     if (recoveredChance != null) {
@@ -77,7 +77,7 @@ function hasOutcomeEvidence(metrics: TrainingMoveMetrics): boolean {
 
 function hasRequiredPreservationEvidence(
     metrics: TrainingMoveMetrics,
-    policy: GradingPolicyV2
+    policy: GradingPolicyV3
 ): boolean {
     return (
         !policy.success.preserveOutcome ||
@@ -95,7 +95,7 @@ function hasRequiredPreservationEvidence(
  */
 export function gradeTrainingMove(
     metrics: TrainingMoveMetrics,
-    policy: GradingPolicyV2
+    policy: GradingPolicyV3
 ): TrainingMoveGradeResult {
     if (!metrics.stable) {
         return { status: 'UNRESOLVED', reason: 'UNSTABLE_EVIDENCE' };
@@ -125,6 +125,12 @@ export function gradeTrainingMove(
         withinLoss(metrics, policy.best)
     ) {
         return { status: 'GRADED', grade: 'BEST', accepted: true };
+    }
+    if (
+        preservesRequiredOutcome &&
+        withinLoss(metrics, policy.strong)
+    ) {
+        return { status: 'GRADED', grade: 'STRONG', accepted: true };
     }
     if (
         preservesRequiredOutcome &&

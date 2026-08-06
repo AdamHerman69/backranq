@@ -498,12 +498,14 @@ function FirstRecordedOutcome({
     const outcome = snapshot.firstRecordedTerminalOutcome;
     if (outcome.positions === 0) return null;
     const metObjective =
-        outcome.gradeCounts.BEST + outcome.gradeCounts.GOOD;
+        outcome.gradeCounts.BEST +
+        outcome.gradeCounts.STRONG +
+        outcome.gradeCounts.GOOD;
     const counts = [
         {
             label: 'Met objective',
             value: metObjective,
-            detail: 'Best or Good',
+            detail: 'Best, Strong, or Good',
         },
         {
             label: 'Improved',

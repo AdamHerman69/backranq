@@ -10,6 +10,7 @@ const requestAutoAnalysisContinuationAfterTerminalJobMock = vi.fn();
 const dispatchAutoAnalysisPolicySweepMock = vi.fn();
 const dispatchPlannedSyncJobsMock = vi.fn();
 const processSyncJobMock = vi.fn();
+const processWeeklyMasterRunMock = vi.fn();
 
 class StaleAnalysisDeliveryError extends Error {}
 
@@ -40,6 +41,9 @@ async function importProcessor() {
     vi.doMock('@/lib/services/syncJobs', () => ({
         dispatchPlannedSyncJobs: dispatchPlannedSyncJobsMock,
         processSyncJob: processSyncJobMock,
+    }));
+    vi.doMock('@/lib/master/pipeline', () => ({
+        processWeeklyMasterRun: processWeeklyMasterRunMock,
     }));
     return import('@/lib/services/backranqQueueProcessor');
 }
@@ -113,6 +117,21 @@ describe('Backranq analysis queue processor', () => {
         expect(analyzeGameJobMock).toHaveBeenCalledTimes(25);
         expect(dispatchQueuedAnalysisJobsMock).toHaveBeenCalledTimes(25);
         expect(seenDeliveryTokens.size).toBe(25);
+    });
+
+    it('routes Weekly Master work through the durable pipeline worker', async () => {
+        const processor = await importProcessor();
+        processWeeklyMasterRunMock.mockResolvedValue({
+            id: 'master-run-1',
+            status: 'SUCCEEDED',
+        });
+
+        await processor.processBackranqQueueMessage({
+            type: 'weekly-master-run',
+            runId: 'master-run-1',
+        });
+
+        expect(processWeeklyMasterRunMock).toHaveBeenCalledWith('master-run-1');
     });
 
     it('schedules a delayed durable wakeup for a retry', async () => {

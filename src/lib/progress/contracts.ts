@@ -112,6 +112,7 @@ export type ProgressAvailability = {
 
 export type ProgressGradeCounts = {
     BEST: number;
+    STRONG: number;
     GOOD: number;
     IMPROVED: number;
     REPEATED_MISTAKE: number;

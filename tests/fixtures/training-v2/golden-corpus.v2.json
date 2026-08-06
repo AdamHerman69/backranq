@@ -33,7 +33,7 @@
         "decisionPly": 0,
         "sourceKinds": ["MY_MISTAKE"],
         "lessonKinds": ["AVOID_MISTAKE"],
-        "solutionShape": "OPEN",
+        "solutionShape": "UNIQUE",
         "bestMoveUci": "f7f8"
       }]
     },
@@ -48,7 +48,7 @@
         "decisionPly": 7,
         "sourceKinds": ["MY_MISTAKE"],
         "lessonKinds": ["SAVE_DRAW"],
-        "solutionShape": "OPEN",
+        "solutionShape": "UNIQUE",
         "bestMoveUci": "f6g8"
       }]
     },
@@ -63,7 +63,7 @@
         "decisionPly": 0,
         "sourceKinds": ["MY_MISTAKE"],
         "lessonKinds": ["AVOID_MISTAKE"],
-        "solutionShape": "OPEN",
+        "solutionShape": "UNIQUE",
         "bestMoveUci": "e5d6"
       }]
     },

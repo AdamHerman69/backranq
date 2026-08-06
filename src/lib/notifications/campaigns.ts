@@ -154,7 +154,14 @@ export async function generateDueWeeklyProgressNotifications(
                         where: {
                             userId: { in: userIds },
                             attemptedAt: { gte: since, lte: now },
-                            grade: { in: ['BEST', 'GOOD', 'IMPROVED'] },
+                            grade: {
+                                in: [
+                                    'BEST',
+                                    'STRONG',
+                                    'GOOD',
+                                    'IMPROVED',
+                                ],
+                            },
                         },
                         _count: { id: true },
                     }),

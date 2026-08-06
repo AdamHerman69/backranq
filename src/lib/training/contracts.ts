@@ -5,7 +5,7 @@ import {
     canonicalSolutionTreeSemantics,
 } from '@/lib/training/solutionSemantics';
 
-export const TRAINING_CONTRACT_VERSION = 2 as const;
+export const TRAINING_CONTRACT_VERSION = 3 as const;
 export const TRAINING_MOMENT_KEY_VERSION = 1 as const;
 
 export const TRAINING_SOURCE_KINDS = [
@@ -51,6 +51,7 @@ export type ContinuationShape = (typeof CONTINUATION_SHAPES)[number];
 
 export const ATTEMPT_GRADES = [
     'BEST',
+    'STRONG',
     'GOOD',
     'IMPROVED',
     'REPEATED_MISTAKE',
@@ -88,10 +89,14 @@ export type TrainingMomentMetadata = {
     themes: string[];
 };
 
-export type GradingPolicyV2 = {
-    version: 2;
+export type GradingPolicyV3 = {
+    version: 3;
     pov: 'TRAINING_SIDE';
     best: {
+        maxCpLoss: number;
+        maxWinChanceLoss: number;
+    };
+    strong: {
         maxCpLoss: number;
         maxWinChanceLoss: number;
     };
@@ -104,9 +109,36 @@ export type GradingPolicyV2 = {
         minRecoveredCp: number;
         minRecoveredWinChance: number;
     };
-    unknownMove: 'DYNAMIC';
+    unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET';
     matePolicy: 'EXACT';
     tablebasePolicy: 'EXACT';
+};
+
+export const ACCEPTANCE_FRONTIER_STATUSES = [
+    'STABLE',
+    'OPEN',
+    'UNSTABLE',
+] as const;
+export type AcceptanceFrontierStatus =
+    (typeof ACCEPTANCE_FRONTIER_STATUSES)[number];
+
+export type AcceptedMoveTier = 'BEST' | 'STRONG' | 'GOOD';
+
+/**
+ * Authoritative root grading boundary. Every move in `moves` is accepted;
+ * every other legal move is rejected only when `status` is STABLE.
+ */
+export type AcceptanceFrontier = {
+    version: 1;
+    status: AcceptanceFrontierStatus;
+    targetCutoffCp: number;
+    effectiveCutoffCp: number | null;
+    boundaryGapCp: number | null;
+    moves: Array<{
+        moveUci: string;
+        tier: AcceptedMoveTier;
+    }>;
+    firstRejectedMoveUci: string | null;
 };
 
 export type SolutionMoveAssessmentInput = {
@@ -115,7 +147,7 @@ export type SolutionMoveAssessmentInput = {
     fen: string;
     moveUci: string;
     source: 'PRECOMPUTED' | 'TABLEBASE';
-    grade: 'BEST' | 'GOOD';
+    grade: AcceptedMoveTier;
     scoreAfter: PovScore | null;
     evidence: unknown;
 };
@@ -129,13 +161,14 @@ export type SolutionRevisionInput = {
     trainable: boolean;
     bestMoveUci: string;
     acceptedMovesUci: string[];
+    acceptanceFrontier: AcceptanceFrontier;
     moveAssessments: SolutionMoveAssessmentInput[];
     bestLineUci: string[];
     solutionTree: unknown;
     scoreAtStart: PovScore | null;
     playedMoveScore: PovScore | null;
     targetOutcome: unknown;
-    gradingPolicy: GradingPolicyV2;
+    gradingPolicy: GradingPolicyV3;
     evidence: unknown;
     generatorVersion: string;
     configHash: string;
@@ -311,6 +344,7 @@ export function solutionSemanticsHash(
         | 'trainable'
         | 'bestMoveUci'
         | 'acceptedMovesUci'
+        | 'acceptanceFrontier'
         | 'moveAssessments'
         | 'bestLineUci'
         | 'solutionTree'
@@ -336,6 +370,7 @@ export function solutionSemanticsHash(
                     .filter(Boolean)
             )
         ).sort(),
+        acceptanceFrontier: input.acceptanceFrontier,
         moveAssessments: input.moveAssessments
             .map((assessment) => ({
                 positionKey: assessment.positionKey,

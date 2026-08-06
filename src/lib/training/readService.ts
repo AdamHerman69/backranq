@@ -161,6 +161,7 @@ const promptSelect = {
         select: {
             bestMoveUci: true,
             acceptedMovesUci: true,
+            acceptanceFrontier: true,
             solutionShape: true,
             bestLine: true,
             scoreAtStart: true,
@@ -266,9 +267,7 @@ export async function listPracticeFeed(args: {
         currentSolutionRevision: {
             is: {
                 trainable: true,
-                verificationStatus: {
-                    in: ['VERIFIED', 'AMBIGUOUS'],
-                },
+                verificationStatus: 'VERIFIED',
             },
         },
         ...(filters.phases?.length
@@ -365,9 +364,7 @@ export async function getTrainingMomentPrompt(args: {
             currentSolutionRevision: {
                 is: {
                     trainable: true,
-                    verificationStatus: {
-                        in: ['VERIFIED', 'AMBIGUOUS'],
-                    },
+                    verificationStatus: 'VERIFIED',
                 },
             },
         },

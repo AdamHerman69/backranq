@@ -85,6 +85,7 @@ enum AttemptStatus {
 
 enum AttemptGrade {
   BEST
+  STRONG
   GOOD
   IMPROVED
   REPEATED_MISTAKE
@@ -200,6 +201,98 @@ enum AnalysisQuality {
   THOROUGH
 }
 
+enum AdminRole {
+  EDITOR
+  ADMIN
+}
+
+enum MasterPipelineStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum MasterPipelineStage {
+  SOURCE
+  ANALYSIS
+  RANKING
+  PUBLICATION
+  COMPLETE
+}
+
+enum MasterPipelineTrigger {
+  SCHEDULED
+  ADMIN
+  RETRY
+  RECOVERY
+}
+
+enum MasterSourceAvailability {
+  AVAILABLE
+  MISSING
+  ERROR
+}
+
+enum MasterCandidateStatus {
+  ELIGIBLE
+  REJECTED
+  PUBLISHED
+}
+
+enum MasterPublicationStatus {
+  PUBLISHED
+  WITHDRAWN
+}
+
+enum MasterPublicationHealth {
+  FRESH
+  STALE
+  SOURCE_MISSING
+  BLOCKED
+}
+
+enum MasterOverrideKind {
+  PIN_PUBLICATION
+  FORCE_FALLBACK
+  PAUSE_AUTOMATION
+  EXCLUDE_PERSON
+  EXCLUDE_ACCOUNT
+  WITHDRAW_PUBLICATION
+}
+
+enum OnboardingEventName {
+  LANDING_VIEWED
+  IDENTITY_SUBMITTED
+  IDENTITY_LOOKUP_SUCCEEDED
+  IDENTITY_LOOKUP_FAILED
+  PERSONAL_ANALYSIS_STARTED
+  PERSONAL_ANALYSIS_FAILED
+  PERSONAL_ANALYSIS_MILESTONE
+  PERSONAL_PUZZLE_READY
+  MASTER_PUZZLE_SHOWN
+  MASTER_ATTEMPT_STARTED
+  MASTER_ATTEMPT_TERMINAL
+  PERSONAL_READY_NOTICE_SHOWN
+  PERSONAL_HANDOFF_CLICKED
+  PERSONAL_PUZZLE_SHOWN
+  PERSONAL_ATTEMPT_STARTED
+  PERSONAL_ATTEMPT_TERMINAL
+  SIGNUP_CLICKED
+  SIGNUP_COMPLETED
+}
+
+enum OnboardingPuzzleKind {
+  MASTER
+  PERSONAL
+}
+
+enum OnboardingMasterState {
+  SOLVING
+  TERMINAL
+}
+
 enum CreditLedgerEntryType {
   RESERVED
   CONSUMED
@@ -281,10 +374,47 @@ model User {
   notificationPreference      NotificationPreference?
   notificationDeliveries      NotificationDelivery[]
   pushSubscriptions           PushSubscription[]
+  adminMembership             AdminMembership?
+  onboardingAnalyticsEvents   OnboardingAnalyticsEvent[]
 
   // NextAuth (Auth.js) relations
   accounts Account[]
   sessions Session[]
+}
+
+model AdminMembership {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @unique @db.Uuid
+  role      AdminRole @default(EDITOR)
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  auditLogs        AdminAuditLog[]
+  createdOverrides MasterAdminOverride[] @relation("MasterOverrideCreatedBy")
+  revokedOverrides MasterAdminOverride[] @relation("MasterOverrideRevokedBy")
+
+  @@index([active, role])
+}
+
+model AdminAuditLog {
+  id                String   @id @default(uuid()) @db.Uuid
+  adminMembershipId String   @db.Uuid
+  idempotencyKey    String?  @unique
+  action            String
+  targetType        String
+  targetId          String?
+  requestId         String?
+  reason            String?  @db.Text
+  metadata          Json     @default(dbgenerated("'{}'::jsonb"))
+  createdAt         DateTime @default(now())
+
+  adminMembership AdminMembership @relation(fields: [adminMembershipId], references: [id], onDelete: Restrict)
+
+  @@index([adminMembershipId, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([requestId])
 }
 
 model NotificationPreference {
@@ -378,26 +508,26 @@ model PushSubscription {
 }
 
 model BillingAccount {
-  id                        String      @id @default(uuid()) @db.Uuid
-  userId                    String      @unique @db.Uuid
-  plan                      BillingPlan @default(FREE)
-  stripeCustomerId          String?     @unique
-  stripeSubscriptionId      String?     @unique
-  stripeSubscriptionStatus  String?
-  stripePriceId             String?
-  stripeCurrentPeriodEnd    DateTime?
-  stripeLastEventCreatedAt  DateTime?
-  stripeLastEventId         String?
-  serverCreditsBalance      Int         @default(100)
-  monthlyServerCreditsUsed  Int         @default(0)
-  serverCreditsPeriodStart DateTime    @default(now())
-  serverCreditsRenewAt      DateTime    @default(dbgenerated("(now() + '1 mon'::interval)"))
-  monthlyServerCreditsLimit Int         @default(100)
-  autoAnalysisMonthlyGameLimit Int      @default(50)
-  autoAnalysisDailyGameLimit   Int      @default(10)
-  stopWhenCreditsBelow      Int         @default(0)
-  createdAt                 DateTime    @default(now())
-  updatedAt                 DateTime    @updatedAt
+  id                           String      @id @default(uuid()) @db.Uuid
+  userId                       String      @unique @db.Uuid
+  plan                         BillingPlan @default(FREE)
+  stripeCustomerId             String?     @unique
+  stripeSubscriptionId         String?     @unique
+  stripeSubscriptionStatus     String?
+  stripePriceId                String?
+  stripeCurrentPeriodEnd       DateTime?
+  stripeLastEventCreatedAt     DateTime?
+  stripeLastEventId            String?
+  serverCreditsBalance         Int         @default(100)
+  monthlyServerCreditsUsed     Int         @default(0)
+  serverCreditsPeriodStart     DateTime    @default(now())
+  serverCreditsRenewAt         DateTime    @default(dbgenerated("(now() + '1 mon'::interval)"))
+  monthlyServerCreditsLimit    Int         @default(100)
+  autoAnalysisMonthlyGameLimit Int         @default(50)
+  autoAnalysisDailyGameLimit   Int         @default(10)
+  stopWhenCreditsBelow         Int         @default(0)
+  createdAt                    DateTime    @default(now())
+  updatedAt                    DateTime    @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -716,6 +846,7 @@ model SolutionRevision {
   trainable          Boolean            @default(true)
   bestMoveUci        String
   acceptedMovesUci   String[]           @default([])
+  acceptanceFrontier Json
   bestLine           Json
   solutionTree       Json               @default(dbgenerated("'{}'::jsonb"))
   scoreAtStart       Json?
@@ -993,6 +1124,374 @@ model ProgressAnalyticsRateBucket {
   updatedAt       DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Strict acquisition analytics for dual onboarding. There is intentionally no
+/// free-form JSON, username, PGN, FEN, source URL, or move field.
+model OnboardingAnalyticsEvent {
+  id                String                 @id @default(uuid()) @db.Uuid
+  sessionId         String                 @db.Uuid
+  eventId           String
+  onboardingRunId   String?                @db.Uuid
+  userId            String?                @db.Uuid
+  eventName         OnboardingEventName
+  provider          Provider?
+  puzzleKind        OnboardingPuzzleKind?
+  experimentKey     String?
+  variantKey        String?
+  durationMs        Int?
+  gameCount         Int?
+  gameIndex         Int?
+  progressMilestone Int?
+  reason            String?
+  masterState       OnboardingMasterState?
+  occurredAt        DateTime
+  recordedAt        DateTime               @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([sessionId, eventId])
+  @@index([eventName, occurredAt])
+  @@index([sessionId, occurredAt])
+  @@index([onboardingRunId, occurredAt])
+  @@index([userId, occurredAt])
+}
+
+model OnboardingRateBucket {
+  keyHash         String
+  namespace       String
+  windowStartedAt DateTime
+  requestCount    Int
+  updatedAt       DateTime @updatedAt
+
+  @@id([keyHash, namespace])
+  @@index([windowStartedAt])
+}
+
+/// Editorial identity shown in Weekly Master attribution. This is deliberately
+/// separate from User: roster membership never implies a Backranq account or an
+/// endorsement relationship.
+model MasterPerson {
+  id               String   @id @default(uuid()) @db.Uuid
+  slug             String   @unique
+  displayName      String
+  attributionLabel String
+  active           Boolean  @default(true)
+  priority         Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  accounts   MasterAccount[]
+  candidates MasterCandidate[]
+  overrides  MasterAdminOverride[]
+
+  @@index([active, priority])
+}
+
+model MasterAccount {
+  id                  String    @id @default(uuid()) @db.Uuid
+  personId            String    @db.Uuid
+  provider            Provider
+  username            String
+  usernameNormalized  String
+  profileUrl          String
+  identityEvidence    Json      @default(dbgenerated("'{}'::jsonb"))
+  identityVerifiedAt  DateTime?
+  active              Boolean   @default(true)
+  priority            Int       @default(0)
+  lastFetchAt         DateTime?
+  lastSuccessAt       DateTime?
+  nextFetchAt         DateTime?
+  etag                String?   @db.Text
+  lastModified        String?   @db.Text
+  consecutiveFailures Int       @default(0)
+  lastError           String?   @db.Text
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  person           MasterPerson                @relation(fields: [personId], references: [id], onDelete: Restrict)
+  discoveries      MasterSourceGameDiscovery[]
+  candidates       MasterCandidate[]
+  analysisReceipts MasterAnalysisReceipt[]
+  overrides        MasterAdminOverride[]
+
+  @@unique([provider, usernameNormalized])
+  @@index([active, nextFetchAt, priority])
+  @@index([personId, active])
+}
+
+model MasterSourceGame {
+  id                String                   @id @default(uuid()) @db.Uuid
+  provider          Provider
+  externalId        String
+  canonicalUrl      String?
+  availability      MasterSourceAvailability @default(AVAILABLE)
+  currentSnapshotId String?                  @unique @db.Uuid
+  firstSeenAt       DateTime                 @default(now())
+  lastSeenAt        DateTime                 @default(now())
+  lastCheckedAt     DateTime                 @default(now())
+  missingSince      DateTime?
+  lastError         String?                  @db.Text
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  currentSnapshot MasterSourceGameSnapshot?   @relation("MasterCurrentSnapshot", fields: [currentSnapshotId], references: [id], onDelete: SetNull)
+  snapshots       MasterSourceGameSnapshot[]  @relation("MasterSourceSnapshots")
+  discoveries     MasterSourceGameDiscovery[]
+
+  @@unique([provider, externalId])
+  @@index([availability, lastCheckedAt])
+}
+
+model MasterSourceGameDiscovery {
+  sourceGameId String       @db.Uuid
+  accountId    String       @db.Uuid
+  featuredSide GameUserSide @default(UNKNOWN)
+  firstSeenAt  DateTime     @default(now())
+  lastSeenAt   DateTime     @default(now())
+
+  sourceGame MasterSourceGame @relation(fields: [sourceGameId], references: [id], onDelete: Cascade)
+  account    MasterAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@id([sourceGameId, accountId])
+  @@index([accountId, lastSeenAt])
+}
+
+/// Immutable provider response normalized at fetch time. A provider correction
+/// creates a new row instead of mutating evidence that may already be public.
+model MasterSourceGameSnapshot {
+  id                          String    @id @default(uuid()) @db.Uuid
+  sourceGameId                String    @db.Uuid
+  pipelineRunId               String?   @db.Uuid
+  snapshotHash                String
+  pgnHash                     String
+  pgn                         String    @db.Text
+  sourceUrl                   String?
+  playedAt                    DateTime
+  timeClass                   TimeClass
+  timeControlRaw              String?
+  timeControlInitialSeconds   Int?
+  timeControlIncrementSeconds Int?
+  rated                       Boolean?
+  result                      String?
+  termination                 String?
+  whiteName                   String
+  whiteRating                 Int?
+  blackName                   String
+  blackRating                 Int?
+  providerMetadata            Json      @default(dbgenerated("'{}'::jsonb"))
+  fetchedAt                   DateTime  @default(now())
+
+  sourceGame       MasterSourceGame        @relation("MasterSourceSnapshots", fields: [sourceGameId], references: [id], onDelete: Restrict)
+  currentForGame   MasterSourceGame?       @relation("MasterCurrentSnapshot")
+  pipelineRun      MasterPipelineRun?      @relation(fields: [pipelineRunId], references: [id], onDelete: SetNull)
+  candidates       MasterCandidate[]
+  analysisReceipts MasterAnalysisReceipt[]
+
+  @@unique([sourceGameId, snapshotHash])
+  @@index([sourceGameId, fetchedAt])
+  @@index([pgnHash])
+}
+
+model MasterPipelineRun {
+  id                 String                @id @default(uuid()) @db.Uuid
+  runKey             String                @unique
+  status             MasterPipelineStatus  @default(QUEUED)
+  stage              MasterPipelineStage   @default(SOURCE)
+  trigger            MasterPipelineTrigger @default(SCHEDULED)
+  scheduledFor       DateTime              @default(now())
+  lockedUntil        DateTime?
+  leaseToken         String?
+  attempts           Int                   @default(0)
+  configSnapshot     Json                  @default(dbgenerated("'{}'::jsonb"))
+  configHash         String
+  fetchedGames       Int                   @default(0)
+  createdSnapshots   Int                   @default(0)
+  analyzedSnapshots  Int                   @default(0)
+  eligibleCandidates Int                   @default(0)
+  publishedCount     Int                   @default(0)
+  lastError          String?               @db.Text
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  snapshots        MasterSourceGameSnapshot[]
+  candidates       MasterCandidate[]
+  analysisReceipts MasterAnalysisReceipt[]
+
+  @@index([status, scheduledFor])
+  @@index([lockedUntil])
+  @@index([createdAt])
+}
+
+/// Durable proof that a specific immutable snapshot/account/config was fully
+/// analyzed, including the valid case where no publishable moment was found.
+model MasterAnalysisReceipt {
+  id             String   @id @default(uuid()) @db.Uuid
+  snapshotId     String   @db.Uuid
+  accountId      String   @db.Uuid
+  pipelineRunId  String   @db.Uuid
+  configHash     String
+  complete       Boolean  @default(false)
+  candidateCount Int      @default(0)
+  manifest       Json     @default(dbgenerated("'{}'::jsonb"))
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  snapshot    MasterSourceGameSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  account     MasterAccount            @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  pipelineRun MasterPipelineRun        @relation(fields: [pipelineRunId], references: [id], onDelete: Restrict)
+
+  @@unique([snapshotId, accountId, configHash])
+  @@index([pipelineRunId, complete])
+  @@index([accountId, createdAt])
+}
+
+model MasterCandidate {
+  id                    String                @id @default(uuid()) @db.Uuid
+  snapshotId            String                @db.Uuid
+  personId              String                @db.Uuid
+  accountId             String                @db.Uuid
+  pipelineRunId         String                @db.Uuid
+  candidateKey          String                @unique
+  decisionPly           Int
+  fen                   String
+  positionHistory       String[]              @default([])
+  sideToMove            String
+  originalMoveUci       String
+  scoreBefore           Json
+  scoreAfter            Json
+  cpLoss                Float?
+  winChanceLoss         Float?
+  phase                 GamePhase?
+  sourceKinds           TrainingSourceKind[]  @default([])
+  lessonKinds           TrainingLessonKind[]  @default([])
+  themes                String[]              @default([])
+  verificationStatus    VerificationStatus
+  solutionShape         SolutionShape
+  gradingStrategy       GradingStrategy
+  continuationShape     ContinuationShape
+  bestMoveUci           String
+  acceptedMovesUci      String[]              @default([])
+  acceptanceFrontier    Json
+  bestLine              Json
+  solutionTree          Json                  @default(dbgenerated("'{}'::jsonb"))
+  moveAssessments       Json                  @default(dbgenerated("'[]'::jsonb"))
+  scoreAtStart          Json?
+  playedMoveScore       Json?
+  targetOutcome         Json                  @default(dbgenerated("'{}'::jsonb"))
+  gradingPolicy         Json
+  evidence              Json                  @default(dbgenerated("'{}'::jsonb"))
+  solutionHash          String
+  generatorVersion      String
+  configHash            String
+  hardGatePassed        Boolean
+  rejectionReasons      String[]              @default([])
+  freshnessScore        Float
+  recognitionScore      Float
+  clarityScore          Float
+  engineConfidenceScore Float
+  humanInterestScore    Float
+  solutionLengthScore   Float
+  totalScore            Float
+  status                MasterCandidateStatus
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  snapshot    MasterSourceGameSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  person      MasterPerson             @relation(fields: [personId], references: [id], onDelete: Restrict)
+  account     MasterAccount            @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  pipelineRun MasterPipelineRun        @relation(fields: [pipelineRunId], references: [id], onDelete: Restrict)
+  publication MasterPublication?
+
+  @@unique([snapshotId, personId, decisionPly, configHash])
+  @@index([hardGatePassed, totalScore, createdAt])
+  @@index([personId, status])
+  @@index([pipelineRunId, status])
+}
+
+model MasterPublication {
+  id               String                  @id @default(uuid()) @db.Uuid
+  slug             String                  @unique
+  candidateId      String                  @unique @db.Uuid
+  status           MasterPublicationStatus @default(PUBLISHED)
+  health           MasterPublicationHealth @default(FRESH)
+  headline         String
+  teaser           String
+  attributionLabel String
+  promptPayload    Json
+  reviewPayload    Json
+  sourceUrl        String?
+  contentHash      String                  @unique
+  isFallback       Boolean                 @default(false)
+  publishedAt      DateTime                @default(now())
+  lastCheckedAt    DateTime?
+  staleSince       DateTime?
+  healthReason     String?
+  withdrawnAt      DateTime?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  candidate         MasterCandidate       @relation(fields: [candidateId], references: [id], onDelete: Restrict)
+  currentForSlots   MasterSlot[]          @relation("MasterSlotCurrentPublication")
+  fallbackForSlots  MasterSlot[]          @relation("MasterSlotFallbackPublication")
+  scopedOverrides   MasterAdminOverride[] @relation("MasterOverridePublication")
+  targetedOverrides MasterAdminOverride[] @relation("MasterOverrideTargetPublication")
+
+  @@index([status, health, publishedAt])
+  @@index([isFallback, status])
+}
+
+model MasterSlot {
+  id                    String    @id @default(uuid()) @db.Uuid
+  key                   String    @unique
+  currentPublicationId  String?   @db.Uuid
+  fallbackPublicationId String?   @db.Uuid
+  version               Int       @default(0)
+  resolvedAt            DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  currentPublication  MasterPublication?    @relation("MasterSlotCurrentPublication", fields: [currentPublicationId], references: [id], onDelete: SetNull)
+  fallbackPublication MasterPublication?    @relation("MasterSlotFallbackPublication", fields: [fallbackPublicationId], references: [id], onDelete: SetNull)
+  overrides           MasterAdminOverride[]
+
+  @@index([currentPublicationId])
+  @@index([fallbackPublicationId])
+}
+
+model MasterAdminOverride {
+  id                  String             @id @default(uuid()) @db.Uuid
+  kind                MasterOverrideKind
+  slotId              String?            @db.Uuid
+  personId            String?            @db.Uuid
+  accountId           String?            @db.Uuid
+  publicationId       String?            @db.Uuid
+  targetPublicationId String?            @db.Uuid
+  startsAt            DateTime           @default(now())
+  expiresAt           DateTime
+  reason              String             @db.Text
+  createdByAdminId    String             @db.Uuid
+  revokedAt           DateTime?
+  revokedByAdminId    String?            @db.Uuid
+  revokeReason        String?            @db.Text
+  metadata            Json               @default(dbgenerated("'{}'::jsonb"))
+  createdAt           DateTime           @default(now())
+
+  slot              MasterSlot?        @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  person            MasterPerson?      @relation(fields: [personId], references: [id], onDelete: Cascade)
+  account           MasterAccount?     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  publication       MasterPublication? @relation("MasterOverridePublication", fields: [publicationId], references: [id], onDelete: Cascade)
+  targetPublication MasterPublication? @relation("MasterOverrideTargetPublication", fields: [targetPublicationId], references: [id], onDelete: Cascade)
+  createdByAdmin    AdminMembership    @relation("MasterOverrideCreatedBy", fields: [createdByAdminId], references: [id], onDelete: Restrict)
+  revokedByAdmin    AdminMembership?   @relation("MasterOverrideRevokedBy", fields: [revokedByAdminId], references: [id], onDelete: Restrict)
+
+  @@index([slotId, startsAt, expiresAt])
+  @@index([personId, startsAt, expiresAt])
+  @@index([accountId, startsAt, expiresAt])
+  @@index([publicationId, startsAt, expiresAt])
+  @@index([expiresAt, revokedAt])
 }
 
 // NextAuth (Auth.js) Prisma Adapter models

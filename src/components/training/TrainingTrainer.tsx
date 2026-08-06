@@ -108,7 +108,9 @@ function ReviewPanel({
     const acceptedAlternatives = Array.from(
         new Set([
             ...review.acceptedMovesUci,
-            ...(grade === 'BEST' || grade === 'GOOD'
+            ...(grade === 'BEST' ||
+            grade === 'STRONG' ||
+            grade === 'GOOD'
                 ? [review.submittedMoveUci]
                 : []),
         ])

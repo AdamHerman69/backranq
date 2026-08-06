@@ -354,7 +354,7 @@ describe('canonical training-moment extraction v2', () => {
         expect(output.moments).toHaveLength(1);
         expect(output.moments[0]?.solution.moveAssessments).toMatchObject([
             { decisionIndex: 0, moveUci: 'e2e3', grade: 'BEST' },
-            { decisionIndex: 0, moveUci: 'd2d3', grade: 'GOOD' },
+            { decisionIndex: 0, moveUci: 'd2d3', grade: 'BEST' },
         ]);
         expect(
             new Set(
@@ -641,7 +641,7 @@ describe('canonical training-moment extraction v2', () => {
             },
             {
                 moveUci: 'e7e5',
-                grade: 'GOOD',
+                grade: 'STRONG',
                 scoreAfter: {
                     kind: 'cp',
                     cp: 30,

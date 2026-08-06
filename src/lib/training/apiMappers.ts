@@ -8,7 +8,8 @@ import type {
 } from '@/lib/training/api';
 import type {
     AttemptGrade,
-    GradingPolicyV2,
+    AcceptanceFrontier,
+    GradingPolicyV3,
     PovScore,
     TrainingLessonKind,
     TrainingSourceKind,
@@ -37,6 +38,7 @@ export function toTrainingPromptDto(row: {
     currentSolutionRevision: {
         bestMoveUci: string;
         acceptedMovesUci: string[];
+        acceptanceFrontier: unknown;
         solutionShape: 'UNIQUE' | 'MULTIPLE' | 'OPEN';
         bestLine: unknown;
         scoreAtStart: unknown;
@@ -61,14 +63,68 @@ export function toTrainingPromptDto(row: {
     ) {
         throw new Error('Training prompt is missing canonical state');
     }
+    const revision = row.currentSolutionRevision;
     const originalScoreAfter = nullablePovScore(row.scoreAfter);
-    const gradingPolicy = gradingPolicyV2(
-        row.currentSolutionRevision.gradingPolicy
+    const gradingPolicy = gradingPolicyV3(
+        revision.gradingPolicy
     );
-    if (!originalScoreAfter || !gradingPolicy) {
+    const acceptanceFrontier = acceptanceFrontierDto(
+        revision.acceptanceFrontier
+    );
+    const solutionTree = trainingSolutionTreeDto(revision.solutionTree);
+    const frontierMoves = acceptanceFrontier?.moves.map(
+        (move) => move.moveUci
+    ) ?? [];
+    const moveAssessments = revision.moveAssessments
+        .filter(
+            (
+                assessment
+            ): assessment is typeof assessment & {
+                status: 'VERIFIED';
+                grade: AttemptGrade;
+            } =>
+                assessment.status === 'VERIFIED' &&
+                assessment.grade != null
+        )
+        .map(
+            (assessment): TrainingMoveAssessmentDto => ({
+                decisionIndex: assessment.decisionIndex,
+                fen: assessment.fen,
+                moveUci: assessment.moveUci,
+                source: assessment.source,
+                grade: assessment.grade,
+                scoreAfter: nullablePovScore(assessment.scoreAfter),
+                evidence: assessment.evidence,
+            })
+        );
+    if (
+        !originalScoreAfter ||
+        !gradingPolicy ||
+        !acceptanceFrontier ||
+        acceptanceFrontier.status !== 'STABLE' ||
+        solutionTree.alternativesComplete !== true ||
+        frontierMoves.length === 0 ||
+        frontierMoves[0] !== revision.bestMoveUci ||
+        acceptanceFrontier.moves[0]?.tier !== 'BEST' ||
+        frontierMoves.length !==
+            revision.acceptedMovesUci.length ||
+        frontierMoves.length !==
+            solutionTree.acceptedMovesUci.length ||
+        !hasCompleteLocalGradingTree(solutionTree, moveAssessments) ||
+        frontierMoves.some(
+            (move, index) =>
+                move !== revision.acceptedMovesUci[index] ||
+                move !== solutionTree.acceptedMovesUci[index] ||
+                moveAssessments.find(
+                    (assessment) =>
+                        assessment.decisionIndex === 0 &&
+                        assessment.fen === row.fen &&
+                        assessment.moveUci === move
+                )?.grade !== acceptanceFrontier.moves[index]?.tier
+        )
+    ) {
         throw new Error('Training prompt has invalid grading evidence');
     }
-    const revision = row.currentSolutionRevision;
     const review = toTrainingReviewDto({
         moment: row,
         revision,
@@ -82,31 +138,9 @@ export function toTrainingPromptDto(row: {
         originalMoveUci: row.originalMoveUci,
         originalScoreAfter,
         gradingPolicy,
-        solutionTree: trainingSolutionTreeDto(revision.solutionTree),
-        moveAssessments: revision.moveAssessments
-            .filter(
-                (
-                    assessment
-                ): assessment is typeof assessment & {
-                    status: 'VERIFIED';
-                    grade: AttemptGrade;
-                } =>
-                    assessment.status === 'VERIFIED' &&
-                    assessment.grade != null
-            )
-            .map(
-                (assessment): TrainingMoveAssessmentDto => ({
-                    decisionIndex: assessment.decisionIndex,
-                    fen: assessment.fen,
-                    moveUci: assessment.moveUci,
-                    source: assessment.source,
-                    grade: assessment.grade,
-                    scoreAfter: nullablePovScore(
-                        assessment.scoreAfter
-                    ),
-                    evidence: assessment.evidence,
-                })
-            ),
+        acceptanceFrontier,
+        solutionTree,
+        moveAssessments,
         review,
     };
     return {
@@ -118,21 +152,96 @@ export function toTrainingPromptDto(row: {
     };
 }
 
-function gradingPolicyV2(value: unknown): GradingPolicyV2 | null {
+function hasCompleteLocalGradingTree(
+    node: TrainingSolutionTreeNodeDto,
+    assessments: TrainingMoveAssessmentDto[]
+): boolean {
+    if (node.role === 'USER') {
+        const branchMoves = node.branches.map(
+            (branch) => branch.moveUci
+        );
+        if (
+            node.alternativesComplete !== true ||
+            node.acceptedMovesUci.length === 0 ||
+            branchMoves.length !== node.acceptedMovesUci.length ||
+            node.acceptedMovesUci.some(
+                (move, index) => move !== branchMoves[index]
+            ) ||
+            node.acceptedMovesUci.some(
+                (move) =>
+                    !assessments.some(
+                        (assessment) =>
+                            assessment.decisionIndex ===
+                                Math.floor(node.ply / 2) &&
+                            assessment.fen === node.fen &&
+                            assessment.moveUci === move &&
+                            (assessment.grade === 'BEST' ||
+                                assessment.grade === 'STRONG' ||
+                                assessment.grade === 'GOOD')
+                    )
+            )
+        ) {
+            return false;
+        }
+    }
+    if (
+        node.role === 'OPPONENT' &&
+        (node.alternativesComplete !== true ||
+            node.acceptedMovesUci.length !== 0 ||
+            node.branches.length > 1 ||
+            (node.branches.length === 1 &&
+                node.selectedMoveUci !==
+                    node.branches[0]?.moveUci))
+    ) {
+        return false;
+    }
+    if (
+        node.role === 'TERMINAL' &&
+        (node.acceptedMovesUci.length !== 0 ||
+            node.branches.length !== 0)
+    ) {
+        return false;
+    }
+    return node.branches.every((branch) =>
+        hasCompleteLocalGradingTree(branch.child, assessments)
+    );
+}
+
+function gradingPolicyV3(value: unknown): GradingPolicyV3 | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
         return null;
     }
-    const policy = value as Partial<GradingPolicyV2>;
-    return policy.version === 2 &&
+    const policy = value as Partial<GradingPolicyV3>;
+    return policy.version === 3 &&
         policy.pov === 'TRAINING_SIDE' &&
-        policy.unknownMove === 'DYNAMIC' &&
+        policy.unknownMove === 'REJECT_OUTSIDE_ACCEPTED_SET' &&
         policy.matePolicy === 'EXACT' &&
         policy.tablebasePolicy === 'EXACT' &&
         !!policy.best &&
+        !!policy.strong &&
         !!policy.success &&
         !!policy.improvement
-        ? (policy as GradingPolicyV2)
+        ? (policy as GradingPolicyV3)
         : null;
+}
+
+function acceptanceFrontierDto(
+    value: unknown
+): AcceptanceFrontier | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null;
+    }
+    const frontier = value as Partial<AcceptanceFrontier>;
+    if (
+        frontier.version !== 1 ||
+        (frontier.status !== 'STABLE' &&
+            frontier.status !== 'OPEN' &&
+            frontier.status !== 'UNSTABLE') ||
+        !Array.isArray(frontier.moves)
+    ) {
+        return null;
+    }
+    return frontier as AcceptanceFrontier;
 }
 
 function trainingSolutionTreeDto(
@@ -261,6 +370,7 @@ export function toTrainingReviewDto(args: {
     revision: {
         bestMoveUci: string;
         acceptedMovesUci: string[];
+        acceptanceFrontier: unknown;
         solutionShape: 'UNIQUE' | 'MULTIPLE' | 'OPEN';
         bestLine: unknown;
         scoreAtStart: unknown;
@@ -285,7 +395,10 @@ export function toTrainingReviewDto(args: {
         submittedMoveUci: args.submittedMoveUci,
         bestMoveUci: args.revision.bestMoveUci,
         acceptedMovesUci: args.revision.acceptedMovesUci,
-        acceptedMovesComplete: args.revision.solutionShape !== 'OPEN',
+        acceptedMovesComplete:
+            acceptanceFrontierDto(
+                args.revision.acceptanceFrontier
+            )?.status === 'STABLE',
         bestLineUci: Array.isArray(args.revision.bestLine)
             ? args.revision.bestLine.filter(
                   (move): move is string => typeof move === 'string'

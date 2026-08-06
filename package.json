@@ -22,6 +22,7 @@
         "check:runtime": "node scripts/check-runtime-readiness.mjs",
         "check:stripe": "node scripts/smoke-stripe-billing.mjs",
         "check:ledger": "node scripts/reconcile-credit-ledger.mjs",
+        "admin:grant": "node scripts/grant-admin.mjs",
         "smoke:auth-session": "node scripts/seed-local-auth-session.mjs",
         "smoke:stockfish-browser": "node scripts/smoke-stockfish-browser.mjs",
         "benchmark:coach-engine": "node scripts/benchmark-coach-engine.mjs",
