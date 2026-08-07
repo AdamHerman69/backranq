@@ -1,9 +1,5 @@
 import { prisma } from '@/lib/prisma';
-import {
-    DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT,
-    DEFAULT_SERVER_CREDITS_BALANCE,
-    DEFAULT_STOP_WHEN_CREDITS_BELOW,
-} from '@/lib/services/billingAccounts';
+import { getEffectiveBillingAccount } from '@/lib/services/billingAccounts';
 import { summarizeCreditLedgerEntries } from '@/lib/services/creditLedger';
 import {
     DEFAULT_ANALYSIS_QUALITY,
@@ -83,11 +79,15 @@ export function calculateManualServerAnalysisCapacity(args: {
 export async function getManualServerAnalysisCapacity(
     userId: string
 ): Promise<ManualServerAnalysisCapacity> {
-    const [account, creditTotals, user] = await Promise.all([
-        prisma.billingAccount.findUnique({ where: { userId } }),
+    const account = await getEffectiveBillingAccount(userId);
+    const [creditTotals, user] = await Promise.all([
         prisma.creditLedgerEntry.groupBy({
             by: ['type'],
-            where: { userId },
+            where: {
+                userId,
+                scope: 'RESERVATION',
+                billingPeriodStart: account.serverCreditsPeriodStart,
+            },
             _sum: { credits: true },
         }),
         prisma.user.findUnique({
@@ -101,24 +101,11 @@ export async function getManualServerAnalysisCapacity(
             credits: row._sum.credits ?? 0,
         }))
     );
-    const renewalDue =
-        account !== null && account.serverCreditsRenewAt <= new Date();
-    const monthlyLimit =
-        account?.monthlyServerCreditsLimit ??
-        DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT;
-    const currentBalance =
-        account === null
-            ? DEFAULT_SERVER_CREDITS_BALANCE
-            : renewalDue
-              ? Math.max(account.serverCreditsBalance, monthlyLimit)
-              : account.serverCreditsBalance;
-
     return calculateManualServerAnalysisCapacity({
-        currentBalance,
-        stopThreshold:
-            account?.stopWhenCreditsBelow ?? DEFAULT_STOP_WHEN_CREDITS_BELOW,
-        monthlyLimit,
-        monthlyUsed: renewalDue ? 0 : (account?.monthlyServerCreditsUsed ?? 0),
+        currentBalance: account.serverCreditsBalance,
+        stopThreshold: account.stopWhenCreditsBelow,
+        monthlyLimit: account.monthlyServerCreditsLimit,
+        monthlyUsed: account.monthlyServerCreditsUsed,
         outstandingReservations: ledger.outstandingReserved,
         analysisQuality: canonicalPreferences(user?.preferences).analysisQuality,
     });

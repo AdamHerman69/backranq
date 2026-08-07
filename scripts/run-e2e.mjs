@@ -107,6 +107,11 @@ const env = {
     NEXTAUTH_SECRET:
         process.env.NEXTAUTH_SECRET ??
         'backranq-local-e2e-secret-not-for-production',
+    SMTP2GO_API_KEY:
+        process.env.SMTP2GO_API_KEY ?? 'e2e-placeholder-never-send',
+    BACKRANQ_EMAIL_FROM:
+        process.env.BACKRANQ_EMAIL_FROM ??
+        'Backranq E2E <no-reply@example.invalid>',
     // The global analysis bar performs independent polling and can resize the
     // sticky header while pointer-based board tests are in progress. Dedicated
     // unit/integration coverage owns that feature; keep authenticated browser

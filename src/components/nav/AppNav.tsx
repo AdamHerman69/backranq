@@ -17,7 +17,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { signOutAndClearCoachSession } from "@/lib/coach/signOut";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 
@@ -123,6 +130,9 @@ export function AppNav() {
             <div className="p-6">
               <SheetHeader>
                 <SheetTitle>Backranq</SheetTitle>
+                <SheetDescription className="sr-only">
+                  Primary navigation and account actions
+                </SheetDescription>
               </SheetHeader>
 
               <nav

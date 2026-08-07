@@ -22,7 +22,10 @@ const { prismaMock, txMock, calls } = vi.hoisted(() => {
 
 vi.mock('@/lib/prisma', () => ({ prisma: prismaMock }));
 
-import { recordNotification } from '@/lib/notifications/service';
+import {
+    recordNotification,
+    recordPracticeDue,
+} from '@/lib/notifications/service';
 import type { NotificationDbClient } from '@/lib/notifications/service';
 
 describe('recordNotification', () => {
@@ -44,6 +47,22 @@ describe('recordNotification', () => {
             emailProductNews: false,
             productNewsConsentedAt: null,
             pushEnabled: false,
+            timezone: 'UTC',
+            digestHour: 9,
+        });
+        prismaMock.notificationPreference.upsert.mockResolvedValue({
+            emailSuppressedAt: null,
+            optionalEmailsUnsubscribedAt: null,
+            emailPracticeReady: true,
+            emailAnalysisFailed: true,
+            emailSyncSummary: true,
+            emailBilling: true,
+            emailWeeklyProgress: true,
+            emailProductNews: false,
+            productNewsConsentedAt: null,
+            pushEnabled: false,
+            timezone: 'UTC',
+            digestHour: 9,
         });
         txMock.notification.upsert.mockImplementation(async () => {
             calls.push('notification');
@@ -86,5 +105,60 @@ describe('recordNotification', () => {
 
         expect(prismaMock.$transaction).not.toHaveBeenCalled();
         expect(calls).toEqual(['notification', 'delivery']);
+    });
+
+    it('replaces a retried daily due snapshot instead of inflating its count', async () => {
+        await recordPracticeDue({
+            userId: 'user-1',
+            dueCount: 4,
+            dueCountIsExact: true,
+            earliestDueAt: new Date('2026-08-01T09:00:00.000Z'),
+            generatedAt: new Date('2026-08-04T08:00:00.000Z'),
+        });
+
+        expect(txMock.notification.upsert).toHaveBeenCalledWith({
+            where: {
+                dedupeKey:
+                    'practice-due:user-1:2026-08-04T09:00:00.000Z',
+            },
+            create: expect.objectContaining({
+                type: 'PRACTICE_DUE',
+                itemCount: 4,
+                href: '/practice?mode=review',
+            }),
+            update: expect.objectContaining({
+                itemCount: 4,
+            }),
+        });
+        expect(txMock.notificationDelivery.upsert).toHaveBeenCalledWith(
+            expect.objectContaining({
+                create: expect.objectContaining({
+                    scheduledFor: new Date(
+                        '2026-08-04T09:00:00.000Z'
+                    ),
+                    dispatchPriority: 1,
+                }),
+            })
+        );
+    });
+
+    it('persists billing email priority before dispatch', async () => {
+        await recordNotification({
+            userId: 'user-1',
+            type: 'BILLING_ACTION_REQUIRED',
+            title: 'Payment action required',
+            body: 'Update your payment method',
+            dedupeKey: 'billing:user-1',
+            email: true,
+        });
+
+        expect(txMock.notificationDelivery.upsert).toHaveBeenCalledWith(
+            expect.objectContaining({
+                create: expect.objectContaining({
+                    channel: 'EMAIL',
+                    dispatchPriority: 0,
+                }),
+            })
+        );
     });
 });

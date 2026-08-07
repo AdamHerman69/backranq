@@ -64,7 +64,9 @@ describe('POST /api/webhooks/smtp2go', () => {
         expect(prismaMock.notificationDelivery.updateMany).toHaveBeenCalledWith({
             where: {
                 id: 'delivery-1',
-                status: { in: ['PENDING', 'PROCESSING', 'SENT', 'FAILED'] },
+                status: {
+                    in: ['PENDING', 'QUEUED', 'PROCESSING', 'SENT', 'FAILED'],
+                },
             },
             data: {
                 status: 'DELIVERED',
@@ -88,7 +90,14 @@ describe('POST /api/webhooks/smtp2go', () => {
             where: {
                 id: 'delivery-1',
                 status: {
-                    in: ['PENDING', 'PROCESSING', 'SENT', 'FAILED', 'DELIVERED'],
+                    in: [
+                        'PENDING',
+                        'QUEUED',
+                        'PROCESSING',
+                        'SENT',
+                        'FAILED',
+                        'DELIVERED',
+                    ],
                 },
             },
             data: { status: 'BOUNCED' },
@@ -100,9 +109,13 @@ describe('POST /api/webhooks/smtp2go', () => {
             where: {
                 userId: 'user-1',
                 channel: 'EMAIL',
-                status: 'PENDING',
+                status: { in: ['PENDING', 'QUEUED'] },
             },
-            data: { status: 'SUPPRESSED' },
+            data: {
+                status: 'SUPPRESSED',
+                dispatchToken: null,
+                lockedUntil: null,
+            },
         });
     });
 
@@ -120,7 +133,7 @@ describe('POST /api/webhooks/smtp2go', () => {
         expect(prismaMock.notificationDelivery.updateMany).toHaveBeenCalledWith({
             where: {
                 id: 'delivery-1',
-                status: { in: ['PENDING', 'PROCESSING', 'SENT'] },
+                status: { in: ['PENDING', 'QUEUED', 'PROCESSING', 'SENT'] },
             },
             data: { status: 'FAILED' },
         });
@@ -152,7 +165,9 @@ describe('POST /api/webhooks/smtp2go', () => {
         expect(prismaMock.notificationDelivery.updateMany).toHaveBeenCalledWith({
             where: {
                 id: 'delivery-race',
-                status: { in: ['PENDING', 'PROCESSING', 'SENT', 'FAILED'] },
+                status: {
+                    in: ['PENDING', 'QUEUED', 'PROCESSING', 'SENT', 'FAILED'],
+                },
             },
             data: {
                 status: 'DELIVERED',

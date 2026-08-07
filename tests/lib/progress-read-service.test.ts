@@ -8,8 +8,7 @@ import {
 describe('Progress read service query shape', () => {
     it('loads only active current candidates and bounded terminal evidence', async () => {
         const userFindUnique = vi.fn().mockResolvedValue({
-            lichessUsername: 'player',
-            chesscomUsername: null,
+            chessAccountConnections: [{ provider: 'LICHESS' }],
             billingAccount: {
                 serverCreditsBalance: 7,
             },
@@ -31,7 +30,8 @@ describe('Progress read service query shape', () => {
                 scope: 90,
                 asOf,
                 filters: { providers: [], timeClasses: [] },
-            }
+            },
+            7
         );
 
         expect(positionFindMany).toHaveBeenCalledWith(
@@ -44,8 +44,10 @@ describe('Progress read service query shape', () => {
                     currentSolutionRevision: {
                         is: {
                             trainable: true,
-                            verificationStatus: {
-                                in: ['VERIFIED', 'AMBIGUOUS'],
+                            verificationStatus: 'VERIFIED',
+                            acceptanceFrontier: {
+                                path: ['status'],
+                                equals: 'STABLE',
                             },
                         },
                     },
@@ -110,8 +112,7 @@ describe('Progress read service query shape', () => {
                 {
                     user: {
                         findUnique: vi.fn().mockResolvedValue({
-                            lichessUsername: 'player',
-                            chesscomUsername: null,
+                            chessAccountConnections: [{ provider: 'LICHESS' }],
                             billingAccount: null,
                         }),
                     },
@@ -169,7 +170,8 @@ describe('Progress read service query shape', () => {
                         providers: [],
                         timeClasses: [],
                     },
-                }
+                },
+                null
             );
 
         expect(result.inventory.eligiblePositions).toBe(0);
@@ -190,8 +192,7 @@ describe('Progress read service query shape', () => {
                 {
                     user: {
                         findUnique: vi.fn().mockResolvedValue({
-                            lichessUsername: 'player',
-                            chesscomUsername: null,
+                            chessAccountConnections: [{ provider: 'LICHESS' }],
                             billingAccount: null,
                         }),
                     },
@@ -217,7 +218,8 @@ describe('Progress read service query shape', () => {
                         providers: [],
                         timeClasses: [],
                     },
-                }
+                },
+                null
             )
         ).rejects.toEqual(
             new ProgressDatasetTooLargeError('games')

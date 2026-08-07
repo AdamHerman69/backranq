@@ -1,5 +1,23 @@
 # Backranq repository instructions
 
+## Product idea capture
+
+- `/Users/adam/dev/backranq/ideas.md` is the single untracked backlog shared by
+  the canonical checkout and every Backranq worktree for product, UX, growth,
+  distribution, and marketing ideas worth preserving before they become
+  committed implementation work.
+- When the user explicitly calls something a good idea, asks to remember or note
+  it, or clearly approves it for future consideration, append or refine
+  `/Users/adam/dev/backranq/ideas.md` in the same task without requiring a
+  separate request or confirmation. Do not create a worktree-local ideas file.
+- Avoid duplicate checklist items. Refine or extend the existing item when the
+  idea is already represented, and preserve useful constraints or rationale
+  needed to understand the intended outcome.
+- Add new ideas as unchecked checklist items. Check them only when the
+  user-facing outcome has been implemented and verified.
+- Do not treat casual brainstorming, rejected alternatives, or an entry in the
+  idea backlog as authorization to implement the idea.
+
 ## Product stage and production policy
 
 - Backranq is currently a pre-user product. The deployed environment is not a

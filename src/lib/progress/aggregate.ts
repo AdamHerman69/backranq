@@ -38,8 +38,7 @@ type PositionPhase = 'OPENING' | 'MIDDLEGAME' | 'ENDGAME';
 type TrainingSourceKind = 'MY_MISTAKE' | 'MISSED_OPPORTUNITY';
 
 export type ProgressUserRecord = {
-    lichessUsername: string | null;
-    chesscomUsername: string | null;
+    linkedAccounts: { lichess: boolean; chesscom: boolean };
     serverCreditsBalance: number | null;
 };
 
@@ -110,6 +109,7 @@ export type ProgressPositionRecord = {
             | 'AMBIGUOUS'
             | 'UNSTABLE'
             | 'INVALID';
+        acceptanceFrontier: unknown;
         trainable: boolean;
     } | null;
     observations: Array<{
@@ -246,8 +246,8 @@ function positionIsEligible(
         !revision ||
         revision.id !== position.currentSolutionRevisionId ||
         !revision.trainable ||
-        (revision.verificationStatus !== 'VERIFIED' &&
-            revision.verificationStatus !== 'AMBIGUOUS')
+        revision.verificationStatus !== 'VERIFIED' ||
+        !hasStableAcceptanceFrontier(revision.acceptanceFrontier)
     ) {
         return false;
     }
@@ -256,6 +256,16 @@ function positionIsEligible(
             observation.analysisRunId === run.id &&
             observation.solutionRevisionId === revision.id &&
             observation.observedSolutionHash === revision.solutionHash
+    );
+}
+
+function hasStableAcceptanceFrontier(value: unknown) {
+    return (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        'status' in value &&
+        value.status === 'STABLE'
     );
 }
 
@@ -905,13 +915,12 @@ function primaryOperationalState(args: {
     counts: ProgressAnalysisStateCounts;
     waitingCredits: number;
 }) {
-    if (
-        !args.user.lichessUsername &&
-        !args.user.chesscomUsername
-    ) {
-        return 'NO_LINKED_ACCOUNT' as const;
+    if (args.games.length === 0) {
+        if (!args.user.linkedAccounts.lichess && !args.user.linkedAccounts.chesscom) {
+            return 'NO_LINKED_ACCOUNT' as const;
+        }
+        return 'NO_GAMES' as const;
     }
-    if (args.games.length === 0) return 'NO_GAMES' as const;
     if (args.waitingCredits > 0) {
         return 'WAITING_FOR_CREDITS' as const;
     }
@@ -1073,7 +1082,7 @@ export function aggregateProgressSnapshot({
         request.asOf
     );
     const providerOptions = (
-        ['LICHESS', 'CHESSCOM'] as const
+        ['LICHESS', 'CHESSCOM', 'MANUAL_PGN', 'BACKRANQ_COACH'] as const
     ).map((provider) => ({
         key: provider,
         sourceGames: unfilteredCurrent.filter(
@@ -1127,10 +1136,7 @@ export function aggregateProgressSnapshot({
                     unfilteredCurrentAttempts.length > 0),
         },
         operational: {
-            linkedAccounts: {
-                lichess: Boolean(user.lichessUsername),
-                chesscom: Boolean(user.chesscomUsername),
-            },
+            linkedAccounts: user.linkedAccounts,
             serverCreditsBalance: user.serverCreditsBalance,
             waitingForCredits: waitingCredits,
             primaryState: primaryOperationalState({

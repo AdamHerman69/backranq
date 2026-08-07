@@ -10,10 +10,8 @@ type LichessEmail = {
     email?: string;
 };
 
-type LichessProfile = Partial<LichessAccount> & {
+type LichessProfile = LichessAccount & {
     email?: string | null;
-    // fallback identifier when account endpoint isn't accessible
-    fallbackId?: string;
 };
 
 export default function LichessProvider(options: {
@@ -62,9 +60,10 @@ export default function LichessProvider(options: {
                 if (!accessToken)
                     throw new Error('Missing Lichess access token');
 
-                // The official oauth-app example only requires `email:read` and calls
-                // /api/account/email. Some endpoints may require additional scopes, so
-                // we treat /api/account as best-effort.
+                // The account endpoint is authoritative for the stable Auth.js
+                // providerAccountId. Email is optional and must never become an
+                // identity fallback: doing so would create a second provider account
+                // when a transient /api/account failure later recovers.
                 const [accountRes, emailRes] = await Promise.all([
                     fetch('https://lichess.org/api/account', {
                         headers: { Authorization: `Bearer ${accessToken}` },
@@ -85,7 +84,13 @@ export default function LichessProvider(options: {
                     email = emailJson.email ?? null;
                 }
 
-                if (!account && !email) {
+                if (
+                    !account ||
+                    typeof account.id !== 'string' ||
+                    !account.id.trim() ||
+                    typeof account.username !== 'string' ||
+                    !account.username.trim()
+                ) {
                     const a = accountRes ? `${accountRes.status}` : 'network';
                     const e = emailRes ? `${emailRes.status}` : 'network';
                     throw new Error(
@@ -93,17 +98,13 @@ export default function LichessProvider(options: {
                     );
                 }
 
-                return account
-                    ? { ...account, email }
-                    : { email, fallbackId: email ?? undefined };
+                return { ...account, email };
             },
         },
         profile(profile) {
-            const id = profile.id ?? profile.fallbackId ?? 'unknown';
-            const name = profile.username ?? profile.email ?? 'Lichess user';
             return {
-                id,
-                name,
+                id: profile.id,
+                name: profile.username,
                 email: profile.email ?? null,
                 image: null,
             };

@@ -8,6 +8,7 @@ import {
     sanitizeCoachSessionSnapshot,
 } from '@/lib/coach/sessionStore';
 import type {
+    CoachActiveSessionSnapshot,
     CoachMistake,
     CoachPlayedMove,
     CoachSessionSnapshot,
@@ -83,10 +84,10 @@ function playMoves(
 }
 
 function snapshot(
-    overrides: Partial<CoachSessionSnapshot> = {}
-): CoachSessionSnapshot {
+    overrides: Partial<CoachActiveSessionSnapshot> = {}
+): CoachActiveSessionSnapshot {
     return {
-        version: 3,
+        version: 4,
         sessionKey: 'coach-session-1',
         ownerId: 'user-1',
         savedAt: NOW,
@@ -216,27 +217,13 @@ describe('coach session snapshot sanitization', () => {
         ).toBe('user-1');
     });
 
-    it('migrates a legacy v1 checkpoint to a locked Stockfish opponent', () => {
-        const legacy: Record<string, unknown> = {
-            ...snapshot(),
-            version: 1,
-        };
-        delete legacy.opponentModel;
-        delete legacy.opponentElo;
-        delete legacy.opponentEngineRevision;
-        const restored = sanitizeCoachSessionSnapshot(
-            legacy,
-            NOW
-        );
-
-        expect(restored).toMatchObject({
-            version: 3,
-            opponentModel: 'stockfish',
-            opponentId: 'club',
-            opponentElo: null,
-            opponentEngineRevision: STOCKFISH_OPPONENT_REVISION,
-            tacticalGuardCp: null,
-        });
+    it('rejects obsolete snapshot contracts instead of restoring aliases', () => {
+        expect(
+            sanitizeCoachSessionSnapshot(
+                { ...snapshot(), version: 3 },
+                NOW
+            )
+        ).toBeNull();
     });
 
     it('normalizes and locks Maia opponent metadata', () => {
@@ -258,26 +245,7 @@ describe('coach session snapshot sanitization', () => {
         expect(restored?.opponentElo).toBe(MAIA_OPPONENT_DEFAULT_ELO);
     });
 
-    it('migrates v2 sessions and persists a normalized tactical guard threshold only for the hybrid model', () => {
-        const previous = {
-            ...snapshot(),
-            version: 2,
-            opponentModel: 'maia3',
-            opponentElo: 1_600,
-            opponentEngineRevision: 'maia3-engine-v1',
-        };
-        delete (previous as { tacticalGuardCp?: unknown }).tacticalGuardCp;
-        const restoredPrevious = sanitizeCoachSessionSnapshot(
-            previous,
-            NOW
-        );
-        expect(restoredPrevious).toMatchObject({
-            version: 3,
-            opponentModel: 'maia3',
-            opponentElo: 1_600,
-            tacticalGuardCp: null,
-        });
-
+    it('persists a normalized tactical guard threshold only for the hybrid model', () => {
         const guarded = sanitizeCoachSessionSnapshot(
             {
                 ...snapshot(),
@@ -290,7 +258,7 @@ describe('coach session snapshot sanitization', () => {
             NOW
         );
         expect(guarded).toMatchObject({
-            version: 3,
+            version: 4,
             opponentModel: 'maia3-tactical',
             opponentElo: 1_750,
             opponentEngineRevision:
@@ -312,6 +280,34 @@ describe('coach session snapshot sanitization', () => {
         expect(restored?.thresholdCp).toBe(150);
         expect(restored?.flipped).toBe(false);
         expect(restored?.positionFens).toEqual([START_FEN]);
+    });
+
+    it('retains a completed game snapshot until explicit save or discard', () => {
+        const replayed = playMoves('w', [
+            'f2f3',
+            'e7e5',
+            'g2g4',
+            'd8h4',
+        ]);
+        const restored = sanitizeCoachSessionSnapshot(
+            {
+                ...snapshot(),
+                phase: 'gameover',
+                completedAt: '2026-07-31T00:00:00.000Z',
+                gameFen: replayed.chess.fen(),
+                moves: replayed.moves,
+                positionFens: replayed.positionFens,
+                baseline: null,
+            },
+            NOW
+        );
+
+        expect(restored).toMatchObject({
+            version: 4,
+            phase: 'gameover',
+            completedAt: '2026-07-31T00:00:00.000Z',
+        });
+        expect(restored?.moves).toHaveLength(4);
     });
 
     it('legally replays moves and replaces forged derived move metadata', () => {
@@ -492,7 +488,7 @@ describe('coach session snapshot sanitization', () => {
     it('rejects unsupported, stale, future, oversized, and invalid-profile snapshots', () => {
         expect(
             sanitizeCoachSessionSnapshot(
-                { ...snapshot(), version: 4 },
+                { ...snapshot(), version: 3 },
                 NOW
             )
         ).toBeNull();

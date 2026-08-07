@@ -10,6 +10,13 @@ transaction as the product event whenever the event already has a transaction
 
 - New Practice positions after analysis, combined into at most one daily email
   at the user's chosen digest hour and timezone.
+- Scheduled Practice reviews derived from the current, verified solution
+  semantics. Outstanding reviews may create one reminder per local digest day;
+  retries replace the same daily snapshot instead of inflating its count. A
+  bounded live recheck cancels the delivery when it can prove the queue is
+  empty. If that check exhausts its raw-row budget on stale state, the durable
+  sweep snapshot is preserved rather than misreporting an unknown result as
+  zero.
 - New games imported by automatic sync, with off/daily/weekly email options.
 - Terminal analysis and sync failures.
 - Automatic analysis paused at the configured credit reserve and failed Stripe
@@ -20,9 +27,11 @@ transaction as the product event whenever the event already has a transaction
 
 Transactional, optional digest, and marketing preferences are separate.
 Product news records a consent timestamp. The unsubscribe endpoint disables all
-optional email categories, including practice-ready messages. Practice-ready
-email is also marked as low priority for clients that honor importance headers.
-It is not sent as Web Push, so it remains a quiet inbox and daily-email update.
+optional email categories, including practice-ready and practice-due messages.
+Both Practice email types share the user's `emailPracticeReady` preference and
+the same local-calendar daily-send guard. They are marked low priority for mail
+clients that honor importance headers. Due reminders may also use Web Push when
+the user has explicitly enabled push; creation notifications remain email-only.
 Analysis and sync failures stay in the in-app inbox by default; payment failures
 and automatic analysis stopping at the configured credit reserve remain enabled
 as important email alerts.
@@ -80,6 +89,16 @@ file. Never commit API keys or signing secrets.
 Templates use the unified React Email 6 `react-email` package rather than the
 deprecated `@react-email/components` package.
 
+Premium invitations are transactional emails initiated from `/admin`. The
+database stores only a hash of the 14-day token. A link does not grant access by
+itself: after sign-in, the recipient must explicitly accept it from the same
+normalized email address. Resending a confirmed `SENT` invitation rotates the
+token and invalidates the old link; a failed or ambiguous provider attempt
+reuses the same generation so a possibly delivered link remains valid. These
+emails are not governed by optional notification preferences or unsubscribe
+state, but they reserve from the same SMTP2GO safety budget as notification
+email and cannot consume the slots reserved for billing-action messages.
+
 Email and push deliveries remain `PENDING` when their provider configuration is
 absent. This makes local development safe and allows delivery after production
 configuration is completed.
@@ -87,8 +106,9 @@ configuration is completed.
 ## Processing
 
 The daily `/api/cron/notifications` job is a reconciliation fallback that
-creates due weekly summaries and wakes pending deliveries within the Hobby cron
-limit. Normal future delivery times schedule a delayed Vercel Queue sweep, so
+creates Practice-due reminders and due weekly summaries, then wakes pending
+deliveries within the Hobby cron limit. Normal future delivery times schedule a
+delayed Vercel Queue sweep, so
 timezone-based digest hours do not wait for the next daily cron. Vercel Queue
 processes each delivery independently. The
 database claim lease prevents normal concurrent retries. SMTP2GO does not offer
@@ -96,12 +116,30 @@ a provider idempotency key for this endpoint, so any email whose request times
 out or loses its response is marked failed instead of retried and risking a
 duplicate. Explicit quota responses are deferred until the next UTC day. The
 configurable daily safety limit (30 by default, leaving headroom under the free
-monthly allowance) and per-dispatch cap (20 by default) pace traffic below the
-provider allowance. Five daily slots are reserved for billing-action messages,
-which are selected ahead of optional campaigns. Delivery webhooks use both
+monthly allowance) is an atomic provider-day counter shared by notifications
+and Premium invitations. The per-dispatch cap (20 by default) paces queue
+traffic. Five daily slots are reserved for billing-action messages, which are
+selected ahead of optional campaigns. Practice email also atomically claims one
+unique local-calendar-day send window per user before provider handoff, so
+concurrent ready/due workers cannot both send. A fixed-size, index-ordered
+recovery pass releases only expired `RESERVED` claims left by a crash before
+provider handoff; `HANDOFF` and `AMBIGUOUS` evidence is never reclaimed
+automatically. A partial-unique logical-attempt key survives worker-token
+rotation: `SENT` is replayed from its stored provider ID, while `HANDOFF` and
+`AMBIGUOUS` fail closed without another provider call. Delivery webhooks use both
 SMTP2GO's email ID and the requested `X-Backranq-Delivery-Id` callback field,
 apply monotonic status precedence, and suppress future email after a hard bounce
 or spam complaint.
+
+Practice-due discovery is a durable snapshot sweep. Each queue message scans at
+most 256 raw review-state rows by the `(nextDueAt, id)` index before applying
+current-solution and VERIFIED checks. Only after the raw cursor reaches the end
+does notification fan-out begin, in pages of 50 users with five concurrent
+writes. Counts above 100 are displayed as `100+`. Completed sweep snapshots are
+removed in bounded pages after 30 days; active scans and notification fan-outs
+are never eligible for cleanup. Maintenance resumes the single active sweep
+before creating a newer snapshot, so an exhausted queue retry cannot accumulate
+abandoned active sweeps.
 
 The same daily fallback job reconciles recent terminal analysis/sync jobs and newly
 created users into deduplicated notifications. This repairs the outbox if a

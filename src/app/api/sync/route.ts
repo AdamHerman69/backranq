@@ -1,4 +1,4 @@
-import type { Provider } from '@prisma/client';
+import type { SyncProvider } from '@prisma/client';
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import {
@@ -12,19 +12,19 @@ const MAX_STALE_MINUTES = 7 * 24 * 60;
 const MAX_REQUESTED_JOB_IDS = 4;
 const MAX_JOB_ID_LENGTH = 128;
 
-function providerFromInput(value: string): Provider | null {
+function providerFromInput(value: string): SyncProvider | null {
     if (value === 'lichess') return 'LICHESS';
     if (value === 'chesscom') return 'CHESSCOM';
     return null;
 }
 
-function providerToOutput(provider: Provider) {
+function providerToOutput(provider: SyncProvider) {
     return provider === 'LICHESS' ? 'lichess' : 'chesscom';
 }
 
 function parseBody(body: unknown):
     | {
-          providers?: Provider[];
+          providers?: SyncProvider[];
           onlyIfStaleMinutes?: number;
       }
     | { error: string } {
@@ -33,7 +33,7 @@ function parseBody(body: unknown):
         return { error: 'Invalid request body' };
     }
     const record = body as Record<string, unknown>;
-    let providers: Provider[] | undefined;
+    let providers: SyncProvider[] | undefined;
     if (record.providers != null) {
         if (
             !Array.isArray(record.providers) ||

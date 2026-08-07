@@ -5,13 +5,13 @@ import { toast } from "sonner";
 import { useSession } from "next-auth/react";
 import { EXPECTED_OWNER_HEADER } from "@/lib/auth/ownerContract";
 
-import { providerToUi, timeClassToUi } from "@/lib/api/games";
+import { gameSourceToUi, timeClassToUi } from "@/lib/api/games";
 import { backgroundAnalysis } from "@/lib/analysis/backgroundAnalysisManager";
 import {
   enqueueServerAnalysisJobs,
   type SyncStatus,
 } from "@/lib/services/gameSync";
-import type { Provider, TimeClass } from "@prisma/client";
+import type { GameSource, TimeClass } from "@prisma/client";
 import {
   defaultPreferences,
   pickAnalysisDefaults,
@@ -31,7 +31,7 @@ import {
 
 type ApiGameRow = {
   id: string;
-  provider: Provider;
+  provider: GameSource;
   playedAt: string;
   timeClass: TimeClass;
   whiteName: string;
@@ -398,7 +398,7 @@ export function AnalyzeGamesModal({
                 <tr className="text-left text-xs text-muted-foreground">
                   <th className="p-3" />
                   <th className="p-3">When</th>
-                  <th className="p-3">Provider</th>
+                  <th className="p-3">GameSource</th>
                   <th className="p-3">Time</th>
                   <th className="p-3">Players</th>
                   <th className="p-3">Result</th>
@@ -406,7 +406,7 @@ export function AnalyzeGamesModal({
               </thead>
               <tbody>
                 {games.map((g) => {
-                  const provider = providerToUi(g.provider);
+                  const provider = gameSourceToUi(g.provider);
                   const timeClass = timeClassToUi(g.timeClass);
                   return (
                     <tr key={g.id} className="border-t">

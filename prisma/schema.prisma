@@ -10,9 +10,21 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-enum Provider {
+enum GameSource {
   LICHESS
   CHESSCOM
+  MANUAL_PGN
+  BACKRANQ_COACH
+}
+
+enum SyncProvider {
+  LICHESS
+  CHESSCOM
+}
+
+enum ConnectionOrigin {
+  OAUTH_ACCOUNT
+  PUBLIC_PROFILE
 }
 
 enum TimeClass {
@@ -133,6 +145,12 @@ enum PracticeExposureTerminalReason {
   ABANDONED
   REPLACED
   NAVIGATED_AWAY
+}
+
+enum PracticeDueSweepStatus {
+  SCANNING
+  NOTIFYING
+  COMPLETE
 }
 
 enum TrainingAttemptStatusEventReason {
@@ -294,11 +312,18 @@ enum OnboardingMasterState {
 }
 
 enum CreditLedgerEntryType {
+  ALLOWANCE_GRANTED
+  ALLOWANCE_EXPIRED
   RESERVED
   CONSUMED
   REFUNDED
   RELEASED
   EXPIRED
+}
+
+enum CreditLedgerEntryScope {
+  ALLOWANCE
+  RESERVATION
 }
 
 enum BillingPlan {
@@ -307,8 +332,28 @@ enum BillingPlan {
   PRO
 }
 
+enum BillingPlanSource {
+  FREE
+  STRIPE
+  ADMIN
+  COMPLIMENTARY
+}
+
+enum PlanGrantSource {
+  ADMIN_INVITATION
+}
+
+enum PremiumInvitationDeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  AMBIGUOUS
+  FAILED
+}
+
 enum NotificationType {
   PRACTICE_READY
+  PRACTICE_DUE
   NEW_GAMES_SYNCED
   ANALYSIS_FAILED
   SYNC_FAILED
@@ -326,6 +371,7 @@ enum NotificationChannel {
 
 enum NotificationDeliveryStatus {
   PENDING
+  QUEUED
   PROCESSING
   SENT
   DELIVERED
@@ -336,6 +382,19 @@ enum NotificationDeliveryStatus {
   CANCELLED
 }
 
+enum EmailSendOwnerType {
+  NOTIFICATION_DELIVERY
+  PREMIUM_INVITATION
+}
+
+enum EmailSendReservationStatus {
+  RESERVED
+  HANDOFF
+  SENT
+  AMBIGUOUS
+  RELEASED
+}
+
 enum NotificationDigestFrequency {
   OFF
   DAILY
@@ -343,16 +402,14 @@ enum NotificationDigestFrequency {
 }
 
 model User {
-  id               String    @id @default(uuid()) @db.Uuid
-  email            String?   @unique
-  emailVerified    DateTime?
-  name             String?
-  image            String?
-  lichessUsername  String?
-  chesscomUsername String?
-  preferences      Json      @default(dbgenerated("'{}'::jsonb"))
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id            String    @id @default(uuid()) @db.Uuid
+  email         String?   @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+  preferences   Json      @default(dbgenerated("'{}'::jsonb"))
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   games                       AnalyzedGame[]
   trainingMoments             TrainingMoment[]
@@ -361,15 +418,21 @@ model User {
   attemptStatusEvents         TrainingAttemptStatusEvent[]
   practiceReviewStates        PracticeReviewState[]
   practiceReviewEvents        PracticeReviewEvent[]
+  practiceDueSweepUsers       PracticeDueSweepUser[]
   progressAnalyticsEvents     ProgressAnalyticsEvent[]
   progressAnalyticsRateBucket ProgressAnalyticsRateBucket?
   providerSyncStates          ProviderSyncState[]
+  chessAccountConnections     ChessAccountConnection[]
   historyImportQuotas         HistoryImportQuota[]
   syncJobs                    SyncJob[]
   analysisJobs                AnalysisJob[]
   analysisRuns                AnalysisRun[]
   creditLedgerEntries         CreditLedgerEntry[]
   billingAccount              BillingAccount?
+  planGrants                  PlanGrant[]                  @relation("PlanGrantRecipient")
+  grantedPlanGrants           PlanGrant[]                  @relation("PlanGrantGranter")
+  premiumInvitationsSent      PremiumInvitation[]          @relation("PremiumInvitationInviter")
+  premiumInvitationsAccepted  PremiumInvitation[]          @relation("PremiumInvitationRecipient")
   notifications               Notification[]
   notificationPreference      NotificationPreference?
   notificationDeliveries      NotificationDelivery[]
@@ -380,6 +443,27 @@ model User {
   // NextAuth (Auth.js) relations
   accounts Account[]
   sessions Session[]
+}
+
+/// A durable provider account selected for importing a user's games. This is
+/// deliberately separate from Auth.js Account: signing in proves application
+/// identity, while this row defines the game source that sync is allowed to use.
+model ChessAccountConnection {
+  id                 String           @id @default(uuid()) @db.Uuid
+  userId             String           @db.Uuid
+  provider           SyncProvider
+  providerAccountId  String?
+  username           String
+  usernameNormalized String
+  origin             ConnectionOrigin
+  verifiedAt         DateTime         @default(now())
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([provider, usernameNormalized])
 }
 
 model AdminMembership {
@@ -472,9 +556,11 @@ model NotificationDelivery {
   userId            String                     @db.Uuid
   channel           NotificationChannel
   status            NotificationDeliveryStatus @default(PENDING)
+  dispatchPriority  Int                        @default(1)
   recipient         String?
   scheduledFor      DateTime                   @default(now())
   lockedUntil       DateTime?
+  dispatchToken     String?                    @unique @db.Uuid
   attempts          Int                        @default(0)
   providerMessageId String?                    @unique
   lastError         String?                    @db.Text
@@ -487,9 +573,50 @@ model NotificationDelivery {
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([notificationId, channel])
-  @@index([status, scheduledFor])
+  @@index([status, scheduledFor, id])
   @@index([userId, channel, createdAt])
-  @@index([lockedUntil])
+  @@index([status, lockedUntil, id])
+  @@index([status, channel, dispatchPriority, scheduledFor, createdAt, id], map: "NotificationDelivery_dispatch_stream_idx")
+  @@index([status, channel, scheduledFor, createdAt, id], map: "NotificationDelivery_pending_channel_schedule_idx")
+}
+
+/// One atomic counter row per SMTP2GO UTC accounting day. Both notification
+/// delivery and Premium invitations reserve from this shared budget.
+model EmailProviderDay {
+  day                      DateTime @id @db.Date
+  reservedCount            Int      @default(0)
+  nonPriorityReservedCount Int      @default(0)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @default(now()) @updatedAt
+
+  reservations EmailSendReservation[]
+}
+
+/// Durable evidence around the irreversible provider handoff. The nullable
+/// Practice window key is unique, so two delivery workers cannot both own the
+/// same user's local calendar-day send window.
+model EmailSendReservation {
+  id                String                     @id @default(uuid()) @db.Uuid
+  providerDay       DateTime                   @db.Date
+  ownerType         EmailSendOwnerType
+  ownerId           String                     @db.Uuid
+  ownerToken        String                     @unique @db.Uuid
+  /// Stable across worker/lease-token retries. A partial unique index in the
+  /// migration allows a replacement only after the prior row is RELEASED.
+  logicalAttemptKey String
+  priority          Boolean                    @default(false)
+  practiceWindowKey String?                    @unique
+  status            EmailSendReservationStatus @default(RESERVED)
+  leaseUntil        DateTime
+  providerMessageId String?
+  lastError         String?                    @db.Text
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @default(now()) @updatedAt
+
+  budget EmailProviderDay @relation(fields: [providerDay], references: [day], onDelete: Restrict)
+
+  @@index([ownerType, ownerId, createdAt])
+  @@index([status, leaseUntil, id])
 }
 
 model PushSubscription {
@@ -508,33 +635,102 @@ model PushSubscription {
 }
 
 model BillingAccount {
-  id                           String      @id @default(uuid()) @db.Uuid
-  userId                       String      @unique @db.Uuid
-  plan                         BillingPlan @default(FREE)
-  stripeCustomerId             String?     @unique
-  stripeSubscriptionId         String?     @unique
+  id                           String             @id @default(uuid()) @db.Uuid
+  userId                       String             @unique @db.Uuid
+  plan                         BillingPlan        @default(FREE)
+  planSource                   BillingPlanSource  @default(FREE)
+  stripePlan                   BillingPlan        @default(FREE)
+  stripeCustomerId             String?            @unique
+  stripeSubscriptionId         String?            @unique
   stripeSubscriptionStatus     String?
   stripePriceId                String?
+  stripeCurrentPeriodStart     DateTime?
   stripeCurrentPeriodEnd       DateTime?
   stripeLastEventCreatedAt     DateTime?
   stripeLastEventId            String?
-  serverCreditsBalance         Int         @default(100)
-  monthlyServerCreditsUsed     Int         @default(0)
-  serverCreditsPeriodStart     DateTime    @default(now())
-  serverCreditsRenewAt         DateTime    @default(dbgenerated("(now() + '1 mon'::interval)"))
-  monthlyServerCreditsLimit    Int         @default(100)
-  autoAnalysisMonthlyGameLimit Int         @default(50)
-  autoAnalysisDailyGameLimit   Int         @default(10)
-  stopWhenCreditsBelow         Int         @default(0)
-  createdAt                    DateTime    @default(now())
-  updatedAt                    DateTime    @updatedAt
+  stripeCheckoutReservationId  String?            @unique
+  stripeCheckoutSessionId      String?            @unique
+  stripeCheckoutPlan           BillingPlan?
+  stripeCheckoutExpiresAt      DateTime?
+  stripeCheckoutFencePlan      BillingPlan?
+  stripeCheckoutFenceSource    BillingPlanSource?
+  serverCreditsBalance         Int                @default(100)
+  monthlyServerCreditsUsed     Int                @default(0)
+  serverCreditsPeriodStart     DateTime           @default(now())
+  serverCreditsRenewAt         DateTime           @default(dbgenerated("(now() + '1 mon'::interval)"))
+  monthlyServerCreditsLimit    Int                @default(100)
+  autoAnalysisMonthlyGameLimit Int                @default(50)
+  autoAnalysisDailyGameLimit   Int                @default(10)
+  stopWhenCreditsBelow         Int                @default(0)
+  createdAt                    DateTime           @default(now())
+  updatedAt                    DateTime           @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([plan])
+  @@index([planSource])
+  @@index([stripePlan])
   @@index([stripePriceId])
   @@index([stripeSubscriptionStatus])
   @@index([serverCreditsRenewAt])
+}
+
+model PlanGrant {
+  id           String          @id @default(uuid()) @db.Uuid
+  userId       String          @db.Uuid
+  plan         BillingPlan
+  source       PlanGrantSource @default(ADMIN_INVITATION)
+  invitationId String?         @unique @db.Uuid
+  grantedById  String?         @db.Uuid
+  startsAt     DateTime        @default(now())
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+  note         String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  user       User               @relation("PlanGrantRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy  User?              @relation("PlanGrantGranter", fields: [grantedById], references: [id], onDelete: SetNull)
+  invitation PremiumInvitation? @relation(fields: [invitationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, revokedAt, startsAt, expiresAt])
+  @@index([grantedById])
+}
+
+model PremiumInvitation {
+  id                    String                          @id @default(uuid()) @db.Uuid
+  email                 String
+  emailNormalized       String
+  activeKey             String?                         @unique
+  tokenHash             String                          @unique
+  plan                  BillingPlan                     @default(PRO)
+  invitedById           String?                         @db.Uuid
+  acceptedById          String?                         @db.Uuid
+  expiresAt             DateTime
+  acceptedAt            DateTime?
+  revokedAt             DateTime?
+  deliveryGeneration    Int                             @default(1)
+  deliveryStatus        PremiumInvitationDeliveryStatus @default(PENDING)
+  deliveryAttempts      Int                             @default(0)
+  deliverySendAttemptId String                          @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deliveryLeaseToken    String?
+  deliveryLeaseUntil    DateTime?
+  lastDeliveryAttemptAt DateTime?
+  emailSentAt           DateTime?
+  providerEmailId       String?
+  lastEmailError        String?
+  createdAt             DateTime                        @default(now())
+  updatedAt             DateTime                        @updatedAt
+
+  invitedBy  User?      @relation("PremiumInvitationInviter", fields: [invitedById], references: [id], onDelete: SetNull)
+  acceptedBy User?      @relation("PremiumInvitationRecipient", fields: [acceptedById], references: [id], onDelete: SetNull)
+  planGrant  PlanGrant?
+
+  @@index([emailNormalized, createdAt])
+  @@index([expiresAt])
+  @@index([invitedById])
+  @@index([acceptedById])
+  @@index([deliveryStatus, deliveryLeaseUntil])
 }
 
 model StripeWebhookEvent {
@@ -557,14 +753,14 @@ model StripeWebhookEvent {
 model AnalyzedGame {
   id                          String       @id @default(uuid()) @db.Uuid
   userId                      String       @db.Uuid
-  provider                    Provider
+  provider                    GameSource
   externalId                  String
   url                         String?
   pgn                         String       @db.Text
   sourcePgnHash               String
-  sourceUsername              String?
+  sourceUsername              String
   sourceAccountId             String?
-  userSide                    GameUserSide @default(UNKNOWN)
+  userSide                    GameUserSide
   playedAt                    DateTime
   timeClass                   TimeClass
   timeControlRaw              String?
@@ -606,9 +802,9 @@ model AnalyzedGame {
 }
 
 model ProviderSyncState {
-  id                         String    @id @default(uuid()) @db.Uuid
-  userId                     String    @db.Uuid
-  provider                   Provider
+  id                         String       @id @default(uuid()) @db.Uuid
+  userId                     String       @db.Uuid
+  provider                   SyncProvider
   providerUsernameNormalized String?
   importPolicyHash           String?
   lastSyncedPlayedAt         DateTime?
@@ -617,11 +813,11 @@ model ProviderSyncState {
   cursorWindowEnd            DateTime?
   lastAttemptAt              DateTime?
   lastSuccessAt              DateTime?
-  lastError                  String?   @db.Text
-  etag                       String?   @db.Text
-  lastModified               String?   @db.Text
-  createdAt                  DateTime  @default(now())
-  updatedAt                  DateTime  @updatedAt
+  lastError                  String?      @db.Text
+  etag                       String?      @db.Text
+  lastModified               String?      @db.Text
+  createdAt                  DateTime     @default(now())
+  updatedAt                  DateTime     @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -630,15 +826,15 @@ model ProviderSyncState {
 }
 
 model HistoryImportQuota {
-  id                 String    @id @default(uuid()) @db.Uuid
-  userId             String    @db.Uuid
-  provider           Provider
+  id                 String       @id @default(uuid()) @db.Uuid
+  userId             String       @db.Uuid
+  provider           SyncProvider
   usernameNormalized String
-  createdCount       Int       @default(0)
+  createdCount       Int          @default(0)
   fetchLeaseToken    String?
   fetchLeaseUntil    DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -649,7 +845,7 @@ model HistoryImportQuota {
 model SyncJob {
   id                  String        @id @default(uuid()) @db.Uuid
   userId              String        @db.Uuid
-  provider            Provider
+  provider            SyncProvider
   status              SyncJobStatus @default(QUEUED)
   scheduledFor        DateTime      @default(now())
   lockedUntil         DateTime?
@@ -762,17 +958,19 @@ model AnalysisRun {
 }
 
 model CreditLedgerEntry {
-  id             String                @id @default(uuid()) @db.Uuid
-  userId         String                @db.Uuid
-  analysisJobId  String?               @db.Uuid
-  analysisRunId  String?               @db.Uuid
-  gameId         String?               @db.Uuid
-  type           CreditLedgerEntryType
-  credits        Int
-  idempotencyKey String                @unique
-  reason         String?
-  metadata       Json                  @default(dbgenerated("'{}'::jsonb"))
-  createdAt      DateTime              @default(now())
+  id                 String                 @id @default(uuid()) @db.Uuid
+  userId             String                 @db.Uuid
+  analysisJobId      String?                @db.Uuid
+  analysisRunId      String?                @db.Uuid
+  gameId             String?                @db.Uuid
+  type               CreditLedgerEntryType
+  scope              CreditLedgerEntryScope @default(RESERVATION)
+  billingPeriodStart DateTime
+  credits            Int
+  idempotencyKey     String                 @unique
+  reason             String?
+  metadata           Json                   @default(dbgenerated("'{}'::jsonb"))
+  createdAt          DateTime               @default(now())
 
   user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   analysisJob AnalysisJob?  @relation(fields: [analysisJobId], references: [id], onDelete: SetNull)
@@ -780,6 +978,8 @@ model CreditLedgerEntry {
   game        AnalyzedGame? @relation(fields: [gameId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
+  @@index([userId, scope, createdAt])
+  @@index([userId, scope, billingPeriodStart, type])
   @@index([userId, type, createdAt])
   @@index([analysisJobId])
   @@index([analysisRunId])
@@ -943,7 +1143,7 @@ model TrainingAttempt {
   contextLessonKinds          TrainingLessonKind[]  @default([])
   contextThemes               String[]              @default([])
   contextThemeTaxonomyVersion String                @default("backranq-theme-v1")
-  contextProvider             Provider
+  contextProvider             GameSource
   contextTimeClass            TimeClass
   contextConfigHash           String
   contextSolutionHash         String
@@ -1063,8 +1263,42 @@ model PracticeReviewState {
   events         PracticeReviewEvent[]
 
   @@unique([userId, trainingMomentId, solutionHash, configHash])
-  @@index([userId, nextDueAt])
+  @@index([userId, nextDueAt, id])
+  @@index([nextDueAt, id])
   @@index([trainingMomentId])
+}
+
+/// Durable, bounded scan of one due snapshot. A queue retry always resumes from
+/// the committed raw-state tuple instead of repeating an unbounded aggregate.
+model PracticeDueSweep {
+  id              String                 @id @default(uuid()) @db.Uuid
+  referenceAt     DateTime               @unique
+  status          PracticeDueSweepStatus @default(SCANNING)
+  cursorNextDueAt DateTime?
+  cursorStateId   String?                @db.Uuid
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @default(now()) @updatedAt
+  completedAt     DateTime?
+
+  users PracticeDueSweepUser[]
+
+  @@index([status, completedAt, id])
+}
+
+model PracticeDueSweepUser {
+  sweepId         String   @db.Uuid
+  userId          String   @db.Uuid
+  dueCount        Int
+  dueCountIsExact Boolean  @default(true)
+  earliestDueAt   DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+
+  sweep PracticeDueSweep @relation(fields: [sweepId], references: [id], onDelete: Cascade)
+  user  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([sweepId, userId])
+  @@index([userId, createdAt])
 }
 
 /// Append-only evidence used to derive PracticeReviewState.
@@ -1106,7 +1340,7 @@ model ProgressAnalyticsEvent {
   actionKey         String?
   recommendationKey String?
   windowDays        Int?
-  provider          Provider?
+  provider          GameSource?
   timeClass         TimeClass?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1135,7 +1369,7 @@ model OnboardingAnalyticsEvent {
   onboardingRunId   String?                @db.Uuid
   userId            String?                @db.Uuid
   eventName         OnboardingEventName
-  provider          Provider?
+  provider          SyncProvider?
   puzzleKind        OnboardingPuzzleKind?
   experimentKey     String?
   variantKey        String?
@@ -1189,25 +1423,25 @@ model MasterPerson {
 }
 
 model MasterAccount {
-  id                  String    @id @default(uuid()) @db.Uuid
-  personId            String    @db.Uuid
-  provider            Provider
+  id                  String       @id @default(uuid()) @db.Uuid
+  personId            String       @db.Uuid
+  provider            SyncProvider
   username            String
   usernameNormalized  String
   profileUrl          String
-  identityEvidence    Json      @default(dbgenerated("'{}'::jsonb"))
+  identityEvidence    Json         @default(dbgenerated("'{}'::jsonb"))
   identityVerifiedAt  DateTime?
-  active              Boolean   @default(true)
-  priority            Int       @default(0)
+  active              Boolean      @default(true)
+  priority            Int          @default(0)
   lastFetchAt         DateTime?
   lastSuccessAt       DateTime?
   nextFetchAt         DateTime?
-  etag                String?   @db.Text
-  lastModified        String?   @db.Text
-  consecutiveFailures Int       @default(0)
-  lastError           String?   @db.Text
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  etag                String?      @db.Text
+  lastModified        String?      @db.Text
+  consecutiveFailures Int          @default(0)
+  lastError           String?      @db.Text
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
 
   person           MasterPerson                @relation(fields: [personId], references: [id], onDelete: Restrict)
   discoveries      MasterSourceGameDiscovery[]
@@ -1222,7 +1456,7 @@ model MasterAccount {
 
 model MasterSourceGame {
   id                String                   @id @default(uuid()) @db.Uuid
-  provider          Provider
+  provider          SyncProvider
   externalId        String
   canonicalUrl      String?
   availability      MasterSourceAvailability @default(AVAILABLE)

@@ -1,12 +1,19 @@
 import type {
     NormalizedGame,
-    Provider as UiProvider,
+    GameSource as UiGameSource,
+    SyncProvider as UiSyncProvider,
     TimeClass as UiTimeClass,
 } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
-import type { AnalyzedGame, Provider, TimeClass } from '@prisma/client';
+import type {
+    AnalyzedGame,
+    GameSource,
+    SyncProvider,
+    TimeClass,
+} from '@prisma/client';
 import { classifyOpeningFromPgn } from '@/lib/chess/opening';
 import { hashSourcePgn } from '@/lib/chess/pgn';
+import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 
 export function parseExternalId(game: NormalizedGame): string {
     // Our provider APIs currently set ids like "lichess:<id>" and "chesscom:<uuid>"
@@ -15,12 +22,38 @@ export function parseExternalId(game: NormalizedGame): string {
     return idx >= 0 ? raw.slice(idx + 1) : raw;
 }
 
-export function providerToDb(p: UiProvider): Provider {
-    return p === 'lichess' ? 'LICHESS' : 'CHESSCOM';
+export function gameSourceToDb(source: UiGameSource): GameSource {
+    switch (source) {
+        case 'lichess':
+            return 'LICHESS';
+        case 'chesscom':
+            return 'CHESSCOM';
+        case 'manual_pgn':
+            return 'MANUAL_PGN';
+        case 'backranq_coach':
+            return 'BACKRANQ_COACH';
+    }
 }
 
-export function providerToUi(p: Provider): UiProvider {
-    return p === 'LICHESS' ? 'lichess' : 'chesscom';
+export function gameSourceToUi(source: GameSource): UiGameSource {
+    switch (source) {
+        case 'LICHESS':
+            return 'lichess';
+        case 'CHESSCOM':
+            return 'chesscom';
+        case 'MANUAL_PGN':
+            return 'manual_pgn';
+        case 'BACKRANQ_COACH':
+            return 'backranq_coach';
+    }
+}
+
+export function syncProviderToDb(provider: UiSyncProvider): SyncProvider {
+    return provider === 'lichess' ? 'LICHESS' : 'CHESSCOM';
+}
+
+export function syncProviderToUi(provider: SyncProvider): UiSyncProvider {
+    return provider === 'LICHESS' ? 'lichess' : 'chesscom';
 }
 
 export function timeClassToDb(t: UiTimeClass): TimeClass {
@@ -65,21 +98,20 @@ export function jsonToGameAnalysis(json: unknown): GameAnalysis | null {
 export function normalizedGameToDb(game: NormalizedGame, userId: string) {
     const opening = classifyOpeningFromPgn(game.pgn);
     const timeControl = game.provenance?.timeControl;
+    const provenance = resolveGameAnalysisProvenance(game);
+    if (!provenance) {
+        throw new Error('Game has invalid immutable source provenance');
+    }
     return {
         userId,
-        provider: providerToDb(game.provider),
+        provider: gameSourceToDb(game.provider),
         externalId: parseExternalId(game),
         url: game.url ?? null,
         pgn: game.pgn,
         sourcePgnHash: hashSourcePgn(game.pgn),
-        sourceUsername: game.provenance?.username ?? null,
+        sourceUsername: provenance.sourceUsername,
         sourceAccountId: game.provenance?.accountId ?? null,
-        userSide:
-            game.provenance?.userSide === 'white'
-                ? ('WHITE' as const)
-                : game.provenance?.userSide === 'black'
-                  ? ('BLACK' as const)
-                  : ('UNKNOWN' as const),
+        userSide: provenance.userSide === 'white' ? ('WHITE' as const) : ('BLACK' as const),
         playedAt: new Date(game.playedAt),
         timeClass: timeClassToDb(game.timeClass),
         timeControlRaw: timeControl?.raw ?? null,
@@ -115,8 +147,8 @@ export function normalizedGameToDb(game: NormalizedGame, userId: string) {
 
 export function dbGameToNormalized(dbGame: AnalyzedGame): NormalizedGame {
     return {
-        id: `${providerToUi(dbGame.provider)}:${dbGame.externalId}`,
-        provider: providerToUi(dbGame.provider),
+        id: `${gameSourceToUi(dbGame.provider)}:${dbGame.externalId}`,
+        provider: gameSourceToUi(dbGame.provider),
         url: dbGame.url ?? undefined,
         playedAt: dbGame.playedAt.toISOString(),
         timeClass: timeClassToUi(dbGame.timeClass),

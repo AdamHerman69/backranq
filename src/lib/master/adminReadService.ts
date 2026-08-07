@@ -211,10 +211,7 @@ export async function getWeeklyMasterAdminSnapshot(
         prisma.user.count(),
         prisma.user.count({
             where: {
-                OR: [
-                    { lichessUsername: { not: null } },
-                    { chesscomUsername: { not: null } },
-                ],
+                chessAccountConnections: { some: {} },
             },
         }),
         prisma.masterSourceGame.count(),
@@ -230,8 +227,9 @@ export async function getWeeklyMasterAdminSnapshot(
                 id: true,
                 name: true,
                 createdAt: true,
-                lichessUsername: true,
-                chesscomUsername: true,
+                chessAccountConnections: {
+                    select: { provider: true },
+                },
                 _count: { select: { games: true } },
                 games: {
                     where: { analyzedAt: { not: null } },
@@ -417,8 +415,16 @@ export async function getWeeklyMasterAdminSnapshot(
             displayName: user.name?.trim() || `User ${user.id.slice(0, 8)}`,
             createdAt: user.createdAt.toISOString(),
             linkedProviders: [
-                ...(user.lichessUsername ? ['Lichess'] : []),
-                ...(user.chesscomUsername ? ['Chess.com'] : []),
+                ...(user.chessAccountConnections.some(
+                    (connection) => connection.provider === 'LICHESS'
+                )
+                    ? ['Lichess']
+                    : []),
+                ...(user.chessAccountConnections.some(
+                    (connection) => connection.provider === 'CHESSCOM'
+                )
+                    ? ['Chess.com']
+                    : []),
             ],
             gameCount: user._count.games,
             lastAnalysisAt: iso(user.games[0]?.analyzedAt),

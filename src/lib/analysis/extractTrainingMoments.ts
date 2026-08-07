@@ -1,5 +1,6 @@
 import { Chess, type Move } from 'chess.js';
 import type { NormalizedGame } from '@/lib/types/game';
+import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 import type {
     EvalResult,
     MultiPvLine,
@@ -283,19 +284,8 @@ function sideToMoveFromFen(fen: string): 'w' | 'b' {
     return (parts[1] === 'b' ? 'b' : 'w') as 'w' | 'b';
 }
 
-function normalizeUsername(s: string | undefined | null): string {
-    return (s ?? '').trim().toLowerCase();
-}
-
-function userColorForGame(
-    game: NormalizedGame,
-    usernameByProvider?: { lichess?: string; chesscom?: string }
-): 'w' | 'b' | null {
-    const target = normalizeUsername(usernameByProvider?.[game.provider]);
-    if (!target) return null;
-    if (normalizeUsername(game.white?.name) === target) return 'w';
-    if (normalizeUsername(game.black?.name) === target) return 'b';
-    return null;
+function userColorForGame(game: NormalizedGame): 'w' | 'b' | null {
+    return resolveGameAnalysisProvenance(game)?.userColor ?? null;
 }
 
 function nonKingPieceCountFromFen(fen: string): number {
@@ -2567,11 +2557,6 @@ export async function extractTrainingMomentsFromGames(args: {
      * supply it; standalone callers receive a deterministic extractor hash.
      */
     analysisConfigHash?: string;
-    /**
-     * Usernames used to determine "user color" per game. Case-insensitive match
-     * against game.white.name / game.black.name.
-     */
-    usernameByProvider?: { lichess?: string; chesscom?: string };
     onProgress?: (p: {
         gameId: string;
         gameIndex: number;
@@ -2646,7 +2631,7 @@ export async function extractTrainingMomentsFromGames(args: {
         // Use verbose history so we replay by from/to (not SAN), which avoids "Invalid move: …" issues.
         const movesVerbose = chess.history({ verbose: true }) as Move[];
         const plyCount = movesVerbose.length;
-        const userColor = userColorForGame(game, args.usernameByProvider);
+        const userColor = userColorForGame(game);
         if (!userColor) {
             manifests.push({
                 version: 1,

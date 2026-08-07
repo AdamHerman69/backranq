@@ -6,9 +6,9 @@ import {
     extractTrainingMomentsFromGames,
     type TrainingMomentExtractionOptions,
 } from '@/lib/analysis/extractTrainingMoments';
-import { getSyncStatus } from '@/lib/services/gameSync';
-import { timeClassToUi } from '@/lib/api/games';
-import type { TimeClass } from '@prisma/client';
+import { gameSourceToUi, timeClassToUi } from '@/lib/api/games';
+import type { GameSource, TimeClass } from '@prisma/client';
+import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 import {
     analysisDefaultsToExtractOptions,
     defaultPreferences,
@@ -46,7 +46,7 @@ function clamp01(n: number) {
 }
 
 type ApiAnalyzedGame = {
-    provider: 'LICHESS' | 'CHESSCOM';
+    provider: GameSource;
     externalId: string;
     url: string | null;
     playedAt: string;
@@ -59,6 +59,9 @@ type ApiAnalyzedGame = {
     blackName: string;
     blackRating: number | null;
     pgn: string;
+    sourceUsername: string;
+    sourceAccountId: string | null;
+    userSide: 'WHITE' | 'BLACK';
 };
 
 function isRecord(x: unknown): x is Record<string, unknown> {
@@ -85,21 +88,26 @@ export function formatAnalysisSaveError(
 function isApiAnalyzedGame(x: unknown): x is ApiAnalyzedGame {
     if (!isRecord(x)) return false;
     return (
-        (x.provider === 'LICHESS' || x.provider === 'CHESSCOM') &&
+        (x.provider === 'LICHESS' ||
+            x.provider === 'CHESSCOM' ||
+            x.provider === 'MANUAL_PGN' ||
+            x.provider === 'BACKRANQ_COACH') &&
         typeof x.externalId === 'string' &&
         typeof x.playedAt === 'string' &&
         typeof x.timeClass === 'string' &&
         typeof x.whiteName === 'string' &&
         typeof x.blackName === 'string' &&
-        typeof x.pgn === 'string'
+        typeof x.pgn === 'string' &&
+        typeof x.sourceUsername === 'string' &&
+        (x.userSide === 'WHITE' || x.userSide === 'BLACK')
     );
 }
 
-function normalizeApiDbGameToNormalized(
+export function normalizeApiDbGameToNormalized(
     dbGame: ApiAnalyzedGame
 ): NormalizedGame {
     // `/api/games/[id]` returns JSON-serialized prisma rows, so dates are strings.
-    const provider = dbGame.provider === 'LICHESS' ? 'lichess' : 'chesscom';
+    const provider = gameSourceToUi(dbGame.provider);
     const timeClass = timeClassToUi(dbGame.timeClass as TimeClass);
     const playedAtIso = new Date(dbGame.playedAt).toISOString();
     return {
@@ -126,6 +134,11 @@ function normalizeApiDbGameToNormalized(
         result: dbGame.result ?? undefined,
         termination: dbGame.termination ?? undefined,
         pgn: dbGame.pgn,
+        provenance: {
+            username: dbGame.sourceUsername,
+            accountId: dbGame.sourceAccountId ?? undefined,
+            userSide: dbGame.userSide === 'WHITE' ? 'white' : 'black',
+        },
     };
 }
 
@@ -363,14 +376,6 @@ class BackgroundAnalysisManager {
             this.nextRunAnalysisDefaultsOverride = null;
         }
 
-        let sync: Awaited<ReturnType<typeof getSyncStatus>> | null = null;
-        try {
-            sync = await getSyncStatus();
-        } catch {
-            // continue; username hints are optional.
-            sync = null;
-        }
-
         let failed = 0;
         let trainingMomentsGenerated = 0;
         const errors: string[] = [];
@@ -388,11 +393,6 @@ class BackgroundAnalysisManager {
                 try {
                     const result = await this.analyzeOneGame({
                         gameDbId,
-                        usernameByProvider: {
-                            lichess: sync?.linked.lichessUsername ?? undefined,
-                            chesscom:
-                                sync?.linked.chesscomUsername ?? undefined,
-                        },
                         onLocalProgress: (localFrac, phase) => {
                             const overallFrac =
                                 (baseProcessed + clamp01(localFrac)) /
@@ -476,7 +476,6 @@ class BackgroundAnalysisManager {
 
     private async analyzeOneGame(opts: {
         gameDbId: string;
-        usernameByProvider: { lichess?: string; chesscom?: string };
         onLocalProgress?: (localFrac: number, phase?: string) => void;
     }): Promise<{ trainingMomentsGenerated: number }> {
         const res = await fetch(`/api/games/${opts.gameDbId}`);
@@ -493,6 +492,9 @@ class BackgroundAnalysisManager {
 
         const g = normalizeApiDbGameToNormalized(gameRaw);
         if (!g.pgn) throw new Error('Missing PGN for analysis');
+        if (!resolveGameAnalysisProvenance(g)) {
+            throw new Error('Game has invalid immutable analysis provenance');
+        }
 
         const engine = this.ensureEngine();
         const fallbackDefaults = pickAnalysisDefaults(defaultPreferences());
@@ -511,7 +513,6 @@ class BackgroundAnalysisManager {
             canonicalSourceGameIdByGameId: {
                 [g.id]: opts.gameDbId,
             },
-            usernameByProvider: opts.usernameByProvider,
             onProgress: (p) => {
                 const local = p.plyCount > 0 ? (p.ply + 1) / p.plyCount : 0;
                 opts.onLocalProgress?.(local, p.phase);

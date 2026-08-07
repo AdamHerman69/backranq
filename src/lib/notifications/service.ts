@@ -11,6 +11,7 @@ import {
     nextDigestAt,
     practiceReadyDeliveryWindow,
 } from './scheduling';
+import { emailDispatchPriority } from './emailPolicy';
 
 export type NotificationDbClient = Pick<
     Prisma.TransactionClient,
@@ -35,6 +36,7 @@ type RecordNotificationArgs = {
     email?: boolean;
     push?: boolean;
     emailScheduledFor?: Date;
+    updateExisting?: 'aggregate' | 'replace' | 'preserve';
 };
 
 export async function getOrCreateNotificationPreference(
@@ -56,6 +58,7 @@ function emailAllowed(
     const optionalBlocked = !!preference.optionalEmailsUnsubscribedAt;
     switch (type) {
         case 'PRACTICE_READY':
+        case 'PRACTICE_DUE':
             return preference.emailPracticeReady && !optionalBlocked;
         case 'ANALYSIS_FAILED':
         case 'SYNC_FAILED':
@@ -105,11 +108,25 @@ export async function recordNotification(
             secondaryCount: args.secondaryCount ?? 0,
             metadata: args.metadata,
         },
-        update: {
-            itemCount: { increment: args.itemCount ?? 0 },
-            secondaryCount: { increment: args.secondaryCount ?? 0 },
-            metadata: args.metadata,
-        },
+        update:
+            args.updateExisting === 'preserve'
+                ? {}
+                : args.updateExisting === 'replace'
+                  ? {
+                        title: args.title,
+                        body: args.body,
+                        href: args.href,
+                        itemCount: args.itemCount ?? 1,
+                        secondaryCount: args.secondaryCount ?? 0,
+                        metadata: args.metadata,
+                    }
+                  : {
+                        itemCount: { increment: args.itemCount ?? 0 },
+                        secondaryCount: {
+                            increment: args.secondaryCount ?? 0,
+                        },
+                        metadata: args.metadata,
+                    },
     });
 
     const deliveries: NotificationChannel[] = [];
@@ -136,6 +153,10 @@ export async function recordNotification(
                 notificationId: notification.id,
                 userId: args.userId,
                 channel,
+                dispatchPriority:
+                    channel === 'EMAIL'
+                        ? emailDispatchPriority(args.type)
+                        : 1,
                 recipient: channel === 'EMAIL' ? user.email : null,
                 scheduledFor:
                     channel === 'EMAIL' && args.emailScheduledFor
@@ -182,6 +203,41 @@ export async function recordPracticeReadyInTransaction(args: {
         },
         args.tx
     );
+}
+
+export async function recordPracticeDue(args: {
+    userId: string;
+    dueCount: number;
+    dueCountIsExact: boolean;
+    earliestDueAt: Date;
+    generatedAt: Date;
+}) {
+    if (args.dueCount <= 0) return null;
+    const preference = await getOrCreateNotificationPreference(args.userId);
+    const window = practiceReadyDeliveryWindow(
+        args.generatedAt,
+        preference.timezone,
+        preference.digestHour
+    );
+    return recordNotification({
+        userId: args.userId,
+        type: 'PRACTICE_DUE',
+        title: 'Your practice review is due',
+        body: 'Your scheduled practice review is ready.',
+        href: '/practice?mode=review',
+        dedupeKey: `practice-due:${args.userId}:${window.key}`,
+        itemCount: args.dueCount,
+        metadata: {
+            earliestDueAt: args.earliestDueAt.toISOString(),
+            dueCountIsExact: args.dueCountIsExact,
+            generatedAt: args.generatedAt.toISOString(),
+            scheduledFor: window.scheduledFor.toISOString(),
+        },
+        email: true,
+        push: true,
+        emailScheduledFor: window.scheduledFor,
+        updateExisting: 'replace',
+    });
 }
 
 export function recordAnalysisFailed(args: {

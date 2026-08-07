@@ -7,6 +7,10 @@ import { PageHeader } from '@/components/app/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import {
+    chessAccountConnectionSelect,
+    linkedUsernameSnapshot,
+} from '@/lib/accounts/chessAccountConnections';
 
 export default async function ProfilePage() {
     const session = await auth();
@@ -19,10 +23,13 @@ export default async function ProfilePage() {
             email: true,
             name: true,
             image: true,
-            lichessUsername: true,
-            chesscomUsername: true,
+            chessAccountConnections: {
+                select: chessAccountConnectionSelect,
+            },
         },
     });
+
+    const linked = linkedUsernameSnapshot(user?.chessAccountConnections ?? []);
 
     return (
         <div className="space-y-6">
@@ -42,13 +49,13 @@ export default async function ProfilePage() {
                         <div>
                             <dt className="text-sm text-muted-foreground">Lichess</dt>
                             <dd className="mt-1 text-sm font-medium">
-                                {user?.lichessUsername ?? '—'}
+                                {linked.lichessUsername ?? '—'}
                             </dd>
                         </div>
                         <div>
                             <dt className="text-sm text-muted-foreground">Chess.com</dt>
                             <dd className="mt-1 text-sm font-medium">
-                                {user?.chesscomUsername ?? '—'}
+                                {linked.chesscomUsername ?? '—'}
                             </dd>
                         </div>
                     </dl>
@@ -69,5 +76,4 @@ export default async function ProfilePage() {
         </div>
     );
 }
-
 

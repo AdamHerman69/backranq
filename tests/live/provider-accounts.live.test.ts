@@ -11,7 +11,7 @@ import {
     fetchLichessGamesBatch,
 } from '@/lib/providers/lichess';
 import { lookupProviderProfile } from '@/lib/providers/profileLookup';
-import type { NormalizedGame, Provider } from '@/lib/types/game';
+import type { NormalizedGame, GameSource } from '@/lib/types/game';
 
 const RUN_LIVE_PROVIDER_TESTS =
     process.env.BACKRANQ_RUN_LIVE_PROVIDER_TESTS === 'true';
@@ -33,7 +33,7 @@ const CURRENT_PROVIDER_INTERVAL = {
 
 function expectValidProviderGames(args: {
     games: NormalizedGame[];
-    provider: Provider;
+    provider: GameSource;
     username: string;
     maximum?: number;
 }) {
@@ -210,10 +210,6 @@ describe.skipIf(!RUN_LIVE_PROVIDER_TESTS)(
                             games.map((game) => game.id)
                         ),
                         engine,
-                        usernameByProvider: {
-                            chesscom: CHESSCOM_USERNAME,
-                            lichess: LICHESS_USERNAME,
-                        },
                         options: {
                             nodesPerPosition: ANALYSIS_NODES,
                             confirmNodes: CONFIRM_NODES,

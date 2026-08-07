@@ -13,6 +13,8 @@ const longLoss = {
     pgn: '1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 6. Re1 b5 7. Bb3 d6 8. c3 O-O 9. h3 Nb8 10. d4 Nbd7 0-1',
     white: { name: 'Ada' },
     black: { name: 'Bob' },
+    sourceUsername: 'Ada',
+    userSide: 'WHITE' as const,
 };
 
 function enabledPreferences() {
@@ -39,7 +41,6 @@ describe('auto analysis eligibility', () => {
             evaluateAutoAnalysisEligibility({
                 preferences: defaultPreferences(),
                 game: longLoss,
-                username: 'Ada',
             })
         ).toMatchObject({ eligible: false, reason: 'disabled' });
     });
@@ -48,7 +49,6 @@ describe('auto analysis eligibility', () => {
         const result = evaluateAutoAnalysisEligibility({
             preferences: enabledPreferences(),
             game: longLoss,
-            username: 'Ada',
         });
         expect(result.eligible).toBe(true);
         expect(result.priority).toBeGreaterThan(0);
@@ -60,14 +60,12 @@ describe('auto analysis eligibility', () => {
             evaluateAutoAnalysisEligibility({
                 preferences,
                 game: { ...longLoss, timeClass: 'blitz' },
-                username: 'Ada',
             }).reason
         ).toBe('automation-mode');
         expect(
             evaluateAutoAnalysisEligibility({
                 preferences,
                 game: { ...longLoss, provider: 'chesscom' },
-                username: 'Ada',
             }).reason
         ).toBe('automation-mode');
     });
@@ -78,14 +76,12 @@ describe('auto analysis eligibility', () => {
             evaluateAutoAnalysisEligibility({
                 preferences,
                 game: { ...longLoss, rated: false },
-                username: 'Ada',
             }).reason
         ).toBe('rated-only');
         expect(
             evaluateAutoAnalysisEligibility({
                 preferences,
                 game: { ...longLoss, pgn: '1. e4 e5 0-1' },
-                username: 'Ada',
             }).reason
         ).toBe('min-plies');
     });
@@ -106,7 +102,6 @@ describe('auto analysis eligibility', () => {
             evaluateAutoAnalysisEligibility({
                 preferences: base,
                 game,
-                username: 'Ada',
             }).reason
         ).toBe('before-enabled');
         expect(
@@ -117,7 +112,6 @@ describe('auto analysis eligibility', () => {
                     },
                 }),
                 game,
-                username: 'Ada',
             }).eligible
         ).toBe(true);
     });
@@ -127,15 +121,13 @@ describe('auto analysis eligibility', () => {
         expect(
             evaluateAutoAnalysisEligibility({
                 preferences: enabledPreferences(),
-                game,
-                username: 'SomeoneElse',
+                game: { ...game, sourceUsername: 'SomeoneElse' },
             }).reason
         ).toBe('result-scope');
         expect(
             evaluateAutoAnalysisEligibility({
                 preferences: enabledPreferences(),
                 game,
-                username: 'Ada',
             }).eligible
         ).toBe(true);
     });

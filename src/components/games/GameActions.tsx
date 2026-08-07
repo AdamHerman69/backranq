@@ -21,12 +21,12 @@ import {
     pickAnalysisDefaults,
     type PreferencesSchema,
 } from '@/lib/preferences';
+import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 
 export function GameActions({
     ownerId,
     dbGameId,
     normalizedGame,
-    usernameByProvider,
     hasAnalysis,
     trainingMomentCount,
     serverAnalysisCapacity,
@@ -35,7 +35,6 @@ export function GameActions({
     ownerId: string;
     dbGameId: string;
     normalizedGame: NormalizedGame;
-    usernameByProvider: { lichess?: string; chesscom?: string };
     hasAnalysis: boolean;
     trainingMomentCount: number;
     serverAnalysisCapacity: ManualServerAnalysisCapacity;
@@ -50,15 +49,10 @@ export function GameActions({
     const engineRef = useRef<StockfishClient | null>(null);
     const actionLabel = hasAnalysis ? 'Re-analyze' : 'Analyze';
 
-    const providerKey = normalizedGame.provider;
-    const linkedUserName =
-        providerKey === 'lichess'
-            ? usernameByProvider.lichess
-            : usernameByProvider.chesscom;
-
-    const canAnalyze = useMemo(() => {
-        return !!linkedUserName?.trim();
-    }, [linkedUserName]);
+    const canAnalyze = useMemo(
+        () => resolveGameAnalysisProvenance(normalizedGame) !== null,
+        [normalizedGame]
+    );
 
     function cancel() {
         engineRef.current?.cancelAll();
@@ -76,7 +70,7 @@ export function GameActions({
         }
         if (!canAnalyze) {
             toast.error(
-                `To analyze, first link your ${normalizedGame.provider} username in Settings.`
+                'This game has invalid or missing frozen player provenance.'
             );
             return;
         }
@@ -114,7 +108,6 @@ export function GameActions({
                 canonicalSourceGameIdByGameId: {
                     [normalizedGame.id]: dbGameId,
                 },
-                usernameByProvider,
                 onProgress: (p) => {
                     const percent =
                         p.plyCount > 0 ? ((p.ply + 1) / p.plyCount) * 100 : 0;
@@ -306,8 +299,8 @@ export function GameActions({
 
             {!canAnalyze ? (
                 <div className="text-sm text-muted-foreground">
-                    Link your {normalizedGame.provider} username in{' '}
-                    <Link href="/settings">Settings</Link> to enable analysis.
+                    This game cannot be analyzed because its frozen player
+                    perspective is invalid.
                 </div>
             ) : (
                 <div className="text-sm text-muted-foreground">

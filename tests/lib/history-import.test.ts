@@ -31,6 +31,24 @@ function game(id: string): NormalizedGame {
         result: '1-0',
         termination: 'Normal',
         pgn: '[Event "Test"]\n[Result "1-0"]\n\n1. e4 e5 1-0',
+        provenance: {
+            username: 'Ada',
+            userSide: 'white',
+        },
+    };
+}
+
+function linkedUser(
+    provider: 'LICHESS' | 'CHESSCOM' = 'LICHESS',
+    username = 'Ada',
+    accessToken: string | null = 'oauth-token'
+) {
+    return {
+        chessAccountConnections: [{ provider, username }],
+        accounts:
+            provider === 'LICHESS' && accessToken
+                ? [{ access_token: accessToken }]
+                : [],
     };
 }
 
@@ -70,17 +88,8 @@ function nonCanonicalSignatureVariant(token: string) {
 describe('durable history import quota', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Ada',
-            chesscomUsername: null,
-            accounts: [{ access_token: 'oauth-token' }],
-        });
-        prismaMock.$queryRaw.mockResolvedValue([
-            {
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
-            },
-        ]);
+        prismaMock.user.findUnique.mockResolvedValue(linkedUser());
+        prismaMock.$queryRaw.mockResolvedValue([{ username: 'Ada' }]);
         prismaMock.$transaction.mockImplementation(
             async (callback: unknown) =>
                 (
@@ -162,11 +171,9 @@ describe('durable history import quota', () => {
     });
 
     it('keeps Chess.com history resumable without first-sync semantics', async () => {
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: null,
-            chesscomUsername: 'Ada',
-            accounts: [],
-        });
+        prismaMock.user.findUnique.mockResolvedValue(
+            linkedUser('CHESSCOM', 'Ada', null)
+        );
         fetchChessComGamesBatchMock.mockResolvedValue({
             games: [],
             complete: false,
@@ -285,11 +292,9 @@ describe('durable history import quota', () => {
     });
 
     it('falls back to the public Lichess export when OAuth is unavailable', async () => {
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Ada',
-            chesscomUsername: null,
-            accounts: [],
-        });
+        prismaMock.user.findUnique.mockResolvedValue(
+            linkedUser('LICHESS', 'Ada', null)
+        );
         const { getHistoryImportSnapshot } = await importHistoryImport();
 
         await getHistoryImportSnapshot({
@@ -422,11 +427,9 @@ describe('durable history import quota', () => {
         await expect(
             call({ userId: 'user-2' })
         ).rejects.toMatchObject({ name: 'HistoryImportCursorError' });
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Ada',
-            chesscomUsername: 'Ada',
-            accounts: [],
-        });
+        prismaMock.user.findUnique.mockResolvedValue(
+            linkedUser('CHESSCOM', 'Ada', null)
+        );
         await expect(
             call({ provider: 'chesscom' })
         ).rejects.toMatchObject({ name: 'HistoryImportCursorError' });
@@ -449,11 +452,9 @@ describe('durable history import quota', () => {
             name: 'HistoryImportCursorError',
             httpStatus: 409,
         });
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Grace',
-            chesscomUsername: 'Grace',
-            accounts: [],
-        });
+        prismaMock.user.findUnique.mockResolvedValue(
+            linkedUser('LICHESS', 'Grace', null)
+        );
         await expect(call()).rejects.toMatchObject({
             name: 'HistoryImportCursorError',
             httpStatus: 409,
@@ -759,10 +760,7 @@ describe('durable history import quota', () => {
         prismaMock.$queryRaw
             .mockReset()
             .mockResolvedValueOnce([
-                {
-                    lichessUsername: 'Ada',
-                    chesscomUsername: null,
-                },
+                { username: 'Ada' },
             ])
             .mockResolvedValueOnce([{ acquired: true }]);
         prismaMock.historyImportQuota.upsert.mockResolvedValue({
@@ -803,7 +801,8 @@ describe('durable history import quota', () => {
                 ? call[0].join(' ')
                 : String(call[0])
         );
-        expect(rawSql[0]).toContain('FROM "User"');
+        expect(rawSql[0]).toContain('FROM "ChessAccountConnection"');
+        expect(rawSql[0]).toContain('"SyncProvider"');
         expect(rawSql[0]).toContain('FOR UPDATE');
         expect(rawSql[1]).toContain('pg_advisory_xact_lock');
         expect(rawSql[1]).toContain('AS MATERIALIZED');
@@ -910,16 +909,10 @@ describe('durable history import quota', () => {
             provider: 'lichess',
             items: [signedItem(historyImport, game('existing'))],
         });
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Grace',
-            chesscomUsername: null,
-        });
-        prismaMock.$queryRaw.mockResolvedValue([
-            {
-                lichessUsername: 'Grace',
-                chesscomUsername: null,
-            },
-        ]);
+        prismaMock.user.findUnique.mockResolvedValue(
+            linkedUser('LICHESS', 'Grace', null)
+        );
+        prismaMock.$queryRaw.mockResolvedValue([{ username: 'Grace' }]);
         const graceGame = {
             ...game('existing'),
             white: { name: 'Grace' },
@@ -931,16 +924,10 @@ describe('durable history import quota', () => {
                 signedItem(historyImport, graceGame, 'grace'),
             ],
         });
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: '  ADA  ',
-            chesscomUsername: null,
-        });
-        prismaMock.$queryRaw.mockResolvedValue([
-            {
-                lichessUsername: '  ADA  ',
-                chesscomUsername: null,
-            },
-        ]);
+        prismaMock.user.findUnique.mockResolvedValue(
+            linkedUser('LICHESS', '  ADA  ', null)
+        );
+        prismaMock.$queryRaw.mockResolvedValue([{ username: '  ADA  ' }]);
         await historyImport.importHistoricalGames({
             userId: 'user-1',
             provider: 'lichess',

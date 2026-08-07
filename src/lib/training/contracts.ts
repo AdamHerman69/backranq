@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Provider } from '@/lib/types/game';
+import type { GameSource } from '@/lib/types/game';
 import {
     canonicalMoveAssessmentEvidence,
     canonicalSolutionTreeSemantics,
@@ -176,7 +176,7 @@ export type SolutionRevisionInput = {
 
 export type TrainingMomentCandidate = {
     sourceGameId: string;
-    sourceProvider: Provider;
+    sourceProvider: GameSource;
     sourcePlayedAt: string;
     sourcePgnHash: string;
     decisionPly: number;

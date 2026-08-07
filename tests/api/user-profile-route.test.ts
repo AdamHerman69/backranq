@@ -52,6 +52,19 @@ describe('GET /api/user/profile', () => {
 
     it('returns profile users with nullable email', async () => {
         const route = await importRoute();
+        const row = {
+            id: 'user-1',
+            email: null,
+            name: 'Ada',
+            image: null,
+            chessAccountConnections: [
+                {
+                    provider: 'LICHESS',
+                    username: 'ada',
+                    usernameNormalized: 'ada',
+                },
+            ],
+        };
         const user = {
             id: 'user-1',
             email: null,
@@ -60,7 +73,7 @@ describe('GET /api/user/profile', () => {
             lichessUsername: 'ada',
             chesscomUsername: null,
         };
-        prismaMock.user.findUnique.mockResolvedValue(user);
+        prismaMock.user.findUnique.mockResolvedValue(row);
 
         const response = await route.GET();
 
@@ -71,7 +84,9 @@ describe('GET /api/user/profile', () => {
     it('atomically resets only the changed provider sync identity', async () => {
         vi.stubGlobal(
             'fetch',
-            vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+            vi.fn().mockResolvedValue(
+                Response.json({ id: 'grace-id', username: 'Grace' })
+            )
         );
         const route = await importRoute();
         const updated = {
@@ -90,17 +105,35 @@ describe('GET /api/user/profile', () => {
                     ) => Promise<unknown>
                 )(prismaMock)
         );
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Ada',
-            chesscomUsername: 'ada-chess',
+        prismaMock.chessAccountConnection.findUnique.mockResolvedValueOnce({
+            usernameNormalized: 'ada',
+            providerAccountId: 'ada-id',
+            origin: 'OAUTH_ACCOUNT',
         });
-        prismaMock.user.update.mockResolvedValue(updated);
+        prismaMock.user.findUniqueOrThrow.mockResolvedValue({
+            id: 'user-1',
+            email: null,
+            name: 'Ada',
+            image: null,
+            chessAccountConnections: [
+                {
+                    provider: 'LICHESS',
+                    username: 'Grace',
+                    usernameNormalized: 'grace',
+                },
+                {
+                    provider: 'CHESSCOM',
+                    username: 'ada-chess',
+                    usernameNormalized: 'ada-chess',
+                },
+            ],
+        });
+        prismaMock.chessAccountConnection.upsert.mockResolvedValue({});
         prismaMock.providerSyncState.upsert.mockResolvedValue({});
 
         const response = await route.PATCH(
             createPatchRequest({
                 lichessUsername: 'Grace',
-                chesscomUsername: 'ada-chess',
             })
         );
 
@@ -127,6 +160,125 @@ describe('GET /api/user/profile', () => {
             }),
         });
         await expect(readJson(response)).resolves.toEqual({ user: updated });
+    });
+
+    it('treats the full provider identity and origin as the no-op contract', async () => {
+        const providerFetch = vi.fn().mockResolvedValue(
+            Response.json({ id: 'stable-id', username: 'Ada' })
+        );
+        vi.stubGlobal('fetch', providerFetch);
+        const route = await importRoute();
+        prismaMock.$transaction.mockImplementation(
+            async (callback: unknown) =>
+                (
+                    callback as (tx: typeof prismaMock) => Promise<unknown>
+                )(prismaMock)
+        );
+        prismaMock.chessAccountConnection.findUnique.mockResolvedValue({
+            usernameNormalized: 'ada',
+            providerAccountId: 'stable-id',
+            origin: 'PUBLIC_PROFILE',
+        });
+        prismaMock.user.findUniqueOrThrow.mockResolvedValue({
+            id: 'user-1',
+            email: null,
+            name: 'Ada',
+            image: null,
+            chessAccountConnections: [
+                {
+                    provider: 'LICHESS',
+                    username: 'Ada',
+                    usernameNormalized: 'ada',
+                },
+            ],
+        });
+
+        const response = await route.PATCH(
+            createPatchRequest({ lichessUsername: 'Ada' })
+        );
+
+        expect(response.status).toBe(200);
+        expect(prismaMock.chessAccountConnection.upsert).not.toHaveBeenCalled();
+        expect(prismaMock.providerSyncState.upsert).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        [{ lichessUsername: 42 }, 'Invalid lichessUsername'],
+        [{ lichessUsername: 'Ada', surprise: true }, 'Invalid profile patch'],
+    ])('rejects an untyped or unknown-field patch before lookup', async (body, error) => {
+        const providerFetch = vi.fn();
+        vi.stubGlobal('fetch', providerFetch);
+        const route = await importRoute();
+
+        const response = await route.PATCH(createPatchRequest(body));
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toMatchObject({
+            code: 'INVALID_PROFILE_PATCH',
+            error,
+        });
+        expect(providerFetch).not.toHaveBeenCalled();
+        expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('retries bounded serializable profile conflicts', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn().mockResolvedValue(
+                Response.json({ id: 'stable-id', username: 'Ada' })
+            )
+        );
+        const route = await importRoute();
+        const conflict = Object.assign(new Error('serialization conflict'), {
+            code: 'P2034',
+        });
+        prismaMock.$transaction
+            .mockRejectedValueOnce(conflict)
+            .mockRejectedValueOnce(conflict)
+            .mockResolvedValue({
+                id: 'user-1',
+                email: null,
+                name: 'Ada',
+                image: null,
+                lichessUsername: 'Ada',
+                chesscomUsername: null,
+            });
+
+        const response = await route.PATCH(
+            createPatchRequest({ lichessUsername: 'Ada' })
+        );
+
+        expect(response.status).toBe(200);
+        expect(prismaMock.$transaction).toHaveBeenCalledTimes(3);
+    });
+
+    it('returns sanitized typed persistence failures', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn().mockResolvedValue(
+                Response.json({ id: 'stable-id', username: 'Ada' })
+            )
+        );
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const route = await importRoute();
+        prismaMock.$transaction.mockRejectedValue(
+            new Error('postgres://secret-internal-message')
+        );
+
+        const response = await route.PATCH(
+            createPatchRequest({ lichessUsername: 'Ada' })
+        );
+        const json = await readJson(response);
+
+        expect(response.status).toBe(500);
+        expect(json).toEqual({
+            error: 'The linked account could not be updated.',
+            code: 'PROFILE_UPDATE_FAILED',
+        });
+        expect(JSON.stringify(json)).not.toContain('secret-internal-message');
+        expect(errorSpy).toHaveBeenCalledWith(
+            '[profile] durable account update failed'
+        );
     });
 
     it('rejects a missing or stale expected owner before parsing, lookup, or mutation', async () => {

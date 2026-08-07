@@ -124,6 +124,7 @@ describe('PATCH /api/games/[id]', () => {
         const route = await importRoute();
         prismaMock.analyzedGame.findFirst.mockResolvedValue({
             id: 'game-1',
+            provider: 'LICHESS',
             pgn: '[Event "Old"]',
         });
         prismaMock.analysisJob.findFirst.mockResolvedValue({ id: 'job-1' });
@@ -162,19 +163,107 @@ describe('PATCH /api/games/[id]', () => {
         expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 
-    it('invalidates current analysis and active training moments when PGN changes', async () => {
+    it.each(['LICHESS', 'CHESSCOM'] as const)(
+        'invalidates current analysis and active training moments when %s corrects its PGN',
+        async (provider) => {
+            const route = await importRoute();
+            prismaMock.analyzedGame.findFirst.mockResolvedValue({
+                id: 'game-1',
+                provider,
+                pgn: '[Event "Old"]',
+            });
+            prismaMock.analysisJob.findFirst.mockResolvedValue(null);
+            prismaMock.analyzedGame.updateMany.mockResolvedValue({ count: 1 });
+            prismaMock.analyzedGame.findUniqueOrThrow.mockResolvedValue({
+                id: 'game-1',
+                pgn: '[Event "New"]',
+            });
+            prismaMock.trainingMoment.updateMany.mockResolvedValue({ count: 2 });
+            prismaMock.$transaction.mockImplementation(
+                async (callback: unknown) =>
+                    (
+                        callback as (
+                            tx: typeof prismaMock
+                        ) => Promise<unknown>
+                    )(prismaMock)
+            );
+
+            const response = await route.PATCH(
+                createPatchRequest({ pgn: '[Event "New"]' }),
+                routeParams()
+            );
+
+            expect(response.status).toBe(200);
+            expect(prismaMock.analyzedGame.updateMany).toHaveBeenCalledWith({
+                where: {
+                    id: 'game-1',
+                    userId: 'user-1',
+                    pgn: '[Event "Old"]',
+                },
+                data: expect.objectContaining({
+                    pgn: '[Event "New"]',
+                    analysis: {},
+                    analyzedAt: null,
+                    currentAnalysisRunId: null,
+                }),
+            });
+            expect(prismaMock.trainingMoment.updateMany).toHaveBeenCalledWith({
+                where: { gameId: 'game-1', archivedAt: null },
+                data: {
+                    status: 'INVALIDATED',
+                    archivedAt: expect.any(Date),
+                },
+            });
+        }
+    );
+
+    it.each(['MANUAL_PGN', 'BACKRANQ_COACH'] as const)(
+        'rejects %s PGN replacement as an immutable source snapshot before any write',
+        async (provider) => {
+            const route = await importRoute();
+            prismaMock.analyzedGame.findFirst.mockResolvedValue({
+                id: 'game-1',
+                provider,
+                pgn: '[Event "Old"]',
+            });
+            prismaMock.$transaction.mockImplementation(
+                async (callback: unknown) =>
+                    (
+                        callback as (
+                            tx: typeof prismaMock
+                        ) => Promise<unknown>
+                    )(prismaMock)
+            );
+
+            const response = await route.PATCH(
+                createPatchRequest({ pgn: '[Event "New"]' }),
+                routeParams()
+            );
+
+            expect(response.status).toBe(409);
+            await expect(readJson(response)).resolves.toEqual({
+                error: 'Manual and Coach game PGN snapshots cannot be replaced.',
+                code: 'IMMUTABLE_SOURCE_SNAPSHOT',
+            });
+            expect(prismaMock.analysisJob.findFirst).not.toHaveBeenCalled();
+            expect(prismaMock.analyzedGame.updateMany).not.toHaveBeenCalled();
+            expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
+        }
+    );
+
+    it('maps a database local-source invariant violation to the same sanitized conflict', async () => {
         const route = await importRoute();
         prismaMock.analyzedGame.findFirst.mockResolvedValue({
             id: 'game-1',
+            provider: 'LICHESS',
             pgn: '[Event "Old"]',
         });
         prismaMock.analysisJob.findFirst.mockResolvedValue(null);
-        prismaMock.analyzedGame.updateMany.mockResolvedValue({ count: 1 });
-        prismaMock.analyzedGame.findUniqueOrThrow.mockResolvedValue({
-            id: 'game-1',
-            pgn: '[Event "New"]',
-        });
-        prismaMock.trainingMoment.updateMany.mockResolvedValue({ count: 2 });
+        prismaMock.analyzedGame.updateMany.mockRejectedValue(
+            new Error(
+                'constraint AnalyzedGame_local_source_pgn_immutable included internal database details'
+            )
+        );
         prismaMock.$transaction.mockImplementation(
             async (callback: unknown) =>
                 (
@@ -186,28 +275,15 @@ describe('PATCH /api/games/[id]', () => {
             createPatchRequest({ pgn: '[Event "New"]' }),
             routeParams()
         );
+        const json = await readJson(response);
 
-        expect(response.status).toBe(200);
-        expect(prismaMock.analyzedGame.updateMany).toHaveBeenCalledWith({
-            where: {
-                id: 'game-1',
-                userId: 'user-1',
-                pgn: '[Event "Old"]',
-            },
-            data: expect.objectContaining({
-                pgn: '[Event "New"]',
-                analysis: {},
-                analyzedAt: null,
-                currentAnalysisRunId: null,
-            }),
+        expect(response.status).toBe(409);
+        expect(json).toEqual({
+            error: 'Manual and Coach game PGN snapshots cannot be replaced.',
+            code: 'IMMUTABLE_SOURCE_SNAPSHOT',
         });
-        expect(prismaMock.trainingMoment.updateMany).toHaveBeenCalledWith({
-            where: { gameId: 'game-1', archivedAt: null },
-            data: {
-                status: 'INVALIDATED',
-                archivedAt: expect.any(Date),
-            },
-        });
+        expect(JSON.stringify(json)).not.toContain('internal database');
+        expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 });
 

@@ -36,8 +36,6 @@ import {
 export const runtime = 'nodejs';
 const MAX_PREFERENCES_BODY_BYTES = 256_000;
 
-const FILTER_STRING_KEYS = new Set(['lichessUsername', 'chesscomUsername']);
-
 function isBlankOrIntegerInRange(
     value: string,
     min: number,
@@ -330,16 +328,6 @@ function validatePreferencesPatch(
             const filters = {} as NonNullable<PartialPreferences['filters']> &
                 Record<string, unknown>;
             for (const [filterKey, filterRaw] of Object.entries(raw)) {
-                if (FILTER_STRING_KEYS.has(filterKey)) {
-                    const parsed = stringValue(
-                        filterRaw,
-                        `filters.${filterKey}`,
-                        { maxLength: 128 }
-                    );
-                    if (!parsed.ok) return parsed;
-                    filters[filterKey] = parsed.value ?? '';
-                    continue;
-                }
                 if (filterKey === 'since' || filterKey === 'until') {
                     const parsed = stringValue(
                         filterRaw,

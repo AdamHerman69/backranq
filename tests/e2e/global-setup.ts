@@ -30,6 +30,11 @@ const E2E_SOLUTION_REVISIONS = {
     offline: '40000000-0000-4000-8000-00000000e2e4',
     promotion: '40000000-0000-4000-8000-00000000e2e5',
 } as const;
+const E2E_PREMIUM_INVITATION = {
+    id: '60000000-0000-4000-8000-00000000e2e1',
+    email: 'invited-friend@example.com',
+    activeKey: 'e2e:invited-friend@example.com',
+} as const;
 const STANDARD_PGN = `[Event "Backranq E2E"]
 [Site "Local"]
 [Date "2026.07.20"]
@@ -406,6 +411,9 @@ async function deleteE2eUserGraph(prisma: PrismaClient) {
     await prisma.trainingMoment.deleteMany({
         where: { userId: E2E_USER.id },
     });
+    await prisma.premiumInvitation.deleteMany({
+        where: { id: E2E_PREMIUM_INVITATION.id },
+    });
     await prisma.user.deleteMany({ where: userWhere });
 }
 
@@ -417,11 +425,56 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
             id: E2E_USER.id,
             email: E2E_USER.email,
             name: E2E_USER.name,
-            lichessUsername: E2E_USER.username,
-            chesscomUsername: E2E_USER.username,
             preferences: {
             },
         },
+    });
+
+    await prisma.adminMembership.create({
+        data: {
+            userId: E2E_USER.id,
+            role: 'ADMIN',
+            active: true,
+        },
+    });
+
+    await prisma.premiumInvitation.create({
+        data: {
+            id: E2E_PREMIUM_INVITATION.id,
+            email: E2E_PREMIUM_INVITATION.email,
+            emailNormalized: E2E_PREMIUM_INVITATION.email,
+            activeKey: E2E_PREMIUM_INVITATION.activeKey,
+            tokenHash: 'e2e-premium-invitation-token-hash',
+            plan: 'PRO',
+            invitedById: E2E_USER.id,
+            expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1_000),
+            deliveryStatus: 'SENT',
+            deliveryAttempts: 1,
+            lastDeliveryAttemptAt: new Date(),
+            emailSentAt: new Date(),
+            providerEmailId: 'e2e-message-1',
+        },
+    });
+
+    await prisma.chessAccountConnection.createMany({
+        data: [
+            {
+                userId: E2E_USER.id,
+                provider: 'LICHESS',
+                providerAccountId: 'backranq-e2e-lichess',
+                username: E2E_USER.username,
+                usernameNormalized: E2E_USER.username.toLowerCase(),
+                origin: 'PUBLIC_PROFILE',
+            },
+            {
+                userId: E2E_USER.id,
+                provider: 'CHESSCOM',
+                providerAccountId: 'backranq-e2e-chesscom',
+                username: E2E_USER.username,
+                usernameNormalized: E2E_USER.username.toLowerCase(),
+                origin: 'PUBLIC_PROFILE',
+            },
+        ],
     });
 
     await prisma.billingAccount.create({

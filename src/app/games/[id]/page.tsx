@@ -24,11 +24,6 @@ export default async function GameDetailPage({
     });
     if (!game) notFound();
 
-    const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { lichessUsername: true, chesscomUsername: true },
-    });
-
     const [trainingMoments, serverAnalysisCapacity] = await Promise.all([
         prisma.trainingMoment.findMany({
             where: {
@@ -40,8 +35,10 @@ export default async function GameDetailPage({
                 currentSolutionRevision: {
                     is: {
                         trainable: true,
-                        verificationStatus: {
-                            in: ['VERIFIED', 'AMBIGUOUS'],
+                        verificationStatus: 'VERIFIED',
+                        acceptanceFrontier: {
+                            path: ['status'],
+                            equals: 'STABLE',
                         },
                     },
                 },
@@ -89,10 +86,6 @@ export default async function GameDetailPage({
             initialHasAnalysis={game.analyzedAt !== null}
             initialPly={initialPly}
             trainingMoments={trainingMoments}
-            usernameByProvider={{
-                lichess: user?.lichessUsername ?? undefined,
-                chesscom: user?.chesscomUsername ?? undefined,
-            }}
             serverAnalysisCapacity={serverAnalysisCapacity}
         />
     );

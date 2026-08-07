@@ -12,6 +12,7 @@ import type {
     ProgressScope,
     ProgressSnapshot,
 } from '@/lib/progress/contracts';
+import { getEffectiveBillingAccount } from '@/lib/services/billingAccounts';
 
 type ProgressReadClient = Pick<
     Prisma.TransactionClient,
@@ -47,13 +48,7 @@ export class ProgressDatasetTooLargeError extends Error {
 }
 
 const userSelect = {
-    lichessUsername: true,
-    chesscomUsername: true,
-    billingAccount: {
-        select: {
-            serverCreditsBalance: true,
-        },
-    },
+    chessAccountConnections: { select: { provider: true } },
 } satisfies Prisma.UserSelect;
 
 const gameSelect = {
@@ -100,6 +95,7 @@ const positionSelect = {
             solutionHash: true,
             configHash: true,
             verificationStatus: true,
+            acceptanceFrontier: true,
             trainable: true,
         },
     },
@@ -152,7 +148,8 @@ const attemptSelect = {
 
 async function readProgressSnapshot(
     db: ProgressReadClient,
-    args: GetProgressSnapshotArgs
+    args: GetProgressSnapshotArgs,
+    serverCreditsBalance: number | null
 ): Promise<ProgressSnapshot> {
     if (
         !args.userId ||
@@ -186,8 +183,10 @@ async function readProgressSnapshot(
                     currentSolutionRevision: {
                         is: {
                             trainable: true,
-                            verificationStatus: {
-                                in: ['VERIFIED', 'AMBIGUOUS'],
+                            verificationStatus: 'VERIFIED',
+                            acceptanceFrontier: {
+                                path: ['status'],
+                                equals: 'STABLE',
                             },
                         },
                     },
@@ -230,10 +229,15 @@ async function readProgressSnapshot(
     }
 
     const user: ProgressUserRecord = {
-        lichessUsername: userRow.lichessUsername,
-        chesscomUsername: userRow.chesscomUsername,
-        serverCreditsBalance:
-            userRow.billingAccount?.serverCreditsBalance ?? null,
+        linkedAccounts: {
+            lichess: userRow.chessAccountConnections.some(
+                (connection) => connection.provider === 'LICHESS'
+            ),
+            chesscom: userRow.chessAccountConnections.some(
+                (connection) => connection.provider === 'CHESSCOM'
+            ),
+        },
+        serverCreditsBalance,
     };
     const games: ProgressGameRecord[] = gameRows.map(
         ({ analysisJobs, ...game }) => ({
@@ -261,10 +265,15 @@ async function readProgressSnapshot(
  * Direct server/RSC entry point. The API route delegates to this same reader;
  * internal pages should call it directly rather than making an HTTP round trip.
  */
-export function getProgressSnapshot(
+export async function getProgressSnapshot(
     args: GetProgressSnapshotArgs
 ): Promise<ProgressSnapshot> {
-    return readProgressSnapshot(prisma, args);
+    const billingAccount = await getEffectiveBillingAccount(args.userId);
+    return readProgressSnapshot(
+        prisma,
+        args,
+        billingAccount.serverCreditsBalance
+    );
 }
 
 export const progressReadTestUtils = {

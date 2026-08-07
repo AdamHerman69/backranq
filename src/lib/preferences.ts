@@ -79,8 +79,6 @@ export const TRAINING_SESSION_MIXES = [
 export type TrainingSessionMix = (typeof TRAINING_SESSION_MIXES)[number];
 
 export type Filters = {
-    lichessUsername: string;
-    chesscomUsername: string;
     timeClass: TimeClass | 'any';
     rated: RatedFilter;
     since: string; // yyyy-mm-dd
@@ -132,8 +130,6 @@ export type AnalysisDefaults = Pick<
 export function defaultPreferences(): PreferencesSchema {
     return {
         filters: {
-            lichessUsername: '',
-            chesscomUsername: '',
             timeClass: 'any',
             rated: 'any',
             since: '',

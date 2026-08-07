@@ -15,6 +15,7 @@ import {
     gamesAnalysisStateWhere,
     parseGamesDateBound,
 } from '@/lib/games/indexFilters';
+import { ManualPgnImportButton } from '@/components/games/ManualPgnImportButton';
 
 function clampInt(v: number, min: number, max: number) {
     return Math.max(min, Math.min(max, v));
@@ -54,28 +55,17 @@ export default async function GamesPage({
               : '';
     const q = typeof sp.q === 'string' ? sp.q.trim() : '';
 
-    const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-            lichessUsername: true,
-            chesscomUsername: true,
-        },
-    });
-    const usernames = {
-        lichess: user?.lichessUsername ?? '',
-        chesscom: user?.chesscomUsername ?? '',
-    };
-
     const where: Prisma.AnalyzedGameWhereInput = {
         userId,
         ...buildUserGameFiltersWhere({
             result: resultFilter,
             opponentQuery: q,
-            usernames,
         }),
     };
     if (provider === 'lichess') where.provider = 'LICHESS';
     if (provider === 'chesscom') where.provider = 'CHESSCOM';
+    if (provider === 'manual_pgn') where.provider = 'MANUAL_PGN';
+    if (provider === 'backranq_coach') where.provider = 'BACKRANQ_COACH';
     if (
         timeClass === 'bullet' ||
         timeClass === 'blitz' ||
@@ -137,6 +127,8 @@ export default async function GamesPage({
             select: {
                 id: true,
                 provider: true,
+                sourceUsername: true,
+                userSide: true,
                 playedAt: true,
                 timeClass: true,
                 rated: true,
@@ -194,8 +186,10 @@ export default async function GamesPage({
                 currentSolutionRevision: {
                     is: {
                         trainable: true,
-                        verificationStatus: {
-                            in: ['VERIFIED', 'AMBIGUOUS'],
+                        verificationStatus: 'VERIFIED',
+                        acceptanceFrontier: {
+                            path: ['status'],
+                            equals: 'STABLE',
                         },
                     },
                 },
@@ -226,6 +220,8 @@ export default async function GamesPage({
         return ({
         id: g.id,
         provider: g.provider,
+        sourceUsername: g.sourceUsername,
+        userSide: g.userSide,
         playedAt: g.playedAt.toISOString(),
         timeClass: g.timeClass,
         rated: g.rated,
@@ -252,6 +248,7 @@ export default async function GamesPage({
             <PageHeader
                 title="Games"
                 subtitle="Your imported games and their analysis status."
+                actions={<ManualPgnImportButton ownerId={userId} />}
             />
 
             <Card className="shadow-none">
@@ -282,13 +279,14 @@ export default async function GamesPage({
                     if (limit !== 20) p.set('limit', String(limit));
                     return p.toString();
                 })()}
-                userNameByProvider={{
-                    lichess: usernames.lichess,
-                    chesscom: usernames.chesscom,
-                }}
                 initialFilters={{
                     provider:
-                        provider === 'lichess' || provider === 'chesscom' ? provider : '',
+                        provider === 'lichess' ||
+                        provider === 'chesscom' ||
+                        provider === 'manual_pgn' ||
+                        provider === 'backranq_coach'
+                            ? provider
+                            : '',
                     timeClass:
                         timeClass === 'bullet' ||
                         timeClass === 'blitz' ||

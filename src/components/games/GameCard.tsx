@@ -5,15 +5,15 @@ import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import {
-    getUserGameOutcome,
-    normalizeChessUsername,
-} from '@/lib/games/outcome';
+import { getUserGameOutcome } from '@/lib/games/outcome';
 import { cn } from '@/lib/utils';
+import type { GameSource, GameUserSide } from '@prisma/client';
 
 export type GameCardData = {
     id: string;
-    provider: 'LICHESS' | 'CHESSCOM';
+    provider: GameSource;
+    sourceUsername: string;
+    userSide: GameUserSide;
     playedAt: string; // ISO
     timeClass: 'BULLET' | 'BLITZ' | 'RAPID' | 'CLASSICAL' | 'UNKNOWN';
     rated: boolean | null;
@@ -52,24 +52,19 @@ function timeLabel(tc: GameCardData['timeClass']) {
 
 export function GameCard({
     game,
-    userNameForProvider,
     selectable = false,
     selected = false,
     selectionDisabled = false,
     onSelectedChange,
 }: {
     game: GameCardData;
-    userNameForProvider: string;
     selectable?: boolean;
     selected?: boolean;
     selectionDisabled?: boolean;
     onSelectedChange?: (selected: boolean) => void;
 }) {
-    const user = normalizeChessUsername(userNameForProvider);
-    const w = normalizeChessUsername(game.whiteName);
-    const b = normalizeChessUsername(game.blackName);
-    const userIsWhite = user && user === w;
-    const userIsBlack = user && user === b;
+    const userIsWhite = game.userSide === 'WHITE';
+    const userIsBlack = game.userSide === 'BLACK';
 
     const opponentName = userIsWhite
         ? game.blackName
@@ -84,12 +79,17 @@ export function GameCard({
 
     const badge = getUserGameOutcome({
         result: game.result,
-        whiteName: game.whiteName,
-        blackName: game.blackName,
-        userName: userNameForProvider,
+        userSide: game.userSide,
     });
     const played = new Date(game.playedAt).toLocaleDateString();
-    const providerLabel = game.provider === 'LICHESS' ? 'Lichess' : 'Chess.com';
+    const providerLabel =
+        game.provider === 'LICHESS'
+            ? 'Lichess'
+            : game.provider === 'CHESSCOM'
+              ? 'Chess.com'
+              : game.provider === 'MANUAL_PGN'
+                ? 'Manual PGN'
+                : 'Backranq Coach';
 
     const opening = game.openingName
         ? `${game.openingEco ? `${game.openingEco} ` : ''}${game.openingName}${game.openingVariation ? ` — ${game.openingVariation}` : ''}`.trim()

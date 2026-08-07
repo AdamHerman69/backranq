@@ -22,6 +22,7 @@ import {
 } from '@/lib/services/billingAccounts';
 import { recordStaleAnalysisDelivery } from '@/lib/services/analysisOps';
 import { recordAnalysisFailed } from '@/lib/notifications/service';
+import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 
 export type AnalyzeGameJobResult = {
     jobId: string;
@@ -62,12 +63,6 @@ export async function analyzeGameJob(
                         configSnapshot: true,
                         configHash: true,
                         creditCost: true,
-                    },
-                },
-                user: {
-                    select: {
-                        lichessUsername: true,
-                        chesscomUsername: true,
                     },
                 },
             },
@@ -146,6 +141,9 @@ export async function analyzeGameJob(
         }
 
         const normalized = dbGameToNormalized(job.game);
+        if (!resolveGameAnalysisProvenance(normalized)) {
+            throw new Error('Game has invalid immutable analysis provenance');
+        }
         if (!run.configHash) {
             throw new Error('Analysis run config hash is required');
         }
@@ -158,10 +156,6 @@ export async function analyzeGameJob(
                 [normalized.id]: job.gameId,
             },
             analysisConfigHash: run.configHash,
-            usernameByProvider: {
-                lichess: job.user.lichessUsername ?? undefined,
-                chesscom: job.user.chesscomUsername ?? undefined,
-            },
             options,
         });
 

@@ -6,7 +6,7 @@ import type {
     TrainingLessonKind,
     TrainingSourceKind,
 } from '@/lib/training/contracts';
-import type { Provider } from '@/lib/types/game';
+import type { GameSource } from '@/lib/types/game';
 
 export const PRACTICE_FEED_MAX_LIMIT = 50;
 export const TRAINING_API_MAX_ID_LENGTH = 128;
@@ -20,6 +20,14 @@ export const PRACTICE_FEED_FOCUSES = [
 export type PracticeFeedFocus =
     (typeof PRACTICE_FEED_FOCUSES)[number];
 
+export const PRACTICE_FEED_MODES = [
+    'RECOMMENDED',
+    'REVIEW',
+    'NEW',
+] as const;
+export type PracticeFeedMode =
+    (typeof PRACTICE_FEED_MODES)[number];
+
 export type PracticeFilters = {
     /**
      * User-facing practice intensity. Thresholds remain a server policy so the
@@ -31,7 +39,7 @@ export type PracticeFilters = {
     lessonKinds?: TrainingLessonKind[];
     themes?: string[];
     minConfidence?: number;
-    includeAttempted?: boolean;
+    mode?: PracticeFeedMode;
 };
 
 export type PracticeFeedRequest = {
@@ -173,7 +181,7 @@ export type TrainingReviewDto = {
     themes: string[];
     source: {
         gameId: string;
-        provider: Provider;
+        provider: GameSource;
         playedAt: string;
         decisionPly: number;
     };

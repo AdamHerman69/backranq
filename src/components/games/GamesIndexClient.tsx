@@ -22,7 +22,6 @@ export function GamesIndexClient({
     page,
     totalPages,
     baseQueryString,
-    userNameByProvider,
     initialFilters,
     serverAnalysisCapacity,
 }: {
@@ -32,7 +31,6 @@ export function GamesIndexClient({
     page: number;
     totalPages: number;
     baseQueryString: string;
-    userNameByProvider: { lichess: string; chesscom: string };
     initialFilters: GamesFilters;
     serverAnalysisCapacity: ManualServerAnalysisCapacity;
 }) {
@@ -196,7 +194,6 @@ export function GamesIndexClient({
                 page={page}
                 totalPages={totalPages}
                 baseQueryString={baseQueryString}
-                userNameByProvider={userNameByProvider}
                 selected={selected}
                 onSelectedChange={(id, v) => setSelected((s) => ({ ...s, [id]: v }))}
                 selectionDisabled={busy}

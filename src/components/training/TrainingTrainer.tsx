@@ -18,7 +18,6 @@ import {
 import { PostMoveStory } from '@/components/training/PostMoveStory';
 import { PuzzleBoard } from '@/components/training/PuzzleBoard';
 import {
-    filtersForReviewAgain,
     hasEffectivePracticeFocus,
     TrainingFocusControls,
 } from '@/components/training/TrainingFocusControls';
@@ -34,6 +33,7 @@ import {
     TabsTrigger,
 } from '@/components/ui/tabs';
 import { usePracticeFeed } from '@/lib/hooks/usePracticeFeed';
+import type { PracticeFeedMode } from '@/lib/training/api';
 import { legalMoveFromInput } from '@/lib/training/boardInput';
 import { bestMoveReviewArrows } from '@/lib/training/boardPresentation';
 import {
@@ -111,19 +111,22 @@ export function TrainingTrainer({
     initialMomentId,
     ownerId,
     entry,
+    initialMode,
     initialViewMode = 'solve',
     compact = false,
 }: {
     initialMomentId?: string;
     ownerId?: string;
     entry?: 'progress';
+    initialMode?: PracticeFeedMode;
     initialViewMode?: TrainerViewMode;
     compact?: boolean;
 }) {
     const training = usePracticeFeed(
         initialMomentId,
         ownerId,
-        entry
+        entry,
+        initialMode
     );
     const nextPosition = training.next;
     const [flipped, setFlipped] = useState(false);
@@ -271,8 +274,29 @@ export function TrainingTrainer({
         training.practiceFilters,
         training.appliedPracticeFilters
     );
-    const isCaughtUp =
-        training.feedExhausted && training.feedHadPositions;
+    const practiceMode =
+        training.practiceFilters.mode ??
+        training.appliedPracticeFilters.mode ??
+        'RECOMMENDED';
+    const isCaughtUp = training.feedExhausted && training.feedHadPositions;
+    const emptyHeading = isCaughtUp
+        ? 'You’re caught up'
+        : practiceMode === 'REVIEW'
+          ? 'Nothing is due for review'
+          : practiceMode === 'NEW'
+            ? 'No new positions available'
+            : hasCustomFocus
+              ? 'No positions are ready for this focus'
+              : 'No practice positions yet';
+    const emptyDescription = isCaughtUp
+        ? 'You’ve completed this queue. Reviewed positions will return when they are due.'
+        : practiceMode === 'REVIEW'
+          ? 'Your reviewed positions will return here when they are due.'
+          : practiceMode === 'NEW'
+            ? 'Analyze more games or switch back to the recommended queue.'
+            : hasCustomFocus
+              ? 'No new or due positions are ready. Broaden the focus or return after a review becomes due.'
+              : 'Analyze more games to find personal practice positions.';
     const focusControls =
         !compact && !initialMomentId ? (
             <TrainingFocusControls
@@ -358,33 +382,24 @@ export function TrainingTrainer({
                 <Card>
                     <CardContent className="py-10 text-center">
                         <h2 className="font-medium">
-                            {isCaughtUp
-                                ? 'You’re caught up'
-                                : hasCustomFocus
-                                  ? 'No positions match this focus'
-                                  : 'No practice positions yet'}
+                            {emptyHeading}
                         </h2>
                         <p className="mt-2 text-sm text-muted-foreground">
-                            {isCaughtUp
-                                ? 'You’ve practised every position matching this focus.'
-                                : hasCustomFocus
-                                  ? 'Adjust the position focus above to practise a broader set of decisions.'
-                                : 'Analyze more games to find personal practice positions.'}
+                            {emptyDescription}
                         </p>
-                        {isCaughtUp && !initialMomentId ? (
+                        {practiceMode !== 'RECOMMENDED' && !initialMomentId ? (
                             <Button
                                 type="button"
                                 variant="outline"
                                 className="mt-4"
                                 onClick={() =>
-                                    training.resetFeed(
-                                        filtersForReviewAgain(
-                                            training.practiceFilters
-                                        )
-                                    )
+                                    training.resetFeed({
+                                        ...training.practiceFilters,
+                                        mode: 'RECOMMENDED',
+                                    })
                                 }
                             >
-                                Review these positions again
+                                Return to recommended
                             </Button>
                         ) : null}
                     </CardContent>

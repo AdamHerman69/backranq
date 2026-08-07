@@ -1,6 +1,7 @@
 import type {
     BillingAccount,
     CreditLedgerEntryType,
+    GameSource,
     Prisma,
 } from '@prisma/client';
 import { after } from 'next/server';
@@ -12,9 +13,7 @@ import {
     resolveAutoAnalysisPolicy,
     type AutoAnalysisPolicy,
 } from '@/lib/preferences';
-import {
-    eligibleAutoAnalysisGameIds,
-} from '@/lib/services/analysisEligibility';
+import { eligibleAutoAnalysisGameIds } from '@/lib/services/analysisEligibility';
 import {
     AUTO_ANALYSIS_QUEUED_REASONS,
     enqueueAnalysisJob,
@@ -29,6 +28,7 @@ import {
     DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT,
     DEFAULT_SERVER_CREDITS_BALANCE,
     DEFAULT_STOP_WHEN_CREDITS_BELOW,
+    getEffectiveBillingAccount,
     InsufficientServerCreditsError,
     MonthlyServerCreditsLimitExceededError,
     ServerCreditStopThresholdError,
@@ -101,7 +101,7 @@ type LedgerRow = {
 
 type Candidate = {
     id: string;
-    provider: 'LICHESS' | 'CHESSCOM';
+    provider: GameSource;
     result: string | null;
     timeClass:
         | 'BULLET'
@@ -113,6 +113,8 @@ type Candidate = {
     pgn: string;
     whiteName: string;
     blackName: string;
+    sourceUsername: string;
+    userSide: 'WHITE' | 'BLACK';
     playedAt: Date;
     createdAt: Date;
 };
@@ -131,6 +133,8 @@ const CANDIDATE_SELECT = {
     pgn: true,
     whiteName: true,
     blackName: true,
+    sourceUsername: true,
+    userSide: true,
     playedAt: true,
     createdAt: true,
 } satisfies Prisma.AnalyzedGameSelect;
@@ -152,11 +156,7 @@ export function calculateAutoAnalysisCapacity(args: {
     ledger: LedgerRow[];
     now: Date;
 }): AutoAnalysisCapacity {
-    const renewalDue =
-        args.account != null && args.account.serverCreditsRenewAt <= args.now;
-    const monthStart = renewalDue
-        ? args.now
-        : (args.account?.serverCreditsPeriodStart ?? args.now);
+    const monthStart = args.account?.serverCreditsPeriodStart ?? args.now;
     const autoEntries = args.ledger.filter((entry) =>
         entry.autoAnalysis === true ||
         AUTO_ANALYSIS_QUEUED_REASONS.includes(
@@ -208,17 +208,11 @@ function calculateAutoAnalysisCapacityFromSummaries(args: {
     dailyAutoGames: number;
     now: Date;
 }): AutoAnalysisCapacity {
-    const renewalDue =
-        args.account != null && args.account.serverCreditsRenewAt <= args.now;
     const planMonthlyLimit =
         args.account?.monthlyServerCreditsLimit ??
         DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT;
     const currentBalance =
-        args.account == null
-            ? DEFAULT_SERVER_CREDITS_BALANCE
-            : renewalDue
-              ? Math.max(args.account.serverCreditsBalance, planMonthlyLimit)
-              : args.account.serverCreditsBalance;
+        args.account?.serverCreditsBalance ?? DEFAULT_SERVER_CREDITS_BALANCE;
     const creditReserve = Math.max(
         args.account?.stopWhenCreditsBelow ??
             DEFAULT_STOP_WHEN_CREDITS_BELOW,
@@ -227,9 +221,7 @@ function calculateAutoAnalysisCapacityFromSummaries(args: {
     const planMonthlyRemaining = Math.max(
         0,
         planMonthlyLimit -
-            (renewalDue
-                ? 0
-                : (args.account?.monthlyServerCreditsUsed ?? 0)) -
+            (args.account?.monthlyServerCreditsUsed ?? 0) -
             args.allOutstandingReserved
     );
     const planDailyGameLimit =
@@ -732,8 +724,6 @@ async function loadContext(
         where: { id: userId },
         select: {
             preferences: true,
-            lichessUsername: true,
-            chesscomUsername: true,
         },
     });
     let preferences = canonicalPreferences(user?.preferences ?? {});
@@ -774,8 +764,6 @@ async function loadContext(
         analyzedAt: null,
         ...metadataEligibilityWhere({
             policy: eligibilityPolicy,
-            lichessUsername: user?.lichessUsername,
-            chesscomUsername: user?.chesscomUsername,
         }),
         ...(eligibilityPolicy.existingGames === 'new' &&
         eligibilityPolicy.enabledAt
@@ -869,10 +857,6 @@ async function loadContext(
         preferences: eligibilityPreferences,
         games: candidates,
         gameId: (game) => game.id,
-        usernameByProvider: {
-            lichess: user?.lichessUsername,
-            chesscom: user?.chesscomUsername,
-        },
     }).sort(
         (a, b) =>
             b.eligibility.priority - a.eligibility.priority ||
@@ -910,18 +894,16 @@ async function loadAutoAnalysisCapacity(
     policy: AutoAnalysisPolicy,
     now: Date
 ) {
-    const account = await prisma.billingAccount.findUnique({
-        where: { userId },
-    });
-    const renewalDue =
-        account !== null && account.serverCreditsRenewAt <= now;
-    const monthStart = renewalDue
-        ? now
-        : (account?.serverCreditsPeriodStart ?? now);
+    const account = await getEffectiveBillingAccount(userId);
+    const monthStart = account.serverCreditsPeriodStart;
     const [allTotals, monthlyAutoRuns] = await Promise.all([
         prisma.creditLedgerEntry.groupBy({
             by: ['type'],
-            where: { userId },
+            where: {
+                userId,
+                scope: 'RESERVATION',
+                billingPeriodStart: monthStart,
+            },
             _sum: { credits: true },
         }),
         prisma.analysisRun.findMany({
@@ -981,8 +963,6 @@ function countCommittedRunRecords(
 
 function metadataEligibilityWhere(args: {
     policy: AutoAnalysisPolicy;
-    lichessUsername?: string | null;
-    chesscomUsername?: string | null;
 }): Prisma.AnalyzedGameWhereInput {
     const timeClassesForProvider = (
         provider: 'lichess' | 'chesscom'
@@ -1002,22 +982,20 @@ function metadataEligibilityWhere(args: {
         .map(([, value]) => value);
     const providerBranches: Prisma.AnalyzedGameWhereInput[] = [];
     const lichessTimeClasses = timeClassesForProvider('lichess');
-    if (lichessTimeClasses.length > 0 && args.lichessUsername) {
+    if (lichessTimeClasses.length > 0) {
         providerBranches.push(
             ...providerResultBranches({
                 provider: 'LICHESS',
-                username: args.lichessUsername,
                 scope: args.policy.resultScope,
                 timeClasses: lichessTimeClasses,
             })
         );
     }
     const chesscomTimeClasses = timeClassesForProvider('chesscom');
-    if (chesscomTimeClasses.length > 0 && args.chesscomUsername) {
+    if (chesscomTimeClasses.length > 0) {
         providerBranches.push(
             ...providerResultBranches({
                 provider: 'CHESSCOM',
-                username: args.chesscomUsername,
                 scope: args.policy.resultScope,
                 timeClasses: chesscomTimeClasses,
             })
@@ -1034,27 +1012,22 @@ function metadataEligibilityWhere(args: {
 
 function providerResultBranches(args: {
     provider: 'LICHESS' | 'CHESSCOM';
-    username: string;
     scope: AutoAnalysisPolicy['resultScope'];
     timeClasses: Array<
         'BULLET' | 'BLITZ' | 'RAPID' | 'CLASSICAL' | 'UNKNOWN'
     >;
 }): Prisma.AnalyzedGameWhereInput[] {
-    const name = {
-        equals: args.username,
-        mode: 'insensitive' as const,
-    };
     const branches: Prisma.AnalyzedGameWhereInput[] = [
         {
             provider: args.provider,
             timeClass: { in: args.timeClasses },
-            whiteName: name,
+            userSide: 'WHITE',
             result: '0-1',
         },
         {
             provider: args.provider,
             timeClass: { in: args.timeClasses },
-            blackName: name,
+            userSide: 'BLACK',
             result: '1-0',
         },
     ];
@@ -1063,7 +1036,6 @@ function providerResultBranches(args: {
             provider: args.provider,
             timeClass: { in: args.timeClasses },
             result: '1/2-1/2',
-            OR: [{ whiteName: name }, { blackName: name }],
         });
     }
     if (args.scope === 'all') {
@@ -1071,13 +1043,13 @@ function providerResultBranches(args: {
             {
                 provider: args.provider,
                 timeClass: { in: args.timeClasses },
-                whiteName: name,
+                userSide: 'WHITE',
                 result: '1-0',
             },
             {
                 provider: args.provider,
                 timeClass: { in: args.timeClasses },
-                blackName: name,
+                userSide: 'BLACK',
                 result: '0-1',
             }
         );

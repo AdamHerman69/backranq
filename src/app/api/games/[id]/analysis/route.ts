@@ -5,7 +5,7 @@ import type {
     GameAnalysis,
     MoveClassification,
 } from '@/lib/analysis/classification';
-import { providerToUi } from '@/lib/api/games';
+import { gameSourceToUi } from '@/lib/api/games';
 import {
     AnalysisConfigHashMismatchError,
     createAndCompleteLocalAnalysisRun,
@@ -31,6 +31,7 @@ import {
     isAnalysisQuality,
     type AnalysisQuality,
 } from '@/lib/analysis/quality';
+import { resolveStoredGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 
 export const runtime = 'nodejs';
 
@@ -403,13 +404,42 @@ export async function PUT(
             externalId: true,
             playedAt: true,
             pgn: true,
+            sourceUsername: true,
+            userSide: true,
+            whiteName: true,
+            blackName: true,
         },
     });
     if (!game)
         return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
     const analysis = body.analysis;
-    const normalizedGameId = `${providerToUi(game.provider)}:${game.externalId}`;
+    const frozenPerspective = resolveStoredGameAnalysisProvenance(game);
+    if (!frozenPerspective) {
+        return NextResponse.json(
+            { error: 'Stored game perspective is invalid' },
+            { status: 409 }
+        );
+    }
+    const expectedTrainingSide =
+        frozenPerspective.userSide === 'white' ? 'WHITE' : 'BLACK';
+    const expectedDecisionParity =
+        frozenPerspective.userSide === 'white' ? 0 : 1;
+    if (
+        analysis.trainingExtraction.trainingSide !== expectedTrainingSide ||
+        analysis.trainingExtraction.decisions.some(
+            (decision) => decision.ply % 2 !== expectedDecisionParity
+        ) ||
+        trainingMomentValidation.moments.some(
+            (moment) => moment.sideToMove !== frozenPerspective.userColor
+        )
+    ) {
+        return NextResponse.json(
+            { error: 'Analysis perspective does not match stored game' },
+            { status: 400 }
+        );
+    }
+    const normalizedGameId = `${gameSourceToUi(game.provider)}:${game.externalId}`;
     if (analysis.gameId !== normalizedGameId) {
         return NextResponse.json(
             { error: 'Analysis game mismatch' },
@@ -426,7 +456,7 @@ export async function PUT(
         !trainingMomentCandidatesMatchSource({
             moments: trainingMomentValidation.moments,
             gameId: id,
-            provider: providerToUi(game.provider),
+            provider: gameSourceToUi(game.provider),
             playedAt: game.playedAt,
             pgn: game.pgn,
             configHash: computedConfigHash,

@@ -34,6 +34,7 @@ const attemptMomentSelect = {
         select: {
             trainable: true,
             verificationStatus: true,
+            acceptanceFrontier: true,
             solutionHash: true,
             configHash: true,
         },
@@ -69,10 +70,36 @@ function attemptContext(
 
 type PracticeEvidenceTx = Pick<
     Prisma.TransactionClient,
+    | '$queryRaw'
     | 'trainingAttemptStatusEvent'
     | 'practiceReviewState'
     | 'practiceReviewEvent'
 >;
+
+async function lockPracticeReviewStream(args: {
+    tx: Pick<Prisma.TransactionClient, '$queryRaw'>;
+    userId: string;
+    trainingMomentId: string;
+}) {
+    const lockKey = [
+        'practice-review',
+        args.userId,
+        args.trainingMomentId,
+    ].join(':');
+
+    // Review state is maintained as an absolute scheduler snapshot. Serialize
+    // every distinct attempt for one owner + Position before any read/derive/
+    // write step so concurrent transactions cannot overwrite an increment.
+    await args.tx.$queryRaw<Array<{ acquired: boolean }>>`
+        WITH "practice_review_lock" AS MATERIALIZED (
+            SELECT pg_advisory_xact_lock(
+                hashtextextended(${lockKey}, 0)
+            )
+        )
+        SELECT TRUE AS "acquired"
+        FROM "practice_review_lock"
+    `;
+}
 
 async function appendAttemptStatusEvent(args: {
     tx: PracticeEvidenceTx;
@@ -138,6 +165,9 @@ async function recordReviewEvidence(args: {
             intervalDays: true,
             lapses: true,
             successes: true,
+            nextDueAt: true,
+            lastReviewedAt: true,
+            algorithmVersion: true,
         },
     });
     const success =
@@ -146,7 +176,7 @@ async function recordReviewEvidence(args: {
             args.grade === 'STRONG' ||
             args.grade === 'GOOD');
     const intervalBeforeDays = existing?.intervalDays ?? 0;
-    const intervalAfterDays = success
+    const scheduledIntervalDays = success
         ? existing?.successes
             ? Math.min(
                   60,
@@ -156,10 +186,27 @@ async function recordReviewEvidence(args: {
               )
             : 1
         : 1;
-    const nextDueAt = new Date(
-        args.occurredAt.getTime() +
-            intervalAfterDays * 24 * 60 * 60 * 1_000
-    );
+    const advancesSchedule =
+        !existing ||
+        args.occurredAt.getTime() >
+            existing.lastReviewedAt.getTime();
+    // A delayed offline attempt remains durable evidence and increments the
+    // counters, but it must not move a newer schedule backwards.
+    const intervalAfterDays = advancesSchedule
+        ? scheduledIntervalDays
+        : existing.intervalDays;
+    const lastReviewedAt = advancesSchedule
+        ? args.occurredAt
+        : existing.lastReviewedAt;
+    const nextDueAt = advancesSchedule
+        ? new Date(
+              args.occurredAt.getTime() +
+                  intervalAfterDays * 24 * 60 * 60 * 1_000
+          )
+        : existing.nextDueAt;
+    const algorithmVersion = advancesSchedule
+        ? PRACTICE_REVIEW_ALGORITHM_VERSION
+        : existing.algorithmVersion;
     const state = await args.tx.practiceReviewState.upsert({
         where: {
             userId_trainingMomentId_solutionHash_configHash: {
@@ -178,9 +225,8 @@ async function recordReviewEvidence(args: {
             intervalDays: intervalAfterDays,
             lapses: success ? 0 : 1,
             successes: success ? 1 : 0,
-            algorithmVersion:
-                PRACTICE_REVIEW_ALGORITHM_VERSION,
-            lastReviewedAt: args.occurredAt,
+            algorithmVersion,
+            lastReviewedAt,
         },
         update: {
             nextDueAt,
@@ -191,9 +237,8 @@ async function recordReviewEvidence(args: {
             successes: success
                 ? (existing?.successes ?? 0) + 1
                 : existing?.successes ?? 0,
-            algorithmVersion:
-                PRACTICE_REVIEW_ALGORITHM_VERSION,
-            lastReviewedAt: args.occurredAt,
+            algorithmVersion,
+            lastReviewedAt,
         },
         select: { id: true },
     });
@@ -419,9 +464,8 @@ export async function recordTrainingAttempt(args: {
     }
     if (
         !revision.trainable ||
-        !['VERIFIED', 'AMBIGUOUS'].includes(
-            revision.verificationStatus
-        )
+        revision.verificationStatus !== 'VERIFIED' ||
+        !hasStableAcceptanceFrontier(revision.acceptanceFrontier)
     ) {
         throw new TrainingAttemptError(
             'Training moment is not currently trainable',
@@ -439,6 +483,11 @@ export async function recordTrainingAttempt(args: {
 
     try {
         const attempt = await db.$transaction(async (tx) => {
+            await lockPracticeReviewStream({
+                tx,
+                userId: args.userId,
+                trainingMomentId: args.momentId,
+            });
             const created = await tx.trainingAttempt.create({
                 data: {
                     trainingMomentId: args.momentId,
@@ -511,6 +560,10 @@ export async function recordTrainingAttempt(args: {
                     id: args.momentId,
                     userId: args.userId,
                     status: 'ACTIVE',
+                    OR: [
+                        { lastTrainedAt: null },
+                        { lastTrainedAt: { lt: now } },
+                    ],
                 },
                 data: { lastTrainedAt: now },
             });
@@ -564,4 +617,14 @@ export async function recordTrainingAttempt(args: {
         assertIdempotentRecord(winner, args);
         return { attemptId: winner.id, status: 'RECORDED' };
     }
+}
+
+function hasStableAcceptanceFrontier(value: unknown) {
+    return (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        'status' in value &&
+        value.status === 'STABLE'
+    );
 }

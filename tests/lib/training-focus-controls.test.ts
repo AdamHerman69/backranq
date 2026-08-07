@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
     controlStateForPracticeFilters,
     filtersForPracticeFocus,
-    filtersForReviewAgain,
     hasEffectivePracticeFocus,
 } from '@/components/training/TrainingFocusControls';
 
@@ -14,9 +13,9 @@ describe('position focus controls', () => {
                 source: 'SAVED',
                 impact: 'ALL',
                 phase: 'ALL',
-                history: 'ALL',
+                mode: 'RECOMMENDED',
             })
-        ).toEqual({ focus: 'ALL' });
+        ).toEqual({ focus: 'ALL', mode: 'RECOMMENDED' });
     });
 
     it('maps a focused practice feed without exposing engine thresholds', () => {
@@ -25,32 +24,14 @@ describe('position focus controls', () => {
                 source: 'MISSED_CHANCES',
                 impact: 'MAJOR',
                 phase: 'ENDGAME',
-                history: 'FRESH',
+                mode: 'NEW',
             })
         ).toEqual({
             focus: 'MAJOR',
             sourceKinds: ['MISSED_OPPORTUNITY'],
             phases: ['ENDGAME'],
-            includeAttempted: false,
+            mode: 'NEW',
         });
-    });
-
-    it('reviews fresh-only positions again without changing other focus filters', () => {
-        const reviewFilters = filtersForReviewAgain({
-            focus: 'MAJOR',
-            sourceKinds: ['MY_MISTAKE'],
-            phases: ['ENDGAME'],
-            includeAttempted: false,
-        });
-
-        expect(reviewFilters).toEqual({
-            focus: 'MAJOR',
-            sourceKinds: ['MY_MISTAKE'],
-            phases: ['ENDGAME'],
-        });
-        expect(
-            controlStateForPracticeFilters(reviewFilters).history
-        ).toBe('ALL');
     });
 
     it('derives truthful controls from the requested practice filters', () => {
@@ -59,19 +40,19 @@ describe('position focus controls', () => {
                 focus: 'MAJOR',
                 sourceKinds: ['MISSED_OPPORTUNITY'],
                 phases: ['ENDGAME'],
-                includeAttempted: false,
+                mode: 'REVIEW',
             })
         ).toEqual({
             source: 'MISSED_CHANCES',
             impact: 'MAJOR',
             phase: 'ENDGAME',
-            history: 'FRESH',
+            mode: 'REVIEW',
         });
         expect(controlStateForPracticeFilters({})).toEqual({
             source: 'SAVED',
             impact: 'ALL',
             phase: 'ALL',
-            history: 'ALL',
+            mode: 'RECOMMENDED',
         });
     });
 

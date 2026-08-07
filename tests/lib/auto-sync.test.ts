@@ -58,6 +58,38 @@ function game(id: string, playedAt = '2026-07-05T10:00:00.000Z') {
     };
 }
 
+function syncUser(
+    lichessUsername: string | null,
+    chesscomUsername: string | null = null,
+    id = 'user-1'
+) {
+    return {
+        id,
+        chessAccountConnections: [
+            ...(lichessUsername
+                ? [
+                      {
+                          provider: 'LICHESS' as const,
+                          providerAccountId: 'lichess-id',
+                          username: lichessUsername,
+                          usernameNormalized: lichessUsername.toLowerCase(),
+                      },
+                  ]
+                : []),
+            ...(chesscomUsername
+                ? [
+                      {
+                          provider: 'CHESSCOM' as const,
+                          providerAccountId: 'chesscom-id',
+                          username: chesscomUsername,
+                          usernameNormalized: chesscomUsername.toLowerCase(),
+                      },
+                  ]
+                : []),
+        ],
+    };
+}
+
 describe('reliable provider auto-sync', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -77,16 +109,17 @@ describe('reliable provider auto-sync', () => {
                     ) => Promise<unknown>
                 )(prismaMock)
         );
-        prismaMock.$queryRaw.mockResolvedValue([
-            {
-                lichessUsername: 'Ada',
-                chesscomUsername: 'AdaChess',
-            },
-        ]);
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Ada',
-            chesscomUsername: 'AdaChess',
+        prismaMock.$queryRaw.mockImplementation(async (query: unknown) => {
+            const values = (query as { values?: unknown[] })?.values ?? [];
+            return [
+                {
+                    username: values.includes('CHESSCOM')
+                        ? 'AdaChess'
+                        : 'Ada',
+                },
+            ];
         });
+        prismaMock.user.findUnique.mockResolvedValue(syncUser('Ada', 'AdaChess'));
         saveNormalizedGamesForUserMock.mockResolvedValue({
             saved: 0,
             created: 0,
@@ -123,23 +156,11 @@ describe('reliable provider auto-sync', () => {
             })
         );
         const { syncUserProvider } = await importAutoSync();
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'New-Ada',
-            chesscomUsername: null,
-        });
-        prismaMock.$queryRaw.mockResolvedValue([
-            {
-                lichessUsername: 'New-Ada',
-                chesscomUsername: null,
-            },
-        ]);
+        prismaMock.user.findUnique.mockResolvedValue(syncUser('New-Ada'));
+        prismaMock.$queryRaw.mockResolvedValue([{ username: 'New-Ada' }]);
 
         await syncUserProvider({
-            user: {
-                id: 'user-1',
-                lichessUsername: 'New-Ada',
-                chesscomUsername: null,
-            },
+            user: syncUser('New-Ada', null),
             provider: 'LICHESS',
             prefs: {
                 ...(await import('@/lib/preferences')).defaultPreferences(),
@@ -188,11 +209,7 @@ describe('reliable provider auto-sync', () => {
         const { syncUserProvider } = await importAutoSync();
 
         const result = await syncUserProvider({
-            user: {
-                id: 'user-1',
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
-            },
+            user: syncUser('Ada', null),
             provider: 'LICHESS',
             prefs: (await import('@/lib/preferences')).defaultPreferences(),
             now: new Date('2026-07-10T00:00:00.000Z'),
@@ -228,11 +245,7 @@ describe('reliable provider auto-sync', () => {
         const { syncUserProvider } = await importAutoSync();
 
         const result = await syncUserProvider({
-            user: {
-                id: 'user-1',
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
-            },
+            user: syncUser('Ada', null),
             provider: 'LICHESS',
             prefs: (await import('@/lib/preferences')).defaultPreferences(),
             now: new Date('2026-07-10T00:00:00.000Z'),
@@ -300,11 +313,7 @@ describe('reliable provider auto-sync', () => {
         const { syncUserProvider } = await importAutoSync();
 
         const result = await syncUserProvider({
-            user: {
-                id: 'user-1',
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
-            },
+            user: syncUser('Ada', null),
             provider: 'LICHESS',
             prefs,
             now: new Date('2026-07-10T00:00:00.000Z'),
@@ -352,11 +361,7 @@ describe('reliable provider auto-sync', () => {
         const now = new Date('2026-07-10T00:00:00.000Z');
 
         const result = await syncUserProvider({
-            user: {
-                id: 'user-1',
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
-            },
+            user: syncUser('Ada', null),
             provider: 'LICHESS',
             prefs: (await import('@/lib/preferences')).defaultPreferences(),
             now,
@@ -393,11 +398,7 @@ describe('reliable provider auto-sync', () => {
         const { syncUserProvider } = await importAutoSync();
 
         const result = await syncUserProvider({
-            user: {
-                id: 'user-1',
-                lichessUsername: null,
-                chesscomUsername: 'AdaChess',
-            },
+            user: syncUser(null, 'AdaChess'),
             provider: 'CHESSCOM',
             prefs: (await import('@/lib/preferences')).defaultPreferences(),
             force: true,
@@ -414,16 +415,8 @@ describe('reliable provider auto-sync', () => {
     });
 
     it('does not save a fetched batch after the linked identity changes', async () => {
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Grace',
-            chesscomUsername: null,
-        });
-        prismaMock.$queryRaw.mockResolvedValue([
-            {
-                lichessUsername: 'Grace',
-                chesscomUsername: null,
-            },
-        ]);
+        prismaMock.user.findUnique.mockResolvedValue(syncUser('Grace'));
+        prismaMock.$queryRaw.mockResolvedValue([{ username: 'Grace' }]);
         fetchLichessGamesBatchMock.mockResolvedValue({
             games: [game('old-account-game')],
             complete: true,
@@ -432,11 +425,7 @@ describe('reliable provider auto-sync', () => {
         const { syncUserProvider } = await importAutoSync();
 
         const result = await syncUserProvider({
-            user: {
-                id: 'user-1',
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
-            },
+            user: syncUser('Ada', null),
             provider: 'LICHESS',
             prefs: (await import('@/lib/preferences')).defaultPreferences(),
             force: true,
@@ -470,12 +459,7 @@ describe('reliable provider auto-sync', () => {
         });
         prismaMock.$queryRaw.mockImplementation(async () => {
             order.push('identity-lock');
-            return [
-                {
-                    lichessUsername: 'Ada',
-                    chesscomUsername: null,
-                },
-            ];
+            return [{ username: 'Ada' }];
         });
         saveNormalizedGamesForUserMock.mockImplementation(async () => {
             order.push('save');
@@ -505,11 +489,7 @@ describe('reliable provider auto-sync', () => {
         const { syncUserProvider } = await importAutoSync();
 
         const result = await syncUserProvider({
-            user: {
-                id: 'user-1',
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
-            },
+            user: syncUser('Ada', null),
             provider: 'LICHESS',
             prefs: (await import('@/lib/preferences')).defaultPreferences(),
             force: true,
@@ -530,12 +510,7 @@ describe('reliable provider auto-sync', () => {
         const userId = '11111111-1111-4111-8111-111111111111';
         const jobId = '22222222-2222-4222-8222-222222222222';
         prismaMock.$queryRaw
-            .mockResolvedValueOnce([
-                {
-                    lichessUsername: 'Ada',
-                    chesscomUsername: null,
-                },
-            ])
+            .mockResolvedValueOnce([{ username: 'Ada' }])
             .mockResolvedValueOnce([
                 {
                     status: 'RUNNING',
@@ -546,11 +521,7 @@ describe('reliable provider auto-sync', () => {
 
         await expect(
             syncUserProvider({
-                user: {
-                    id: userId,
-                    lichessUsername: 'Ada',
-                    chesscomUsername: null,
-                },
+                user: syncUser('Ada', null, userId),
                 provider: 'LICHESS',
                 prefs: (await import('@/lib/preferences')).defaultPreferences(),
                 force: true,
@@ -579,9 +550,9 @@ describe('reliable provider auto-sync', () => {
 
         expect(identityLock).toEqual({
             text: expect.stringMatching(
-                /FROM "User"[\s\S]*WHERE "id" = CAST\(\$1 AS uuid\)[\s\S]*FOR UPDATE/
+                /FROM "ChessAccountConnection"[\s\S]*WHERE "userId" = CAST\(\$1 AS uuid\)[\s\S]*"provider" = CAST\(\$2 AS "SyncProvider"\)[\s\S]*FOR UPDATE/
             ),
-            values: [userId],
+            values: [userId, 'LICHESS'],
         });
         expect(jobLeaseLock).toEqual({
             text: expect.stringMatching(
@@ -604,12 +575,7 @@ describe('reliable provider auto-sync', () => {
             nextUntil: null,
         });
         prismaMock.$queryRaw
-            .mockResolvedValueOnce([
-                {
-                    lichessUsername: 'Ada',
-                    chesscomUsername: null,
-                },
-            ])
+            .mockResolvedValueOnce([{ username: 'Ada' }])
             .mockResolvedValueOnce([
                 {
                     status: 'RUNNING',
@@ -621,11 +587,7 @@ describe('reliable provider auto-sync', () => {
 
         await expect(
             syncUserProvider({
-                user: {
-                    id: 'user-1',
-                    lichessUsername: 'Ada',
-                    chesscomUsername: null,
-                },
+                user: syncUser('Ada', null),
                 provider: 'LICHESS',
                 prefs: (await import('@/lib/preferences')).defaultPreferences(),
                 force: true,
@@ -662,11 +624,7 @@ describe('reliable provider auto-sync', () => {
         const { syncUserProvider } = await importAutoSync();
 
         const result = await syncUserProvider({
-            user: {
-                id: 'user-1',
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
-            },
+            user: syncUser('Ada', null),
             provider: 'LICHESS',
             prefs: (await import('@/lib/preferences')).defaultPreferences(),
             force: true,
@@ -689,11 +647,7 @@ describe('reliable provider auto-sync', () => {
         const { syncUserProvider } = await importAutoSync();
 
         const result = await syncUserProvider({
-            user: {
-                id: 'user-1',
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
-            },
+            user: syncUser('Ada', null),
             provider: 'LICHESS',
             prefs: (await import('@/lib/preferences')).defaultPreferences(),
             force: true,
@@ -737,8 +691,8 @@ describe('reliable provider auto-sync', () => {
                         },
                     },
                 },
-                lichessUsername: 'Ada',
-                chesscomUsername: 'AdaChess',
+                chessAccountConnections: syncUser('Ada', 'AdaChess')
+                    .chessAccountConnections,
                 accounts: [],
             },
         ]);

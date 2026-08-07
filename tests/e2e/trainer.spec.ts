@@ -407,6 +407,30 @@ test.describe('authenticated personal decision practice', () => {
     test('applies a practice focus without changing extraction settings', async ({
         page,
     }) => {
+        await page.route('**/api/training/feed?**', async (route) => {
+            const url = new URL(route.request().url());
+            if (
+                url.searchParams.get('sourceKind') !==
+                    'MISSED_OPPORTUNITY' ||
+                url.searchParams.get('focus') !== 'major'
+            ) {
+                await route.continue();
+                return;
+            }
+            await route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    items: [],
+                    nextCursor: null,
+                    appliedFilters: {
+                        sourceKinds: ['MISSED_OPPORTUNITY'],
+                        focus: 'MAJOR',
+                        mode: 'RECOMMENDED',
+                    },
+                }),
+            });
+        });
         await page.goto('/practice');
         await page
             .getByRole('combobox', { name: 'Position source' })
@@ -442,7 +466,7 @@ test.describe('authenticated personal decision practice', () => {
             page.getByRole('combobox', { name: 'Position impact' })
         ).toContainText('Major positions');
         await expect(
-            page.getByText('No positions match this focus')
-        ).toHaveCount(0);
+            page.getByText('No positions are ready for this focus')
+        ).toBeVisible();
     });
 });

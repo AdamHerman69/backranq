@@ -23,6 +23,10 @@ import {
     processNotificationDelivery,
 } from '@/lib/notifications/delivery';
 import { runNotificationMaintenance } from '@/lib/notifications/campaigns';
+import {
+    processPracticeDueNotificationPage,
+    processPracticeDueSweepPage,
+} from '@/lib/training/practiceDueSweep';
 import { processWeeklyMasterRun } from '@/lib/master/pipelineRunner';
 
 export async function processBackranqQueueMessage(message: BackranqQueueMessage) {
@@ -30,20 +34,36 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
         return processWeeklyMasterRun(message.runId);
     }
     if (message.type === 'notification-delivery') {
-        return processNotificationDelivery(message.deliveryId);
+        return processNotificationDelivery(
+            message.deliveryId,
+            message.dispatchToken
+        );
     }
     if (message.type === 'notification-sweep') {
         return dispatchPendingNotificationDeliveries();
     }
     if (message.type === 'notification-maintenance') {
-        return runNotificationMaintenance({
+        const maintenance = await runNotificationMaintenance({
             referenceAt: new Date(message.referenceAt),
             since: new Date(message.since),
             analysisCursor: message.analysisCursor,
             syncCursor: message.syncCursor,
             userCursor: message.userCursor,
             weeklyCursor: message.weeklyCursor,
+            practiceDueCursor: message.practiceDueCursor,
         });
+        const notificationDispatch =
+            await dispatchPendingNotificationDeliveries();
+        return { maintenance, notificationDispatch };
+    }
+    if (message.type === 'practice-due-sweep') {
+        return processPracticeDueSweepPage(message.sweepId);
+    }
+    if (message.type === 'practice-due-notify') {
+        return processPracticeDueNotificationPage(
+            message.sweepId,
+            message.afterUserId
+        );
     }
     if (message.type === 'sync-all') {
         const [sync, automation] = await Promise.all([

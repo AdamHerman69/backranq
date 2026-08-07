@@ -345,16 +345,8 @@ describe('analysis job enqueue service', () => {
         prismaMock.creditLedgerEntry.findMany
             .mockResolvedValueOnce([{ type: 'RESERVED', credits: 10 }])
             .mockResolvedValueOnce([{ type: 'RESERVED', credits: 10 }])
-            .mockResolvedValueOnce([
-                { type: 'RESERVED', credits: 10 },
-                { type: 'RELEASED', credits: 10 },
-            ])
             .mockResolvedValueOnce([{ type: 'RESERVED', credits: 10 }])
-            .mockResolvedValueOnce([{ type: 'RESERVED', credits: 10 }])
-            .mockResolvedValueOnce([
-                { type: 'RESERVED', credits: 10 },
-                { type: 'RELEASED', credits: 10 },
-            ]);
+            .mockResolvedValueOnce([{ type: 'RESERVED', credits: 10 }]);
         prismaMock.billingAccount.upsert.mockResolvedValue(billingAccount());
         prismaMock.billingAccount.update.mockResolvedValue(billingAccount());
         prismaMock.creditLedgerEntry.create.mockReset();

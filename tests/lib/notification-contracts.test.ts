@@ -26,6 +26,37 @@ describe('notification contracts', () => {
         });
     });
 
+    it('renders the current due snapshot rather than an accumulated count', () => {
+        expect(
+            notificationCopy({
+                type: 'PRACTICE_DUE',
+                title: 'stale',
+                body: 'stale',
+                itemCount: 1,
+                secondaryCount: 0,
+            })
+        ).toEqual({
+            title: 'Your practice review is due',
+            body: '1 practice position is ready for review.',
+        });
+    });
+
+    it('marks a capped due snapshot as a lower bound', () => {
+        expect(
+            notificationCopy({
+                type: 'PRACTICE_DUE',
+                title: 'stale',
+                body: 'stale',
+                itemCount: 100,
+                secondaryCount: 0,
+                metadata: { dueCountIsExact: false },
+            })
+        ).toEqual({
+            title: 'Your practice review is due',
+            body: '100+ practice positions are ready for review.',
+        });
+    });
+
     it('groups practice created before the same local digest into one delivery', () => {
         const first = practiceReadyDeliveryWindow(
             new Date('2026-08-04T06:00:00.000Z'),
@@ -53,6 +84,30 @@ describe('notification contracts', () => {
 
         expect(window.scheduledFor.toISOString()).toBe(
             '2026-08-05T07:00:00.000Z'
+        );
+    });
+
+    it('moves a nonexistent DST-gap digest hour to the first valid instant', () => {
+        const window = practiceReadyDeliveryWindow(
+            new Date('2026-03-28T12:00:00.000Z'),
+            'Europe/Prague',
+            2
+        );
+
+        expect(window.scheduledFor.toISOString()).toBe(
+            '2026-03-29T01:00:00.000Z'
+        );
+    });
+
+    it('chooses one stable instant for a repeated DST-fold digest hour', () => {
+        const window = practiceReadyDeliveryWindow(
+            new Date('2026-10-24T12:00:00.000Z'),
+            'Europe/Prague',
+            2
+        );
+
+        expect(window.scheduledFor.toISOString()).toBe(
+            '2026-10-25T01:00:00.000Z'
         );
     });
 

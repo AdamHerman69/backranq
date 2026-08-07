@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 import { readJson } from '../helpers/route';
 import { mockAuthModule, setMockUserId } from '../helpers/route-mocks';
 
@@ -15,6 +16,15 @@ async function importRoute(): Promise<PortalRouteModule> {
     return import('@/app/api/stripe/portal/route');
 }
 
+function post(ownerId: string | null = 'user-1') {
+    const headers = new Headers();
+    if (ownerId !== null) headers.set(EXPECTED_OWNER_HEADER, ownerId);
+    return new Request('http://localhost/api/stripe/portal', {
+        method: 'POST',
+        headers,
+    });
+}
+
 describe('POST /api/stripe/portal', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -29,16 +39,31 @@ describe('POST /api/stripe/portal', () => {
         setMockUserId(null);
         const route = await importRoute();
 
-        const response = await route.POST();
+        const response = await route.POST(post());
 
         expect(response.status).toBe(401);
         expect(createStripePortalSessionMock).not.toHaveBeenCalled();
     });
 
+    it.each([null, 'stale-user'])(
+        'rejects missing or stale render owner %s before Stripe calls',
+        async (ownerId) => {
+            const route = await importRoute();
+
+            const response = await route.POST(post(ownerId));
+
+            expect(response.status).toBe(409);
+            await expect(readJson(response)).resolves.toMatchObject({
+                code: 'OWNER_MISMATCH',
+            });
+            expect(createStripePortalSessionMock).not.toHaveBeenCalled();
+        }
+    );
+
     it('creates a portal session for the current user', async () => {
         const route = await importRoute();
 
-        const response = await route.POST();
+        const response = await route.POST(post());
 
         expect(response.status).toBe(200);
         await expect(readJson(response)).resolves.toEqual({
@@ -54,7 +79,7 @@ describe('POST /api/stripe/portal', () => {
         );
         const route = await importRoute();
 
-        const response = await route.POST();
+        const response = await route.POST(post());
 
         expect(response.status).toBe(503);
         await expect(readJson(response)).resolves.toEqual({

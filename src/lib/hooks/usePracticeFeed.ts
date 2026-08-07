@@ -9,6 +9,7 @@ import {
 import { useSession } from 'next-auth/react';
 
 import type {
+    PracticeFeedMode,
     PracticeFilters,
     RecordTrainingAttemptRequest,
     TrainingPromptDto,
@@ -174,7 +175,8 @@ function writeQueue(
 export function usePracticeFeed(
     initialMomentId?: string,
     ownerIdOverride?: string,
-    entry?: 'progress'
+    entry?: 'progress',
+    initialMode?: PracticeFeedMode
 ) {
     const { data: session } = useSession();
     const ownerId = ownerIdOverride ?? session?.user?.id ?? null;
@@ -187,7 +189,10 @@ export function usePracticeFeed(
     const [feedRequest, setFeedRequest] = useState<{
         filters: PracticeFilters;
         revision: number;
-    }>({ filters: {}, revision: 0 });
+    }>(() => ({
+        filters: initialMode ? { mode: initialMode } : {},
+        revision: 0,
+    }));
     const [loading, setLoading] = useState(true);
     const [feedExhausted, setFeedExhausted] = useState(false);
     const [feedHadPositions, setFeedHadPositions] = useState(false);

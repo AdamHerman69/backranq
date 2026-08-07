@@ -3,6 +3,7 @@ import NextAuth from 'next-auth';
 import { PrismaAdapter } from '@auth/prisma-adapter';
 import { prisma } from '@/lib/prisma';
 import { authConfig } from './config';
+import { syncVerifiedLichessIdentity } from './lichessIdentity';
 
 const authDebug = process.env.NEXTAUTH_DEBUG === 'true';
 
@@ -110,6 +111,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
     ...authConfig,
     events: {
+        async signIn(event) {
+            await syncVerifiedLichessIdentity(event);
+        },
         async createUser({ user }) {
             if (!user.id) return;
             const { recordWelcome } = await import('@/lib/notifications/service');

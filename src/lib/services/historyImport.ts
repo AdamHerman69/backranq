@@ -9,7 +9,7 @@ import { Prisma } from '@prisma/client';
 import {
     normalizedGameToDb,
     parseExternalId,
-    providerToDb,
+    syncProviderToDb,
 } from '@/lib/api/games';
 import { isRecord, isStrictIsoInstant } from '@/lib/api/validation';
 import { isValidSourcePgn } from '@/lib/chess/pgn';
@@ -429,18 +429,6 @@ function verifyHistoryTicket(args: {
     );
 }
 
-function providerUsername(
-    provider: HistoryImportProvider,
-    user: {
-        lichessUsername: string | null;
-        chesscomUsername: string | null;
-    }
-) {
-    return provider === 'lichess'
-        ? user.lichessUsername
-        : user.chesscomUsername;
-}
-
 function allowance(createdCount: number): HistoryImportAllowance {
     const used = Math.max(
         0,
@@ -771,8 +759,14 @@ async function linkedIdentity(
     const user = await client.user.findUnique({
         where: { id: userId },
         select: {
-            lichessUsername: true,
-            chesscomUsername: true,
+            chessAccountConnections: {
+                where: {
+                    provider:
+                        provider === 'lichess' ? 'LICHESS' : 'CHESSCOM',
+                },
+                select: { username: true },
+                take: 1,
+            },
             accounts: {
                 where: { provider: 'lichess' },
                 select: { access_token: true },
@@ -780,7 +774,8 @@ async function linkedIdentity(
             },
         },
     });
-    const username = user ? providerUsername(provider, user)?.trim() : null;
+    const username =
+        user?.chessAccountConnections?.[0]?.username.trim() ?? null;
     if (!username) throw new HistoryImportProviderNotLinkedError(provider);
     return {
         username,
@@ -801,18 +796,15 @@ async function lockedLinkedIdentity(
     provider: HistoryImportProvider
 ) {
     const rows = await tx.$queryRaw<
-        Array<{
-            lichessUsername: string | null;
-            chesscomUsername: string | null;
-        }>
+        Array<{ username: string }>
     >`
-        SELECT "lichessUsername", "chesscomUsername"
-        FROM "User"
-        WHERE "id" = ${userId}::uuid
+        SELECT "username"
+        FROM "ChessAccountConnection"
+        WHERE "userId" = ${userId}::uuid
+          AND "provider" = ${provider === 'lichess' ? 'LICHESS' : 'CHESSCOM'}::"SyncProvider"
         FOR UPDATE
     `;
-    const user = rows[0];
-    const username = user ? providerUsername(provider, user)?.trim() : null;
+    const username = rows[0]?.username?.trim() ?? null;
     if (!username) throw new HistoryImportProviderNotLinkedError(provider);
     return {
         username,
@@ -914,7 +906,7 @@ async function acquireHistoryFetchLease(args: {
     provider: HistoryImportProvider;
     usernameNormalized: string;
 }): Promise<HistoryFetchLease> {
-    const provider = providerToDb(args.provider);
+    const provider = syncProviderToDb(args.provider);
     const now = new Date();
     const leaseUntil = new Date(now.getTime() + HISTORY_FETCH_LEASE_MS);
     const token = randomUUID();
@@ -1043,7 +1035,7 @@ export async function getHistoryImportSnapshot(args: {
     fetchTimeoutMs?: number;
 }): Promise<HistoryImportSnapshot> {
     const identity = await linkedIdentity(args.userId, args.provider);
-    const provider = providerToDb(args.provider);
+    const provider = syncProviderToDb(args.provider);
     const cursorPayload = args.cursor
         ? readHistoryImportCursor({
               cursor: args.cursor,
@@ -1249,7 +1241,7 @@ export async function importHistoricalGames(args: {
             args.userId,
             args.provider
         );
-        const provider = providerToDb(args.provider);
+        const provider = syncProviderToDb(args.provider);
         const lockKey = [
             'history-import',
             args.userId,

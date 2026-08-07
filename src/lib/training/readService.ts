@@ -1,101 +1,222 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import type {
-    PracticeFeedFocus,
     PracticeFeedRequest,
     PracticeFeedResponse,
     PracticeFilters,
     TrainingMomentResponse,
 } from '@/lib/training/api';
 import { toTrainingPromptDto } from '@/lib/training/apiMappers';
+import {
+    queryDuePracticeStream,
+    queryNewPracticeStream,
+} from '@/lib/training/practiceFeedQueries';
+import {
+    interleavePracticeStreams,
+    initialPracticeScheduleCursor,
+    type DueScheduleCursor,
+    type DueScheduleKey,
+    type NewScheduleCursor,
+    type NewScheduleKey,
+    type PracticeScheduleCursor,
+} from '@/lib/training/practiceScheduler';
 
-type TrainingReadClient = Pick<Prisma.TransactionClient, 'trainingMoment'>;
+type TrainingReadClient = Pick<
+    Prisma.TransactionClient,
+    'trainingMoment' | '$queryRaw'
+>;
 
 type PracticeFeedCursor = {
+    version: 2;
+    purpose: 'practice-feed';
+    userId: string;
     feedStartedAt: string;
     filterHash: string;
-    lastTrainedAt: string | null;
-    createdAt: string;
-    id: string;
+    schedule: PracticeScheduleCursor;
+    issuedAt: number;
+    expiresAt: number;
 };
 
-function encodeCursor(cursor: PracticeFeedCursor): string {
-    return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+export const PRACTICE_FEED_CURSOR_TTL_MS = 6 * 60 * 60_000;
+const PRACTICE_FEED_CURSOR_MAX_LENGTH = 1_024;
+const MIN_SAFE_PRACTICE_INSTANT_MS = Date.parse('2000-01-01T00:00:00.000Z');
+const MAX_SAFE_PRACTICE_INSTANT_MS = Date.parse('2100-01-01T00:00:00.000Z');
+
+const UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function cursorSecret() {
+    const secret =
+        process.env.PRACTICE_FEED_CURSOR_SECRET?.trim() ||
+        process.env.AUTH_SECRET?.trim() ||
+        process.env.NEXTAUTH_SECRET?.trim();
+    if (!secret) throw new Error('Practice feed cursor signing is not configured');
+    return secret;
 }
 
-function decodeCursor(value: string): {
+function encodeCursor(cursor: PracticeFeedCursor): string {
+    const encoded = Buffer.from(JSON.stringify(cursor), 'utf8').toString(
+        'base64url'
+    );
+    const signature = createHmac('sha256', cursorSecret())
+        .update(`practice-feed:${encoded}`)
+        .digest('base64url');
+    const value = `${encoded}.${signature}`;
+    if (value.length > PRACTICE_FEED_CURSOR_MAX_LENGTH) {
+        throw new Error('Practice feed cursor exceeded its safe size');
+    }
+    return value;
+}
+
+function decodeCanonicalBase64Url(value: string): Buffer | null {
+    if (!value || !/^[A-Za-z0-9_-]+$/.test(value)) return null;
+    const decoded = Buffer.from(value, 'base64url');
+    return decoded.toString('base64url') === value ? decoded : null;
+}
+
+function decodeCursor(value: string, args: {
+    userId: string;
+    filterHash: string;
+    requestTime: Date;
+}): {
     feedStartedAt: Date;
     filterHash: string;
-    lastTrainedAt: Date | null;
-    createdAt: Date;
-    id: string;
+    schedule: PracticeScheduleCursor;
+    issuedAt: number;
+    expiresAt: number;
 } | null {
     try {
-        const decoded = JSON.parse(
-            Buffer.from(value, 'base64url').toString('utf8')
-        ) as Partial<PracticeFeedCursor>;
+        if (!value || value.length > PRACTICE_FEED_CURSOR_MAX_LENGTH) {
+            return null;
+        }
+        const [encoded, signature, extra] = value.split('.');
+        if (!encoded || !signature || extra) return null;
+        const payload = decodeCanonicalBase64Url(encoded);
+        const receivedSignature = decodeCanonicalBase64Url(signature);
+        if (!payload || !receivedSignature) return null;
+        const expectedSignature = createHmac('sha256', cursorSecret())
+            .update(`practice-feed:${encoded}`)
+            .digest();
         if (
-            typeof decoded.createdAt !== 'string' ||
-            typeof decoded.feedStartedAt !== 'string' ||
-            typeof decoded.filterHash !== 'string' ||
-            !/^[a-f0-9]{64}$/.test(decoded.filterHash) ||
-            (decoded.lastTrainedAt !== null &&
-                typeof decoded.lastTrainedAt !== 'string') ||
-            typeof decoded.id !== 'string' ||
-            decoded.id.length > 128
+            receivedSignature.length !== expectedSignature.length ||
+            !timingSafeEqual(receivedSignature, expectedSignature)
         ) {
             return null;
         }
-        const createdAt = new Date(decoded.createdAt);
-        const feedStartedAt = new Date(decoded.feedStartedAt);
-        const lastTrainedAt =
-            decoded.lastTrainedAt == null
-                ? null
-                : new Date(decoded.lastTrainedAt);
+        const decoded = JSON.parse(
+            payload.toString('utf8')
+        ) as Partial<PracticeFeedCursor>;
         if (
-            !Number.isFinite(createdAt.getTime()) ||
-            !Number.isFinite(feedStartedAt.getTime()) ||
-            (lastTrainedAt &&
-                !Number.isFinite(lastTrainedAt.getTime()))
+            decoded.version !== 2 ||
+            decoded.purpose !== 'practice-feed' ||
+            decoded.userId !== args.userId ||
+            typeof decoded.feedStartedAt !== 'string' ||
+            typeof decoded.filterHash !== 'string' ||
+            decoded.filterHash !== args.filterHash ||
+            !/^[a-f0-9]{64}$/.test(decoded.filterHash) ||
+            !isPracticeScheduleCursor(decoded.schedule) ||
+            !Number.isSafeInteger(decoded.issuedAt) ||
+            !Number.isSafeInteger(decoded.expiresAt) ||
+            (decoded.issuedAt ?? Infinity) > args.requestTime.getTime() ||
+            (decoded.expiresAt ?? -Infinity) <= args.requestTime.getTime() ||
+            (decoded.expiresAt ?? 0) - (decoded.issuedAt ?? 0) !==
+                PRACTICE_FEED_CURSOR_TTL_MS
+        ) {
+            return null;
+        }
+        const feedStartedAt = new Date(decoded.feedStartedAt);
+        if (
+            !isSafePracticeInstant(decoded.feedStartedAt) ||
+            feedStartedAt.getTime() > args.requestTime.getTime() ||
+            feedStartedAt.getTime() <
+                args.requestTime.getTime() - PRACTICE_FEED_CURSOR_TTL_MS
         ) {
             return null;
         }
         return {
             feedStartedAt,
             filterHash: decoded.filterHash,
-            lastTrainedAt,
-            createdAt,
-            id: decoded.id,
+            schedule: decoded.schedule,
+            issuedAt: decoded.issuedAt!,
+            expiresAt: decoded.expiresAt!,
         };
     } catch {
         return null;
     }
 }
 
-const PRACTICE_FOCUS_THRESHOLDS: Record<
-    Exclude<PracticeFeedFocus, 'ALL'>,
-    {
-        minWinChanceLoss: number;
-        fallbackMinCpLoss: number;
-    }
-> = {
-    MEANINGFUL: {
-        minWinChanceLoss: 0.08,
-        fallbackMinCpLoss: 100,
-    },
-    MAJOR: {
-        minWinChanceLoss: 0.12,
-        fallbackMinCpLoss: 150,
-    },
-};
+function isSafePracticeInstant(value: unknown): value is string {
+    if (typeof value !== 'string') return false;
+    const parsed = new Date(value);
+    return (
+        Number.isFinite(parsed.getTime()) &&
+        parsed.toISOString() === value &&
+        parsed.getTime() >= MIN_SAFE_PRACTICE_INSTANT_MS &&
+        parsed.getTime() < MAX_SAFE_PRACTICE_INSTANT_MS
+    );
+}
+
+function isNewScheduleKey(value: unknown): value is NewScheduleKey {
+    if (!value || typeof value !== 'object') return false;
+    const key = value as Partial<NewScheduleKey>;
+    return (
+        isSafePracticeInstant(key.createdAt) &&
+        typeof key.id === 'string' &&
+        UUID_RE.test(key.id)
+    );
+}
+
+function isDueScheduleKey(value: unknown): value is DueScheduleKey {
+    if (!value || typeof value !== 'object') return false;
+    const key = value as Partial<DueScheduleKey>;
+    return (
+        (key.bucket === 'LAPSED' || key.bucket === 'CLEAN') &&
+        isSafePracticeInstant(key.nextDueAt) &&
+        typeof key.id === 'string' &&
+        UUID_RE.test(key.id)
+    );
+}
+
+function isDueScheduleCursor(value: unknown): value is DueScheduleCursor {
+    if (!value || typeof value !== 'object') return false;
+    const cursor = value as Partial<DueScheduleCursor>;
+    if (cursor.bucket === 'DONE') return cursor.after === null;
+    return (
+        (cursor.bucket === 'LAPSED' || cursor.bucket === 'CLEAN') &&
+        (cursor.after === null ||
+            (isDueScheduleKey(cursor.after) &&
+                cursor.after.bucket === cursor.bucket))
+    );
+}
+
+function isNewScheduleCursor(value: unknown): value is NewScheduleCursor {
+    if (!value || typeof value !== 'object') return false;
+    const cursor = value as Partial<NewScheduleCursor>;
+    return (
+        typeof cursor.exhausted === 'boolean' &&
+        (cursor.after === null || isNewScheduleKey(cursor.after))
+    );
+}
+
+function isPracticeScheduleCursor(
+    value: unknown
+): value is PracticeScheduleCursor {
+    if (!value || typeof value !== 'object') return false;
+    const cursor = value as Partial<PracticeScheduleCursor>;
+    return (
+        Number.isSafeInteger(cursor.patternIndex) &&
+        (cursor.patternIndex ?? -1) >= 0 &&
+        (cursor.patternIndex ?? 3) < 3 &&
+        isDueScheduleCursor(cursor.due) &&
+        isNewScheduleCursor(cursor.fresh)
+    );
+}
 
 function sorted(values: readonly string[] | undefined): string[] {
     return Array.from(new Set(values ?? [])).sort();
 }
 
-function practiceFilterHash(
-    filters: PracticeFilters
-): string {
+function practiceFilterHash(filters: PracticeFilters): string {
     return createHash('sha256')
         .update(
             JSON.stringify({
@@ -106,33 +227,10 @@ function practiceFilterHash(
                 themes: sorted(filters.themes),
                 minConfidence:
                     filters.minConfidence ?? null,
-                includeAttempted:
-                    filters.includeAttempted !== false,
+                mode: filters.mode ?? 'RECOMMENDED',
             })
         )
         .digest('hex');
-}
-
-function severityWhere(
-    focus: PracticeFeedFocus | undefined
-): Prisma.TrainingMomentWhereInput | null {
-    if (!focus || focus === 'ALL') return null;
-    const threshold = PRACTICE_FOCUS_THRESHOLDS[focus];
-    return {
-        OR: [
-            {
-                winChanceLoss: {
-                    gte: threshold.minWinChanceLoss,
-                },
-            },
-            {
-                winChanceLoss: null,
-                cpLoss: {
-                    gte: threshold.fallbackMinCpLoss,
-                },
-            },
-        ],
-    };
 }
 
 const promptSelect = {
@@ -190,43 +288,6 @@ const promptSelect = {
     lastTrainedAt: true,
 } satisfies Prisma.TrainingMomentSelect;
 
-function afterPracticeFeedCursor(
-    cursor: NonNullable<ReturnType<typeof decodeCursor>>
-): Prisma.TrainingMomentWhereInput {
-    if (cursor.lastTrainedAt === null) {
-        return {
-            OR: [
-                {
-                    lastTrainedAt: null,
-                    createdAt: { gt: cursor.createdAt },
-                },
-                {
-                    lastTrainedAt: null,
-                    createdAt: cursor.createdAt,
-                    id: { gt: cursor.id },
-                },
-                { lastTrainedAt: { not: null } },
-            ],
-        };
-    }
-    return {
-        OR: [
-            {
-                lastTrainedAt: { gt: cursor.lastTrainedAt },
-            },
-            {
-                lastTrainedAt: cursor.lastTrainedAt,
-                createdAt: { gt: cursor.createdAt },
-            },
-            {
-                lastTrainedAt: cursor.lastTrainedAt,
-                createdAt: cursor.createdAt,
-                id: { gt: cursor.id },
-            },
-        ],
-    };
-}
-
 export class InvalidPracticeFeedCursorError extends Error {
     constructor() {
         super('Invalid practice feed cursor');
@@ -238,112 +299,147 @@ export async function listPracticeFeed(args: {
     db: TrainingReadClient;
     userId: string;
     request: PracticeFeedRequest;
+    now?: () => Date;
 }): Promise<PracticeFeedResponse> {
     const limit = args.request.limit ?? 10;
     const filters = args.request.filters ?? {};
+    const mode = filters.mode ?? 'RECOMMENDED';
     const filterHash = practiceFilterHash(filters);
+    const requestTime = (args.now ?? (() => new Date()))();
+    if (!Number.isFinite(requestTime.getTime())) {
+        throw new InvalidPracticeFeedCursorError();
+    }
     const cursor = args.request.cursor
-        ? decodeCursor(args.request.cursor)
+        ? decodeCursor(args.request.cursor, {
+              userId: args.userId,
+              filterHash,
+              requestTime,
+          })
         : null;
     if (args.request.cursor && !cursor) {
         throw new InvalidPracticeFeedCursorError();
     }
-    if (cursor && cursor.filterHash !== filterHash) {
-        throw new InvalidPracticeFeedCursorError();
-    }
-    const requestTime = new Date();
-    const feedStartedAt =
-        cursor?.feedStartedAt ?? requestTime;
-    if (feedStartedAt.getTime() > requestTime.getTime()) {
-        throw new InvalidPracticeFeedCursorError();
-    }
+    const feedStartedAt = cursor?.feedStartedAt ?? requestTime;
+    const schedule = cursor?.schedule ?? initialPracticeScheduleCursor();
 
-    const severityFilter = severityWhere(filters.focus);
-    const where: Prisma.TrainingMomentWhereInput = {
-        userId: args.userId,
-        status: 'ACTIVE',
-        archivedAt: null,
-        currentSolutionRevisionId: { not: null },
-        currentSolutionRevision: {
-            is: {
-                trainable: true,
-                verificationStatus: 'VERIFIED',
-            },
-        },
-        ...(filters.phases?.length
-            ? { phase: { in: filters.phases } }
-            : {}),
-        ...(filters.sourceKinds?.length
-            ? { sourceKinds: { hasSome: filters.sourceKinds } }
-            : {}),
-        ...(filters.lessonKinds?.length
-            ? { lessonKinds: { hasSome: filters.lessonKinds } }
-            : {}),
-        ...(filters.themes?.length
-            ? { themes: { hasEvery: filters.themes } }
-            : {}),
-        ...(filters.minConfidence !== undefined
-            ? { confidence: { gte: filters.minConfidence } }
-            : {}),
-        ...(filters.includeAttempted === false
-            ? {
-                  attempts: {
-                      none: {
-                          userId: args.userId,
-                          status: { in: ['GRADED', 'REVEALED'] },
-                      },
+    const streamTake = limit + 1;
+    const [due, fresh] = await Promise.all([
+        mode === 'NEW'
+            ? Promise.resolve({
+                  candidates: [],
+                  startedAt: schedule.due,
+                  scannedThrough: {
+                      bucket: 'DONE' as const,
+                      after: null,
                   },
-              }
-            : {}),
-        AND: [
-            ...(severityFilter ? [severityFilter] : []),
-            { createdAt: { lte: feedStartedAt } },
-            {
-                OR: [
-                    { lastTrainedAt: null },
-                    {
-                        lastTrainedAt: {
-                            lt: feedStartedAt,
-                        },
-                    },
-                ],
-            },
-            ...(cursor ? [afterPracticeFeedCursor(cursor)] : []),
-        ],
-    };
+              })
+            : queryDuePracticeStream({
+                  db: args.db,
+                  userId: args.userId,
+                  feedStartedAt,
+                  filters,
+                  cursor: schedule.due,
+                  take: streamTake,
+              }),
+        mode === 'REVIEW'
+            ? Promise.resolve({
+                  candidates: [],
+                  startedAt: schedule.fresh,
+                  scannedThrough: {
+                      after: schedule.fresh.after,
+                      exhausted: true,
+                  },
+              })
+            : queryNewPracticeStream({
+                  db: args.db,
+                  userId: args.userId,
+                  feedStartedAt,
+                  filters,
+                  cursor: schedule.fresh,
+                  take: streamTake,
+              }),
+    ]);
+    const scheduled = interleavePracticeStreams({
+        due,
+        fresh,
+        mode,
+        limit,
+        patternIndex: schedule.patternIndex,
+    });
+    if (scheduled.selected.length === 0) {
+        return {
+            items: [],
+            appliedFilters: filters,
+            nextCursor: scheduled.hasMore
+                ? encodeCursor({
+                      version: 2,
+                      purpose: 'practice-feed',
+                      userId: args.userId,
+                      feedStartedAt: feedStartedAt.toISOString(),
+                      filterHash,
+                      schedule: scheduled.cursor,
+                      issuedAt: cursor?.issuedAt ?? requestTime.getTime(),
+                      expiresAt:
+                          cursor?.expiresAt ??
+                          requestTime.getTime() +
+                              PRACTICE_FEED_CURSOR_TTL_MS,
+                  })
+                : null,
+        };
+    }
 
     const rows = await args.db.trainingMoment.findMany({
-        where,
-        select: promptSelect,
-        orderBy: [
-            {
-                lastTrainedAt: {
-                    sort: 'asc',
-                    nulls: 'first',
+        where: {
+            userId: args.userId,
+            status: 'ACTIVE',
+            archivedAt: null,
+            OR: scheduled.selected.map((candidate) => ({
+                id: candidate.id,
+                currentSolutionRevisionId:
+                    candidate.currentSolutionRevisionId,
+            })),
+            currentSolutionRevision: {
+                is: {
+                    trainable: true,
+                    verificationStatus: 'VERIFIED',
+                    acceptanceFrontier: {
+                        path: ['status'],
+                        equals: 'STABLE',
+                    },
                 },
             },
-            { createdAt: 'asc' },
-            { id: 'asc' },
-        ],
-        take: limit + 1,
+        },
+        select: promptSelect,
     });
-    const hasMore = rows.length > limit;
-    const visible = hasMore ? rows.slice(0, limit) : rows;
-    const last = visible.at(-1);
+    const byCandidate = new Map(
+        rows.map((row) => [
+            `${row.id}:${row.currentSolutionRevisionId ?? ''}`,
+            row,
+        ])
+    );
+    const visible = scheduled.selected.flatMap((candidate) => {
+        const row = byCandidate.get(
+            `${candidate.id}:${candidate.currentSolutionRevisionId}`
+        );
+        return row ? [row] : [];
+    });
     return {
         items: visible.map(toTrainingPromptDto),
         appliedFilters: filters,
         nextCursor:
-            hasMore && last
+            scheduled.hasMore
                 ? encodeCursor({
-                      createdAt: last.createdAt.toISOString(),
-                      feedStartedAt:
-                          feedStartedAt.toISOString(),
+                      version: 2,
+                      purpose: 'practice-feed',
+                      userId: args.userId,
+                      feedStartedAt: feedStartedAt.toISOString(),
                       filterHash,
-                      lastTrainedAt:
-                          last.lastTrainedAt?.toISOString() ??
-                          null,
-                      id: last.id,
+                      schedule: scheduled.cursor,
+                      issuedAt: cursor?.issuedAt ?? requestTime.getTime(),
+                      expiresAt:
+                          cursor?.expiresAt ??
+                          requestTime.getTime() +
+                              PRACTICE_FEED_CURSOR_TTL_MS,
                   })
                 : null,
     };
@@ -365,6 +461,10 @@ export async function getTrainingMomentPrompt(args: {
                 is: {
                     trainable: true,
                     verificationStatus: 'VERIFIED',
+                    acceptanceFrontier: {
+                        path: ['status'],
+                        equals: 'STABLE',
+                    },
                 },
             },
         },

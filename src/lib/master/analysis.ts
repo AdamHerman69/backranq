@@ -91,16 +91,6 @@ export async function analyzeMasterSnapshot(args: {
                 [normalized.id]: snapshot.id,
             },
             analysisConfigHash: args.config.analysis.configHash,
-            usernameByProvider: {
-                lichess:
-                    normalized.provider === 'lichess'
-                        ? account.username
-                        : undefined,
-                chesscom:
-                    normalized.provider === 'chesscom'
-                        ? account.username
-                        : undefined,
-            },
             options: args.config.analysis.options,
         });
         const manifest = output.manifests.find(

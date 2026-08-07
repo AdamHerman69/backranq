@@ -9,6 +9,11 @@ import { BillingSettingsCard } from '@/components/settings/BillingSettingsCard';
 import { getOrCreateDefaultBillingAccount } from '@/lib/services/billingAccounts';
 import { PracticeDefaultsCard } from '@/components/settings/PracticeDefaultsCard';
 import { NotificationSettingsCard } from '@/components/settings/NotificationSettingsCard';
+import { presentBillingAccount } from '@/lib/billing/presentation';
+import {
+    chessAccountConnectionSelect,
+    linkedUsernameSnapshot,
+} from '@/lib/accounts/chessAccountConnections';
 
 export default async function SettingsPage() {
     const session = await auth();
@@ -22,8 +27,9 @@ export default async function SettingsPage() {
             email: true,
             name: true,
             image: true,
-            lichessUsername: true,
-            chesscomUsername: true,
+            chessAccountConnections: {
+                select: chessAccountConnectionSelect,
+            },
         },
     });
     if (!user) redirect('/login?callbackUrl=/settings');
@@ -33,10 +39,17 @@ export default async function SettingsPage() {
         email: user.email,
         name: user.name,
         image: user.image,
-        lichessUsername: user.lichessUsername,
-        chesscomUsername: user.chesscomUsername,
+        ...linkedUsernameSnapshot(user.chessAccountConnections),
     };
     const billingAccount = await getOrCreateDefaultBillingAccount(userId);
+    const billingPresentation = presentBillingAccount({
+        plan: billingAccount.plan,
+        planSource: billingAccount.planSource,
+        stripePlan: billingAccount.stripePlan,
+        stripeSubscriptionStatus: billingAccount.stripeSubscriptionStatus,
+        stripeCurrentPeriodEnd:
+            billingAccount.stripeCurrentPeriodEnd?.toISOString() ?? null,
+    });
     const stripeMissing = [
         !process.env.STRIPE_SECRET_KEY ? 'STRIPE_SECRET_KEY' : null,
         !process.env.STRIPE_WEBHOOK_SECRET ? 'STRIPE_WEBHOOK_SECRET' : null,
@@ -75,8 +88,9 @@ export default async function SettingsPage() {
 
             <section id="billing" className="scroll-mt-24">
                 <BillingSettingsCard
+                    ownerId={initialUser.id}
                     billing={{
-                        plan: billingAccount.plan,
+                        presentation: billingPresentation,
                         serverCreditsBalance:
                             billingAccount.serverCreditsBalance,
                         monthlyServerCreditsLimit:
@@ -85,11 +99,6 @@ export default async function SettingsPage() {
                             billingAccount.autoAnalysisMonthlyGameLimit,
                         autoAnalysisDailyGameLimit:
                             billingAccount.autoAnalysisDailyGameLimit,
-                        stripeSubscriptionStatus:
-                            billingAccount.stripeSubscriptionStatus,
-                        stripeCurrentPeriodEnd:
-                            billingAccount.stripeCurrentPeriodEnd?.toISOString() ??
-                            null,
                         canOpenPortal: !!billingAccount.stripeCustomerId,
                         stripeConfigured: stripeMissing.length === 0,
                         stripeMissing,

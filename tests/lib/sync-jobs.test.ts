@@ -41,6 +41,32 @@ function automationPreferences(args: {
     };
 }
 
+function linkedConnections(
+    lichess: string | null,
+    chesscom: string | null
+) {
+    return [
+        ...(lichess
+            ? [
+                  {
+                      provider: 'LICHESS' as const,
+                      username: lichess,
+                      usernameNormalized: lichess.toLowerCase(),
+                  },
+              ]
+            : []),
+        ...(chesscom
+            ? [
+                  {
+                      provider: 'CHESSCOM' as const,
+                      username: chesscom,
+                      usernameNormalized: chesscom.toLowerCase(),
+                  },
+              ]
+            : []),
+    ];
+}
+
 describe('sync job planning', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -54,8 +80,7 @@ describe('sync job planning', () => {
                     lichess: 'IMPORT_ONLY',
                     chesscom: 'IGNORE',
                 }),
-                lichessUsername: 'Ada',
-                chesscomUsername: 'ada-chess',
+                chessAccountConnections: linkedConnections('Ada', 'ada-chess'),
                 providerSyncStates: [],
             },
         ]);
@@ -109,8 +134,7 @@ describe('sync job planning', () => {
                     lichess: 'IMPORT_ONLY',
                     chesscom: 'IMPORT_ONLY',
                 }),
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
+                chessAccountConnections: linkedConnections('Ada', null),
                 providerSyncStates: [],
             },
         ]);
@@ -144,8 +168,7 @@ describe('sync job planning', () => {
                     lichess: 'IMPORT_ONLY',
                     chesscom: 'IGNORE',
                 }),
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
+                chessAccountConnections: linkedConnections('Ada', null),
                 providerSyncStates: [],
             },
         ]);
@@ -186,8 +209,7 @@ describe('sync job planning', () => {
                 lichess: 'IMPORT_ONLY',
                 chesscom: 'IMPORT_ONLY',
             }),
-            lichessUsername: 'Ada',
-            chesscomUsername: null,
+            chessAccountConnections: linkedConnections('Ada', null),
             providerSyncStates: [
                 {
                     provider: 'LICHESS',
@@ -230,8 +252,7 @@ describe('sync job planning', () => {
         prismaMock.user.findUnique.mockResolvedValue({
             id: 'user-1',
             preferences: {},
-            lichessUsername: 'Ada',
-            chesscomUsername: null,
+            chessAccountConnections: linkedConnections('Ada', null),
             providerSyncStates: [],
         });
         prismaMock.syncJob.findFirst
@@ -292,8 +313,7 @@ describe('sync job planning', () => {
                 lichess: 'IMPORT_ONLY',
                 chesscom: 'IMPORT_ONLY',
             }),
-            lichessUsername: 'Ada',
-            chesscomUsername: null,
+            chessAccountConnections: linkedConnections('Ada', null),
             providerSyncStates: [
                 {
                     provider: 'LICHESS',
@@ -326,8 +346,7 @@ describe('sync job planning', () => {
                 lichess: 'IGNORE',
                 chesscom: 'IGNORE',
             }),
-            lichessUsername: 'Ada',
-            chesscomUsername: null,
+            chessAccountConnections: linkedConnections('Ada', null),
             providerSyncStates: [],
         });
         prismaMock.syncJob.findFirst.mockResolvedValue(null);
@@ -362,8 +381,7 @@ describe('sync job planning', () => {
         prismaMock.user.findUnique.mockResolvedValue({
             id: 'user-1',
             preferences: {},
-            lichessUsername: 'Ada',
-            chesscomUsername: null,
+            chessAccountConnections: linkedConnections('Ada', null),
             providerSyncStates: [],
         });
         prismaMock.syncJob.findFirst
@@ -424,8 +442,7 @@ describe('sync job planning', () => {
                 user: {
                     id: 'user-1',
                     preferences: {},
-                    lichessUsername: 'Ada',
-                    chesscomUsername: null,
+                    chessAccountConnections: linkedConnections('Ada', null),
                     accounts: [],
                 },
             })
@@ -496,8 +513,7 @@ describe('sync job planning', () => {
                 user: {
                     id: 'user-1',
                     preferences: {},
-                    lichessUsername: 'Ada',
-                    chesscomUsername: null,
+                    chessAccountConnections: linkedConnections('Ada', null),
                     accounts: [],
                 },
             })
@@ -567,8 +583,7 @@ describe('sync job planning', () => {
             user: {
                 id: 'user-1',
                 preferences: {},
-                lichessUsername: 'Ada',
-                chesscomUsername: null,
+                chessAccountConnections: linkedConnections('Ada', null),
                 accounts: [],
             },
         });
@@ -621,10 +636,9 @@ describe('sync job planning', () => {
             lastError: null,
             ...overrides,
         });
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Ada',
-            chesscomUsername: 'AdaChess',
-        });
+        prismaMock.chessAccountConnection.findMany.mockResolvedValue(
+            linkedConnections('Ada', 'AdaChess')
+        );
         prismaMock.providerSyncState.findMany.mockResolvedValue([]);
         prismaMock.syncJob.findFirst
             .mockResolvedValueOnce(
@@ -659,10 +673,9 @@ describe('sync job planning', () => {
 
     it('returns only explicitly requested completion jobs owned by the user', async () => {
         const date = new Date('2026-07-05T12:00:00.000Z');
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Ada',
-            chesscomUsername: null,
-        });
+        prismaMock.chessAccountConnection.findMany.mockResolvedValue(
+            linkedConnections('Ada', null)
+        );
         prismaMock.providerSyncState.findMany.mockResolvedValue([]);
         prismaMock.syncJob.findFirst.mockResolvedValue(null);
         prismaMock.syncJob.findMany.mockResolvedValue([

@@ -1,4 +1,21 @@
-export type Provider = 'lichess' | 'chesscom';
+export const GAME_SOURCES = [
+    'lichess',
+    'chesscom',
+    'manual_pgn',
+    'backranq_coach',
+] as const;
+export type GameSource = (typeof GAME_SOURCES)[number];
+
+export const SYNC_PROVIDERS = ['lichess', 'chesscom'] as const;
+export type SyncProvider = (typeof SYNC_PROVIDERS)[number];
+
+export function isGameSource(value: unknown): value is GameSource {
+    return GAME_SOURCES.includes(value as GameSource);
+}
+
+export function isSyncProvider(value: unknown): value is SyncProvider {
+    return SYNC_PROVIDERS.includes(value as SyncProvider);
+}
 
 export type TimeClass = 'bullet' | 'blitz' | 'rapid' | 'classical' | 'unknown';
 
@@ -23,7 +40,7 @@ export type NormalizedGameProvenance = {
 
 export type NormalizedGame = {
     id: string;
-    provider: Provider;
+    provider: GameSource;
     url?: string;
     playedAt: string; // ISO
     timeClass: TimeClass;

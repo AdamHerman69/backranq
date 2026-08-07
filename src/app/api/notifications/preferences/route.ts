@@ -110,16 +110,28 @@ export async function PATCH(req: Request) {
                 where: {
                     userId,
                     channel: 'EMAIL',
-                    status: 'PENDING',
+                    status: { in: ['PENDING', 'QUEUED'] },
                     notification: { type: { in: cancelledEmailTypes } },
                 },
-                data: { status: 'CANCELLED' },
+                data: {
+                    status: 'CANCELLED',
+                    dispatchToken: null,
+                    lockedUntil: null,
+                },
             });
         }
         if (value.pushEnabled === false) {
             await tx.notificationDelivery.updateMany({
-                where: { userId, channel: 'WEB_PUSH', status: 'PENDING' },
-                data: { status: 'CANCELLED' },
+                where: {
+                    userId,
+                    channel: 'WEB_PUSH',
+                    status: { in: ['PENDING', 'QUEUED'] },
+                },
+                data: {
+                    status: 'CANCELLED',
+                    dispatchToken: null,
+                    lockedUntil: null,
+                },
             });
         }
         return updated;
@@ -130,6 +142,7 @@ export async function PATCH(req: Request) {
 function disabledEmailTypes(value: Record<string, unknown>) {
     const types: Array<
         | 'PRACTICE_READY'
+        | 'PRACTICE_DUE'
         | 'ANALYSIS_FAILED'
         | 'SYNC_FAILED'
         | 'NEW_GAMES_SYNCED'
@@ -138,7 +151,9 @@ function disabledEmailTypes(value: Record<string, unknown>) {
         | 'WEEKLY_PROGRESS'
         | 'PRODUCT_NEWS'
     > = [];
-    if (value.emailPracticeReady === false) types.push('PRACTICE_READY');
+    if (value.emailPracticeReady === false) {
+        types.push('PRACTICE_READY', 'PRACTICE_DUE');
+    }
     if (value.emailAnalysisFailed === false) {
         types.push('ANALYSIS_FAILED', 'SYNC_FAILED');
     }

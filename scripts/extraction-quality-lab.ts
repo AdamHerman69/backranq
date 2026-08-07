@@ -154,6 +154,11 @@ function validateCorpus(corpus: QualityCorpus): QualityCorpus {
     );
     const ids = new Set<string>();
     for (const game of corpus.games) {
+        if (game.provider !== 'lichess' && game.provider !== 'chesscom') {
+            throw new Error(
+                `Invalid corpus game ${game.id}: unsupported provider`
+            );
+        }
         const expectedUsername = sources.get(game.provider);
         const expected = expectedUsername?.toLocaleLowerCase('en-US');
         const white = game.white.name.toLocaleLowerCase('en-US');
@@ -378,10 +383,6 @@ async function runProfile(
             const output = await extractTrainingMomentsFromGames({
                 games: [game],
                 selectedGameIds: new Set([game.id]),
-                usernameByProvider:
-                    game.provider === 'lichess'
-                        ? { lichess: 'aldicigg' }
-                        : { chesscom: 'adam1a4' },
                 engine,
                 options: {
                     returnAnalysis: true,

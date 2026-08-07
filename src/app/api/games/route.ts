@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { providerToDb, timeClassToDb } from '@/lib/api/games';
+import { gameSourceToDb, timeClassToDb } from '@/lib/api/games';
 import {
     isStrictIsoDate,
     isStrictIsoInstant,
 } from '@/lib/api/validation';
 import { Prisma } from '@prisma/client';
+import { isGameSource } from '@/lib/types/game';
 
 export const runtime = 'nodejs';
 
@@ -70,8 +71,14 @@ export async function GET(req: Request) {
             { status: 400 }
         );
     }
-    if (provider === 'lichess' || provider === 'chesscom') {
-        where.provider = providerToDb(provider);
+    if (provider) {
+        if (!isGameSource(provider)) {
+            return NextResponse.json(
+                { error: 'Invalid source filter' },
+                { status: 400 }
+            );
+        }
+        where.provider = gameSourceToDb(provider);
     }
     if (
         timeClass === 'bullet' ||
@@ -119,6 +126,9 @@ export async function GET(req: Request) {
             select: {
                 id: true,
                 provider: true,
+                sourceUsername: true,
+                sourceAccountId: true,
+                userSide: true,
                 externalId: true,
                 url: true,
                 playedAt: true,

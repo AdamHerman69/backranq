@@ -99,6 +99,30 @@ function parsePatch(value: unknown):
 class GameNotFoundError extends Error {}
 class ActiveAnalysisConflictError extends Error {}
 class ConcurrentGameMutationError extends Error {}
+class ImmutableSourceSnapshotError extends Error {}
+
+const LOCAL_SOURCE_PGN_INVARIANT_MARKER =
+    'AnalyzedGame_local_source_pgn_immutable';
+
+function isLocalSourcePgnInvariantViolation(error: unknown) {
+    return (
+        error instanceof Error &&
+        (error.message.includes(LOCAL_SOURCE_PGN_INVARIANT_MARKER) ||
+            error.message.includes(
+                'AnalyzedGame local source PGN snapshot is immutable'
+            ))
+    );
+}
+
+function immutableSourceSnapshotResponse() {
+    return NextResponse.json(
+        {
+            error: 'Manual and Coach game PGN snapshots cannot be replaced.',
+            code: 'IMMUTABLE_SOURCE_SNAPSHOT',
+        },
+        { status: 409 }
+    );
+}
 
 function isSerializationConflict(error: unknown) {
     return (
@@ -125,6 +149,9 @@ export async function GET(
             externalId: true,
             url: true,
             pgn: true,
+            sourceUsername: true,
+            sourceAccountId: true,
+            userSide: true,
             analysis: true,
             analyzedAt: true,
             playedAt: true,
@@ -172,7 +199,7 @@ export async function PATCH(
     }
     const body = parsed.patch;
 
-    const data: Prisma.AnalyzedGameUpdateManyMutationInput = {
+    const data: Prisma.AnalyzedGameUncheckedUpdateManyInput = {
         url: body.url,
         pgn: body.pgn,
         result: body.result,
@@ -192,6 +219,13 @@ export async function PATCH(
 
                 const pgnChanged =
                     body.pgn !== undefined && body.pgn !== exists.pgn;
+                if (
+                    pgnChanged &&
+                    (exists.provider === 'MANUAL_PGN' ||
+                        exists.provider === 'BACKRANQ_COACH')
+                ) {
+                    throw new ImmutableSourceSnapshotError();
+                }
                 if (pgnChanged) {
                     const activeJob = await tx.analysisJob.findFirst({
                         where: {
@@ -220,9 +254,6 @@ export async function PATCH(
                                   currentAnalysisRunId: null,
                                   currentAnalysisValid: false,
                                   sourcePgnHash: hashSourcePgn(body.pgn!),
-                                  sourceUsername: null,
-                                  sourceAccountId: null,
-                                  userSide: 'UNKNOWN',
                                   timeControlRaw: null,
                                   timeControlInitialSeconds: null,
                                   timeControlIncrementSeconds: null,
@@ -259,6 +290,12 @@ export async function PATCH(
                 { error: 'Cannot replace PGN while analysis is active' },
                 { status: 409 }
             );
+        }
+        if (
+            error instanceof ImmutableSourceSnapshotError ||
+            isLocalSourcePgnInvariantViolation(error)
+        ) {
+            return immutableSourceSnapshotResponse();
         }
         if (
             error instanceof ConcurrentGameMutationError ||

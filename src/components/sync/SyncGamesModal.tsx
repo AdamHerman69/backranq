@@ -715,7 +715,6 @@ export function SyncGamesModal({
                 }}
             />
             <DialogPrimitive.Content
-                aria-describedby="sync-games-description"
                 data-context={context}
                 style={{
                     position: 'fixed',
@@ -767,7 +766,6 @@ export function SyncGamesModal({
                     </button>
                 </div>
                 <DialogPrimitive.Description
-                    id="sync-games-description"
                     style={{ fontSize: 12, opacity: 0.8 }}
                 >
                     Add a bounded snapshot of up to 2,000 older games per

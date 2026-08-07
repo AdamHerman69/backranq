@@ -4,7 +4,7 @@ import { fetchLichessGames } from '@/lib/providers/lichess';
 import { hashSourcePgn } from '@/lib/chess/pgn';
 import {
     parseExternalId,
-    providerToDb,
+    syncProviderToUi,
     timeClassToDb,
 } from '@/lib/api/games';
 import { prisma } from '@/lib/prisma';
@@ -46,7 +46,10 @@ export async function persistMasterSourceSnapshot(args: {
     now?: Date;
 }) {
     const now = args.now ?? new Date();
-    const provider = providerToDb(args.game.provider);
+    if (args.game.provider !== syncProviderToUi(args.account.provider)) {
+        throw new Error('Master game source does not match its verified account');
+    }
+    const provider = args.account.provider;
     const externalId = parseExternalId(args.game);
     const pgnHash = hashSourcePgn(args.game.pgn);
     const snapshotHash = masterContentHash(snapshotValue(args.game));

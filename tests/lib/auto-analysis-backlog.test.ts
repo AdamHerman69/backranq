@@ -30,6 +30,21 @@ async function importBacklog() {
         publishBackranqQueueMessage:
             publishBackranqQueueMessageMock,
     }));
+    vi.doMock(
+        '@/lib/services/billingAccounts',
+        async (importOriginal) => {
+            const actual = await importOriginal<
+                typeof import('@/lib/services/billingAccounts')
+            >();
+            return {
+                ...actual,
+                getEffectiveBillingAccount: (userId: string) =>
+                    prismaMock.billingAccount.findUnique({
+                        where: { userId },
+                    }),
+            };
+        }
+    );
     return import('@/lib/services/autoAnalysisBacklog');
 }
 
@@ -38,13 +53,22 @@ function account(serverCreditsBalance: number) {
         id: 'billing-1',
         userId: 'user-1',
         plan: 'FREE' as const,
+        planSource: 'FREE' as const,
+        stripePlan: 'FREE' as const,
         stripeCustomerId: null,
         stripeSubscriptionId: null,
         stripeSubscriptionStatus: null,
         stripePriceId: null,
+        stripeCurrentPeriodStart: null,
         stripeCurrentPeriodEnd: null,
         stripeLastEventCreatedAt: null,
         stripeLastEventId: null,
+        stripeCheckoutReservationId: null,
+        stripeCheckoutSessionId: null,
+        stripeCheckoutPlan: null,
+        stripeCheckoutExpiresAt: null,
+        stripeCheckoutFencePlan: null,
+        stripeCheckoutFenceSource: null,
         serverCreditsBalance,
         monthlyServerCreditsUsed: 0,
         serverCreditsPeriodStart: new Date('2026-07-01T00:00:00Z'),
@@ -86,6 +110,8 @@ function candidate() {
         pgn: '1. e4 e5 0-1',
         whiteName: 'Ada',
         blackName: 'Bob',
+        sourceUsername: 'Ada',
+        userSide: 'WHITE',
         playedAt: new Date('2026-07-20T12:00:00Z'),
         createdAt: new Date('2026-07-20T12:01:00Z'),
     };
@@ -156,6 +182,18 @@ describe('auto-analysis backlog', () => {
             countsExact: true,
             scannedCandidates: 1,
             scanLimit: 250,
+        });
+        expect(prismaMock.billingAccount.findUnique).toHaveBeenCalledWith({
+            where: { userId: 'user-1' },
+        });
+        expect(prismaMock.creditLedgerEntry.groupBy).toHaveBeenCalledWith({
+            by: ['type'],
+            where: {
+                userId: 'user-1',
+                scope: 'RESERVATION',
+                billingPeriodStart: new Date('2026-07-01T00:00:00Z'),
+            },
+            _sum: { credits: true },
         });
     });
 

@@ -1,14 +1,27 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
+import {
+    EXPECTED_OWNER_HEADER,
+    expectedOwnerId,
+} from '@/lib/auth/ownerContract';
 import { createStripePortalSession } from '@/lib/services/stripeBilling';
 
 export const runtime = 'nodejs';
 
-export async function POST() {
+export async function POST(req: Request) {
     const session = await auth();
     const userId = session?.user?.id;
     if (!userId) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (expectedOwnerId(req) !== userId) {
+        return NextResponse.json(
+            {
+                code: 'OWNER_MISMATCH',
+                error: `The signed-in account no longer matches ${EXPECTED_OWNER_HEADER}. Reload Settings before opening billing.`,
+            },
+            { status: 409 }
+        );
     }
 
     try {

@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma';
 import {
     normalizedGameToDb,
     parseExternalId,
-    providerToDb,
+    gameSourceToDb,
 } from '@/lib/api/games';
 
 export type SaveNormalizedGamesResult = {
@@ -13,8 +13,59 @@ export type SaveNormalizedGamesResult = {
     updated: number;
     ids: Record<string, string>;
     newGameDbIds: string[];
-    errors: Array<{ index: number; id?: string; error: string }>;
+    errors: Array<{
+        index: number;
+        id?: string;
+        code: GameImportErrorCode;
+        error: string;
+    }>;
 };
+
+export type GameImportErrorCode =
+    | 'PROVENANCE_CONFLICT'
+    | 'SOURCE_SNAPSHOT_CONFLICT'
+    | 'CONCURRENT_MODIFICATION'
+    | 'SAVE_FAILED';
+
+export class GameProvenanceConflictError extends Error {
+    readonly code = 'PROVENANCE_CONFLICT' as const;
+
+    constructor() {
+        super('Existing game has a different immutable player perspective');
+        this.name = 'GameProvenanceConflictError';
+    }
+}
+
+export class GameSourceSnapshotConflictError extends Error {
+    readonly code = 'SOURCE_SNAPSHOT_CONFLICT' as const;
+
+    constructor() {
+        super('Existing game has a different immutable source snapshot');
+        this.name = 'GameSourceSnapshotConflictError';
+    }
+}
+
+function gameImportErrorCode(error: unknown): GameImportErrorCode {
+    if (error instanceof GameProvenanceConflictError) {
+        return error.code;
+    }
+    if (error instanceof GameSourceSnapshotConflictError) {
+        return error.code;
+    }
+    if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        (error.code === 'P2002' || error.code === 'P2034')
+    ) {
+        return 'CONCURRENT_MODIFICATION';
+    }
+    if (
+        error instanceof Error &&
+        error.message === 'Game changed concurrently during import'
+    ) {
+        return 'CONCURRENT_MODIFICATION';
+    }
+    return 'SAVE_FAILED';
+}
 
 type GameImportClient = Pick<
     Prisma.TransactionClient,
@@ -26,7 +77,7 @@ async function saveNormalizedGame(args: {
     userId: string;
     game: NormalizedGame;
 }) {
-    const provider = providerToDb(args.game.provider);
+    const provider = gameSourceToDb(args.game.provider);
     const externalId = parseExternalId(args.game);
     const data = normalizedGameToDb(args.game, args.userId);
     const existing = await args.client.analyzedGame.findUnique({
@@ -41,6 +92,9 @@ async function saveNormalizedGame(args: {
             id: true,
             pgn: true,
             sourcePgnHash: true,
+            sourceUsername: true,
+            sourceAccountId: true,
+            userSide: true,
         },
     });
 
@@ -56,6 +110,16 @@ async function saveNormalizedGame(args: {
     // correction that only changes PGN formatting must not retain analysis
     // evidence that was produced from a different stored source snapshot.
     const pgnChanged = existing.pgn !== data.pgn;
+    if (
+        existing.sourceUsername !== data.sourceUsername ||
+        existing.sourceAccountId !== data.sourceAccountId ||
+        existing.userSide !== data.userSide
+    ) {
+        throw new GameProvenanceConflictError();
+    }
+    if (provider === 'BACKRANQ_COACH' && pgnChanged) {
+        throw new GameSourceSnapshotConflictError();
+    }
     const updated = await args.client.analyzedGame.updateMany({
         where: {
             id: existing.id,
@@ -65,27 +129,29 @@ async function saveNormalizedGame(args: {
         },
         data: {
             url: data.url,
-            pgn: data.pgn,
-            sourcePgnHash: data.sourcePgnHash,
-            sourceUsername: data.sourceUsername,
-            sourceAccountId: data.sourceAccountId,
-            userSide: data.userSide,
-            playedAt: data.playedAt,
-            timeClass: data.timeClass,
-            timeControlRaw: data.timeControlRaw,
-            timeControlInitialSeconds: data.timeControlInitialSeconds,
-            timeControlIncrementSeconds:
-                data.timeControlIncrementSeconds,
-            rated: data.rated,
-            result: data.result,
-            termination: data.termination,
-            whiteName: data.whiteName,
-            whiteRating: data.whiteRating,
-            blackName: data.blackName,
-            blackRating: data.blackRating,
-            openingEco: data.openingEco,
-            openingName: data.openingName,
-            openingVariation: data.openingVariation,
+            ...(pgnChanged
+                ? {
+                      pgn: data.pgn,
+                      sourcePgnHash: data.sourcePgnHash,
+                      playedAt: data.playedAt,
+                      timeClass: data.timeClass,
+                      timeControlRaw: data.timeControlRaw,
+                      timeControlInitialSeconds:
+                          data.timeControlInitialSeconds,
+                      timeControlIncrementSeconds:
+                          data.timeControlIncrementSeconds,
+                      rated: data.rated,
+                      result: data.result,
+                      termination: data.termination,
+                      whiteName: data.whiteName,
+                      whiteRating: data.whiteRating,
+                      blackName: data.blackName,
+                      blackRating: data.blackRating,
+                      openingEco: data.openingEco,
+                      openingName: data.openingName,
+                      openingVariation: data.openingVariation,
+                  }
+                : {}),
             ...(pgnChanged
                 ? {
                       analysis: {} as Prisma.InputJsonValue,
@@ -168,6 +234,7 @@ export async function saveNormalizedGamesForUser(args: {
             result.errors.push({
                 index,
                 id: game.id,
+                code: gameImportErrorCode(e),
                 error: e instanceof Error ? e.message : 'Failed to save game',
             });
         }

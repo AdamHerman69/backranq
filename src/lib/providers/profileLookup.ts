@@ -1,7 +1,7 @@
 export type ProfileProvider = 'lichess' | 'chesscom';
 
 export type ProviderProfileLookup =
-    | { state: 'found' }
+    | { state: 'found'; accountId: string | null; username: string }
     | { state: 'not-found' }
     | {
           state: 'source-error';
@@ -21,7 +21,9 @@ export async function lookupProviderProfile(args: {
     username: string;
 }): Promise<ProviderProfileLookup> {
     const username = args.username.trim();
-    if (!username) return { state: 'found' };
+    if (!username) {
+        throw new Error('Provider username is required');
+    }
 
     const label = providerProfileLabel(args.provider);
     const endpoint =
@@ -36,7 +38,30 @@ export async function lookupProviderProfile(args: {
             cache: 'no-store',
             signal: AbortSignal.timeout(PROVIDER_PROFILE_TIMEOUT_MS),
         });
-        if (response.ok) return { state: 'found' };
+        if (response.ok) {
+            const profile = (await response.json().catch(() => null)) as Record<
+                string,
+                unknown
+            > | null;
+            const canonicalUsername =
+                typeof profile?.username === 'string' && profile.username.trim()
+                    ? profile.username.trim()
+                    : username;
+            const rawAccountId =
+                args.provider === 'lichess'
+                    ? profile?.id
+                    : profile?.player_id;
+            const accountId =
+                typeof rawAccountId === 'string' ||
+                typeof rawAccountId === 'number'
+                    ? String(rawAccountId)
+                    : null;
+            return {
+                state: 'found',
+                accountId,
+                username: canonicalUsername,
+            };
+        }
         if (response.status === 404) return { state: 'not-found' };
         if (response.status === 429) {
             return {

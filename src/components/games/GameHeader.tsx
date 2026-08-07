@@ -8,9 +8,10 @@ import {
     TooltipProvider,
     TooltipTrigger,
 } from '@/components/ui/tooltip';
+import type { GameSource } from '@prisma/client';
 
 export type GameHeaderData = {
-    provider: 'LICHESS' | 'CHESSCOM';
+    provider: GameSource;
     url: string | null;
     playedAt: string; // ISO
     timeClass: 'BULLET' | 'BLITZ' | 'RAPID' | 'CLASSICAL' | 'UNKNOWN';
@@ -41,7 +42,13 @@ function timeLabel(tc: GameHeaderData['timeClass']) {
 }
 
 function providerLabel(p: GameHeaderData['provider']) {
-    return p === 'LICHESS' ? 'Lichess' : 'Chess.com';
+    return p === 'LICHESS'
+        ? 'Lichess'
+        : p === 'CHESSCOM'
+          ? 'Chess.com'
+          : p === 'MANUAL_PGN'
+            ? 'Manual PGN'
+            : 'Backranq Coach';
 }
 
 export function GameHeader({ game }: { game: GameHeaderData }) {
@@ -125,5 +132,4 @@ export function GameHeader({ game }: { game: GameHeaderData }) {
         </TooltipProvider>
     );
 }
-
 

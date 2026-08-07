@@ -1,4 +1,4 @@
-import type { MasterAccount, MasterPerson, Prisma, Provider } from '@prisma/client';
+import type { MasterAccount, MasterPerson, Prisma, SyncProvider } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
     DEFAULT_WEEKLY_MASTER_ROSTER,
@@ -12,7 +12,7 @@ type RosterClient = Pick<
 
 export type MasterAccountWithPerson = MasterAccount & { person: MasterPerson };
 
-function dbProvider(provider: WeeklyMasterRosterProvider): Provider {
+function dbProvider(provider: WeeklyMasterRosterProvider): SyncProvider {
     return provider === 'lichess' ? 'LICHESS' : 'CHESSCOM';
 }
 
