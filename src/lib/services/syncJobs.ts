@@ -253,7 +253,7 @@ export async function getUserSyncActivity(
         new Set((options.requestedJobIds ?? []).filter(Boolean))
     ).slice(0, 4);
     const [
-        user,
+        connections,
         states,
         lichessActive,
         chesscomActive,
@@ -334,8 +334,8 @@ export async function getUserSyncActivity(
             const latest = latestByProvider[provider];
             return {
                 provider,
-                linked: !!usernameForProvider(user, provider),
-                username: usernameForProvider(user, provider),
+                linked: !!usernameForProvider(connections, provider),
+                username: usernameForProvider(connections, provider),
                 state: state
                     ? {
                           providerUsernameNormalized:

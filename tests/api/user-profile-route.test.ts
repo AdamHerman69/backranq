@@ -52,6 +52,19 @@ describe('GET /api/user/profile', () => {
 
     it('returns profile users with nullable email', async () => {
         const route = await importRoute();
+        const row = {
+            id: 'user-1',
+            email: null,
+            name: 'Ada',
+            image: null,
+            chessAccountConnections: [
+                {
+                    provider: 'LICHESS',
+                    username: 'ada',
+                    usernameNormalized: 'ada',
+                },
+            ],
+        };
         const user = {
             id: 'user-1',
             email: null,
@@ -60,7 +73,7 @@ describe('GET /api/user/profile', () => {
             lichessUsername: 'ada',
             chesscomUsername: null,
         };
-        prismaMock.user.findUnique.mockResolvedValue(user);
+        prismaMock.user.findUnique.mockResolvedValue(row);
 
         const response = await route.GET();
 
@@ -71,7 +84,9 @@ describe('GET /api/user/profile', () => {
     it('atomically resets only the changed provider sync identity', async () => {
         vi.stubGlobal(
             'fetch',
-            vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+            vi.fn().mockResolvedValue(
+                Response.json({ id: 'grace-id', username: 'Grace' })
+            )
         );
         const route = await importRoute();
         const updated = {
@@ -90,11 +105,28 @@ describe('GET /api/user/profile', () => {
                     ) => Promise<unknown>
                 )(prismaMock)
         );
-        prismaMock.user.findUnique.mockResolvedValue({
-            lichessUsername: 'Ada',
-            chesscomUsername: 'ada-chess',
+        prismaMock.chessAccountConnection.findUnique
+            .mockResolvedValueOnce({ usernameNormalized: 'ada' })
+            .mockResolvedValueOnce({ usernameNormalized: 'ada-chess' });
+        prismaMock.user.findUniqueOrThrow.mockResolvedValue({
+            id: 'user-1',
+            email: null,
+            name: 'Ada',
+            image: null,
+            chessAccountConnections: [
+                {
+                    provider: 'LICHESS',
+                    username: 'Grace',
+                    usernameNormalized: 'grace',
+                },
+                {
+                    provider: 'CHESSCOM',
+                    username: 'ada-chess',
+                    usernameNormalized: 'ada-chess',
+                },
+            ],
         });
-        prismaMock.user.update.mockResolvedValue(updated);
+        prismaMock.chessAccountConnection.upsert.mockResolvedValue({});
         prismaMock.providerSyncState.upsert.mockResolvedValue({});
 
         const response = await route.PATCH(

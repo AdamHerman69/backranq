@@ -110,6 +110,8 @@ function candidate() {
         pgn: '1. e4 e5 0-1',
         whiteName: 'Ada',
         blackName: 'Bob',
+        sourceUsername: 'Ada',
+        userSide: 'WHITE',
         playedAt: new Date('2026-07-20T12:00:00Z'),
         createdAt: new Date('2026-07-20T12:01:00Z'),
     };
