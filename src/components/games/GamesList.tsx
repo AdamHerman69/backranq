@@ -11,7 +11,6 @@ export function GamesList({
     page,
     totalPages,
     baseQueryString,
-    userNameByProvider,
     selected,
     onSelectedChange,
     selectionDisabled,
@@ -21,7 +20,6 @@ export function GamesList({
     page: number;
     totalPages: number;
     baseQueryString: string;
-    userNameByProvider: { lichess: string; chesscom: string };
     selected?: Record<string, boolean>;
     onSelectedChange?: (id: string, selected: boolean) => void;
     selectionDisabled?: boolean;
@@ -51,11 +49,6 @@ export function GamesList({
                     <GameCard
                         key={g.id}
                         game={g}
-                        userNameForProvider={
-                            g.provider === 'LICHESS'
-                                ? userNameByProvider.lichess
-                                : userNameByProvider.chesscom
-                        }
                         selectable={!!onSelectedChange}
                         selected={!!selected?.[g.id]}
                         selectionDisabled={selectionDisabled}
@@ -90,5 +83,4 @@ export function GamesList({
         </div>
     );
 }
-
 

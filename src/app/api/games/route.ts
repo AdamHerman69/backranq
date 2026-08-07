@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { providerToDb, timeClassToDb } from '@/lib/api/games';
+import { gameSourceToDb, timeClassToDb } from '@/lib/api/games';
 import {
     isStrictIsoDate,
     isStrictIsoInstant,
@@ -71,7 +71,7 @@ export async function GET(req: Request) {
         );
     }
     if (provider === 'lichess' || provider === 'chesscom') {
-        where.provider = providerToDb(provider);
+        where.provider = gameSourceToDb(provider);
     }
     if (
         timeClass === 'bullet' ||

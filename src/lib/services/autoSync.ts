@@ -1,10 +1,15 @@
-import { Prisma, type Provider } from '@prisma/client';
+import { Prisma, type SyncProvider } from '@prisma/client';
 import { fetchChessComGamesBatch } from '@/lib/providers/chesscom';
 import { fetchLichessGamesBatch } from '@/lib/providers/lichess';
 import type { ProviderBatchFetchResult } from '@/lib/providers/pagination';
 import { saveNormalizedGamesForUser } from '@/lib/services/gameImport';
 import { prisma } from '@/lib/prisma';
 import { requestAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
+import {
+    chessAccountConnectionSelect,
+    usernameForProvider,
+    type ChessAccountConnectionSnapshot,
+} from '@/lib/accounts/chessAccountConnections';
 import {
     canonicalPreferences,
     providerImportPolicyHash,
@@ -18,7 +23,7 @@ const LICHESS_CURSOR_OVERLAP_MS = 24 * 60 * 60 * 1_000;
 const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 5 * 60 * 1_000;
 
 export type SyncProviderResult = {
-    provider: Provider;
+    provider: SyncProvider;
     username: string;
     fetched: number;
     saved: number;
@@ -79,17 +84,15 @@ export class StaleSyncJobLeaseError extends Error {
     }
 }
 
-function providerKey(provider: Provider): 'lichess' | 'chesscom' {
+function providerKey(provider: SyncProvider): 'lichess' | 'chesscom' {
     return provider === 'LICHESS' ? 'lichess' : 'chesscom';
 }
 
 function providerUsername(
-    provider: Provider,
-    user: { lichessUsername: string | null; chesscomUsername: string | null }
+    provider: SyncProvider,
+    user: { chessAccountConnections: ChessAccountConnectionSnapshot[] }
 ) {
-    return provider === 'LICHESS'
-        ? user.lichessUsername
-        : user.chesscomUsername;
+    return usernameForProvider(user.chessAccountConnections, provider);
 }
 
 export function normalizeProviderUsername(username: string) {
@@ -109,7 +112,7 @@ function startOfPreviousUtcMonth(now: Date) {
 }
 
 function incrementalSyncSince(
-    provider: Provider,
+    provider: SyncProvider,
     lastSyncedPlayedAt: Date,
     now: Date
 ) {
@@ -129,7 +132,7 @@ function incrementalSyncSince(
 
 function automationImportsProvider(
     prefs: PreferencesSchema,
-    provider: Provider
+    provider: SyncProvider
 ) {
     return providerImportTimeControls(
         prefs.gameAutomation,
@@ -139,7 +142,7 @@ function automationImportsProvider(
 
 function syncWindow(
     state: SyncState,
-    provider: Provider,
+    provider: SyncProvider,
     now: Date
 ): SyncWindow {
     if (
@@ -176,7 +179,7 @@ function syncWindow(
 
 async function prepareSyncState(args: {
     userId: string;
-    provider: Provider;
+    provider: SyncProvider;
     username: string;
     usernameNormalized: string;
     importPolicyHash: string;
@@ -310,14 +313,16 @@ async function prepareSyncState(args: {
 
 async function assertProviderIdentityCurrent(args: {
     userId: string;
-    provider: Provider;
+    provider: SyncProvider;
     usernameNormalized: string;
 }) {
     const user = await prisma.user.findUnique({
         where: { id: args.userId },
         select: {
-            lichessUsername: true,
-            chesscomUsername: true,
+            chessAccountConnections: {
+                where: { provider: args.provider },
+                select: chessAccountConnectionSelect,
+            },
         },
     });
     const current = user ? providerUsername(args.provider, user)?.trim() : null;
@@ -331,7 +336,7 @@ async function assertProviderIdentityCurrent(args: {
 
 function stateIdentityWhere(args: {
     stateId: string;
-    provider: Provider;
+    provider: SyncProvider;
     username: string;
     usernameNormalized: string;
     importPolicyHash: string;
@@ -341,17 +346,20 @@ function stateIdentityWhere(args: {
         providerUsernameNormalized: args.usernameNormalized,
         importPolicyHash: args.importPolicyHash,
         user: {
-            is:
-                args.provider === 'LICHESS'
-                    ? { lichessUsername: args.username }
-                    : { chesscomUsername: args.username },
+            is: {
+                chessAccountConnections: {
+                    some: {
+                        provider: args.provider,
+                        usernameNormalized: args.usernameNormalized,
+                    },
+                },
+            },
         },
     };
 }
 
 type LockedProviderIdentity = {
-    lichessUsername: string | null;
-    chesscomUsername: string | null;
+    username: string;
 };
 
 type LockedSyncJobLease = {
@@ -362,19 +370,19 @@ type LockedSyncJobLease = {
 async function lockAndAssertProviderIdentity(args: {
     tx: Prisma.TransactionClient;
     userId: string;
-    provider: Provider;
+    provider: SyncProvider;
     usernameNormalized: string;
 }) {
     const rows = await args.tx.$queryRaw<LockedProviderIdentity[]>(
         Prisma.sql`
-            SELECT "lichessUsername", "chesscomUsername"
-            FROM "User"
-            WHERE "id" = CAST(${args.userId} AS uuid)
+            SELECT "username"
+            FROM "ChessAccountConnection"
+            WHERE "userId" = CAST(${args.userId} AS uuid)
+              AND "provider" = CAST(${args.provider} AS "SyncProvider")
             FOR UPDATE
         `
     );
-    const current = rows[0];
-    const username = current ? providerUsername(args.provider, current) : null;
+    const username = rows[0]?.username ?? null;
     if (
         !username ||
         normalizeProviderUsername(username) !== args.usernameNormalized
@@ -406,7 +414,7 @@ async function lockAndAssertSyncJobLease(args: {
 }
 
 async function fetchProviderBatch(args: {
-    provider: Provider;
+    provider: SyncProvider;
     username: string;
     window: SyncWindow;
     timeClasses: ReturnType<typeof providerImportTimeControls>;
@@ -451,16 +459,14 @@ async function fetchProviderBatch(args: {
 export async function syncLinkedAccounts(): Promise<SyncLinkedAccountsResult> {
     const users = await prisma.user.findMany({
         where: {
-            OR: [
-                { lichessUsername: { not: null } },
-                { chesscomUsername: { not: null } },
-            ],
+            chessAccountConnections: { some: {} },
         },
         select: {
             id: true,
             preferences: true,
-            lichessUsername: true,
-            chesscomUsername: true,
+            chessAccountConnections: {
+                select: chessAccountConnectionSelect,
+            },
             accounts: {
                 where: { provider: 'lichess' },
                 select: { access_token: true },
@@ -492,10 +498,9 @@ export async function syncLinkedAccounts(): Promise<SyncLinkedAccountsResult> {
 export async function syncUserProvider(args: {
     user: {
         id: string;
-        lichessUsername: string | null;
-        chesscomUsername: string | null;
+        chessAccountConnections: ChessAccountConnectionSnapshot[];
     };
-    provider: Provider;
+    provider: SyncProvider;
     prefs: PreferencesSchema;
     lichessAccessToken?: string | null;
     force?: boolean;
@@ -707,7 +712,7 @@ export async function syncUserProvider(args: {
     }
 }
 
-function skippedResult(provider: Provider, username: string): SyncProviderResult {
+function skippedResult(provider: SyncProvider, username: string): SyncProviderResult {
     return {
         provider,
         username,

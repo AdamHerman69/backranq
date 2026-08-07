@@ -14,7 +14,12 @@ import {
 } from '@/components/ui/select';
 
 export type GamesFilters = {
-    provider: '' | 'lichess' | 'chesscom';
+    provider:
+        | ''
+        | 'lichess'
+        | 'chesscom'
+        | 'manual_pgn'
+        | 'backranq_coach';
     timeClass: '' | 'bullet' | 'blitz' | 'rapid' | 'classical' | 'unknown';
     result: '' | 'wins' | 'losses' | 'draws';
     analysisState: '' | 'analyzed' | 'needs-analysis';
@@ -96,7 +101,7 @@ export function GamesFilter({
                         id="games-provider-label"
                         className="text-sm font-medium"
                     >
-                        Provider
+                        Source
                     </div>
                     <Select
                         value={filters.provider || 'all'}
@@ -118,6 +123,8 @@ export function GamesFilter({
                             <SelectItem value="all">All</SelectItem>
                             <SelectItem value="lichess">Lichess</SelectItem>
                             <SelectItem value="chesscom">Chess.com</SelectItem>
+                            <SelectItem value="manual_pgn">Manual PGN</SelectItem>
+                            <SelectItem value="backranq_coach">Backranq Coach</SelectItem>
                         </SelectContent>
                     </Select>
                 </div>

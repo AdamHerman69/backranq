@@ -171,8 +171,7 @@ function snapshot(args: {
             },
         },
         user: {
-            lichessUsername: 'player',
-            chesscomUsername: null,
+            linkedAccounts: { lichess: true, chesscom: false },
             serverCreditsBalance: 10,
         },
         games: args.games ?? [game()],

@@ -6,7 +6,7 @@ import type {
     TrainingLessonKind,
     TrainingSourceKind,
 } from '@/lib/training/contracts';
-import type { Provider } from '@/lib/types/game';
+import type { GameSource } from '@/lib/types/game';
 
 export const PRACTICE_FEED_MAX_LIMIT = 50;
 export const TRAINING_API_MAX_ID_LENGTH = 128;
@@ -173,7 +173,7 @@ export type TrainingReviewDto = {
     themes: string[];
     source: {
         gameId: string;
-        provider: Provider;
+        provider: GameSource;
         playedAt: string;
         decisionPly: number;
     };

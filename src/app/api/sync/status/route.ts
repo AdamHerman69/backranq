@@ -7,6 +7,10 @@ import {
 import { getAnalysisJobCounts } from '@/lib/services/analysisJobs';
 import { getManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 import { getAutoAnalysisStatus } from '@/lib/services/autoAnalysisBacklog';
+import {
+    chessAccountConnectionSelect,
+    linkedUsernameSnapshot,
+} from '@/lib/accounts/chessAccountConnections';
 
 export const runtime = 'nodejs';
 
@@ -30,9 +34,10 @@ export async function GET() {
     const user = await prisma.user.findUnique({
         where: { id: userId },
         select: {
-            lichessUsername: true,
-            chesscomUsername: true,
             preferences: true,
+            chessAccountConnections: {
+                select: chessAccountConnectionSelect,
+            },
         },
     });
     const syncStates = await prisma.providerSyncState.findMany({
@@ -67,10 +72,7 @@ export async function GET() {
 
     return NextResponse.json({
         ownerId: userId,
-        linked: {
-            lichessUsername: user?.lichessUsername ?? null,
-            chesscomUsername: user?.chesscomUsername ?? null,
-        },
+        linked: linkedUsernameSnapshot(user?.chessAccountConnections ?? []),
         lastSync: {
             lichess: lichessLatest?.playedAt?.toISOString() ?? null,
             chesscom: chesscomLatest?.playedAt?.toISOString() ?? null,

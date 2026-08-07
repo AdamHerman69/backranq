@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma';
 import {
     normalizedGameToDb,
     parseExternalId,
-    providerToDb,
+    gameSourceToDb,
 } from '@/lib/api/games';
 
 export type SaveNormalizedGamesResult = {
@@ -16,6 +16,13 @@ export type SaveNormalizedGamesResult = {
     errors: Array<{ index: number; id?: string; error: string }>;
 };
 
+export class GameProvenanceConflictError extends Error {
+    constructor() {
+        super('Existing game has a different immutable player perspective');
+        this.name = 'GameProvenanceConflictError';
+    }
+}
+
 type GameImportClient = Pick<
     Prisma.TransactionClient,
     'analyzedGame' | 'trainingMoment'
@@ -26,7 +33,7 @@ async function saveNormalizedGame(args: {
     userId: string;
     game: NormalizedGame;
 }) {
-    const provider = providerToDb(args.game.provider);
+    const provider = gameSourceToDb(args.game.provider);
     const externalId = parseExternalId(args.game);
     const data = normalizedGameToDb(args.game, args.userId);
     const existing = await args.client.analyzedGame.findUnique({
@@ -41,6 +48,9 @@ async function saveNormalizedGame(args: {
             id: true,
             pgn: true,
             sourcePgnHash: true,
+            sourceUsername: true,
+            sourceAccountId: true,
+            userSide: true,
         },
     });
 
@@ -56,6 +66,13 @@ async function saveNormalizedGame(args: {
     // correction that only changes PGN formatting must not retain analysis
     // evidence that was produced from a different stored source snapshot.
     const pgnChanged = existing.pgn !== data.pgn;
+    if (
+        existing.sourceUsername !== data.sourceUsername ||
+        existing.sourceAccountId !== data.sourceAccountId ||
+        existing.userSide !== data.userSide
+    ) {
+        throw new GameProvenanceConflictError();
+    }
     const updated = await args.client.analyzedGame.updateMany({
         where: {
             id: existing.id,
@@ -65,27 +82,29 @@ async function saveNormalizedGame(args: {
         },
         data: {
             url: data.url,
-            pgn: data.pgn,
-            sourcePgnHash: data.sourcePgnHash,
-            sourceUsername: data.sourceUsername,
-            sourceAccountId: data.sourceAccountId,
-            userSide: data.userSide,
-            playedAt: data.playedAt,
-            timeClass: data.timeClass,
-            timeControlRaw: data.timeControlRaw,
-            timeControlInitialSeconds: data.timeControlInitialSeconds,
-            timeControlIncrementSeconds:
-                data.timeControlIncrementSeconds,
-            rated: data.rated,
-            result: data.result,
-            termination: data.termination,
-            whiteName: data.whiteName,
-            whiteRating: data.whiteRating,
-            blackName: data.blackName,
-            blackRating: data.blackRating,
-            openingEco: data.openingEco,
-            openingName: data.openingName,
-            openingVariation: data.openingVariation,
+            ...(pgnChanged
+                ? {
+                      pgn: data.pgn,
+                      sourcePgnHash: data.sourcePgnHash,
+                      playedAt: data.playedAt,
+                      timeClass: data.timeClass,
+                      timeControlRaw: data.timeControlRaw,
+                      timeControlInitialSeconds:
+                          data.timeControlInitialSeconds,
+                      timeControlIncrementSeconds:
+                          data.timeControlIncrementSeconds,
+                      rated: data.rated,
+                      result: data.result,
+                      termination: data.termination,
+                      whiteName: data.whiteName,
+                      whiteRating: data.whiteRating,
+                      blackName: data.blackName,
+                      blackRating: data.blackRating,
+                      openingEco: data.openingEco,
+                      openingName: data.openingName,
+                      openingVariation: data.openingVariation,
+                  }
+                : {}),
             ...(pgnChanged
                 ? {
                       analysis: {} as Prisma.InputJsonValue,

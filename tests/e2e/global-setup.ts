@@ -417,8 +417,6 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
             id: E2E_USER.id,
             email: E2E_USER.email,
             name: E2E_USER.name,
-            lichessUsername: E2E_USER.username,
-            chesscomUsername: E2E_USER.username,
             preferences: {
             },
         },
@@ -430,6 +428,27 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
             role: 'ADMIN',
             active: true,
         },
+    });
+
+    await prisma.chessAccountConnection.createMany({
+        data: [
+            {
+                userId: E2E_USER.id,
+                provider: 'LICHESS',
+                providerAccountId: 'backranq-e2e-lichess',
+                username: E2E_USER.username,
+                usernameNormalized: E2E_USER.username.toLowerCase(),
+                verification: 'PUBLIC_PROFILE',
+            },
+            {
+                userId: E2E_USER.id,
+                provider: 'CHESSCOM',
+                providerAccountId: 'backranq-e2e-chesscom',
+                username: E2E_USER.username,
+                usernameNormalized: E2E_USER.username.toLowerCase(),
+                verification: 'PUBLIC_PROFILE',
+            },
+        ],
     });
 
     await prisma.billingAccount.create({

@@ -1,5 +1,6 @@
 import { Chess } from 'chess.js';
 import { isStrictIsoInstant } from '@/lib/api/validation';
+import { isGameSource, type GameSource } from '@/lib/types/game';
 import { moveToUci } from '@/lib/chess/utils';
 import {
     hashSourcePgn,
@@ -970,8 +971,7 @@ function validateCandidate(value: unknown): TrainingMomentCandidate | null {
         }) ||
         !isObject(value.originalDecision) ||
         !boundedString(value.sourceGameId, 512) ||
-        (value.sourceProvider !== 'lichess' &&
-            value.sourceProvider !== 'chesscom') ||
+        !isGameSource(value.sourceProvider) ||
         !isStrictIsoInstant(value.sourcePlayedAt) ||
         typeof value.sourcePgnHash !== 'string' ||
         !HASH_RE.test(value.sourcePgnHash) ||
@@ -1079,7 +1079,7 @@ export function validateTrainingMomentCandidates(
 export function trainingMomentCandidatesMatchSource(args: {
     moments: TrainingMomentCandidate[];
     gameId: string;
-    provider: 'lichess' | 'chesscom';
+    provider: GameSource;
     playedAt: Date;
     pgn: string;
     configHash: string;

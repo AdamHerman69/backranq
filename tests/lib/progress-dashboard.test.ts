@@ -15,8 +15,7 @@ describe('Progress dashboard rendering', () => {
                 filters: { providers: [], timeClasses: [] },
             },
             user: {
-                lichessUsername: null,
-                chesscomUsername: null,
+                linkedAccounts: { lichess: false, chesscom: false },
                 serverCreditsBalance: null,
             },
             games: [],
@@ -44,8 +43,7 @@ describe('Progress dashboard rendering', () => {
                 filters: { providers: [], timeClasses: [] },
             },
             user: {
-                lichessUsername: 'player',
-                chesscomUsername: null,
+                linkedAccounts: { lichess: true, chesscom: false },
                 serverCreditsBalance: 10,
             },
             games: [],
@@ -97,8 +95,7 @@ describe('Progress dashboard rendering', () => {
                 filters: { providers: [], timeClasses: [] },
             },
             user: {
-                lichessUsername: 'player',
-                chesscomUsername: null,
+                linkedAccounts: { lichess: true, chesscom: false },
                 serverCreditsBalance: 10,
             },
             games: [],
@@ -137,8 +134,7 @@ describe('Progress dashboard rendering', () => {
                 filters: { providers: [], timeClasses: [] },
             },
             user: {
-                lichessUsername: 'player',
-                chesscomUsername: null,
+                linkedAccounts: { lichess: true, chesscom: false },
                 serverCreditsBalance: 10,
             },
             games: [],
@@ -169,8 +165,7 @@ describe('Progress dashboard rendering', () => {
                 filters: { providers: [], timeClasses: [] },
             },
             user: {
-                lichessUsername: 'player',
-                chesscomUsername: null,
+                linkedAccounts: { lichess: true, chesscom: false },
                 serverCreditsBalance: 10,
             },
             games: [],

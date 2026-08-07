@@ -8,8 +8,7 @@ import {
 describe('Progress read service query shape', () => {
     it('loads only active current candidates and bounded terminal evidence', async () => {
         const userFindUnique = vi.fn().mockResolvedValue({
-            lichessUsername: 'player',
-            chesscomUsername: null,
+            chessAccountConnections: [{ provider: 'LICHESS' }],
             billingAccount: {
                 serverCreditsBalance: 7,
             },
@@ -110,8 +109,7 @@ describe('Progress read service query shape', () => {
                 {
                     user: {
                         findUnique: vi.fn().mockResolvedValue({
-                            lichessUsername: 'player',
-                            chesscomUsername: null,
+                            chessAccountConnections: [{ provider: 'LICHESS' }],
                             billingAccount: null,
                         }),
                     },
@@ -190,8 +188,7 @@ describe('Progress read service query shape', () => {
                 {
                     user: {
                         findUnique: vi.fn().mockResolvedValue({
-                            lichessUsername: 'player',
-                            chesscomUsername: null,
+                            chessAccountConnections: [{ provider: 'LICHESS' }],
                             billingAccount: null,
                         }),
                     },

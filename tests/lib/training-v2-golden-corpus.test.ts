@@ -295,11 +295,15 @@ async function runCorpus(): Promise<{
                         : 'opponent',
             },
             pgn: fixture.pgn,
+            provenance: {
+                username: 'adam',
+                userSide:
+                    fixture.usernameColor === 'black' ? 'black' : 'white',
+            },
         };
         const output = await extractTrainingMomentsFromGames({
             games: [normalizedGame],
             selectedGameIds: new Set([fixture.id]),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: {
                 nodesPerPosition: 100,

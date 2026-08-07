@@ -1,4 +1,4 @@
-import { Prisma, type Provider } from '@prisma/client';
+import { Prisma, type SyncProvider } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
 import { prisma } from '@/lib/prisma';
@@ -16,6 +16,11 @@ import {
     syncUserProvider,
     type SyncProviderResult,
 } from '@/lib/services/autoSync';
+import {
+    chessAccountConnectionSelect,
+    usernameForProvider,
+    type ChessAccountConnectionSnapshot,
+} from '@/lib/accounts/chessAccountConnections';
 
 const SYNC_JOB_LEASE_MS = 10 * 60 * 1_000;
 const SYNC_JOB_HEARTBEAT_MS = 60 * 1_000;
@@ -27,10 +32,9 @@ const DEFAULT_SYNC_JOB_LIMIT = 50;
 type SyncJobUser = {
     id: string;
     preferences: unknown;
-    lichessUsername: string | null;
-    chesscomUsername: string | null;
+    chessAccountConnections: ChessAccountConnectionSnapshot[];
     providerSyncStates?: Array<{
-        provider: Provider;
+        provider: SyncProvider;
         lastSuccessAt?: Date | null;
         lastAttemptAt?: Date | null;
         cursorUntilPlayedAt?: Date | null;
@@ -40,14 +44,14 @@ type SyncJobUser = {
 
 export type PlannedSyncJob = {
     userId: string;
-    provider: Provider;
+    provider: SyncProvider;
     queued: boolean;
     jobId: string | null;
     skippedReason: string | null;
 };
 
 export type UserSyncProviderActivity = {
-    provider: Provider;
+    provider: SyncProvider;
     linked: boolean;
     username: string | null;
     state: {
@@ -90,7 +94,7 @@ export type PlanSyncJobsResult = {
 
 export type ProcessSyncJobResult = {
     jobId: string;
-    provider: Provider;
+    provider: SyncProvider;
     result: SyncProviderResult;
 };
 
@@ -127,16 +131,14 @@ export async function planSyncJobs(args: { scheduledFor?: Date; now?: Date } = {
     const now = args.now ?? new Date();
     const users = await prisma.user.findMany({
         where: {
-            OR: [
-                { lichessUsername: { not: null } },
-                { chesscomUsername: { not: null } },
-            ],
+            chessAccountConnections: { some: {} },
         },
         select: {
             id: true,
             preferences: true,
-            lichessUsername: true,
-            chesscomUsername: true,
+            chessAccountConnections: {
+                select: chessAccountConnectionSelect,
+            },
             providerSyncStates: {
                 select: {
                     provider: true,
@@ -175,7 +177,7 @@ export async function planSyncJobs(args: { scheduledFor?: Date; now?: Date } = {
 
 export async function planUserSyncJobs(args: {
     userId: string;
-    providers?: Provider[];
+    providers?: SyncProvider[];
     onlyIfStaleMinutes?: number;
     scheduledFor?: Date;
     now?: Date;
@@ -186,8 +188,9 @@ export async function planUserSyncJobs(args: {
         select: {
             id: true,
             preferences: true,
-            lichessUsername: true,
-            chesscomUsername: true,
+            chessAccountConnections: {
+                select: chessAccountConnectionSelect,
+            },
             providerSyncStates: {
                 select: {
                     provider: true,
@@ -202,7 +205,7 @@ export async function planUserSyncJobs(args: {
 
     const providers = args.providers?.length
         ? Array.from(new Set(args.providers))
-        : (['LICHESS', 'CHESSCOM'] as Provider[]);
+        : (['LICHESS', 'CHESSCOM'] as SyncProvider[]);
     const planned: PlannedSyncJob[] = [];
     for (const provider of providers) {
         planned.push(
@@ -226,7 +229,7 @@ export async function planUserSyncJobs(args: {
 
 export async function dispatchUserSyncJobs(args: {
     userId: string;
-    providers?: Provider[];
+    providers?: SyncProvider[];
     onlyIfStaleMinutes?: number;
     scheduledFor?: Date;
     now?: Date;
@@ -258,12 +261,9 @@ export async function getUserSyncActivity(
         chesscomLatest,
         requestedJobs,
     ] = await Promise.all([
-        prisma.user.findUnique({
-            where: { id: userId },
-            select: {
-                lichessUsername: true,
-                chesscomUsername: true,
-            },
+        prisma.chessAccountConnection.findMany({
+            where: { userId },
+            select: chessAccountConnectionSelect,
         }),
         prisma.providerSyncState.findMany({
             where: { userId },
@@ -334,15 +334,8 @@ export async function getUserSyncActivity(
             const latest = latestByProvider[provider];
             return {
                 provider,
-                linked: !!providerUsername(provider, user ?? {
-                    lichessUsername: null,
-                    chesscomUsername: null,
-                }),
-                username:
-                    providerUsername(provider, user ?? {
-                        lichessUsername: null,
-                        chesscomUsername: null,
-                    }) ?? null,
+                linked: !!usernameForProvider(user, provider),
+                username: usernameForProvider(user, provider),
                 state: state
                     ? {
                           providerUsernameNormalized:
@@ -478,8 +471,9 @@ export async function processSyncJob(
                 select: {
                     id: true,
                     preferences: true,
-                    lichessUsername: true,
-                    chesscomUsername: true,
+                    chessAccountConnections: {
+                        select: chessAccountConnectionSelect,
+                    },
                     accounts: {
                         where: { provider: 'lichess' },
                         select: { access_token: true },
@@ -678,11 +672,8 @@ function startSyncJobHeartbeat(jobId: string, leaseToken: string) {
 
 function staleProcessResult(job: {
     id: string;
-    provider: Provider;
-    user: {
-        lichessUsername: string | null;
-        chesscomUsername: string | null;
-    };
+    provider: SyncProvider;
+    user: { chessAccountConnections: ChessAccountConnectionSnapshot[] };
 }): ProcessSyncJobResult {
     return {
         jobId: job.id,
@@ -706,7 +697,7 @@ function staleProcessResult(job: {
 
 async function planUserProviderSyncJob(args: {
     user: SyncJobUser;
-    provider: Provider;
+    provider: SyncProvider;
     scheduledFor: Date;
     now: Date;
     respectAutoSyncPreferences: boolean;
@@ -854,24 +845,22 @@ function syncJobSummary(job: {
 
 function skipped(
     userId: string,
-    provider: Provider,
+    provider: SyncProvider,
     skippedReason: string
 ): PlannedSyncJob {
     return { userId, provider, queued: false, jobId: null, skippedReason };
 }
 
 function providerUsername(
-    provider: Provider,
-    user: { lichessUsername: string | null; chesscomUsername: string | null }
+    provider: SyncProvider,
+    user: { chessAccountConnections: ChessAccountConnectionSnapshot[] }
 ) {
-    return provider === 'LICHESS'
-        ? user.lichessUsername
-        : user.chesscomUsername;
+    return usernameForProvider(user.chessAccountConnections, provider);
 }
 
 function automationImportsProvider(
     prefs: PreferencesSchema,
-    provider: Provider
+    provider: SyncProvider
 ) {
     return (
         providerImportTimeControls(
@@ -883,7 +872,7 @@ function automationImportsProvider(
 
 async function recoverExpiredSyncJobForProvider(args: {
     userId: string;
-    provider: Provider;
+    provider: SyncProvider;
     now: Date;
 }) {
     const job = await prisma.syncJob.findFirst({

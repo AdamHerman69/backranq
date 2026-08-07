@@ -48,15 +48,30 @@ function game(args: {
     pgn: string;
     white?: string;
     black?: string;
+    sourceUsername?: string;
+    userSide?: 'white' | 'black' | 'unknown';
 }): NormalizedGame {
+    const white = args.white ?? 'adam';
+    const black = args.black ?? 'opponent';
+    const userSide =
+        args.userSide ??
+        (white.toLowerCase() === 'adam'
+            ? 'white'
+            : black.toLowerCase() === 'adam'
+              ? 'black'
+              : 'unknown');
     return {
         id: args.id,
         provider: 'lichess',
         playedAt: '2026-01-01T00:00:00.000Z',
         timeClass: 'rapid',
-        white: { name: args.white ?? 'adam' },
-        black: { name: args.black ?? 'opponent' },
+        white: { name: white },
+        black: { name: black },
         pgn: args.pgn,
+        provenance: {
+            username: args.sourceUsername ?? 'adam',
+            userSide,
+        },
     };
 }
 
@@ -149,7 +164,6 @@ describe('canonical training-moment extraction v2', () => {
         const output = await extractTrainingMomentsFromGames({
             games: [game({ id: 'adaptive-confirmation', pgn: '1. e4 *' })],
             selectedGameIds: new Set(['adaptive-confirmation']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: {
                 nodesPerPosition: 100,
@@ -219,7 +233,6 @@ describe('canonical training-moment extraction v2', () => {
         const output = await extractTrainingMomentsFromGames({
             games: [game({ id: 'unstable-confirmation', pgn: '1. e4 *' })],
             selectedGameIds: new Set(['unstable-confirmation']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: {
                 nodesPerPosition: 100,
@@ -286,7 +299,6 @@ describe('canonical training-moment extraction v2', () => {
         const output = await extractTrainingMomentsFromGames({
             games: [game({ id: 'quiet', pgn: '1. e4 *' })],
             selectedGameIds: new Set(['quiet']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: baseOptions,
         });
@@ -341,7 +353,6 @@ describe('canonical training-moment extraction v2', () => {
         const output = await extractTrainingMomentsFromGames({
             games: [game({ id: 'duplicate-root', pgn: '1. e4 *' })],
             selectedGameIds: new Set(['duplicate-root']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: {
                 ...baseOptions,
@@ -415,7 +426,6 @@ describe('canonical training-moment extraction v2', () => {
                 }),
             ],
             selectedGameIds: new Set(['threefold-loss']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: {
                 ...baseOptions,
@@ -504,7 +514,6 @@ describe('canonical training-moment extraction v2', () => {
                 }),
             ],
             selectedGameIds: new Set(['threefold-save']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: {
                 ...baseOptions,
@@ -608,7 +617,6 @@ describe('canonical training-moment extraction v2', () => {
             selectedGameIds: new Set([
                 'mixed-rule-engine',
             ]),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: {
                 ...baseOptions,
@@ -721,7 +729,6 @@ describe('canonical training-moment extraction v2', () => {
                 }),
             ],
             selectedGameIds: new Set(['exact-tablebase-root']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             tablebase,
             options: {
@@ -784,7 +791,6 @@ describe('canonical training-moment extraction v2', () => {
                 }),
             ],
             selectedGameIds: new Set(['mate-one']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: baseOptions,
         });
@@ -845,7 +851,6 @@ describe('canonical training-moment extraction v2', () => {
                 }),
             ],
             selectedGameIds: new Set(['underpromotion']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: baseOptions,
         });
@@ -898,7 +903,6 @@ describe('canonical training-moment extraction v2', () => {
                 }),
             ],
             selectedGameIds: new Set(['sacrifice']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: baseOptions,
         });
@@ -968,7 +972,6 @@ describe('canonical training-moment extraction v2', () => {
         const output = await extractTrainingMomentsFromGames({
             games: [game({ id: 'equivalent', pgn: '1. e4 e5 2. Nf3 *' })],
             selectedGameIds: new Set(['equivalent']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: baseOptions,
         });
@@ -1042,7 +1045,6 @@ describe('canonical training-moment extraction v2', () => {
         const output = await extractTrainingMomentsFromGames({
             games: [game({ id: 'merged', pgn: '1. e4 e5 2. Nf3 *' })],
             selectedGameIds: new Set(['merged']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: {
                 ...baseOptions,
@@ -1146,7 +1148,6 @@ describe('canonical training-moment extraction v2', () => {
         const output = await extractTrainingMomentsFromGames({
             games: [game({ id: 'response-confirm', pgn: '1. e4 e5 2. Nf3 *' })],
             selectedGameIds: new Set(['response-confirm']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: {
                 ...baseOptions,
@@ -1194,7 +1195,6 @@ describe('canonical training-moment extraction v2', () => {
         const output = await extractTrainingMomentsFromGames({
             games: [game({ id: 'unstable', pgn: '1. e4 *' })],
             selectedGameIds: new Set(['unstable']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: {
                 ...baseOptions,
@@ -1216,9 +1216,14 @@ describe('canonical training-moment extraction v2', () => {
         );
 
         const output = await extractTrainingMomentsFromGames({
-            games: [game({ id: 'unresolved', pgn: '1. e4 *' })],
+            games: [
+                game({
+                    id: 'unresolved',
+                    pgn: '1. e4 *',
+                    sourceUsername: 'someone-else',
+                }),
+            ],
             selectedGameIds: new Set(['unresolved']),
-            usernameByProvider: { lichess: 'someone-else' },
             engine,
             options: baseOptions,
         });
@@ -1251,7 +1256,6 @@ describe('canonical training-moment extraction v2', () => {
         const output = await extractTrainingMomentsFromGames({
             games: [game({ id: 'missing-evidence', pgn: '1. e4 *' })],
             selectedGameIds: new Set(['missing-evidence']),
-            usernameByProvider: { lichess: 'adam' },
             engine,
             options: baseOptions,
         });

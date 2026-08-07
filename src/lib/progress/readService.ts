@@ -47,8 +47,7 @@ export class ProgressDatasetTooLargeError extends Error {
 }
 
 const userSelect = {
-    lichessUsername: true,
-    chesscomUsername: true,
+    chessAccountConnections: { select: { provider: true } },
     billingAccount: {
         select: {
             serverCreditsBalance: true,
@@ -230,8 +229,14 @@ async function readProgressSnapshot(
     }
 
     const user: ProgressUserRecord = {
-        lichessUsername: userRow.lichessUsername,
-        chesscomUsername: userRow.chesscomUsername,
+        linkedAccounts: {
+            lichess: userRow.chessAccountConnections.some(
+                (connection) => connection.provider === 'LICHESS'
+            ),
+            chesscom: userRow.chessAccountConnections.some(
+                (connection) => connection.provider === 'CHESSCOM'
+            ),
+        },
         serverCreditsBalance:
             userRow.billingAccount?.serverCreditsBalance ?? null,
     };

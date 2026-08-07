@@ -383,10 +383,6 @@ async function runProfile(
             const output = await extractTrainingMomentsFromGames({
                 games: [game],
                 selectedGameIds: new Set([game.id]),
-                usernameByProvider:
-                    game.provider === 'lichess'
-                        ? { lichess: 'aldicigg' }
-                        : { chesscom: 'adam1a4' },
                 engine,
                 options: {
                     returnAnalysis: true,

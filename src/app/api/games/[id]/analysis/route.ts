@@ -5,7 +5,7 @@ import type {
     GameAnalysis,
     MoveClassification,
 } from '@/lib/analysis/classification';
-import { providerToUi } from '@/lib/api/games';
+import { gameSourceToUi } from '@/lib/api/games';
 import {
     AnalysisConfigHashMismatchError,
     createAndCompleteLocalAnalysisRun,
@@ -409,7 +409,7 @@ export async function PUT(
         return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
     const analysis = body.analysis;
-    const normalizedGameId = `${providerToUi(game.provider)}:${game.externalId}`;
+    const normalizedGameId = `${gameSourceToUi(game.provider)}:${game.externalId}`;
     if (analysis.gameId !== normalizedGameId) {
         return NextResponse.json(
             { error: 'Analysis game mismatch' },
@@ -426,7 +426,7 @@ export async function PUT(
         !trainingMomentCandidatesMatchSource({
             moments: trainingMomentValidation.moments,
             gameId: id,
-            provider: providerToUi(game.provider),
+            provider: gameSourceToUi(game.provider),
             playedAt: game.playedAt,
             pgn: game.pgn,
             configHash: computedConfigHash,

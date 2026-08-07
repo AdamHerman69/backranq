@@ -38,7 +38,12 @@ const EVENT_NAMES = [
     'ACTION_CLICKED',
     'PRACTICE_STARTED_FROM_PROGRESS',
 ] as const;
-const PROVIDERS = ['LICHESS', 'CHESSCOM'] as const;
+const PROVIDERS = [
+    'LICHESS',
+    'CHESSCOM',
+    'MANUAL_PGN',
+    'BACKRANQ_COACH',
+] as const;
 const TIME_CLASSES = [
     'BULLET',
     'BLITZ',

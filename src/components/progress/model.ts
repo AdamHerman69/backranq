@@ -24,6 +24,8 @@ export type ProgressNextAction = {
 const PROVIDER_QUERY: Record<string, string> = {
     LICHESS: 'lichess',
     CHESSCOM: 'chesscom',
+    MANUAL_PGN: 'manual_pgn',
+    BACKRANQ_COACH: 'backranq_coach',
 };
 
 const TIME_CLASS_QUERY: Record<string, string> = {
@@ -294,6 +296,8 @@ export function breakdownLabel(kind: string, key: string) {
         UNKNOWN: 'Unknown',
         LICHESS: 'Lichess',
         CHESSCOM: 'Chess.com',
+        MANUAL_PGN: 'Manual PGN',
+        BACKRANQ_COACH: 'Backranq Coach',
         BULLET: 'Bullet',
         BLITZ: 'Blitz',
         RAPID: 'Rapid',

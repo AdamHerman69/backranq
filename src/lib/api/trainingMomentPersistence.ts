@@ -1,6 +1,6 @@
 import type { TrainingMomentCandidate } from '@/lib/training/contracts';
 import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainingMoments';
-import type { Provider } from '@/lib/types/game';
+import type { GameSource } from '@/lib/types/game';
 import {
     persistTrainingMomentsInTransaction,
     type PersistTrainingMomentsResult,
@@ -18,7 +18,7 @@ export async function replaceTrainingMomentsInTransaction(args: {
     tx: TrainingMomentTransactionClient;
     userId: string;
     gameId: string;
-    sourceProvider: Provider;
+    sourceProvider: GameSource;
     sourcePlayedAt: Date;
     sourcePgnHash: string;
     analysisRunId: string;

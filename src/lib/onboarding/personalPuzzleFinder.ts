@@ -38,9 +38,6 @@ export async function findFirstVerifiedPersonalPuzzle(args: {
             selectedGameIds: new Set([game.id]),
             engine: args.engine,
             tablebase,
-            usernameByProvider: {
-                [args.identity.provider]: args.identity.username,
-            },
             signal: args.signal,
             stopAfterFirstVerified: true,
             onProgress: (progress) => {

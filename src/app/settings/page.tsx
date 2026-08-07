@@ -10,6 +10,10 @@ import { getOrCreateDefaultBillingAccount } from '@/lib/services/billingAccounts
 import { PracticeDefaultsCard } from '@/components/settings/PracticeDefaultsCard';
 import { NotificationSettingsCard } from '@/components/settings/NotificationSettingsCard';
 import { presentBillingAccount } from '@/lib/billing/presentation';
+import {
+    chessAccountConnectionSelect,
+    linkedUsernameSnapshot,
+} from '@/lib/accounts/chessAccountConnections';
 
 export default async function SettingsPage() {
     const session = await auth();
@@ -23,8 +27,9 @@ export default async function SettingsPage() {
             email: true,
             name: true,
             image: true,
-            lichessUsername: true,
-            chesscomUsername: true,
+            chessAccountConnections: {
+                select: chessAccountConnectionSelect,
+            },
         },
     });
     if (!user) redirect('/login?callbackUrl=/settings');
@@ -34,8 +39,7 @@ export default async function SettingsPage() {
         email: user.email,
         name: user.name,
         image: user.image,
-        lichessUsername: user.lichessUsername,
-        chesscomUsername: user.chesscomUsername,
+        ...linkedUsernameSnapshot(user.chessAccountConnections),
     };
     const billingAccount = await getOrCreateDefaultBillingAccount(userId);
     const billingPresentation = presentBillingAccount({

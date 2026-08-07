@@ -3,7 +3,12 @@ export const PROGRESS_DEFINITION_VERSION = 'progress-v1' as const;
 export const PROGRESS_SCOPES = [28, 90, 'all'] as const;
 export type ProgressScope = (typeof PROGRESS_SCOPES)[number];
 
-export const PROGRESS_PROVIDERS = ['LICHESS', 'CHESSCOM'] as const;
+export const PROGRESS_PROVIDERS = [
+    'LICHESS',
+    'CHESSCOM',
+    'MANUAL_PGN',
+    'BACKRANQ_COACH',
+] as const;
 export type ProgressProvider = (typeof PROGRESS_PROVIDERS)[number];
 
 export const PROGRESS_TIME_CLASSES = [

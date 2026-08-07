@@ -14,6 +14,7 @@ import type {
     TrainingLessonKind,
     TrainingSourceKind,
 } from '@/lib/training/contracts';
+import type { GameSource } from '@prisma/client';
 
 export function toTrainingPromptDto(row: {
     id: string;
@@ -32,7 +33,7 @@ export function toTrainingPromptDto(row: {
     gameId: string;
     decisionPly: number;
     game: {
-        provider: 'LICHESS' | 'CHESSCOM';
+        provider: GameSource;
         playedAt: Date;
     };
     currentSolutionRevision: {
@@ -363,7 +364,7 @@ export function toTrainingReviewDto(args: {
         lessonKinds: TrainingLessonKind[];
         themes: string[];
         game: {
-            provider: 'LICHESS' | 'CHESSCOM';
+            provider: GameSource;
             playedAt: Date;
         };
     };

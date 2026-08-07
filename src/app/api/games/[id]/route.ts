@@ -125,6 +125,9 @@ export async function GET(
             externalId: true,
             url: true,
             pgn: true,
+            sourceUsername: true,
+            sourceAccountId: true,
+            userSide: true,
             analysis: true,
             analyzedAt: true,
             playedAt: true,
@@ -172,7 +175,7 @@ export async function PATCH(
     }
     const body = parsed.patch;
 
-    const data: Prisma.AnalyzedGameUpdateManyMutationInput = {
+    const data: Prisma.AnalyzedGameUncheckedUpdateManyInput = {
         url: body.url,
         pgn: body.pgn,
         result: body.result,
@@ -220,9 +223,6 @@ export async function PATCH(
                                   currentAnalysisRunId: null,
                                   currentAnalysisValid: false,
                                   sourcePgnHash: hashSourcePgn(body.pgn!),
-                                  sourceUsername: null,
-                                  sourceAccountId: null,
-                                  userSide: 'UNKNOWN',
                                   timeControlRaw: null,
                                   timeControlInitialSeconds: null,
                                   timeControlIncrementSeconds: null,

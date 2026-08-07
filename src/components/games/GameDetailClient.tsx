@@ -23,7 +23,6 @@ export default function GameDetailClient({
     initialAnalysis,
     initialHasAnalysis,
     trainingMoments,
-    usernameByProvider,
     initialPly,
     serverAnalysisCapacity,
 }: {
@@ -34,7 +33,6 @@ export default function GameDetailClient({
     initialAnalysis: GameAnalysis | null;
     initialHasAnalysis: boolean;
     trainingMoments: GameTrainingMomentRow[];
-    usernameByProvider: { lichess?: string; chesscom?: string };
     initialPly?: number;
     serverAnalysisCapacity: ManualServerAnalysisCapacity;
 }) {
@@ -45,31 +43,12 @@ export default function GameDetailClient({
 
     const { analysis, hasAnalysis } = analysisState;
 
-    const userBoardOrientation = (() => {
-        const providerKey = normalizedGame.provider;
-        const linked =
-            providerKey === 'lichess'
-                ? usernameByProvider.lichess
-                : usernameByProvider.chesscom;
-        const norm = (s: string | undefined) =>
-            (s ?? '')
-                .trim()
-                .toLowerCase()
-                .replace(/[^a-z0-9_]+/g, '');
-
-        const me = norm(linked);
-        if (!me) return 'white' as const;
-
-        const white = norm(normalizedGame.white?.name);
-        const black = norm(normalizedGame.black?.name);
-
-        const matches = (a: string, b: string) =>
-            !!a && !!b && (a === b || a.includes(b) || b.includes(a));
-
-        if (matches(me, black)) return 'black' as const;
-        if (matches(me, white)) return 'white' as const;
-        return 'white' as const;
-    })();
+    const userBoardOrientation =
+        normalizedGame.provenance?.userSide === 'black'
+            ? ('black' as const)
+            : normalizedGame.provenance?.userSide === 'white'
+              ? ('white' as const)
+              : undefined;
 
     return (
         <div className="space-y-6">
@@ -86,7 +65,6 @@ export default function GameDetailClient({
                     ownerId={ownerId}
                     dbGameId={dbGameId}
                     normalizedGame={normalizedGame}
-                    usernameByProvider={usernameByProvider}
                     hasAnalysis={hasAnalysis}
                     trainingMomentCount={trainingMoments.length}
                     serverAnalysisCapacity={serverAnalysisCapacity}

@@ -1,4 +1,4 @@
-import type { Provider, TimeClass } from '@prisma/client';
+import type { GameSource, TimeClass } from '@prisma/client';
 import {
     resolveAutoAnalysisPolicy,
     type AutoAnalysisPolicy,
@@ -13,13 +13,15 @@ export type AutoAnalysisRules = AutoAnalysisPolicy;
 
 export type AutoAnalysisGameCandidate = {
     id?: string;
-    provider: Provider | ProviderKey;
+    provider: GameSource | ProviderKey;
     result?: string | null;
     timeClass: TimeClass | TimeControlKey;
     rated?: boolean | null;
     pgn?: string | null;
     whiteName?: string | null;
     blackName?: string | null;
+    sourceUsername?: string | null;
+    userSide?: 'WHITE' | 'BLACK' | 'UNKNOWN' | 'white' | 'black' | 'unknown';
     createdAt?: Date | string | null;
     white?: { name?: string | null };
     black?: { name?: string | null };
@@ -41,17 +43,13 @@ export function autoAnalysisRulesFromPreferences(
 export function evaluateAutoAnalysisEligibility(args: {
     preferences: unknown;
     game: AutoAnalysisGameCandidate;
-    username?: string | null;
-    usernameByProvider?: Partial<Record<ProviderKey, string | null>>;
 }): AutoAnalysisEligibility {
     const rules = autoAnalysisRulesFromPreferences(args.preferences);
     const provider = providerKey(args.game.provider);
+    if (!provider) return ineligible(rules, 'unsupported-source');
     const timeControl = timeControlKey(args.game.timeClass);
     const plies = countPgnPlies(args.game.pgn ?? '');
-    const perspective = perspectiveResult(
-        args.game,
-        args.usernameByProvider?.[provider] ?? args.username
-    );
+    const perspective = perspectiveResult(args.game);
 
     if (!rules.enabled) return ineligible(rules, 'disabled');
     if (
@@ -93,8 +91,6 @@ export function eligibleAutoAnalysisGameIds<T extends AutoAnalysisGameCandidate>
         preferences: unknown;
         games: T[];
         gameId: (game: T) => string | null | undefined;
-        username?: string | null;
-        usernameByProvider?: Partial<Record<ProviderKey, string | null>>;
     }
 ) {
     return args.games
@@ -104,8 +100,6 @@ export function eligibleAutoAnalysisGameIds<T extends AutoAnalysisGameCandidate>
             eligibility: evaluateAutoAnalysisEligibility({
                 preferences: args.preferences,
                 game,
-                username: args.username,
-                usernameByProvider: args.usernameByProvider,
             }),
         }))
         .filter(
@@ -139,20 +133,35 @@ function resultInScope(
 }
 
 function perspectiveResult(
-    game: AutoAnalysisGameCandidate,
-    username?: string | null
+    game: AutoAnalysisGameCandidate
 ): 'win' | 'loss' | 'draw' | 'unknown' {
     const result = (game.result ?? '').trim();
-    const user = normalizeName(username);
+    const user = normalizeName(game.sourceUsername);
     if (!user) return 'unknown';
     const white = normalizeName(game.whiteName ?? game.white?.name);
     const black = normalizeName(game.blackName ?? game.black?.name);
-    if (user !== white && user !== black) return 'unknown';
+    const side =
+        game.userSide === 'WHITE' || game.userSide === 'white'
+            ? 'white'
+            : game.userSide === 'BLACK' || game.userSide === 'black'
+              ? 'black'
+              : null;
+    if (
+        !side ||
+        (side === 'white' && user !== white) ||
+        (side === 'black' && user !== black)
+    ) {
+        return 'unknown';
+    }
     if (result === '1/2-1/2') return 'draw';
     if (result !== '1-0' && result !== '0-1') return 'unknown';
-    if (user === white) return result === '1-0' ? 'win' : 'loss';
-    if (user === black) return result === '0-1' ? 'win' : 'loss';
-    return 'unknown';
+    return side === 'white'
+        ? result === '1-0'
+            ? 'win'
+            : 'loss'
+        : result === '0-1'
+          ? 'win'
+          : 'loss';
 }
 
 function autoAnalysisPriority(args: {
@@ -188,10 +197,10 @@ export function countPgnPlies(pgn: string) {
     return moves.length;
 }
 
-function providerKey(provider: Provider | ProviderKey): ProviderKey {
-    return provider === 'LICHESS' || provider === 'lichess'
-        ? 'lichess'
-        : 'chesscom';
+function providerKey(provider: GameSource | ProviderKey): ProviderKey | null {
+    if (provider === 'LICHESS' || provider === 'lichess') return 'lichess';
+    if (provider === 'CHESSCOM' || provider === 'chesscom') return 'chesscom';
+    return null;
 }
 
 function timeControlKey(timeClass: TimeClass | TimeControlKey): TimeControlKey {

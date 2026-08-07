@@ -5,6 +5,7 @@ import {
     expectedOwnerId,
 } from '@/lib/auth/ownerContract';
 import { prisma } from '@/lib/prisma';
+import { linkedUsernameSnapshot } from '@/lib/accounts/chessAccountConnections';
 import {
     lookupProviderProfile,
     providerProfileLabel,
@@ -33,21 +34,27 @@ async function validateProviderUsername(
     username: string
 ) {
     const lookup = await lookupProviderProfile({ provider, username });
-    if (lookup.state === 'found') return null;
+    if (lookup.state === 'found') return { ok: true as const, lookup };
     if (lookup.state === 'not-found') {
-        return NextResponse.json(
-            { error: `${providerProfileLabel(provider)} username not found` },
-            { status: 400 }
-        );
+        return {
+            ok: false as const,
+            response: NextResponse.json(
+                { error: `${providerProfileLabel(provider)} username not found` },
+                { status: 400 }
+            ),
+        };
     }
-    return NextResponse.json(
-        {
-            error: lookup.error,
-            retryable: true,
-            sourceStatus: lookup.sourceStatus,
-        },
-        { status: lookup.httpStatus }
-    );
+    return {
+        ok: false as const,
+        response: NextResponse.json(
+            {
+                error: lookup.error,
+                retryable: true,
+                sourceStatus: lookup.sourceStatus,
+            },
+            { status: lookup.httpStatus }
+        ),
+    };
 }
 
 export async function GET() {
@@ -57,23 +64,31 @@ export async function GET() {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const user = await prisma.user.findUnique({
+    const row = await prisma.user.findUnique({
         where: { id: userId },
         select: {
             id: true,
             email: true,
             name: true,
             image: true,
-            lichessUsername: true,
-            chesscomUsername: true,
+            chessAccountConnections: {
+                select: {
+                    provider: true,
+                    username: true,
+                    usernameNormalized: true,
+                },
+            },
         },
     });
 
-    if (!user) {
+    if (!row) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
-    return NextResponse.json({ user });
+    const { chessAccountConnections, ...user } = row;
+    return NextResponse.json({
+        user: { ...user, ...linkedUsernameSnapshot(chessAccountConnections) },
+    });
 }
 
 export async function PATCH(req: Request) {
@@ -94,73 +109,80 @@ export async function PATCH(req: Request) {
     const lichessUsernameRaw = body.lichessUsername;
     const chesscomUsernameRaw = body.chesscomUsername;
 
-    const next: {
-        lichessUsername?: string | null;
-        chesscomUsername?: string | null;
-    } = {};
+    const updates: Array<{
+        provider: 'LICHESS' | 'CHESSCOM';
+        username: string | null;
+        usernameNormalized: string | null;
+        providerAccountId: string | null;
+    }> = [];
 
     if (lichessUsernameRaw !== undefined) {
         const v = (lichessUsernameRaw ?? '').trim();
-        const errorResponse = await validateProviderUsername('lichess', v);
-        if (errorResponse) return errorResponse;
-        next.lichessUsername = v ? v : null;
+        const validation = v
+            ? await validateProviderUsername('lichess', v)
+            : null;
+        if (validation && !validation.ok) return validation.response;
+        const verified = validation?.lookup ?? null;
+        updates.push({
+            provider: 'LICHESS',
+            username: verified?.username ?? null,
+            usernameNormalized: verified
+                ? normalizedIdentity(verified.username)
+                : null,
+            providerAccountId: verified?.accountId ?? null,
+        });
     }
 
     if (chesscomUsernameRaw !== undefined) {
         const v = (chesscomUsernameRaw ?? '').trim().toLowerCase();
-        const errorResponse = await validateProviderUsername('chesscom', v);
-        if (errorResponse) return errorResponse;
-        next.chesscomUsername = v ? v : null;
+        const validation = v
+            ? await validateProviderUsername('chesscom', v)
+            : null;
+        if (validation && !validation.ok) return validation.response;
+        const verified = validation?.lookup ?? null;
+        updates.push({
+            provider: 'CHESSCOM',
+            username: verified?.username ?? null,
+            usernameNormalized: verified
+                ? normalizedIdentity(verified.username)
+                : null,
+            providerAccountId: verified?.accountId ?? null,
+        });
     }
 
     const user = await prisma.$transaction(async (tx) => {
-        const current = await tx.user.findUnique({
-            where: { id: userId },
-            select: {
-                lichessUsername: true,
-                chesscomUsername: true,
-            },
-        });
-        const updated = await tx.user.update({
-            where: { id: userId },
-            data: next,
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                image: true,
-                lichessUsername: true,
-                chesscomUsername: true,
-            },
-        });
-
-        const changedProviders = [
-            ...(lichessUsernameRaw !== undefined &&
-            normalizedIdentity(current?.lichessUsername) !==
-                normalizedIdentity(updated.lichessUsername)
-                ? [
-                      {
-                          provider: 'LICHESS' as const,
-                          username: normalizedIdentity(
-                              updated.lichessUsername
-                          ),
-                      },
-                  ]
-                : []),
-            ...(chesscomUsernameRaw !== undefined &&
-            normalizedIdentity(current?.chesscomUsername) !==
-                normalizedIdentity(updated.chesscomUsername)
-                ? [
-                      {
-                          provider: 'CHESSCOM' as const,
-                          username: normalizedIdentity(
-                              updated.chesscomUsername
-                          ),
-                      },
-                  ]
-                : []),
-        ];
-        for (const identity of changedProviders) {
+        for (const identity of updates) {
+            const current = await tx.chessAccountConnection.findUnique({
+                where: { userId_provider: { userId, provider: identity.provider } },
+                select: { usernameNormalized: true },
+            });
+            if (current?.usernameNormalized === identity.usernameNormalized) {
+                continue;
+            }
+            if (!identity.username || !identity.usernameNormalized) {
+                await tx.chessAccountConnection.deleteMany({
+                    where: { userId, provider: identity.provider },
+                });
+            } else {
+                await tx.chessAccountConnection.upsert({
+                    where: { userId_provider: { userId, provider: identity.provider } },
+                    create: {
+                        userId,
+                        provider: identity.provider,
+                        providerAccountId: identity.providerAccountId,
+                        username: identity.username,
+                        usernameNormalized: identity.usernameNormalized,
+                        verification: 'PUBLIC_PROFILE',
+                    },
+                    update: {
+                        providerAccountId: identity.providerAccountId,
+                        username: identity.username,
+                        usernameNormalized: identity.usernameNormalized,
+                        verification: 'PUBLIC_PROFILE',
+                        verifiedAt: new Date(),
+                    },
+                });
+            }
             await tx.providerSyncState.upsert({
                 where: {
                     userId_provider: {
@@ -171,10 +193,10 @@ export async function PATCH(req: Request) {
                 create: {
                     userId,
                     provider: identity.provider,
-                    providerUsernameNormalized: identity.username,
+                        providerUsernameNormalized: identity.usernameNormalized,
                 },
                 update: {
-                    providerUsernameNormalized: identity.username,
+                    providerUsernameNormalized: identity.usernameNormalized,
                     lastSyncedPlayedAt: null,
                     cursorSincePlayedAt: null,
                     cursorUntilPlayedAt: null,
@@ -187,7 +209,24 @@ export async function PATCH(req: Request) {
                 },
             });
         }
-        return updated;
+        const row = await tx.user.findUniqueOrThrow({
+            where: { id: userId },
+            select: {
+                id: true,
+                email: true,
+                name: true,
+                image: true,
+                chessAccountConnections: {
+                    select: {
+                        provider: true,
+                        username: true,
+                        usernameNormalized: true,
+                    },
+                },
+            },
+        });
+        const { chessAccountConnections, ...profile } = row;
+        return { ...profile, ...linkedUsernameSnapshot(chessAccountConnections) };
     });
 
     return NextResponse.json({ user });

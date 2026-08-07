@@ -10,9 +10,21 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-enum Provider {
+enum GameSource {
   LICHESS
   CHESSCOM
+  MANUAL_PGN
+  BACKRANQ_COACH
+}
+
+enum SyncProvider {
+  LICHESS
+  CHESSCOM
+}
+
+enum AccountConnectionVerification {
+  OAUTH
+  PUBLIC_PROFILE
 }
 
 enum TimeClass {
@@ -369,16 +381,14 @@ enum NotificationDigestFrequency {
 }
 
 model User {
-  id               String    @id @default(uuid()) @db.Uuid
-  email            String?   @unique
-  emailVerified    DateTime?
-  name             String?
-  image            String?
-  lichessUsername  String?
-  chesscomUsername String?
-  preferences      Json      @default(dbgenerated("'{}'::jsonb"))
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id            String    @id @default(uuid()) @db.Uuid
+  email         String?   @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+  preferences   Json      @default(dbgenerated("'{}'::jsonb"))
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   games                       AnalyzedGame[]
   trainingMoments             TrainingMoment[]
@@ -390,6 +400,7 @@ model User {
   progressAnalyticsEvents     ProgressAnalyticsEvent[]
   progressAnalyticsRateBucket ProgressAnalyticsRateBucket?
   providerSyncStates          ProviderSyncState[]
+  chessAccountConnections     ChessAccountConnection[]
   historyImportQuotas         HistoryImportQuota[]
   syncJobs                    SyncJob[]
   analysisJobs                AnalysisJob[]
@@ -410,6 +421,28 @@ model User {
   // NextAuth (Auth.js) relations
   accounts Account[]
   sessions Session[]
+}
+
+/// A durable provider account selected for importing a user's games. This is
+/// deliberately separate from Auth.js Account: signing in proves application
+/// identity, while this row defines the game source that sync is allowed to use.
+model ChessAccountConnection {
+  id                 String                        @id @default(uuid()) @db.Uuid
+  userId             String                        @db.Uuid
+  provider           SyncProvider
+  providerAccountId  String?
+  username           String
+  usernameNormalized String
+  verification       AccountConnectionVerification
+  verifiedAt         DateTime                      @default(now())
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@unique([provider, providerAccountId])
+  @@index([provider, usernameNormalized])
 }
 
 model AdminMembership {
@@ -655,12 +688,12 @@ model StripeWebhookEvent {
 model AnalyzedGame {
   id                          String       @id @default(uuid()) @db.Uuid
   userId                      String       @db.Uuid
-  provider                    Provider
+  provider                    GameSource
   externalId                  String
   url                         String?
   pgn                         String       @db.Text
   sourcePgnHash               String
-  sourceUsername              String?
+  sourceUsername              String
   sourceAccountId             String?
   userSide                    GameUserSide @default(UNKNOWN)
   playedAt                    DateTime
@@ -704,9 +737,9 @@ model AnalyzedGame {
 }
 
 model ProviderSyncState {
-  id                         String    @id @default(uuid()) @db.Uuid
-  userId                     String    @db.Uuid
-  provider                   Provider
+  id                         String       @id @default(uuid()) @db.Uuid
+  userId                     String       @db.Uuid
+  provider                   SyncProvider
   providerUsernameNormalized String?
   importPolicyHash           String?
   lastSyncedPlayedAt         DateTime?
@@ -715,11 +748,11 @@ model ProviderSyncState {
   cursorWindowEnd            DateTime?
   lastAttemptAt              DateTime?
   lastSuccessAt              DateTime?
-  lastError                  String?   @db.Text
-  etag                       String?   @db.Text
-  lastModified               String?   @db.Text
-  createdAt                  DateTime  @default(now())
-  updatedAt                  DateTime  @updatedAt
+  lastError                  String?      @db.Text
+  etag                       String?      @db.Text
+  lastModified               String?      @db.Text
+  createdAt                  DateTime     @default(now())
+  updatedAt                  DateTime     @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -728,15 +761,15 @@ model ProviderSyncState {
 }
 
 model HistoryImportQuota {
-  id                 String    @id @default(uuid()) @db.Uuid
-  userId             String    @db.Uuid
-  provider           Provider
+  id                 String       @id @default(uuid()) @db.Uuid
+  userId             String       @db.Uuid
+  provider           SyncProvider
   usernameNormalized String
-  createdCount       Int       @default(0)
+  createdCount       Int          @default(0)
   fetchLeaseToken    String?
   fetchLeaseUntil    DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -747,7 +780,7 @@ model HistoryImportQuota {
 model SyncJob {
   id                  String        @id @default(uuid()) @db.Uuid
   userId              String        @db.Uuid
-  provider            Provider
+  provider            SyncProvider
   status              SyncJobStatus @default(QUEUED)
   scheduledFor        DateTime      @default(now())
   lockedUntil         DateTime?
@@ -1045,7 +1078,7 @@ model TrainingAttempt {
   contextLessonKinds          TrainingLessonKind[]  @default([])
   contextThemes               String[]              @default([])
   contextThemeTaxonomyVersion String                @default("backranq-theme-v1")
-  contextProvider             Provider
+  contextProvider             GameSource
   contextTimeClass            TimeClass
   contextConfigHash           String
   contextSolutionHash         String
@@ -1208,7 +1241,7 @@ model ProgressAnalyticsEvent {
   actionKey         String?
   recommendationKey String?
   windowDays        Int?
-  provider          Provider?
+  provider          GameSource?
   timeClass         TimeClass?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1237,7 +1270,7 @@ model OnboardingAnalyticsEvent {
   onboardingRunId   String?                @db.Uuid
   userId            String?                @db.Uuid
   eventName         OnboardingEventName
-  provider          Provider?
+  provider          SyncProvider?
   puzzleKind        OnboardingPuzzleKind?
   experimentKey     String?
   variantKey        String?
@@ -1291,25 +1324,25 @@ model MasterPerson {
 }
 
 model MasterAccount {
-  id                  String    @id @default(uuid()) @db.Uuid
-  personId            String    @db.Uuid
-  provider            Provider
+  id                  String       @id @default(uuid()) @db.Uuid
+  personId            String       @db.Uuid
+  provider            SyncProvider
   username            String
   usernameNormalized  String
   profileUrl          String
-  identityEvidence    Json      @default(dbgenerated("'{}'::jsonb"))
+  identityEvidence    Json         @default(dbgenerated("'{}'::jsonb"))
   identityVerifiedAt  DateTime?
-  active              Boolean   @default(true)
-  priority            Int       @default(0)
+  active              Boolean      @default(true)
+  priority            Int          @default(0)
   lastFetchAt         DateTime?
   lastSuccessAt       DateTime?
   nextFetchAt         DateTime?
-  etag                String?   @db.Text
-  lastModified        String?   @db.Text
-  consecutiveFailures Int       @default(0)
-  lastError           String?   @db.Text
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  etag                String?      @db.Text
+  lastModified        String?      @db.Text
+  consecutiveFailures Int          @default(0)
+  lastError           String?      @db.Text
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
 
   person           MasterPerson                @relation(fields: [personId], references: [id], onDelete: Restrict)
   discoveries      MasterSourceGameDiscovery[]
@@ -1324,7 +1357,7 @@ model MasterAccount {
 
 model MasterSourceGame {
   id                String                   @id @default(uuid()) @db.Uuid
-  provider          Provider
+  provider          SyncProvider
   externalId        String
   canonicalUrl      String?
   availability      MasterSourceAvailability @default(AVAILABLE)
