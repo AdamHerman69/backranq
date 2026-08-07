@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
 import { recordPracticeDue } from '@/lib/notifications/service';
+import { dispatchPendingNotificationDeliveries } from '@/lib/notifications/delivery';
 import { PRACTICE_DUE_COUNT_CAP } from '@/lib/training/practiceDue';
 
 export const PRACTICE_DUE_SWEEP_SLICE_SIZE = 256;
@@ -361,5 +362,12 @@ export async function processPracticeDueNotificationPage(
             data: { status: 'COMPLETE', completedAt: new Date() },
         });
     }
-    return { sweepId, processed: summaries.length, nextCursor };
+    const notificationDispatch =
+        await dispatchPendingNotificationDeliveries();
+    return {
+        sweepId,
+        processed: summaries.length,
+        nextCursor,
+        notificationDispatch,
+    };
 }

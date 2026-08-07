@@ -11,6 +11,11 @@ const dispatchAutoAnalysisPolicySweepMock = vi.fn();
 const dispatchPlannedSyncJobsMock = vi.fn();
 const processSyncJobMock = vi.fn();
 const processWeeklyMasterRunMock = vi.fn();
+const dispatchPendingNotificationDeliveriesMock = vi.fn();
+const processNotificationDeliveryMock = vi.fn();
+const runNotificationMaintenanceMock = vi.fn();
+const processPracticeDueNotificationPageMock = vi.fn();
+const processPracticeDueSweepPageMock = vi.fn();
 
 class StaleAnalysisDeliveryError extends Error {}
 
@@ -45,6 +50,19 @@ async function importProcessor() {
     vi.doMock('@/lib/master/pipelineRunner', () => ({
         processWeeklyMasterRun: processWeeklyMasterRunMock,
     }));
+    vi.doMock('@/lib/notifications/delivery', () => ({
+        dispatchPendingNotificationDeliveries:
+            dispatchPendingNotificationDeliveriesMock,
+        processNotificationDelivery: processNotificationDeliveryMock,
+    }));
+    vi.doMock('@/lib/notifications/campaigns', () => ({
+        runNotificationMaintenance: runNotificationMaintenanceMock,
+    }));
+    vi.doMock('@/lib/training/practiceDueSweep', () => ({
+        processPracticeDueNotificationPage:
+            processPracticeDueNotificationPageMock,
+        processPracticeDueSweepPage: processPracticeDueSweepPageMock,
+    }));
     return import('@/lib/services/backranqQueueProcessor');
 }
 
@@ -70,6 +88,7 @@ describe('Backranq analysis queue processor', () => {
             providers: [],
             published: [],
         });
+        dispatchPendingNotificationDeliveriesMock.mockResolvedValue([]);
     });
 
     it('self-drains a 25-job single-user batch one completion at a time', async () => {
@@ -132,6 +151,37 @@ describe('Backranq analysis queue processor', () => {
         });
 
         expect(processWeeklyMasterRunMock).toHaveBeenCalledWith('master-run-1');
+    });
+
+    it('wakes bounded delivery immediately after maintenance records notifications', async () => {
+        const processor = await importProcessor();
+        runNotificationMaintenanceMock.mockResolvedValue({
+            reconciled: { welcomeUsers: 1 },
+        });
+        dispatchPendingNotificationDeliveriesMock.mockResolvedValue([
+            { deliveryId: 'delivery-1', queued: true },
+        ]);
+
+        const result = await processor.processBackranqQueueMessage({
+            type: 'notification-maintenance',
+            referenceAt: '2026-08-07T00:00:00.000Z',
+            since: '2026-08-01T00:00:00.000Z',
+        });
+
+        expect(runNotificationMaintenanceMock).toHaveBeenCalledOnce();
+        expect(dispatchPendingNotificationDeliveriesMock).toHaveBeenCalledOnce();
+        expect(
+            dispatchPendingNotificationDeliveriesMock.mock
+                .invocationCallOrder[0]
+        ).toBeGreaterThan(
+            runNotificationMaintenanceMock.mock.invocationCallOrder[0]!
+        );
+        expect(result).toEqual({
+            maintenance: { reconciled: { welcomeUsers: 1 } },
+            notificationDispatch: [
+                { deliveryId: 'delivery-1', queued: true },
+            ],
+        });
     });
 
     it('schedules a delayed durable wakeup for a retry', async () => {

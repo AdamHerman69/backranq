@@ -92,9 +92,12 @@ deprecated `@react-email/components` package.
 Premium invitations are transactional emails initiated from `/admin`. The
 database stores only a hash of the 14-day token. A link does not grant access by
 itself: after sign-in, the recipient must explicitly accept it from the same
-normalized email address. Resending rotates the token and invalidates the old
-link. These emails use SMTP2GO directly and are not governed by optional
-notification preferences or unsubscribe state.
+normalized email address. Resending a confirmed `SENT` invitation rotates the
+token and invalidates the old link; a failed or ambiguous provider attempt
+reuses the same generation so a possibly delivered link remains valid. These
+emails are not governed by optional notification preferences or unsubscribe
+state, but they reserve from the same SMTP2GO safety budget as notification
+email and cannot consume the slots reserved for billing-action messages.
 
 Email and push deliveries remain `PENDING` when their provider configuration is
 absent. This makes local development safe and allows delivery after production
@@ -113,9 +116,15 @@ a provider idempotency key for this endpoint, so any email whose request times
 out or loses its response is marked failed instead of retried and risking a
 duplicate. Explicit quota responses are deferred until the next UTC day. The
 configurable daily safety limit (30 by default, leaving headroom under the free
-monthly allowance) and per-dispatch cap (20 by default) pace traffic below the
-provider allowance. Five daily slots are reserved for billing-action messages,
-which are selected ahead of optional campaigns. Delivery webhooks use both
+monthly allowance) is an atomic provider-day counter shared by notifications
+and Premium invitations. The per-dispatch cap (20 by default) paces queue
+traffic. Five daily slots are reserved for billing-action messages, which are
+selected ahead of optional campaigns. Practice email also atomically claims one
+unique local-calendar-day send window per user before provider handoff, so
+concurrent ready/due workers cannot both send. A fixed-size, index-ordered
+recovery pass releases only expired `RESERVED` claims left by a crash before
+provider handoff; `HANDOFF` and `AMBIGUOUS` evidence is never reclaimed
+automatically. Delivery webhooks use both
 SMTP2GO's email ID and the requested `X-Backranq-Delivery-Id` callback field,
 apply monotonic status precedence, and suppress future email after a hard bounce
 or spam complaint.

@@ -43,7 +43,7 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
         return dispatchPendingNotificationDeliveries();
     }
     if (message.type === 'notification-maintenance') {
-        return runNotificationMaintenance({
+        const maintenance = await runNotificationMaintenance({
             referenceAt: new Date(message.referenceAt),
             since: new Date(message.since),
             analysisCursor: message.analysisCursor,
@@ -52,6 +52,9 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
             weeklyCursor: message.weeklyCursor,
             practiceDueCursor: message.practiceDueCursor,
         });
+        const notificationDispatch =
+            await dispatchPendingNotificationDeliveries();
+        return { maintenance, notificationDispatch };
     }
     if (message.type === 'practice-due-sweep') {
         return processPracticeDueSweepPage(message.sweepId);

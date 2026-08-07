@@ -382,6 +382,19 @@ enum NotificationDeliveryStatus {
   CANCELLED
 }
 
+enum EmailSendOwnerType {
+  NOTIFICATION_DELIVERY
+  PREMIUM_INVITATION
+}
+
+enum EmailSendReservationStatus {
+  RESERVED
+  HANDOFF
+  SENT
+  AMBIGUOUS
+  RELEASED
+}
+
 enum NotificationDigestFrequency {
   OFF
   DAILY
@@ -543,6 +556,7 @@ model NotificationDelivery {
   userId            String                     @db.Uuid
   channel           NotificationChannel
   status            NotificationDeliveryStatus @default(PENDING)
+  dispatchPriority  Int                        @default(1)
   recipient         String?
   scheduledFor      DateTime                   @default(now())
   lockedUntil       DateTime?
@@ -562,6 +576,43 @@ model NotificationDelivery {
   @@index([status, scheduledFor, id])
   @@index([userId, channel, createdAt])
   @@index([status, lockedUntil, id])
+  @@index([status, channel, dispatchPriority, scheduledFor, createdAt, id])
+}
+
+/// One atomic counter row per SMTP2GO UTC accounting day. Both notification
+/// delivery and Premium invitations reserve from this shared budget.
+model EmailProviderDay {
+  day                      DateTime @id @db.Date
+  reservedCount            Int      @default(0)
+  nonPriorityReservedCount Int      @default(0)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @default(now()) @updatedAt
+
+  reservations EmailSendReservation[]
+}
+
+/// Durable evidence around the irreversible provider handoff. The nullable
+/// Practice window key is unique, so two delivery workers cannot both own the
+/// same user's local calendar-day send window.
+model EmailSendReservation {
+  id                String                     @id @default(uuid()) @db.Uuid
+  providerDay       DateTime                   @db.Date
+  ownerType         EmailSendOwnerType
+  ownerId           String                     @db.Uuid
+  ownerToken        String                     @unique @db.Uuid
+  priority          Boolean                    @default(false)
+  practiceWindowKey String?                    @unique
+  status            EmailSendReservationStatus @default(RESERVED)
+  leaseUntil        DateTime
+  providerMessageId String?
+  lastError         String?                    @db.Text
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @default(now()) @updatedAt
+
+  budget EmailProviderDay @relation(fields: [providerDay], references: [day], onDelete: Restrict)
+
+  @@index([ownerType, ownerId, createdAt])
+  @@index([status, leaseUntil, id])
 }
 
 model PushSubscription {

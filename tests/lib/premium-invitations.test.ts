@@ -21,6 +21,11 @@ async function importInvitations() {
         sendSmtp2GoEmail: sendEmailMock,
         Smtp2GoAmbiguousSendError: AmbiguousSendError,
     }));
+    vi.doMock('@/lib/notifications/emailReservations', () => ({
+        sendReservedSmtp2GoEmail: vi.fn(
+            async (args: { email: unknown }) => sendEmailMock(args.email)
+        ),
+    }));
     vi.doMock('@/lib/services/autoAnalysisBacklog', () => ({
         scheduleAutoAnalysisWakeup: scheduleWakeupMock,
     }));

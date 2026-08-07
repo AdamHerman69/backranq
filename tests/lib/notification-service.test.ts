@@ -136,6 +136,27 @@ describe('recordNotification', () => {
                     scheduledFor: new Date(
                         '2026-08-04T09:00:00.000Z'
                     ),
+                    dispatchPriority: 1,
+                }),
+            })
+        );
+    });
+
+    it('persists billing email priority before dispatch', async () => {
+        await recordNotification({
+            userId: 'user-1',
+            type: 'BILLING_ACTION_REQUIRED',
+            title: 'Payment action required',
+            body: 'Update your payment method',
+            dedupeKey: 'billing:user-1',
+            email: true,
+        });
+
+        expect(txMock.notificationDelivery.upsert).toHaveBeenCalledWith(
+            expect.objectContaining({
+                create: expect.objectContaining({
+                    channel: 'EMAIL',
+                    dispatchPriority: 0,
                 }),
             })
         );

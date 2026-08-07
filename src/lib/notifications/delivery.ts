@@ -1,41 +1,34 @@
 import webpush from 'web-push';
 import { render } from 'react-email';
-import { Prisma, type NotificationType } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import NotificationEmail from '@/emails/NotificationEmail';
 import { notificationCopy } from './contracts';
 import { createUnsubscribeToken } from './tokens';
 import {
-    sendSmtp2GoEmail,
     Smtp2GoAmbiguousSendError,
     Smtp2GoQuotaError,
 } from './smtp2go';
+import {
+    EmailBudgetUnavailableError,
+    PracticeEmailWindowClaimedError,
+    sendReservedSmtp2GoEmail,
+} from './emailReservations';
 import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
 import { getPracticeDueSummary } from '@/lib/training/practiceDue';
+import {
+    OPTIONAL_EMAIL_TYPES,
+    PRIORITY_EMAIL_TYPES,
+} from './emailPolicy';
 
 // Provider requests time out after 15 seconds. Fifteen minutes leaves ample
 // headroom for rendering, preferences/quota checks and bounded device sends,
 // so recovery cannot normally reclaim an active provider handoff.
 const DELIVERY_LEASE_MS = 15 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
-const DEFAULT_SMTP2GO_DAILY_SEND_LIMIT = 30;
 const DEFAULT_SMTP2GO_EMAILS_PER_DISPATCH = 20;
-const DEFAULT_SMTP2GO_TRANSACTIONAL_RESERVE = 5;
 const MAX_NOTIFICATION_SWEEP_DELAY_SECONDS = 6 * 24 * 60 * 60;
 const NOTIFICATION_SWEEP_RETENTION_SECONDS = 7 * 24 * 60 * 60;
-const PRIORITY_EMAIL_TYPES = new Set<NotificationType>([
-    'LOW_CREDITS',
-    'BILLING_ACTION_REQUIRED',
-]);
-const OPTIONAL_EMAIL_TYPES = new Set([
-    'PRACTICE_READY',
-    'PRACTICE_DUE',
-    'ANALYSIS_FAILED',
-    'SYNC_FAILED',
-    'NEW_GAMES_SYNCED',
-    'WEEKLY_PROGRESS',
-    'PRODUCT_NEWS',
-]);
 
 type HydratedDelivery = Prisma.NotificationDeliveryGetPayload<{
     include: {
@@ -50,7 +43,6 @@ type QueuedDelivery = {
     attempts: number;
     scheduledFor: Date;
     dispatchToken: string;
-    notificationType: NotificationType;
 };
 
 class DeliveryCancelledError extends Error {
@@ -109,62 +101,20 @@ export async function dispatchPendingNotificationDeliveries(limit = 50) {
         now,
         take
     );
-    const channels = [
-        ...(emailConfigured() ? (['EMAIL'] as const) : []),
-        ...(pushConfigured() ? (['WEB_PUSH'] as const) : []),
-    ];
-    const deliveries = await claimPendingNotificationDeliveries({
-        now,
-        take,
-        channels,
-    });
     const maxEmailsThisDispatch = positiveIntegerEnv(
         'SMTP2GO_EMAILS_PER_DISPATCH',
         DEFAULT_SMTP2GO_EMAILS_PER_DISPATCH
     );
-    const sentToday = await emailsSentToday();
-    const dailyEmailRemaining = Math.max(0, smtp2GoDailySendLimit() - sentToday);
-    const optionalEmailRemaining = Math.max(
-        0,
-        smtp2GoDailySendLimit() - smtp2GoTransactionalReserve() - sentToday
-    );
-    let emailBudget = Math.min(maxEmailsThisDispatch, dailyEmailRemaining);
-    let optionalEmailBudget = Math.min(
-        maxEmailsThisDispatch,
-        optionalEmailRemaining
-    );
-    const publishable: QueuedDelivery[] = [];
-    for (const delivery of deliveries) {
-        const priorityEmail =
-            delivery.channel === 'EMAIL' &&
-            PRIORITY_EMAIL_TYPES.has(delivery.notificationType);
-        if (
-            delivery.channel === 'EMAIL' &&
-            (emailBudget <= 0 || (!priorityEmail && optionalEmailBudget <= 0))
-        ) {
-            await prisma.notificationDelivery.updateMany({
-                where: {
-                    id: delivery.id,
-                    status: 'QUEUED',
-                    dispatchToken: delivery.dispatchToken,
-                },
-                data: {
-                    status: 'PENDING',
-                    dispatchToken: null,
-                    lockedUntil: null,
-                    scheduledFor: nextUtcQuotaWindow(),
-                },
-            });
-            continue;
-        }
-        if (delivery.channel === 'EMAIL') {
-            emailBudget -= 1;
-            if (!priorityEmail) optionalEmailBudget -= 1;
-        }
-        publishable.push(delivery);
-    }
+    const deliveries = await claimPendingNotificationDeliveries({
+        now,
+        take,
+        emailTake: emailConfigured()
+            ? Math.min(take, maxEmailsThisDispatch)
+            : 0,
+        pushTake: pushConfigured() ? take : 0,
+    });
     const results = await Promise.all(
-        publishable.map(publishClaimedNotificationDelivery)
+        deliveries.map(publishClaimedNotificationDelivery)
     );
     await scheduleNextNotificationSweep(now);
     if (recovered.length === take) {
@@ -225,45 +175,83 @@ async function recoverExpiredNotificationDeliveryLeases(
 async function claimPendingNotificationDeliveries(args: {
     now: Date;
     take: number;
-    channels: Array<'EMAIL' | 'WEB_PUSH'>;
+    emailTake: number;
+    pushTake: number;
 }) {
-    if (args.channels.length === 0) return [];
-    const channelSql = Prisma.join(
-        args.channels.map(
-            (channel) =>
-                Prisma.sql`${channel}::"NotificationChannel"`
-        )
-    );
+    if (args.emailTake === 0 && args.pushTake === 0) return [];
     const leaseUntil = new Date(args.now.getTime() + DELIVERY_LEASE_MS);
     return prisma.$queryRaw<QueuedDelivery[]>(Prisma.sql`
-        WITH candidates AS MATERIALIZED (
+        WITH priority_email AS MATERIALIZED (
             SELECT
                 delivery."id",
-                notification."type" AS "notificationType"
+                delivery."dispatchPriority",
+                delivery."scheduledFor",
+                delivery."createdAt"
             FROM "NotificationDelivery" delivery
-            INNER JOIN "Notification" notification
-                ON notification."id" = delivery."notificationId"
             WHERE delivery."status" = 'PENDING'::"NotificationDeliveryStatus"
+              AND delivery."channel" = 'EMAIL'::"NotificationChannel"
+              AND delivery."dispatchPriority" = 0
               AND delivery."scheduledFor" <= ${args.now}
-              AND delivery."channel" IN (${channelSql})
-              AND (
-                  delivery."lockedUntil" IS NULL OR
-                  delivery."lockedUntil" < ${args.now}
-              )
             ORDER BY
-                CASE
-                    WHEN delivery."channel" = 'EMAIL'::"NotificationChannel"
-                     AND notification."type" IN (
-                        'LOW_CREDITS'::"NotificationType",
-                        'BILLING_ACTION_REQUIRED'::"NotificationType"
-                     )
-                    THEN 0 ELSE 1
-                END ASC,
                 delivery."scheduledFor" ASC,
                 delivery."createdAt" ASC,
                 delivery."id" ASC
-            LIMIT ${args.take}
+            LIMIT ${args.emailTake}
             FOR UPDATE OF delivery SKIP LOCKED
+        ), optional_email AS MATERIALIZED (
+            SELECT
+                delivery."id",
+                delivery."dispatchPriority",
+                delivery."scheduledFor",
+                delivery."createdAt"
+            FROM "NotificationDelivery" delivery
+            WHERE delivery."status" = 'PENDING'::"NotificationDeliveryStatus"
+              AND delivery."channel" = 'EMAIL'::"NotificationChannel"
+              AND delivery."dispatchPriority" = 1
+              AND delivery."scheduledFor" <= ${args.now}
+            ORDER BY
+                delivery."scheduledFor" ASC,
+                delivery."createdAt" ASC,
+                delivery."id" ASC
+            LIMIT ${args.emailTake}
+            FOR UPDATE OF delivery SKIP LOCKED
+        ), email_candidates AS MATERIALIZED (
+            SELECT * FROM priority_email
+            UNION ALL
+            SELECT * FROM optional_email
+            ORDER BY
+                "dispatchPriority" ASC,
+                "scheduledFor" ASC,
+                "createdAt" ASC,
+                "id" ASC
+            LIMIT ${args.emailTake}
+        ), push_candidates AS MATERIALIZED (
+            SELECT
+                delivery."id",
+                delivery."dispatchPriority",
+                delivery."scheduledFor",
+                delivery."createdAt"
+            FROM "NotificationDelivery" delivery
+            WHERE delivery."status" = 'PENDING'::"NotificationDeliveryStatus"
+              AND delivery."channel" = 'WEB_PUSH'::"NotificationChannel"
+              AND delivery."dispatchPriority" = 1
+              AND delivery."scheduledFor" <= ${args.now}
+            ORDER BY
+                delivery."scheduledFor" ASC,
+                delivery."createdAt" ASC,
+                delivery."id" ASC
+            LIMIT ${args.pushTake}
+            FOR UPDATE OF delivery SKIP LOCKED
+        ), candidates AS MATERIALIZED (
+            SELECT * FROM email_candidates
+            UNION ALL
+            SELECT * FROM push_candidates
+            ORDER BY
+                "dispatchPriority" ASC,
+                "scheduledFor" ASC,
+                "createdAt" ASC,
+                "id" ASC
+            LIMIT ${args.take}
         )
         UPDATE "NotificationDelivery" delivery
         SET
@@ -280,8 +268,7 @@ async function claimPendingNotificationDeliveries(args: {
             delivery."channel",
             delivery."attempts",
             delivery."scheduledFor",
-            delivery."dispatchToken",
-            candidates."notificationType"
+            delivery."dispatchToken"
     `);
 }
 
@@ -538,6 +525,9 @@ async function deliverEmail(delivery: HydratedDelivery) {
     const recipient = delivery.recipient ?? delivery.user.email;
     const from = process.env.BACKRANQ_EMAIL_FROM;
     if (!recipient || !from) throw new Error('Email recipient or sender is missing');
+    if (!delivery.dispatchToken) {
+        throw new Error('Email delivery is missing its dispatch token');
+    }
     const base = appUrl();
     const optional = OPTIONAL_EMAIL_TYPES.has(delivery.notification.type);
     const unsubscribeUrl = optional
@@ -565,7 +555,7 @@ async function deliverEmail(delivery: HydratedDelivery) {
         )
             ? 'Start practicing'
             : 'Open Backranq';
-    await ensureEmailCanBeSent(delivery);
+    const practiceWindowKey = await ensureEmailCanBeSent(delivery);
     await ensurePracticeDueStillCurrent(delivery);
     const renderContent = async () => {
         const copy = notificationCopy(delivery.notification);
@@ -599,8 +589,8 @@ async function deliverEmail(delivery: HydratedDelivery) {
     let content = await renderContent();
     const renderedCount = delivery.notification.itemCount;
     const renderedMetadata = JSON.stringify(delivery.notification.metadata);
-    // Best-effort final freshness check after preferences/calendar/quota and as
-    // close as possible to the irreversible provider handoff.
+    // Best-effort final freshness check after preferences/calendar checks and
+    // as close as possible to the durable provider reservation and handoff.
     await ensurePracticeDueStillCurrent(delivery);
     if (
         delivery.notification.itemCount !== renderedCount ||
@@ -608,17 +598,34 @@ async function deliverEmail(delivery: HydratedDelivery) {
     ) {
         content = await renderContent();
     }
-    return sendSmtp2GoEmail({
-        from,
-        to: recipient,
-        subject: content.copy.title,
-        html: content.html,
-        text: content.text,
-        headers: {
-            ...headers,
-            'X-Backranq-Delivery-Id': delivery.id,
-        },
-    });
+    try {
+        return await sendReservedSmtp2GoEmail({
+            ownerType: 'NOTIFICATION_DELIVERY',
+            ownerId: delivery.id,
+            ownerToken: delivery.dispatchToken,
+            priority: PRIORITY_EMAIL_TYPES.has(delivery.notification.type),
+            practiceWindowKey,
+            email: {
+                from,
+                to: recipient,
+                subject: content.copy.title,
+                html: content.html,
+                text: content.text,
+                headers: {
+                    ...headers,
+                    'X-Backranq-Delivery-Id': delivery.id,
+                },
+            },
+        });
+    } catch (error) {
+        if (error instanceof EmailBudgetUnavailableError) {
+            throw new DeliveryRescheduledError(error.message, error.retryAt);
+        }
+        if (error instanceof PracticeEmailWindowClaimedError) {
+            throw new DeliveryCancelledError(error.message);
+        }
+        throw error;
+    }
 }
 
 async function ensureEmailCanBeSent(delivery: HydratedDelivery) {
@@ -671,18 +678,19 @@ async function ensureEmailCanBeSent(delivery: HydratedDelivery) {
         throw new DeliveryCancelledError('Email preference was disabled before send');
     }
 
+    let practiceWindowKey: string | undefined;
     if (
         ['PRACTICE_READY', 'PRACTICE_DUE'].includes(
             delivery.notification.type
         )
     ) {
-        await guardPracticeEmailCalendarDay(
+        practiceWindowKey = await guardPracticeEmailCalendarDay(
             delivery,
             preference.timezone,
             preference.digestHour
         );
     }
-    await guardSmtp2GoDailyQuota(delivery);
+    return practiceWindowKey;
 }
 
 async function guardPracticeEmailCalendarDay(
@@ -702,130 +710,12 @@ async function guardPracticeEmailCalendarDay(
             digestAt
         );
     }
-    const sentToday = await prisma.notificationDelivery.findFirst({
-        where: {
-            id: { not: delivery.id },
-            userId: delivery.userId,
-            channel: 'EMAIL',
-            OR: [
-                { sentAt: { gte: start, lt: end } },
-                {
-                    status: 'FAILED',
-                    updatedAt: { gte: start, lt: end },
-                    lastError: { contains: 'delivery state is unknown' },
-                },
-            ],
-            notification: {
-                type: { in: ['PRACTICE_READY', 'PRACTICE_DUE'] },
-            },
-        },
-        select: { id: true },
-    });
-    if (sentToday) {
-        throw new DeliveryCancelledError(
-            'A practice email was already sent in this local calendar day'
-        );
-    }
-
-    const firstActive = await prisma.notificationDelivery.findFirst({
-        where: {
-            userId: delivery.userId,
-            channel: 'EMAIL',
-            status: 'PROCESSING',
-            notification: {
-                type: { in: ['PRACTICE_READY', 'PRACTICE_DUE'] },
-            },
-            OR: [{ id: delivery.id }, { lockedUntil: { gt: now } }],
-        },
-        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-        select: { id: true },
-    });
-    if (firstActive && firstActive.id !== delivery.id) {
-        throw new DeliveryCancelledError(
-            'A concurrent practice email already owns this send window'
-        );
-    }
-}
-
-async function guardSmtp2GoDailyQuota(delivery: HydratedDelivery) {
-    const start = utcDayStart(new Date());
-    const end = new Date(start.getTime() + 24 * 60 * 60_000);
-    const reserved = await prisma.notificationDelivery.count({
-        where: {
-            channel: 'EMAIL',
-            OR: [
-                { sentAt: { gte: start, lt: end } },
-                {
-                    status: 'PROCESSING',
-                    updatedAt: { gte: start, lt: end },
-                },
-                {
-                    status: 'FAILED',
-                    updatedAt: { gte: start, lt: end },
-                    lastError: { contains: 'delivery state is unknown' },
-                },
-            ],
-        },
-    });
-    // The current PROCESSING delivery is part of the reservation count.
-    const priority = PRIORITY_EMAIL_TYPES.has(delivery.notification.type);
-    const allowed = priority
-        ? smtp2GoDailySendLimit()
-        : Math.max(0, smtp2GoDailySendLimit() - smtp2GoTransactionalReserve());
-    if (reserved > allowed) {
-        throw new DeliveryRescheduledError(
-            `SMTP2GO daily safety limit reached before delivery ${delivery.id}`,
-            nextUtcQuotaWindow()
-        );
-    }
-}
-
-async function emailsSentToday() {
-    const start = utcDayStart(new Date());
-    return prisma.notificationDelivery.count({
-        where: {
-            channel: 'EMAIL',
-            OR: [
-                { sentAt: { gte: start } },
-                {
-                    status: 'FAILED',
-                    updatedAt: { gte: start },
-                    lastError: { contains: 'delivery state is unknown' },
-                },
-            ],
-        },
-    });
-}
-
-function smtp2GoDailySendLimit() {
-    return positiveIntegerEnv(
-        'SMTP2GO_DAILY_SEND_LIMIT',
-        DEFAULT_SMTP2GO_DAILY_SEND_LIMIT
-    );
-}
-
-function smtp2GoTransactionalReserve() {
-    return Math.min(
-        smtp2GoDailySendLimit(),
-        positiveIntegerEnv(
-            'SMTP2GO_TRANSACTIONAL_RESERVE',
-            DEFAULT_SMTP2GO_TRANSACTIONAL_RESERVE
-        )
-    );
+    return `practice-email:${delivery.userId}:${start.toISOString()}:${end.toISOString()}`;
 }
 
 function positiveIntegerEnv(name: string, fallback: number) {
     const parsed = Number(process.env[name]);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function utcDayStart(now: Date) {
-    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-}
-
-function nextUtcQuotaWindow() {
-    const start = utcDayStart(new Date());
-    return new Date(start.getTime() + 24 * 60 * 60_000 + 5 * 60_000);
 }
 
 function localCalendarDayWindow(now: Date, timezone: string, digestHour: number) {

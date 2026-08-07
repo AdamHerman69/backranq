@@ -11,6 +11,7 @@ import {
     nextDigestAt,
     practiceReadyDeliveryWindow,
 } from './scheduling';
+import { emailDispatchPriority } from './emailPolicy';
 
 export type NotificationDbClient = Pick<
     Prisma.TransactionClient,
@@ -152,6 +153,10 @@ export async function recordNotification(
                 notificationId: notification.id,
                 userId: args.userId,
                 channel,
+                dispatchPriority:
+                    channel === 'EMAIL'
+                        ? emailDispatchPriority(args.type)
+                        : 1,
                 recipient: channel === 'EMAIL' ? user.email : null,
                 scheduledFor:
                     channel === 'EMAIL' && args.emailScheduledFor

@@ -2,8 +2,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
 
 const sendSmtp2GoEmailMock = vi.fn();
+const sendReservedSmtp2GoEmailMock = vi.fn();
 const publishBackranqQueueMessageMock = vi.fn();
 const getPracticeDueSummaryMock = vi.fn();
+
+class EmailBudgetUnavailableErrorMock extends Error {
+    readonly retryAt: Date;
+
+    constructor(retryAt: Date) {
+        super('SMTP2GO daily safety budget is exhausted');
+        this.retryAt = retryAt;
+    }
+}
+
+class PracticeEmailWindowClaimedErrorMock extends Error {}
 
 async function importDelivery() {
     vi.resetModules();
@@ -21,6 +33,11 @@ async function importDelivery() {
     }));
     vi.doMock('@/lib/training/practiceDue', () => ({
         getPracticeDueSummary: getPracticeDueSummaryMock,
+    }));
+    vi.doMock('@/lib/notifications/emailReservations', () => ({
+        EmailBudgetUnavailableError: EmailBudgetUnavailableErrorMock,
+        PracticeEmailWindowClaimedError: PracticeEmailWindowClaimedErrorMock,
+        sendReservedSmtp2GoEmail: sendReservedSmtp2GoEmailMock,
     }));
     vi.doMock('@/lib/notifications/smtp2go', async (importOriginal) => {
         const actual = await importOriginal<
@@ -96,15 +113,17 @@ describe('notification email delivery safety', () => {
         );
         sendSmtp2GoEmailMock.mockReset();
         sendSmtp2GoEmailMock.mockResolvedValue('smtp2go-email-id');
+        sendReservedSmtp2GoEmailMock.mockReset();
+        sendReservedSmtp2GoEmailMock.mockImplementation(
+            async (args: { email: unknown }) =>
+                sendSmtp2GoEmailMock(args.email)
+        );
         prismaMock.notificationDelivery.updateMany.mockResolvedValue({ count: 1 });
         prismaMock.notificationDelivery.findUniqueOrThrow.mockResolvedValue(
             practiceDelivery()
         );
         prismaMock.notificationPreference.findUnique.mockResolvedValue(preference);
-        prismaMock.notificationDelivery.findFirst
-            .mockResolvedValueOnce(null)
-            .mockResolvedValueOnce({ id: 'delivery-1' });
-        prismaMock.notificationDelivery.count.mockResolvedValue(1);
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue(null);
         publishBackranqQueueMessageMock.mockResolvedValue({
             queued: true,
             messageId: 'message-1',
@@ -135,29 +154,21 @@ describe('notification email delivery safety', () => {
         });
     });
 
-    it('cancels a second practice-ready email in the same local calendar day', async () => {
-        prismaMock.notificationDelivery.findFirst.mockReset();
-        prismaMock.notificationDelivery.findFirst.mockResolvedValueOnce({
-            id: 'already-sent',
-        });
+    it('cancels a second practice email when the durable local-day window is already claimed', async () => {
+        sendReservedSmtp2GoEmailMock.mockRejectedValue(
+            new PracticeEmailWindowClaimedErrorMock()
+        );
         const { processNotificationDelivery } = await importDelivery();
 
         await expect(processNotificationDelivery('delivery-1', 'dispatch-1')).resolves.toEqual({
             status: 'CANCELLED',
         });
         expect(sendSmtp2GoEmailMock).not.toHaveBeenCalled();
-        expect(prismaMock.notificationDelivery.findFirst).toHaveBeenCalledWith(
+        expect(sendReservedSmtp2GoEmailMock).toHaveBeenCalledWith(
             expect.objectContaining({
-                where: expect.objectContaining({
-                    OR: expect.arrayContaining([
-                        expect.objectContaining({
-                            status: 'FAILED',
-                            lastError: {
-                                contains: 'delivery state is unknown',
-                            },
-                        }),
-                    ]),
-                }),
+                practiceWindowKey: expect.stringContaining(
+                    'practice-email:user-1:'
+                ),
             })
         );
     });
@@ -336,25 +347,13 @@ describe('notification email delivery safety', () => {
             },
             data: expect.objectContaining({ status: 'FAILED' }),
         });
-        expect(prismaMock.notificationDelivery.count).toHaveBeenCalledWith(
-            expect.objectContaining({
-                where: expect.objectContaining({
-                    OR: expect.arrayContaining([
-                        expect.objectContaining({
-                            status: 'FAILED',
-                            lastError: {
-                                contains: 'delivery state is unknown',
-                            },
-                        }),
-                    ]),
-                }),
-            })
+        expect(sendReservedSmtp2GoEmailMock).toHaveBeenCalledWith(
+            expect.objectContaining({ priority: true })
         );
     });
 
-    it('dispatches billing email before optional email and preserves its reserve', async () => {
+    it('publishes the bounded priority-first set returned by the atomic claim', async () => {
         prismaMock.notificationDelivery.updateMany.mockResolvedValue({ count: 0 });
-        prismaMock.notificationDelivery.count.mockResolvedValue(25);
         prismaMock.$queryRaw.mockResolvedValue([
                 {
                     id: 'billing-delivery',
@@ -362,7 +361,6 @@ describe('notification email delivery safety', () => {
                     attempts: 0,
                     scheduledFor: new Date('2026-08-04T08:00:00.000Z'),
                     dispatchToken: 'billing-token',
-                    notificationType: 'BILLING_ACTION_REQUIRED',
                 },
                 {
                     id: 'practice-delivery',
@@ -370,23 +368,24 @@ describe('notification email delivery safety', () => {
                     attempts: 0,
                     scheduledFor: new Date('2026-08-04T07:00:00.000Z'),
                     dispatchToken: 'practice-token',
-                    notificationType: 'PRACTICE_READY',
                 },
             ]);
         const { dispatchPendingNotificationDeliveries } = await importDelivery();
 
         const result = await dispatchPendingNotificationDeliveries(10);
 
-        expect(result).toEqual([{ deliveryId: 'billing-delivery', queued: true }]);
+        expect(result).toEqual([
+            { deliveryId: 'billing-delivery', queued: true },
+            { deliveryId: 'practice-delivery', queued: true },
+        ]);
         expect(publishBackranqQueueMessageMock).toHaveBeenCalledWith(
             expect.objectContaining({ deliveryId: 'billing-delivery' }),
             expect.any(Object)
         );
     });
 
-    it('claims at most 100 due deliveries with a skip-locked token lease', async () => {
+    it('claims from fixed index-backed streams before a bounded merge', async () => {
         prismaMock.notificationDelivery.updateMany.mockResolvedValue({ count: 0 });
-        prismaMock.notificationDelivery.count.mockResolvedValue(0);
         prismaMock.$queryRaw.mockResolvedValue([]);
         prismaMock.notificationDelivery.findFirst.mockReset();
         prismaMock.notificationDelivery.findFirst.mockResolvedValue(null);
@@ -405,7 +404,7 @@ describe('notification email delivery safety', () => {
             query.strings.join('').includes('WITH expired AS MATERIALIZED')
         )!;
         const claim = queries.find((query) =>
-            query.strings.join('').includes('WITH candidates AS MATERIALIZED')
+            query.strings.join('').includes('WITH priority_email AS MATERIALIZED')
         )!;
         expect(recovery.strings.join('')).toContain(
             'FOR UPDATE SKIP LOCKED'
@@ -417,8 +416,13 @@ describe('notification email delivery safety', () => {
         };
         const text = claimQuery.strings.join('');
         expect(text).toContain('FOR UPDATE OF delivery SKIP LOCKED');
+        expect(text).toContain('optional_email AS MATERIALIZED');
+        expect(text).toContain('push_candidates AS MATERIALIZED');
+        expect(text).not.toContain('INNER JOIN "Notification"');
+        expect(text).not.toContain('CASE');
         expect(text).toContain('"status" = \'QUEUED\'');
         expect(claimQuery.values).toContain(100);
+        expect(claimQuery.values).toContain(20);
     });
 
     it('releases only its own queued token when publication fails', async () => {
@@ -431,8 +435,7 @@ describe('notification email delivery safety', () => {
                 attempts: 0,
                 scheduledFor: new Date('2026-08-04T09:00:00.000Z'),
                 dispatchToken: 'publish-token',
-                notificationType: 'PRACTICE_READY',
-            },
+                },
         ]);
         publishBackranqQueueMessageMock.mockRejectedValueOnce(
             new Error('queue unavailable')
@@ -611,12 +614,9 @@ describe('notification email delivery safety', () => {
 
     it('schedules a new sweep after a retryable provider failure', async () => {
         prismaMock.notificationDelivery.findFirst.mockReset();
-        prismaMock.notificationDelivery.findFirst
-            .mockResolvedValueOnce(null)
-            .mockResolvedValueOnce({ id: 'delivery-1' })
-            .mockResolvedValueOnce({
-                scheduledFor: new Date('2026-08-04T10:02:00.000Z'),
-            });
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
+            scheduledFor: new Date('2026-08-04T10:02:00.000Z'),
+        });
         sendSmtp2GoEmailMock.mockRejectedValue(new Error('Temporary failure'));
         const { processNotificationDelivery } = await importDelivery();
 
@@ -627,5 +627,29 @@ describe('notification email delivery safety', () => {
             expect.objectContaining({ type: 'notification-sweep' }),
             expect.objectContaining({ delaySeconds: 120 })
         );
+    });
+
+    it('reschedules without provider work when the shared SMTP budget is exhausted', async () => {
+        const retryAt = new Date('2026-08-05T00:05:00.000Z');
+        sendReservedSmtp2GoEmailMock.mockRejectedValue(
+            new EmailBudgetUnavailableErrorMock(retryAt)
+        );
+        const { processNotificationDelivery } = await importDelivery();
+
+        await expect(
+            processNotificationDelivery('delivery-1', 'dispatch-1')
+        ).resolves.toEqual({ status: 'RESCHEDULED' });
+        expect(sendSmtp2GoEmailMock).not.toHaveBeenCalled();
+        expect(prismaMock.notificationDelivery.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'delivery-1',
+                status: 'PROCESSING',
+                dispatchToken: 'dispatch-1',
+            },
+            data: expect.objectContaining({
+                status: 'PENDING',
+                scheduledFor: retryAt,
+            }),
+        });
     });
 });

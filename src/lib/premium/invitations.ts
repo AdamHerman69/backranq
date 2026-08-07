@@ -5,10 +5,8 @@ import { Prisma } from '@prisma/client';
 import PremiumInvitationEmail from '@/emails/PremiumInvitationEmail';
 import { prisma } from '@/lib/prisma';
 import { appUrl } from '@/lib/stripe';
-import {
-    sendSmtp2GoEmail,
-    Smtp2GoAmbiguousSendError,
-} from '@/lib/notifications/smtp2go';
+import { sendReservedSmtp2GoEmail } from '@/lib/notifications/emailReservations';
+import { Smtp2GoAmbiguousSendError } from '@/lib/notifications/smtp2go';
 import { reconcileBillingAccountInTransaction } from '@/lib/services/billingAccounts';
 import { scheduleAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
 import type {
@@ -247,8 +245,10 @@ export async function deliverPremiumInvitationGeneration(args: {
     try {
         const providerEmailId = await sendInvitationEmail({
             invitationId: invitation.id,
+            ownerToken: leaseToken,
             email: invitation.email,
             token,
+            now,
         });
         return completeDelivery({
             ...args,
@@ -336,8 +336,10 @@ async function currentDeliveryResult(
 
 async function sendInvitationEmail(args: {
     invitationId: string;
+    ownerToken: string;
     email: string;
     token: string;
+    now: Date;
 }) {
     const from = process.env.BACKRANQ_EMAIL_FROM;
     if (!from) throw new Error('BACKRANQ_EMAIL_FROM is not configured');
@@ -352,14 +354,21 @@ async function sendInvitationEmail(args: {
         '',
         'This invitation expires in 14 days.',
     ].join('\n');
-    return sendSmtp2GoEmail({
-        from,
-        to: args.email,
-        subject: 'Your Backranq Pro invitation',
-        html,
-        text,
-        headers: {
-            'X-Backranq-Premium-Invitation-Id': args.invitationId,
+    return sendReservedSmtp2GoEmail({
+        ownerType: 'PREMIUM_INVITATION',
+        ownerId: args.invitationId,
+        ownerToken: args.ownerToken,
+        priority: false,
+        now: args.now,
+        email: {
+            from,
+            to: args.email,
+            subject: 'Your Backranq Pro invitation',
+            html,
+            text,
+            headers: {
+                'X-Backranq-Premium-Invitation-Id': args.invitationId,
+            },
         },
     });
 }

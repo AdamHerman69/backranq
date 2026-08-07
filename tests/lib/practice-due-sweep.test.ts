@@ -4,6 +4,7 @@ import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
 
 const publishMock = vi.fn();
 const recordPracticeDueMock = vi.fn();
+const dispatchNotificationsMock = vi.fn();
 
 function sqlText(query: unknown) {
     return ((query as { strings?: readonly string[] }).strings ?? []).join('');
@@ -18,6 +19,9 @@ async function importSweep() {
     vi.doMock('@/lib/notifications/service', () => ({
         recordPracticeDue: recordPracticeDueMock,
     }));
+    vi.doMock('@/lib/notifications/delivery', () => ({
+        dispatchPendingNotificationDeliveries: dispatchNotificationsMock,
+    }));
     return import('@/lib/training/practiceDueSweep');
 }
 
@@ -27,6 +31,7 @@ describe('durable practice due sweep', () => {
         vi.unstubAllEnvs();
         publishMock.mockResolvedValue({ queued: true, messageId: 'queued-1' });
         recordPracticeDueMock.mockResolvedValue({ id: 'notification-1' });
+        dispatchNotificationsMock.mockResolvedValue([]);
         prismaMock.$transaction.mockImplementation(
             async (...args: unknown[]) =>
                 (args[0] as (tx: typeof prismaMock) => unknown)(prismaMock)
@@ -99,7 +104,7 @@ describe('durable practice due sweep', () => {
         );
     });
 
-    it('publishes a continuation after exactly 50 users and finishes the next page', async () => {
+    it('publishes a continuation after 50 users and wakes delivery after every recorded page', async () => {
         prismaMock.practiceDueSweep.findUniqueOrThrow.mockResolvedValue({
             status: 'NOTIFYING',
             referenceAt: new Date('2026-08-07T00:00:00.000Z'),
@@ -139,6 +144,17 @@ describe('durable practice due sweep', () => {
             where: { id: 'sweep-1', status: 'NOTIFYING' },
             data: { status: 'COMPLETE', completedAt: expect.any(Date) },
         });
+        expect(dispatchNotificationsMock).toHaveBeenCalledTimes(2);
+        expect(
+            dispatchNotificationsMock.mock.invocationCallOrder[0]
+        ).toBeGreaterThan(
+            recordPracticeDueMock.mock.invocationCallOrder[49]!
+        );
+        expect(
+            dispatchNotificationsMock.mock.invocationCallOrder[1]
+        ).toBeGreaterThan(
+            recordPracticeDueMock.mock.invocationCallOrder[50]!
+        );
     });
 
     it('deletes only one indexed page of old completed sweeps', async () => {
