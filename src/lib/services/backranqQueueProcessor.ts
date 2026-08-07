@@ -43,6 +43,7 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
             syncCursor: message.syncCursor,
             userCursor: message.userCursor,
             weeklyCursor: message.weeklyCursor,
+            practiceDueCursor: message.practiceDueCursor,
         });
     }
     if (message.type === 'sync-all') {

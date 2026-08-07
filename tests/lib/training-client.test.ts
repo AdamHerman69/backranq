@@ -37,7 +37,7 @@ describe('training client transport', () => {
                 sourceKinds: ['MY_MISTAKE'],
                 lessonKinds: ['IMPROVE_POSITION'],
                 themes: ['quiet-move', 'development'],
-                includeAttempted: true,
+                mode: 'REVIEW',
             },
         });
 
@@ -55,6 +55,6 @@ describe('training client transport', () => {
             'quiet-move',
             'development',
         ]);
-        expect(requested.searchParams.get('includeAttempted')).toBe('true');
+        expect(requested.searchParams.get('mode')).toBe('review');
     });
 });

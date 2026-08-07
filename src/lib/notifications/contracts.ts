@@ -47,6 +47,11 @@ export function notificationCopy(notification: Pick<
                 title: 'Your new practice is ready',
                 body: `${notification.itemCount} practice position${notification.itemCount === 1 ? '' : 's'} from ${notification.secondaryCount} analyzed game${notification.secondaryCount === 1 ? '' : 's'} ${notification.itemCount === 1 ? 'is' : 'are'} ready.`,
             };
+        case 'PRACTICE_DUE':
+            return {
+                title: 'Your practice review is due',
+                body: `${notification.itemCount} practice position${notification.itemCount === 1 ? ' is' : 's are'} ready for review.`,
+            };
         case 'NEW_GAMES_SYNCED':
             return {
                 title: 'New games synced',

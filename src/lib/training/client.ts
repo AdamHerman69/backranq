@@ -84,11 +84,8 @@ export async function fetchPracticeFeed(
     if (typeof request.filters?.minConfidence === 'number') {
         params.set('minConfidence', String(request.filters.minConfidence));
     }
-    if (typeof request.filters?.includeAttempted === 'boolean') {
-        params.set(
-            'includeAttempted',
-            String(request.filters.includeAttempted)
-        );
+    if (request.filters?.mode) {
+        params.set('mode', request.filters.mode.toLowerCase());
     }
 
     const query = params.toString();

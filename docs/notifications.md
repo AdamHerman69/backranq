@@ -10,6 +10,10 @@ transaction as the product event whenever the event already has a transaction
 
 - New Practice positions after analysis, combined into at most one daily email
   at the user's chosen digest hour and timezone.
+- Scheduled Practice reviews derived from the current, verified solution
+  semantics. Outstanding reviews may create one reminder per local digest day;
+  retries replace the same daily snapshot instead of inflating its count, and a
+  delivery is cancelled if the user completes the queue before provider send.
 - New games imported by automatic sync, with off/daily/weekly email options.
 - Terminal analysis and sync failures.
 - Automatic analysis paused at the configured credit reserve and failed Stripe
@@ -20,9 +24,11 @@ transaction as the product event whenever the event already has a transaction
 
 Transactional, optional digest, and marketing preferences are separate.
 Product news records a consent timestamp. The unsubscribe endpoint disables all
-optional email categories, including practice-ready messages. Practice-ready
-email is also marked as low priority for clients that honor importance headers.
-It is not sent as Web Push, so it remains a quiet inbox and daily-email update.
+optional email categories, including practice-ready and practice-due messages.
+Both Practice email types share the user's `emailPracticeReady` preference and
+the same local-calendar daily-send guard. They are marked low priority for mail
+clients that honor importance headers. Due reminders may also use Web Push when
+the user has explicitly enabled push; creation notifications remain email-only.
 Analysis and sync failures stay in the in-app inbox by default; payment failures
 and automatic analysis stopping at the configured credit reserve remain enabled
 as important email alerts.
@@ -94,8 +100,9 @@ configuration is completed.
 ## Processing
 
 The daily `/api/cron/notifications` job is a reconciliation fallback that
-creates due weekly summaries and wakes pending deliveries within the Hobby cron
-limit. Normal future delivery times schedule a delayed Vercel Queue sweep, so
+creates Practice-due reminders and due weekly summaries, then wakes pending
+deliveries within the Hobby cron limit. Normal future delivery times schedule a
+delayed Vercel Queue sweep, so
 timezone-based digest hours do not wait for the next daily cron. Vercel Queue
 processes each delivery independently. The
 database claim lease prevents normal concurrent retries. SMTP2GO does not offer

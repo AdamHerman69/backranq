@@ -69,6 +69,7 @@ export function HomeDashboard() {
         ownerId: string | null;
         status: 'idle' | 'loading' | 'ready' | 'error';
         trainingMomentCount: number;
+        duePracticeCount: number;
         gameCount: number;
         unanalyzedGameCount: number;
         syncStatus: SyncStatus | null;
@@ -77,6 +78,7 @@ export function HomeDashboard() {
         ownerId: null,
         status: 'idle',
         trainingMomentCount: 0,
+        duePracticeCount: 0,
         gameCount: 0,
         unanalyzedGameCount: 0,
         syncStatus: null,
@@ -98,9 +100,9 @@ export function HomeDashboard() {
             error: null,
         }));
         try {
-            const [trainingRes, gameRes, unanalyzedRes, syncStatus] =
+            const [practiceRes, gameRes, unanalyzedRes, syncStatus] =
                 await Promise.all([
-                    fetch('/api/training/feed?limit=1', {
+                    fetch('/api/training/due', {
                         cache: 'no-store',
                     }),
                     fetch('/api/games?limit=1', { cache: 'no-store' }),
@@ -111,16 +113,16 @@ export function HomeDashboard() {
                     // Its own compact status UI remains independently retryable.
                     getSyncStatus().catch(() => null),
                 ]);
-            if (!trainingRes.ok || !gameRes.ok || !unanalyzedRes.ok) {
+            if (!practiceRes.ok || !gameRes.ok || !unanalyzedRes.ok) {
                 throw new Error('Could not load your practice overview.');
             }
-            const [trainingJson, gameJson, unanalyzedJson] =
+            const [practiceJson, gameJson, unanalyzedJson] =
                 (await Promise.all([
-                    trainingRes.json(),
+                    practiceRes.json(),
                     gameRes.json(),
                     unanalyzedRes.json(),
                 ])) as [
-                    { items?: unknown[] },
+                    { totalEligibleCount?: number; dueCount?: number },
                     { total?: number },
                     { total?: number },
                 ];
@@ -128,9 +130,14 @@ export function HomeDashboard() {
             setDashboard({
                 ownerId,
                 status: 'ready',
-                trainingMomentCount: Array.isArray(trainingJson.items)
-                    ? trainingJson.items.length
-                    : 0,
+                trainingMomentCount:
+                    typeof practiceJson.totalEligibleCount === 'number'
+                        ? practiceJson.totalEligibleCount
+                        : 0,
+                duePracticeCount:
+                    typeof practiceJson.dueCount === 'number'
+                        ? practiceJson.dueCount
+                        : 0,
                 gameCount:
                     typeof gameJson.total === 'number' ? gameJson.total : 0,
                 unanalyzedGameCount:
@@ -161,6 +168,7 @@ export function HomeDashboard() {
             ownerId,
             status: 'idle',
             trainingMomentCount: 0,
+            duePracticeCount: 0,
             gameCount: 0,
             unanalyzedGameCount: 0,
             syncStatus: null,
@@ -225,6 +233,9 @@ export function HomeDashboard() {
         ? dashboard.trainingMomentCount
         : 0;
     const gameCount = dashboardMatchesOwner ? dashboard.gameCount : 0;
+    const duePracticeCount = dashboardMatchesOwner
+        ? dashboard.duePracticeCount
+        : 0;
     const unanalyzedGameCount = dashboardMatchesOwner
         ? dashboard.unanalyzedGameCount
         : 0;
@@ -308,6 +319,8 @@ export function HomeDashboard() {
                             ? 'Loading your practice overview…'
                             : dashboardStatus === 'error'
                               ? 'Your games and positions are still here, but their latest status could not be loaded.'
+                            : duePracticeCount > 0
+                              ? `${duePracticeCount} practice position${duePracticeCount === 1 ? ' is' : 's are'} due for review.`
                             : hasTrainingMoments
                             ? `Your next practice position is ready from ${gameCount} games.`
                             : dashboardSyncStatus === null
@@ -340,6 +353,7 @@ export function HomeDashboard() {
                 gameCount={gameCount}
                 unanalyzedGameCount={unanalyzedGameCount}
                 trainingMomentCount={trainingMomentCount}
+                duePracticeCount={duePracticeCount}
                 analysisBlockedReason={effectiveAnalysisBlockedReason}
                 error={dashboardMatchesOwner ? dashboard.error : null}
                 onRetry={() => void fetchDashboard()}
@@ -364,6 +378,7 @@ function HomeStateCard({
     gameCount,
     unanalyzedGameCount,
     trainingMomentCount,
+    duePracticeCount,
     analysisBlockedReason,
     error,
     onRetry,
@@ -372,6 +387,7 @@ function HomeStateCard({
     gameCount: number;
     unanalyzedGameCount: number;
     trainingMomentCount: number;
+    duePracticeCount: number;
     analysisBlockedReason: string | null;
     error: string | null;
     onRetry: () => void;
@@ -524,10 +540,26 @@ function HomeStateCard({
     return (
         <NextActionCard
             icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
-            title="Your positions are ready"
-            description="Open Practice and work through your personal positions for as long as you like."
-            actionLabel="Practice now"
-            href="/practice"
+            title={
+                duePracticeCount > 0
+                    ? `${duePracticeCount} review${duePracticeCount === 1 ? '' : 's'} due`
+                    : 'Your positions are ready'
+            }
+            description={
+                duePracticeCount > 0
+                    ? 'Open the Review queue to revisit the positions scheduled for today.'
+                    : 'Open Practice and work through your personal positions for as long as you like.'
+            }
+            actionLabel={
+                duePracticeCount > 0
+                    ? 'Review due positions'
+                    : 'Practice now'
+            }
+            href={
+                duePracticeCount > 0
+                    ? '/practice?mode=review'
+                    : '/practice'
+            }
         />
     );
 }

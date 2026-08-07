@@ -10,11 +10,12 @@ export async function GET(req: Request) {
     if (!secret || req.headers.get('authorization') !== `Bearer ${secret}`) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    const { weekly, reconciled, continuationQueued } =
+    const { practiceDue, weekly, reconciled, continuationQueued } =
         await runNotificationMaintenance();
     const deliveries = await dispatchPendingNotificationDeliveries(100);
     return NextResponse.json({
         ok: true,
+        practiceDue,
         weekly,
         reconciled,
         continuationQueued,

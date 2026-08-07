@@ -116,6 +116,27 @@ describe('canonical training routes', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         setMockUserId('user-1');
+        prismaMock.$queryRaw.mockImplementation(
+            async (query: unknown) => {
+                const text = (
+                    query as { strings?: readonly string[] }
+                ).strings?.join('');
+                if (
+                    text?.includes(
+                        'INNER JOIN "PracticeReviewState" state'
+                    )
+                ) {
+                    return [];
+                }
+                return [
+                    {
+                        id: momentId,
+                        currentSolutionRevisionId: revisionId,
+                        createdAt: feedRow.createdAt,
+                    },
+                ];
+            }
+        );
     });
 
     it('requires authentication on every pre-attempt and write endpoint', async () => {
@@ -219,13 +240,9 @@ describe('canonical training routes', () => {
                 sourceKinds: ['MISSED_OPPORTUNITY'],
             },
         });
-        expect(prismaMock.trainingMoment.findMany).toHaveBeenCalledWith(
+        expect(prismaMock.$queryRaw).toHaveBeenCalledWith(
             expect.objectContaining({
-                where: expect.objectContaining({
-                    sourceKinds: {
-                        hasSome: ['MISSED_OPPORTUNITY'],
-                    },
-                }),
+                values: expect.arrayContaining(['MISSED_OPPORTUNITY']),
             })
         );
     });
@@ -245,6 +262,38 @@ describe('canonical training routes', () => {
                 createdAt: new Date('2026-01-02T00:00:00.000Z'),
             },
         ]);
+        let newPage = 0;
+        prismaMock.$queryRaw.mockImplementation(
+            async (query: unknown) => {
+                const text = (
+                    query as { strings?: readonly string[] }
+                ).strings?.join('');
+                if (
+                    text?.includes(
+                        'INNER JOIN "PracticeReviewState" state'
+                    )
+                ) {
+                    return [];
+                }
+                newPage += 1;
+                return newPage === 1
+                    ? [
+                          {
+                              id: momentId,
+                              currentSolutionRevisionId: revisionId,
+                              createdAt: feedRow.createdAt,
+                          },
+                          {
+                              id: '44444444-4444-4444-8444-444444444444',
+                              currentSolutionRevisionId: revisionId,
+                              createdAt: new Date(
+                                  '2026-01-02T00:00:00.000Z'
+                              ),
+                          },
+                      ]
+                    : [];
+            }
+        );
         const route = await import('@/app/api/training/feed/route');
 
         const first = await route.GET(

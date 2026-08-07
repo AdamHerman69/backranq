@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/select';
 import type {
     PracticeFeedFocus,
+    PracticeFeedMode,
     PracticeFilters,
     TrainingPhase,
 } from '@/lib/training/api';
@@ -21,19 +22,19 @@ export type PracticeFocusControlState = {
     source: 'SAVED' | 'ALL' | 'MY_MISTAKES' | 'MISSED_CHANCES';
     impact: PracticeFeedFocus;
     phase: 'ALL' | TrainingPhase;
-    history: 'ALL' | 'FRESH';
+    mode: PracticeFeedMode;
 };
 
 export function filtersForPracticeFocus({
     source,
     impact,
     phase,
-    history,
+    mode,
 }: {
     source: PracticeFocusControlState['source'];
     impact: PracticeFeedFocus;
     phase: PracticeFocusControlState['phase'];
-    history: PracticeFocusControlState['history'];
+    mode: PracticeFocusControlState['mode'];
 }): PracticeFilters {
     return {
         focus: impact,
@@ -52,7 +53,7 @@ export function filtersForPracticeFocus({
                   }
                 : {}),
         ...(phase === 'ALL' ? {} : { phases: [phase] }),
-        ...(history === 'FRESH' ? { includeAttempted: false } : {}),
+        mode,
     };
 }
 
@@ -79,8 +80,7 @@ export function controlStateForPracticeFilters(
             filters.phases?.length === 1
                 ? filters.phases[0]
                 : 'ALL',
-        history:
-            filters.includeAttempted === false ? 'FRESH' : 'ALL',
+        mode: filters.mode ?? 'RECOMMENDED',
     };
 }
 
@@ -97,16 +97,8 @@ export function hasEffectivePracticeFocus(
             Boolean(filters.lessonKinds?.length) ||
             Boolean(filters.themes?.length) ||
             filters.minConfidence !== undefined ||
-            filters.includeAttempted === false
+            (filters.mode ?? 'RECOMMENDED') !== 'RECOMMENDED'
     );
-}
-
-export function filtersForReviewAgain(
-    filters: PracticeFilters
-): PracticeFilters {
-    const reviewFilters = { ...filters };
-    delete reviewFilters.includeAttempted;
-    return reviewFilters;
 }
 
 export function TrainingFocusControls({
@@ -128,7 +120,7 @@ export function TrainingFocusControls({
                 source: controls.source,
                 impact: controls.impact,
                 phase: controls.phase,
-                history: controls.history,
+                mode: controls.mode,
             }),
         [controls]
     );
@@ -265,27 +257,30 @@ export function TrainingFocusControls({
                     </label>
 
                     <label className="space-y-1.5">
-                        <span className="font-medium">History</span>
+                        <span className="font-medium">Queue</span>
                         <Select
-                            value={controls.history}
+                            value={controls.mode}
                             onValueChange={(value) =>
                                 setControls((current) => ({
                                     ...current,
-                                    history:
-                                        value as PracticeFocusControlState['history'],
+                                    mode:
+                                        value as PracticeFocusControlState['mode'],
                                 }))
                             }
                             disabled={disabled}
                         >
-                            <SelectTrigger aria-label="Position history">
+                            <SelectTrigger aria-label="Practice queue">
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="ALL">
-                                    New and reviewed
+                                <SelectItem value="RECOMMENDED">
+                                    Recommended mix
                                 </SelectItem>
-                                <SelectItem value="FRESH">
-                                    Not reviewed yet
+                                <SelectItem value="REVIEW">
+                                    Due for review
+                                </SelectItem>
+                                <SelectItem value="NEW">
+                                    New positions
                                 </SelectItem>
                             </SelectContent>
                         </Select>

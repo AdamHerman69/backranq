@@ -2,6 +2,7 @@ import {
     TRAINING_API_MAX_ID_LENGTH,
     PRACTICE_FEED_MAX_LIMIT,
     PRACTICE_FEED_FOCUSES,
+    PRACTICE_FEED_MODES,
     type PracticeFeedFocus,
     type PracticeFeedRequest,
     type RecordTrainingAttemptRequest,
@@ -35,7 +36,7 @@ const FEED_QUERY_KEYS = new Set([
     'lessonKind',
     'theme',
     'minConfidence',
-    'includeAttempted',
+    'mode',
 ]);
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -103,7 +104,7 @@ export function parsePracticeFeedRequest(
             'cursor',
             'focus',
             'minConfidence',
-            'includeAttempted',
+            'mode',
         ].some(
             (key) => url.searchParams.getAll(key).length > 1
         )
@@ -120,7 +121,7 @@ export function parsePracticeFeedRequest(
         return null;
     }
     const cursor = url.searchParams.get('cursor')?.trim() || undefined;
-    if (cursor && cursor.length > 512) return null;
+    if (cursor && cursor.length > 1_024) return null;
     const rawFocus = url.searchParams.get('focus');
     const focus =
         rawFocus == null
@@ -164,11 +165,11 @@ export function parsePracticeFeedRequest(
     ) {
         return null;
     }
-    const rawIncludeAttempted = url.searchParams.get('includeAttempted');
+    const rawMode = url.searchParams.get('mode');
+    const mode = rawMode == null ? undefined : rawMode.trim().toUpperCase();
     if (
-        rawIncludeAttempted !== null &&
-        rawIncludeAttempted !== 'true' &&
-        rawIncludeAttempted !== 'false'
+        mode !== undefined &&
+        !(PRACTICE_FEED_MODES as readonly string[]).includes(mode)
     ) {
         return null;
     }
@@ -199,8 +200,12 @@ export function parsePracticeFeedRequest(
                 : {}),
             ...(themes.length > 0 ? { themes } : {}),
             ...(minConfidence !== undefined ? { minConfidence } : {}),
-            ...(rawIncludeAttempted !== null
-                ? { includeAttempted: rawIncludeAttempted === 'true' }
+            ...(mode !== undefined
+                ? {
+                      mode: mode as NonNullable<
+                          PracticeFeedRequest['filters']
+                      >['mode'],
+                  }
                 : {}),
         },
     };

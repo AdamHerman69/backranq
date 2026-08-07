@@ -11,6 +11,7 @@ import {
     Smtp2GoQuotaError,
 } from './smtp2go';
 import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
+import { getPracticeDueSummary } from '@/lib/training/practiceDue';
 
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
@@ -25,6 +26,7 @@ const PRIORITY_EMAIL_TYPES = new Set<NotificationType>([
 ]);
 const OPTIONAL_EMAIL_TYPES = new Set([
     'PRACTICE_READY',
+    'PRACTICE_DUE',
     'ANALYSIS_FAILED',
     'SYNC_FAILED',
     'NEW_GAMES_SYNCED',
@@ -256,6 +258,7 @@ export async function processNotificationDelivery(deliveryId: string) {
         },
     });
     try {
+        await ensurePracticeDueStillCurrent(delivery);
         const providerMessageId =
             delivery.channel === 'EMAIL'
                 ? await deliverEmail(delivery)
@@ -334,6 +337,28 @@ export async function processNotificationDelivery(deliveryId: string) {
     }
 }
 
+async function ensurePracticeDueStillCurrent(delivery: HydratedDelivery) {
+    if (delivery.notification.type !== 'PRACTICE_DUE') return;
+    const summary = await getPracticeDueSummary(delivery.userId);
+    if (!summary) {
+        throw new DeliveryCancelledError(
+            'Practice review queue was completed before delivery'
+        );
+    }
+    if (summary.dueCount === delivery.notification.itemCount) return;
+    await prisma.notification.update({
+        where: { id: delivery.notification.id },
+        data: {
+            itemCount: summary.dueCount,
+            metadata: {
+                earliestDueAt: summary.earliestDueAt.toISOString(),
+                refreshedAt: new Date().toISOString(),
+            },
+        },
+    });
+    delivery.notification.itemCount = summary.dueCount;
+}
+
 async function deliverEmail(delivery: HydratedDelivery) {
     const recipient = delivery.recipient ?? delivery.user.email;
     const from = process.env.BACKRANQ_EMAIL_FROM;
@@ -354,12 +379,16 @@ async function deliverEmail(delivery: HydratedDelivery) {
                   'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
               }
             : {}),
-        ...(delivery.notification.type === 'PRACTICE_READY'
+        ...(['PRACTICE_READY', 'PRACTICE_DUE'].includes(
+            delivery.notification.type
+        )
             ? { Importance: 'low', 'X-Priority': '5' }
             : {}),
     };
     const actionLabel =
-        delivery.notification.type === 'PRACTICE_READY'
+        ['PRACTICE_READY', 'PRACTICE_DUE'].includes(
+            delivery.notification.type
+        )
             ? 'Start practicing'
             : 'Open Backranq';
     const html = await render(
@@ -421,6 +450,7 @@ async function ensureEmailCanBeSent(delivery: HydratedDelivery) {
     const allowed = (() => {
         switch (delivery.notification.type) {
             case 'PRACTICE_READY':
+            case 'PRACTICE_DUE':
                 return preference.emailPracticeReady && !optionalBlocked;
             case 'ANALYSIS_FAILED':
             case 'SYNC_FAILED':
@@ -446,8 +476,12 @@ async function ensureEmailCanBeSent(delivery: HydratedDelivery) {
         throw new DeliveryCancelledError('Email preference was disabled before send');
     }
 
-    if (delivery.notification.type === 'PRACTICE_READY') {
-        await guardPracticeReadyCalendarDay(
+    if (
+        ['PRACTICE_READY', 'PRACTICE_DUE'].includes(
+            delivery.notification.type
+        )
+    ) {
+        await guardPracticeEmailCalendarDay(
             delivery,
             preference.timezone,
             preference.digestHour
@@ -456,7 +490,7 @@ async function ensureEmailCanBeSent(delivery: HydratedDelivery) {
     await guardSmtp2GoDailyQuota(delivery);
 }
 
-async function guardPracticeReadyCalendarDay(
+async function guardPracticeEmailCalendarDay(
     delivery: HydratedDelivery,
     timezone: string,
     digestHour: number
@@ -469,7 +503,7 @@ async function guardPracticeReadyCalendarDay(
     );
     if (now < digestAt) {
         throw new DeliveryRescheduledError(
-            'Practice-ready email rescheduled to the current preferred hour',
+            'Practice email rescheduled to the current preferred hour',
             digestAt
         );
     }
@@ -486,13 +520,15 @@ async function guardPracticeReadyCalendarDay(
                     lastError: { contains: 'delivery state is unknown' },
                 },
             ],
-            notification: { type: 'PRACTICE_READY' },
+            notification: {
+                type: { in: ['PRACTICE_READY', 'PRACTICE_DUE'] },
+            },
         },
         select: { id: true },
     });
     if (sentToday) {
         throw new DeliveryCancelledError(
-            'A practice-ready email was already sent in this local calendar day'
+            'A practice email was already sent in this local calendar day'
         );
     }
 
@@ -501,7 +537,9 @@ async function guardPracticeReadyCalendarDay(
             userId: delivery.userId,
             channel: 'EMAIL',
             status: 'PROCESSING',
-            notification: { type: 'PRACTICE_READY' },
+            notification: {
+                type: { in: ['PRACTICE_READY', 'PRACTICE_DUE'] },
+            },
             OR: [{ id: delivery.id }, { lockedUntil: { gt: now } }],
         },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -509,7 +547,7 @@ async function guardPracticeReadyCalendarDay(
     });
     if (firstActive && firstActive.id !== delivery.id) {
         throw new DeliveryCancelledError(
-            'A concurrent practice-ready email already owns this send window'
+            'A concurrent practice email already owns this send window'
         );
     }
 }

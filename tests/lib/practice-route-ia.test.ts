@@ -109,6 +109,27 @@ describe('practice route information architecture', () => {
         expect(target.searchParams.get('callbackUrl')).toBe('/practice');
     });
 
+    it('preserves the explicit review queue through authentication', async () => {
+        authMock.mockResolvedValue(null);
+        redirectMock.mockImplementation(() => {
+            throw new Error('NEXT_REDIRECT');
+        });
+
+        await expect(
+            PracticePage({
+                searchParams: Promise.resolve({ mode: 'review' }),
+            })
+        ).rejects.toThrow('NEXT_REDIRECT');
+
+        const target = new URL(
+            redirectMock.mock.calls[0]?.[0] as string,
+            'https://backranq.test'
+        );
+        expect(target.searchParams.get('callbackUrl')).toBe(
+            '/practice?mode=review'
+        );
+    });
+
     it('opens the installed app on Home', () => {
         expect(manifest().start_url).toBe('/home');
     });

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { prismaMock, serviceMocks, publishQueueMock } = vi.hoisted(() => ({
+const { prismaMock, serviceMocks, publishQueueMock, practiceDueMocks } = vi.hoisted(() => ({
     prismaMock: {
         analysisJob: { findMany: vi.fn() },
         syncJob: { findMany: vi.fn() },
@@ -15,8 +15,12 @@ const { prismaMock, serviceMocks, publishQueueMock } = vi.hoisted(() => ({
         recordSyncFailed: vi.fn(),
         recordWelcome: vi.fn(),
         recordNotification: vi.fn(),
+        recordPracticeDue: vi.fn(),
     },
     publishQueueMock: vi.fn(),
+    practiceDueMocks: {
+        listPracticeDueSummaries: vi.fn(),
+    },
 }));
 
 vi.mock('@/lib/prisma', () => ({ prisma: prismaMock }));
@@ -24,9 +28,11 @@ vi.mock('@/lib/notifications/service', () => serviceMocks);
 vi.mock('@/lib/queues/backranq', () => ({
     publishBackranqQueueMessage: publishQueueMock,
 }));
+vi.mock('@/lib/training/practiceDue', () => practiceDueMocks);
 
 import {
     generateDueWeeklyProgressNotifications,
+    generatePracticeDueNotifications,
     reconcileRecentNotificationEvents,
     runNotificationMaintenance,
 } from '@/lib/notifications/campaigns';
@@ -36,6 +42,7 @@ describe('notification campaigns', () => {
         vi.clearAllMocks();
         serviceMocks.recordNotification.mockResolvedValue({ id: 'notification' });
         publishQueueMock.mockResolvedValue({ queued: true, messageId: 'message-1' });
+        practiceDueMocks.listPracticeDueSummaries.mockResolvedValue([]);
     });
 
     it('pages through all recent failures and replays existing notification keys to repair delivery', async () => {
@@ -223,5 +230,34 @@ describe('notification campaigns', () => {
                 idempotencyKey: expect.stringContaining('user-199'),
             })
         );
+    });
+
+    it('creates one bounded daily due notification per due user', async () => {
+        const now = new Date('2026-08-03T14:00:00.000Z');
+        practiceDueMocks.listPracticeDueSummaries.mockResolvedValue([
+            {
+                userId: 'user-1',
+                dueCount: 3,
+                earliestDueAt: new Date(
+                    '2026-08-01T09:00:00.000Z'
+                ),
+            },
+        ]);
+
+        await expect(
+            generatePracticeDueNotifications(now)
+        ).resolves.toEqual({
+            dueUsers: 1,
+            processed: 1,
+            nextCursor: null,
+        });
+        expect(serviceMocks.recordPracticeDue).toHaveBeenCalledWith({
+            userId: 'user-1',
+            dueCount: 3,
+            earliestDueAt: new Date(
+                '2026-08-01T09:00:00.000Z'
+            ),
+            generatedAt: now,
+        });
     });
 });

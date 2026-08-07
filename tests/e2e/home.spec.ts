@@ -26,11 +26,15 @@ test('Home keeps available Practice when sync status is unavailable', async ({
 test('Home shows one dominant connection action when no account is linked', async ({
     page,
 }) => {
-    await page.route('**/api/training/feed?**', async (route) => {
+    await page.route('**/api/training/due', async (route) => {
         await route.fulfill({
             status: 200,
             contentType: 'application/json',
-            body: JSON.stringify({ items: [] }),
+            body: JSON.stringify({
+                totalEligibleCount: 0,
+                dueCount: 0,
+                earliestDueAt: null,
+            }),
         });
     });
     await page.route('**/api/games?**', async (route) => {
@@ -77,6 +81,29 @@ test('Home shows one dominant connection action when no account is linked', asyn
     await expect(
         page.getByRole('button', { name: 'Sync now' })
     ).toHaveCount(0);
+});
+
+test('Home links a scheduled review count to the due-only queue', async ({
+    page,
+}) => {
+    await page.route('**/api/training/due', async (route) => {
+        await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+                totalEligibleCount: 6,
+                dueCount: 3,
+                earliestDueAt: '2026-08-01T09:00:00.000Z',
+            }),
+        });
+    });
+
+    await page.goto('/home');
+
+    await expect(page.getByText('3 reviews due')).toBeVisible();
+    await expect(
+        page.getByRole('link', { name: 'Review due positions' })
+    ).toHaveAttribute('href', '/practice?mode=review');
 });
 
 test('public root stays a marketing landing for signed-in visitors', async ({

@@ -3,6 +3,7 @@ import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
 
 const sendSmtp2GoEmailMock = vi.fn();
 const publishBackranqQueueMessageMock = vi.fn();
+const getPracticeDueSummaryMock = vi.fn();
 
 async function importDelivery() {
     vi.resetModules();
@@ -17,6 +18,9 @@ async function importDelivery() {
     }));
     vi.doMock('@/lib/queues/backranq', () => ({
         publishBackranqQueueMessage: publishBackranqQueueMessageMock,
+    }));
+    vi.doMock('@/lib/training/practiceDue', () => ({
+        getPracticeDueSummary: getPracticeDueSummaryMock,
     }));
     vi.doMock('@/lib/notifications/smtp2go', async (importOriginal) => {
         const actual = await importOriginal<
@@ -104,6 +108,8 @@ describe('notification email delivery safety', () => {
             queued: true,
             messageId: 'message-1',
         });
+        getPracticeDueSummaryMock.mockReset();
+        getPracticeDueSummaryMock.mockResolvedValue(null);
     });
 
     it('cancels an optional email when its preference changed before provider send', async () => {
@@ -146,6 +152,56 @@ describe('notification email delivery safety', () => {
                         }),
                     ]),
                 }),
+            })
+        );
+    });
+
+    it('cancels a due reminder completed before provider delivery', async () => {
+        prismaMock.notificationDelivery.findUniqueOrThrow.mockResolvedValue({
+            ...practiceDelivery(),
+            notification: {
+                ...practiceDelivery().notification,
+                type: 'PRACTICE_DUE',
+                href: '/practice?mode=review',
+            },
+        });
+        const { processNotificationDelivery } = await importDelivery();
+
+        await expect(
+            processNotificationDelivery('delivery-1')
+        ).resolves.toEqual({ status: 'CANCELLED' });
+        expect(getPracticeDueSummaryMock).toHaveBeenCalledWith('user-1');
+        expect(sendSmtp2GoEmailMock).not.toHaveBeenCalled();
+    });
+
+    it('refreshes a changed due count immediately before delivery', async () => {
+        const delivery = {
+            ...practiceDelivery(),
+            notification: {
+                ...practiceDelivery().notification,
+                type: 'PRACTICE_DUE',
+                href: '/practice?mode=review',
+                itemCount: 5,
+            },
+        };
+        prismaMock.notificationDelivery.findUniqueOrThrow.mockResolvedValue(
+            delivery
+        );
+        getPracticeDueSummaryMock.mockResolvedValue({
+            userId: 'user-1',
+            dueCount: 2,
+            earliestDueAt: new Date('2026-08-01T09:00:00.000Z'),
+        });
+        prismaMock.notification.update.mockResolvedValue({});
+        const { processNotificationDelivery } = await importDelivery();
+
+        await expect(
+            processNotificationDelivery('delivery-1')
+        ).resolves.toMatchObject({ status: 'SENT' });
+        expect(prismaMock.notification.update).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: { id: 'notification-1' },
+                data: expect.objectContaining({ itemCount: 2 }),
             })
         );
     });

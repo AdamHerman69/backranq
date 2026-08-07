@@ -1,0 +1,1 @@
+ALTER TYPE "NotificationType" ADD VALUE 'PRACTICE_DUE';

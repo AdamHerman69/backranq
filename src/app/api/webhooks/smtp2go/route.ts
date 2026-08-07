@@ -6,6 +6,7 @@ export const runtime = 'nodejs';
 const MAX_WEBHOOK_BODY_BYTES = 256_000;
 const OPTIONAL_TYPES = [
     'PRACTICE_READY',
+    'PRACTICE_DUE',
     'ANALYSIS_FAILED',
     'SYNC_FAILED',
     'NEW_GAMES_SYNCED',

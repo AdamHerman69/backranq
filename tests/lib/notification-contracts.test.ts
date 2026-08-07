@@ -26,6 +26,21 @@ describe('notification contracts', () => {
         });
     });
 
+    it('renders the current due snapshot rather than an accumulated count', () => {
+        expect(
+            notificationCopy({
+                type: 'PRACTICE_DUE',
+                title: 'stale',
+                body: 'stale',
+                itemCount: 1,
+                secondaryCount: 0,
+            })
+        ).toEqual({
+            title: 'Your practice review is due',
+            body: '1 practice position is ready for review.',
+        });
+    });
+
     it('groups practice created before the same local digest into one delivery', () => {
         const first = practiceReadyDeliveryWindow(
             new Date('2026-08-04T06:00:00.000Z'),

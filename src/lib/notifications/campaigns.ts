@@ -4,9 +4,11 @@ import { nextDigestAt } from './scheduling';
 import {
     recordAnalysisFailed,
     recordNotification,
+    recordPracticeDue,
     recordSyncFailed,
     recordWelcome,
 } from './service';
+import { listPracticeDueSummaries } from '@/lib/training/practiceDue';
 
 const PAGE_SIZE = 200;
 const WEEK_MS = 7 * 24 * 60 * 60_000;
@@ -245,20 +247,54 @@ export async function generateDueWeeklyProgressNotifications(
     };
 }
 
+export async function generatePracticeDueNotifications(
+    now = new Date(),
+    cursor?: string | null
+) {
+    if (cursor === null) {
+        return { dueUsers: 0, processed: 0, nextCursor: null };
+    }
+    const summaries = await listPracticeDueSummaries({
+        now,
+        afterUserId: cursor,
+        limit: PAGE_SIZE,
+    });
+    for (const summary of summaries) {
+        await recordPracticeDue({
+            ...summary,
+            generatedAt: now,
+        });
+    }
+    return {
+        dueUsers: summaries.length,
+        processed: summaries.length,
+        nextCursor:
+            summaries.length === PAGE_SIZE
+                ? (summaries.at(-1)?.userId ?? null)
+                : null,
+    };
+}
+
 type MaintenanceArgs = ReconcileCursors & {
     referenceAt?: Date;
     since?: Date;
     weeklyCursor?: string | null;
+    practiceDueCursor?: string | null;
 };
 
 export async function runNotificationMaintenance(args: MaintenanceArgs = {}) {
     const referenceAt = args.referenceAt ?? new Date();
     const since = args.since ?? new Date(referenceAt.getTime() - WEEK_MS);
-    const [weekly, reconciled] = await Promise.all([
+    const [practiceDue, weekly, reconciled] = await Promise.all([
+        generatePracticeDueNotifications(
+            referenceAt,
+            args.practiceDueCursor
+        ),
         generateDueWeeklyProgressNotifications(referenceAt, args.weeklyCursor),
         reconcileRecentNotificationEvents(referenceAt, args, since),
     ]);
     const hasContinuation =
+        practiceDue.nextCursor !== null ||
         weekly.nextCursor !== null ||
         reconciled.next.analysisCursor !== null ||
         reconciled.next.syncCursor !== null ||
@@ -273,13 +309,14 @@ export async function runNotificationMaintenance(args: MaintenanceArgs = {}) {
             syncCursor: reconciled.next.syncCursor,
             userCursor: reconciled.next.userCursor,
             weeklyCursor: weekly.nextCursor,
+            practiceDueCursor: practiceDue.nextCursor,
         };
         const continuation = await publishBackranqQueueMessage(message, {
-            idempotencyKey: `notification-maintenance:${message.referenceAt}:${message.analysisCursor ?? 'done'}:${message.syncCursor ?? 'done'}:${message.userCursor ?? 'done'}:${message.weeklyCursor ?? 'done'}`,
+            idempotencyKey: `notification-maintenance:${message.referenceAt}:${message.analysisCursor ?? 'done'}:${message.syncCursor ?? 'done'}:${message.userCursor ?? 'done'}:${message.weeklyCursor ?? 'done'}:${message.practiceDueCursor ?? 'done'}`,
         });
         continuationQueued = continuation.queued;
     }
-    return { weekly, reconciled, continuationQueued };
+    return { practiceDue, weekly, reconciled, continuationQueued };
 }
 
 function weeklyPeriod(now: Date, timezone: string, digestHour: number) {

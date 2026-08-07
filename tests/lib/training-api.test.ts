@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     getTrainingMomentPrompt,
     InvalidPracticeFeedCursorError,
@@ -8,6 +8,18 @@ import {
     parseRecordTrainingAttemptRequest,
     parsePracticeFeedRequest,
 } from '@/lib/training/apiValidation';
+import {
+    queryDuePracticeStream,
+    queryNewPracticeStream,
+} from '@/lib/training/practiceFeedQueries';
+
+vi.mock('@/lib/training/practiceFeedQueries', () => ({
+    queryDuePracticeStream: vi.fn(),
+    queryNewPracticeStream: vi.fn(),
+}));
+
+const queryDueMock = vi.mocked(queryDuePracticeStream);
+const queryNewMock = vi.mocked(queryNewPracticeStream);
 
 const promptRow = {
     id: '11111111-1111-4111-8111-111111111111',
@@ -109,6 +121,20 @@ const promptRow = {
 };
 
 describe('canonical training API boundary', () => {
+    beforeEach(() => {
+        queryDueMock.mockReset().mockResolvedValue([]);
+        queryNewMock.mockReset().mockResolvedValue([
+            {
+                id: promptRow.id,
+                currentSolutionRevisionId:
+                    promptRow.currentSolutionRevisionId,
+                key: {
+                    createdAt: promptRow.createdAt.toISOString(),
+                    id: promptRow.id,
+                },
+            },
+        ]);
+    });
     it('returns the complete local grading manifest with each prompt', async () => {
         const db = {
             trainingMoment: {
@@ -214,62 +240,87 @@ describe('canonical training API boundary', () => {
         ).rejects.toThrow('invalid grading evidence');
     });
 
-    it('schedules unseen moments first and keeps a completed corpus reviewable', async () => {
-        const reviewedAt = new Date('2026-02-01T00:00:00.000Z');
-        const db = {
-            trainingMoment: {
-                findMany: vi.fn().mockResolvedValue([
-                    {
-                        ...promptRow,
-                        lastTrainedAt: reviewedAt,
-                    },
-                ]),
-            },
+    it('interleaves bounded due and new streams without trusting database return order', async () => {
+        const ids = {
+            due1: '10000000-0000-4000-8000-000000000001',
+            due2: '10000000-0000-4000-8000-000000000002',
+            due3: '10000000-0000-4000-8000-000000000003',
+            fresh1: '10000000-0000-4000-8000-000000000004',
+            fresh2: '10000000-0000-4000-8000-000000000005',
         };
+        const revisions = Object.fromEntries(
+            Object.entries(ids).map(([name], index) => [
+                name,
+                `20000000-0000-4000-8000-00000000000${index + 1}`,
+            ])
+        ) as Record<keyof typeof ids, string>;
+        const due = (name: 'due1' | 'due2' | 'due3', lapses: number) => ({
+            id: ids[name],
+            currentSolutionRevisionId: revisions[name],
+            key: {
+                lapseBucket: 1 as const,
+                lapses,
+                nextDueAt: '2026-01-01T00:00:00.000Z',
+                lastReviewedAt: '2025-12-01T00:00:00.000Z',
+                createdAt: '2025-01-01T00:00:00.000Z',
+                id: ids[name],
+            },
+        });
+        const fresh = (name: 'fresh1' | 'fresh2') => ({
+            id: ids[name],
+            currentSolutionRevisionId: revisions[name],
+            key: {
+                createdAt: '2026-01-01T00:00:00.000Z',
+                id: ids[name],
+            },
+        });
+        queryDueMock.mockResolvedValue([
+            due('due1', 3),
+            due('due2', 2),
+            due('due3', 1),
+        ]);
+        queryNewMock.mockResolvedValue([
+            fresh('fresh1'),
+            fresh('fresh2'),
+        ]);
+        const selectedNames = ['fresh1', 'due2', 'due1'] as const;
+        const findMany = vi.fn().mockResolvedValue(
+            selectedNames.map((name) => ({
+                ...promptRow,
+                id: ids[name],
+                currentSolutionRevisionId: revisions[name],
+            }))
+        );
+        const now = new Date('2026-02-01T00:00:00.000Z');
 
         const feed = await listPracticeFeed({
-            db: db as never,
+            db: { trainingMoment: { findMany } } as never,
             userId: 'user-1',
-            request: { limit: 10 },
+            request: { limit: 3 },
+            now: () => now,
         });
 
-        expect(feed.items).toHaveLength(1);
-        const call = db.trainingMoment.findMany.mock.calls[0]![0];
-        expect(call.where).not.toHaveProperty('attempts');
-        expect(call.orderBy).toEqual([
-            {
-                lastTrainedAt: {
-                    sort: 'asc',
-                    nulls: 'first',
-                },
-            },
-            { createdAt: 'asc' },
-            { id: 'asc' },
+        expect(feed.items.map((item) => item.id)).toEqual([
+            ids.due1,
+            ids.due2,
+            ids.fresh1,
         ]);
+        expect(feed.nextCursor).toEqual(expect.any(String));
+        expect(queryDueMock).toHaveBeenCalledWith(
+            expect.objectContaining({ take: 4, feedStartedAt: now })
+        );
+        expect(queryNewMock).toHaveBeenCalledWith(
+            expect.objectContaining({ take: 4, feedStartedAt: now })
+        );
     });
 
-    it.each([
-        {
-            focus: 'MEANINGFUL' as const,
-            minWinChanceLoss: 0.08,
-            fallbackMinCpLoss: 100,
-        },
-        {
-            focus: 'MAJOR' as const,
-            minWinChanceLoss: 0.12,
-            fallbackMinCpLoss: 150,
-        },
-    ])(
-        'applies $focus with win-chance-primary and cp-fallback semantics',
-        async ({
-            focus,
-            minWinChanceLoss,
-            fallbackMinCpLoss,
-        }) => {
-            const findMany = vi.fn().mockResolvedValue([]);
+    it.each(['MEANINGFUL', 'MAJOR'] as const)(
+        'passes %s focus to both authoritative SQL streams',
+        async (focus) => {
+            queryNewMock.mockResolvedValue([]);
             await listPracticeFeed({
                 db: {
-                    trainingMoment: { findMany },
+                    trainingMoment: { findMany: vi.fn() },
                 } as never,
                 userId: 'user-1',
                 request: {
@@ -278,99 +329,107 @@ describe('canonical training API boundary', () => {
                 },
             });
 
-            expect(findMany.mock.calls[0]![0].where.AND).toEqual(
-                expect.arrayContaining([
-                    {
-                        OR: [
-                            {
-                                winChanceLoss: {
-                                    gte: minWinChanceLoss,
-                                },
-                            },
-                            {
-                                winChanceLoss: null,
-                                cpLoss: {
-                                    gte: fallbackMinCpLoss,
-                                },
-                            },
-                        ],
-                    },
-                ])
+            expect(queryDueMock).toHaveBeenCalledWith(
+                expect.objectContaining({ filters: { focus } })
+            );
+            expect(queryNewMock).toHaveBeenCalledWith(
+                expect.objectContaining({ filters: { focus } })
             );
         }
     );
 
-    it('uses a stable feed snapshot so mutable review timestamps cannot repeat pages', async () => {
-        const rows = Array.from({ length: 13 }, (_, index) => ({
-            ...promptRow,
-            id: `moment-${String(index).padStart(2, '0')}`,
-            createdAt: new Date(
-                Date.UTC(2026, 0, 1, 0, index)
-            ),
-            lastTrainedAt:
-                index < 4
-                    ? null
-                    : new Date(
-                          Date.UTC(2026, 1, 1, 0, index)
-                      ),
-        }));
-        const pages = [
-            rows.slice(0, 6),
-            rows.slice(5, 11),
-            rows.slice(10),
-        ];
+    it('keeps one feed snapshot and resumes each stream from its own key', async () => {
+        const secondId = '11111111-1111-4111-8111-111111111112';
+        const secondRevision =
+            '22222222-2222-4222-8222-222222222223';
+        const firstKey = {
+            lapseBucket: 1 as const,
+            lapses: 2,
+            nextDueAt: '2026-01-01T00:00:00.000Z',
+            lastReviewedAt: '2025-12-01T00:00:00.000Z',
+            createdAt: promptRow.createdAt.toISOString(),
+            id: promptRow.id,
+        };
+        queryNewMock.mockResolvedValue([]);
+        queryDueMock
+            .mockResolvedValueOnce([
+                {
+                    id: promptRow.id,
+                    currentSolutionRevisionId:
+                        promptRow.currentSolutionRevisionId,
+                    key: firstKey,
+                },
+                {
+                    id: secondId,
+                    currentSolutionRevisionId: secondRevision,
+                    key: { ...firstKey, lapses: 1, id: secondId },
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    id: secondId,
+                    currentSolutionRevisionId: secondRevision,
+                    key: { ...firstKey, lapses: 1, id: secondId },
+                },
+            ]);
         const findMany = vi
             .fn()
-            .mockImplementation(async () => pages.shift() ?? []);
-        const db = { trainingMoment: { findMany } };
-        const seen: string[] = [];
-        let cursor: string | undefined;
+            .mockResolvedValueOnce([promptRow])
+            .mockResolvedValueOnce([
+                {
+                    ...promptRow,
+                    id: secondId,
+                    currentSolutionRevisionId: secondRevision,
+                },
+            ]);
+        const startedAt = new Date('2026-02-01T00:00:00.000Z');
 
-        do {
-            const page = await listPracticeFeed({
-                db: db as never,
-                userId: 'user-1',
-                request: { limit: 5, cursor },
-            });
-            seen.push(...page.items.map((item) => item.id));
-            cursor = page.nextCursor ?? undefined;
-        } while (cursor);
+        const first = await listPracticeFeed({
+            db: { trainingMoment: { findMany } } as never,
+            userId: 'user-1',
+            request: { limit: 1 },
+            now: () => startedAt,
+        });
+        const second = await listPracticeFeed({
+            db: { trainingMoment: { findMany } } as never,
+            userId: 'user-1',
+            request: { limit: 1, cursor: first.nextCursor! },
+            now: () => new Date('2026-02-02T00:00:00.000Z'),
+        });
 
-        expect(seen).toHaveLength(13);
-        expect(new Set(seen).size).toBe(13);
-        expect(findMany).toHaveBeenCalledTimes(3);
-        const secondWhere =
-            findMany.mock.calls[1]![0].where;
-        expect(secondWhere.AND).toEqual(
-            expect.arrayContaining([
-                expect.objectContaining({
-                    createdAt: {
-                        lte: expect.any(Date),
-                    },
-                }),
-                expect.objectContaining({
-                    OR: [
-                        { lastTrainedAt: null },
-                        {
-                            lastTrainedAt: {
-                                lt: expect.any(Date),
-                            },
-                        },
-                    ],
-                }),
-            ])
+        expect(first.items.map((item) => item.id)).toEqual([promptRow.id]);
+        expect(second.items.map((item) => item.id)).toEqual([secondId]);
+        expect(queryDueMock.mock.calls[1]?.[0]).toEqual(
+            expect.objectContaining({
+                feedStartedAt: startedAt,
+                cursor: firstKey,
+            })
         );
     });
 
     it('rejects a cursor that forges a future feed snapshot', async () => {
-        const findMany = vi.fn().mockResolvedValue([
-            promptRow,
+        const nextId = '11111111-1111-4111-8111-111111111112';
+        queryNewMock.mockResolvedValue([
             {
-                ...promptRow,
-                id: 'moment-next',
-                createdAt: new Date('2026-01-01T00:01:00.000Z'),
+                id: promptRow.id,
+                currentSolutionRevisionId:
+                    promptRow.currentSolutionRevisionId,
+                key: {
+                    createdAt: promptRow.createdAt.toISOString(),
+                    id: promptRow.id,
+                },
+            },
+            {
+                id: nextId,
+                currentSolutionRevisionId:
+                    '22222222-2222-4222-8222-222222222223',
+                key: {
+                    createdAt: '2026-01-01T00:01:00.000Z',
+                    id: nextId,
+                },
             },
         ]);
+        const findMany = vi.fn().mockResolvedValue([promptRow]);
         const db = {
             trainingMoment: {
                 findMany,
@@ -406,19 +465,32 @@ describe('canonical training API boundary', () => {
     });
 
     it('binds a feed cursor to its normalized filters', async () => {
-        const findMany = vi
-            .fn()
+        const nextId = '11111111-1111-4111-8111-111111111112';
+        queryNewMock
             .mockResolvedValueOnce([
-                promptRow,
                 {
-                    ...promptRow,
-                    id: 'moment-next',
-                    createdAt: new Date(
-                        '2026-01-01T00:01:00.000Z'
-                    ),
+                    id: promptRow.id,
+                    currentSolutionRevisionId:
+                        promptRow.currentSolutionRevisionId,
+                    key: {
+                        createdAt: promptRow.createdAt.toISOString(),
+                        id: promptRow.id,
+                    },
+                },
+                {
+                    id: nextId,
+                    currentSolutionRevisionId:
+                        '22222222-2222-4222-8222-222222222223',
+                    key: {
+                        createdAt: '2026-01-01T00:01:00.000Z',
+                        id: nextId,
+                    },
                 },
             ])
             .mockResolvedValueOnce([]);
+        const findMany = vi
+            .fn()
+            .mockResolvedValueOnce([promptRow]);
         const db = { trainingMoment: { findMany } };
         const first = await listPracticeFeed({
             db: db as never,
@@ -469,13 +541,13 @@ describe('canonical training API boundary', () => {
                 },
             })
         ).rejects.toBeInstanceOf(InvalidPracticeFeedCursorError);
-        expect(findMany).toHaveBeenCalledTimes(2);
+        expect(findMany).toHaveBeenCalledTimes(1);
     });
 
-    it('parses repeated filters and rejects loose booleans or oversized limits', () => {
+    it('parses repeated filters and rejects unknown queue modes or oversized limits', () => {
         const parsed = parsePracticeFeedRequest(
             new URL(
-                'http://localhost/api/training/feed?focus=meaningful&phase=opening&phase=endgame&sourceKind=my_mistake&theme=quiet-move&includeAttempted=false'
+                'http://localhost/api/training/feed?focus=meaningful&phase=opening&phase=endgame&sourceKind=my_mistake&theme=quiet-move&mode=new'
             )
         );
         expect(parsed).toEqual({
@@ -485,13 +557,13 @@ describe('canonical training API boundary', () => {
                 phases: ['OPENING', 'ENDGAME'],
                 sourceKinds: ['MY_MISTAKE'],
                 themes: ['quiet-move'],
-                includeAttempted: false,
+                mode: 'NEW',
             },
         });
         expect(
             parsePracticeFeedRequest(
                 new URL(
-                    'http://localhost/api/training/feed?includeAttempted=1'
+                    'http://localhost/api/training/feed?mode=everything'
                 )
             )
         ).toBeNull();

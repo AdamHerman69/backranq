@@ -1,23 +1,37 @@
 import { createHash } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import type {
-    PracticeFeedFocus,
     PracticeFeedRequest,
     PracticeFeedResponse,
     PracticeFilters,
     TrainingMomentResponse,
 } from '@/lib/training/api';
 import { toTrainingPromptDto } from '@/lib/training/apiMappers';
+import {
+    queryDuePracticeStream,
+    queryNewPracticeStream,
+} from '@/lib/training/practiceFeedQueries';
+import {
+    interleavePracticeStreams,
+    type DueScheduleKey,
+    type NewScheduleKey,
+    type PracticeScheduleCursor,
+} from '@/lib/training/practiceScheduler';
 
-type TrainingReadClient = Pick<Prisma.TransactionClient, 'trainingMoment'>;
+type TrainingReadClient = Pick<
+    Prisma.TransactionClient,
+    'trainingMoment' | '$queryRaw'
+>;
 
 type PracticeFeedCursor = {
+    version: 1;
     feedStartedAt: string;
     filterHash: string;
-    lastTrainedAt: string | null;
-    createdAt: string;
-    id: string;
+    schedule: PracticeScheduleCursor;
 };
+
+const UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function encodeCursor(cursor: PracticeFeedCursor): string {
     return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
@@ -26,76 +40,82 @@ function encodeCursor(cursor: PracticeFeedCursor): string {
 function decodeCursor(value: string): {
     feedStartedAt: Date;
     filterHash: string;
-    lastTrainedAt: Date | null;
-    createdAt: Date;
-    id: string;
+    schedule: PracticeScheduleCursor;
 } | null {
     try {
         const decoded = JSON.parse(
             Buffer.from(value, 'base64url').toString('utf8')
         ) as Partial<PracticeFeedCursor>;
         if (
-            typeof decoded.createdAt !== 'string' ||
+            decoded.version !== 1 ||
             typeof decoded.feedStartedAt !== 'string' ||
             typeof decoded.filterHash !== 'string' ||
             !/^[a-f0-9]{64}$/.test(decoded.filterHash) ||
-            (decoded.lastTrainedAt !== null &&
-                typeof decoded.lastTrainedAt !== 'string') ||
-            typeof decoded.id !== 'string' ||
-            decoded.id.length > 128
+            !isPracticeScheduleCursor(decoded.schedule)
         ) {
             return null;
         }
-        const createdAt = new Date(decoded.createdAt);
         const feedStartedAt = new Date(decoded.feedStartedAt);
-        const lastTrainedAt =
-            decoded.lastTrainedAt == null
-                ? null
-                : new Date(decoded.lastTrainedAt);
-        if (
-            !Number.isFinite(createdAt.getTime()) ||
-            !Number.isFinite(feedStartedAt.getTime()) ||
-            (lastTrainedAt &&
-                !Number.isFinite(lastTrainedAt.getTime()))
-        ) {
+        if (!Number.isFinite(feedStartedAt.getTime())) {
             return null;
         }
         return {
             feedStartedAt,
             filterHash: decoded.filterHash,
-            lastTrainedAt,
-            createdAt,
-            id: decoded.id,
+            schedule: decoded.schedule,
         };
     } catch {
         return null;
     }
 }
 
-const PRACTICE_FOCUS_THRESHOLDS: Record<
-    Exclude<PracticeFeedFocus, 'ALL'>,
-    {
-        minWinChanceLoss: number;
-        fallbackMinCpLoss: number;
-    }
-> = {
-    MEANINGFUL: {
-        minWinChanceLoss: 0.08,
-        fallbackMinCpLoss: 100,
-    },
-    MAJOR: {
-        minWinChanceLoss: 0.12,
-        fallbackMinCpLoss: 150,
-    },
-};
+function isIsoDate(value: unknown): value is string {
+    if (typeof value !== 'string') return false;
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function isNewScheduleKey(value: unknown): value is NewScheduleKey {
+    if (!value || typeof value !== 'object') return false;
+    const key = value as Partial<NewScheduleKey>;
+    return (
+        isIsoDate(key.createdAt) &&
+        typeof key.id === 'string' &&
+        UUID_RE.test(key.id)
+    );
+}
+
+function isDueScheduleKey(value: unknown): value is DueScheduleKey {
+    if (!isNewScheduleKey(value)) return false;
+    const key = value as Partial<DueScheduleKey>;
+    return (
+        (key.lapseBucket === 0 || key.lapseBucket === 1) &&
+        Number.isSafeInteger(key.lapses) &&
+        (key.lapses ?? -1) >= 0 &&
+        isIsoDate(key.nextDueAt) &&
+        isIsoDate(key.lastReviewedAt)
+    );
+}
+
+function isPracticeScheduleCursor(
+    value: unknown
+): value is PracticeScheduleCursor {
+    if (!value || typeof value !== 'object') return false;
+    const cursor = value as Partial<PracticeScheduleCursor>;
+    return (
+        Number.isSafeInteger(cursor.patternIndex) &&
+        (cursor.patternIndex ?? -1) >= 0 &&
+        (cursor.patternIndex ?? 3) < 3 &&
+        (cursor.due === null || isDueScheduleKey(cursor.due)) &&
+        (cursor.fresh === null || isNewScheduleKey(cursor.fresh))
+    );
+}
 
 function sorted(values: readonly string[] | undefined): string[] {
     return Array.from(new Set(values ?? [])).sort();
 }
 
-function practiceFilterHash(
-    filters: PracticeFilters
-): string {
+function practiceFilterHash(filters: PracticeFilters): string {
     return createHash('sha256')
         .update(
             JSON.stringify({
@@ -106,33 +126,10 @@ function practiceFilterHash(
                 themes: sorted(filters.themes),
                 minConfidence:
                     filters.minConfidence ?? null,
-                includeAttempted:
-                    filters.includeAttempted !== false,
+                mode: filters.mode ?? 'RECOMMENDED',
             })
         )
         .digest('hex');
-}
-
-function severityWhere(
-    focus: PracticeFeedFocus | undefined
-): Prisma.TrainingMomentWhereInput | null {
-    if (!focus || focus === 'ALL') return null;
-    const threshold = PRACTICE_FOCUS_THRESHOLDS[focus];
-    return {
-        OR: [
-            {
-                winChanceLoss: {
-                    gte: threshold.minWinChanceLoss,
-                },
-            },
-            {
-                winChanceLoss: null,
-                cpLoss: {
-                    gte: threshold.fallbackMinCpLoss,
-                },
-            },
-        ],
-    };
 }
 
 const promptSelect = {
@@ -190,43 +187,6 @@ const promptSelect = {
     lastTrainedAt: true,
 } satisfies Prisma.TrainingMomentSelect;
 
-function afterPracticeFeedCursor(
-    cursor: NonNullable<ReturnType<typeof decodeCursor>>
-): Prisma.TrainingMomentWhereInput {
-    if (cursor.lastTrainedAt === null) {
-        return {
-            OR: [
-                {
-                    lastTrainedAt: null,
-                    createdAt: { gt: cursor.createdAt },
-                },
-                {
-                    lastTrainedAt: null,
-                    createdAt: cursor.createdAt,
-                    id: { gt: cursor.id },
-                },
-                { lastTrainedAt: { not: null } },
-            ],
-        };
-    }
-    return {
-        OR: [
-            {
-                lastTrainedAt: { gt: cursor.lastTrainedAt },
-            },
-            {
-                lastTrainedAt: cursor.lastTrainedAt,
-                createdAt: { gt: cursor.createdAt },
-            },
-            {
-                lastTrainedAt: cursor.lastTrainedAt,
-                createdAt: cursor.createdAt,
-                id: { gt: cursor.id },
-            },
-        ],
-    };
-}
-
 export class InvalidPracticeFeedCursorError extends Error {
     constructor() {
         super('Invalid practice feed cursor');
@@ -238,9 +198,11 @@ export async function listPracticeFeed(args: {
     db: TrainingReadClient;
     userId: string;
     request: PracticeFeedRequest;
+    now?: () => Date;
 }): Promise<PracticeFeedResponse> {
     const limit = args.request.limit ?? 10;
     const filters = args.request.filters ?? {};
+    const mode = filters.mode ?? 'RECOMMENDED';
     const filterHash = practiceFilterHash(filters);
     const cursor = args.request.cursor
         ? decodeCursor(args.request.cursor)
@@ -251,99 +213,91 @@ export async function listPracticeFeed(args: {
     if (cursor && cursor.filterHash !== filterHash) {
         throw new InvalidPracticeFeedCursorError();
     }
-    const requestTime = new Date();
-    const feedStartedAt =
-        cursor?.feedStartedAt ?? requestTime;
+    const requestTime = (args.now ?? (() => new Date()))();
+    const feedStartedAt = cursor?.feedStartedAt ?? requestTime;
     if (feedStartedAt.getTime() > requestTime.getTime()) {
         throw new InvalidPracticeFeedCursorError();
     }
 
-    const severityFilter = severityWhere(filters.focus);
-    const where: Prisma.TrainingMomentWhereInput = {
-        userId: args.userId,
-        status: 'ACTIVE',
-        archivedAt: null,
-        currentSolutionRevisionId: { not: null },
-        currentSolutionRevision: {
-            is: {
-                trainable: true,
-                verificationStatus: 'VERIFIED',
-            },
-        },
-        ...(filters.phases?.length
-            ? { phase: { in: filters.phases } }
-            : {}),
-        ...(filters.sourceKinds?.length
-            ? { sourceKinds: { hasSome: filters.sourceKinds } }
-            : {}),
-        ...(filters.lessonKinds?.length
-            ? { lessonKinds: { hasSome: filters.lessonKinds } }
-            : {}),
-        ...(filters.themes?.length
-            ? { themes: { hasEvery: filters.themes } }
-            : {}),
-        ...(filters.minConfidence !== undefined
-            ? { confidence: { gte: filters.minConfidence } }
-            : {}),
-        ...(filters.includeAttempted === false
-            ? {
-                  attempts: {
-                      none: {
-                          userId: args.userId,
-                          status: { in: ['GRADED', 'REVEALED'] },
-                      },
-                  },
-              }
-            : {}),
-        AND: [
-            ...(severityFilter ? [severityFilter] : []),
-            { createdAt: { lte: feedStartedAt } },
-            {
-                OR: [
-                    { lastTrainedAt: null },
-                    {
-                        lastTrainedAt: {
-                            lt: feedStartedAt,
-                        },
-                    },
-                ],
-            },
-            ...(cursor ? [afterPracticeFeedCursor(cursor)] : []),
-        ],
-    };
+    const streamTake = limit + 1;
+    const [due, fresh] = await Promise.all([
+        mode === 'NEW'
+            ? Promise.resolve([])
+            : queryDuePracticeStream({
+                  db: args.db,
+                  userId: args.userId,
+                  feedStartedAt,
+                  filters,
+                  cursor: cursor?.schedule.due,
+                  take: streamTake,
+              }),
+        mode === 'REVIEW'
+            ? Promise.resolve([])
+            : queryNewPracticeStream({
+                  db: args.db,
+                  userId: args.userId,
+                  feedStartedAt,
+                  filters,
+                  cursor: cursor?.schedule.fresh,
+                  take: streamTake,
+              }),
+    ]);
+    const scheduled = interleavePracticeStreams({
+        due,
+        fresh,
+        mode,
+        limit,
+        ...(cursor ? { cursor: cursor.schedule } : {}),
+    });
+    if (scheduled.selected.length === 0) {
+        return {
+            items: [],
+            appliedFilters: filters,
+            nextCursor: null,
+        };
+    }
 
     const rows = await args.db.trainingMoment.findMany({
-        where,
-        select: promptSelect,
-        orderBy: [
-            {
-                lastTrainedAt: {
-                    sort: 'asc',
-                    nulls: 'first',
+        where: {
+            userId: args.userId,
+            status: 'ACTIVE',
+            archivedAt: null,
+            OR: scheduled.selected.map((candidate) => ({
+                id: candidate.id,
+                currentSolutionRevisionId:
+                    candidate.currentSolutionRevisionId,
+            })),
+            currentSolutionRevision: {
+                is: {
+                    trainable: true,
+                    verificationStatus: 'VERIFIED',
                 },
             },
-            { createdAt: 'asc' },
-            { id: 'asc' },
-        ],
-        take: limit + 1,
+        },
+        select: promptSelect,
     });
-    const hasMore = rows.length > limit;
-    const visible = hasMore ? rows.slice(0, limit) : rows;
-    const last = visible.at(-1);
+    const byCandidate = new Map(
+        rows.map((row) => [
+            `${row.id}:${row.currentSolutionRevisionId ?? ''}`,
+            row,
+        ])
+    );
+    const visible = scheduled.selected.flatMap((candidate) => {
+        const row = byCandidate.get(
+            `${candidate.id}:${candidate.currentSolutionRevisionId}`
+        );
+        return row ? [row] : [];
+    });
     return {
         items: visible.map(toTrainingPromptDto),
         appliedFilters: filters,
         nextCursor:
-            hasMore && last
+            scheduled.hasMore
                 ? encodeCursor({
-                      createdAt: last.createdAt.toISOString(),
-                      feedStartedAt:
-                          feedStartedAt.toISOString(),
+                      version: 1,
+                      feedStartedAt: feedStartedAt.toISOString(),
                       filterHash,
-                      lastTrainedAt:
-                          last.lastTrainedAt?.toISOString() ??
-                          null,
-                      id: last.id,
+                      schedule: scheduled.cursor,
                   })
                 : null,
     };

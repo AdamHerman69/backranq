@@ -4,6 +4,7 @@ import { safeAuthCallbackUrl } from '@/lib/auth/callbackUrl';
 import { PageHeader } from '@/components/app/PageHeader';
 import { TrainingTrainer } from '@/components/training/TrainingTrainer';
 import { isTrainingApiUuid } from '@/lib/training/apiValidation';
+import type { PracticeFeedMode } from '@/lib/training/api';
 
 export default async function PracticePage({
     searchParams,
@@ -19,11 +20,20 @@ export default async function PracticePage({
             : undefined;
     const entry = sp.entry === 'progress' ? 'progress' : undefined;
     const initialViewMode = sp.view === 'analyze' ? 'analyze' : 'solve';
+    const initialMode: PracticeFeedMode | undefined =
+        sp.mode === 'review'
+            ? 'REVIEW'
+            : sp.mode === 'new'
+              ? 'NEW'
+              : undefined;
     const callbackSearchParams = new URLSearchParams();
     if (momentId) callbackSearchParams.set('momentId', momentId);
     if (entry) callbackSearchParams.set('entry', entry);
     if (initialViewMode === 'analyze') {
         callbackSearchParams.set('view', 'analyze');
+    }
+    if (initialMode) {
+        callbackSearchParams.set('mode', initialMode.toLowerCase());
     }
     const practiceCallbackUrl = safeAuthCallbackUrl(
         callbackSearchParams.size > 0
@@ -51,6 +61,7 @@ export default async function PracticePage({
                 initialMomentId={momentId}
                 ownerId={userId}
                 entry={entry}
+                initialMode={initialMode}
                 initialViewMode={initialViewMode}
             />
         </div>

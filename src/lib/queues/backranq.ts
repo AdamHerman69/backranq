@@ -38,6 +38,7 @@ export type BackranqQueueMessage =
           syncCursor: string | null;
           userCursor: string | null;
           weeklyCursor: string | null;
+          practiceDueCursor: string | null;
       };
 
 export type BackranqQueuePublishResult = {

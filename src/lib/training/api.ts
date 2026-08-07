@@ -20,6 +20,14 @@ export const PRACTICE_FEED_FOCUSES = [
 export type PracticeFeedFocus =
     (typeof PRACTICE_FEED_FOCUSES)[number];
 
+export const PRACTICE_FEED_MODES = [
+    'RECOMMENDED',
+    'REVIEW',
+    'NEW',
+] as const;
+export type PracticeFeedMode =
+    (typeof PRACTICE_FEED_MODES)[number];
+
 export type PracticeFilters = {
     /**
      * User-facing practice intensity. Thresholds remain a server policy so the
@@ -31,7 +39,7 @@ export type PracticeFilters = {
     lessonKinds?: TrainingLessonKind[];
     themes?: string[];
     minConfidence?: number;
-    includeAttempted?: boolean;
+    mode?: PracticeFeedMode;
 };
 
 export type PracticeFeedRequest = {

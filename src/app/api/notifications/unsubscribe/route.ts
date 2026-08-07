@@ -29,6 +29,7 @@ async function unsubscribe(req: Request) {
                 type: {
                     in: [
                         'PRACTICE_READY',
+                        'PRACTICE_DUE',
                         'ANALYSIS_FAILED',
                         'SYNC_FAILED',
                         'NEW_GAMES_SYNCED',
