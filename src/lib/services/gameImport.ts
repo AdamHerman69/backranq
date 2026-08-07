@@ -13,14 +13,45 @@ export type SaveNormalizedGamesResult = {
     updated: number;
     ids: Record<string, string>;
     newGameDbIds: string[];
-    errors: Array<{ index: number; id?: string; error: string }>;
+    errors: Array<{
+        index: number;
+        id?: string;
+        code: GameImportErrorCode;
+        error: string;
+    }>;
 };
 
+export type GameImportErrorCode =
+    | 'PROVENANCE_CONFLICT'
+    | 'CONCURRENT_MODIFICATION'
+    | 'SAVE_FAILED';
+
 export class GameProvenanceConflictError extends Error {
+    readonly code = 'PROVENANCE_CONFLICT' as const;
+
     constructor() {
         super('Existing game has a different immutable player perspective');
         this.name = 'GameProvenanceConflictError';
     }
+}
+
+function gameImportErrorCode(error: unknown): GameImportErrorCode {
+    if (error instanceof GameProvenanceConflictError) {
+        return error.code;
+    }
+    if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        (error.code === 'P2002' || error.code === 'P2034')
+    ) {
+        return 'CONCURRENT_MODIFICATION';
+    }
+    if (
+        error instanceof Error &&
+        error.message === 'Game changed concurrently during import'
+    ) {
+        return 'CONCURRENT_MODIFICATION';
+    }
+    return 'SAVE_FAILED';
 }
 
 type GameImportClient = Pick<
@@ -187,6 +218,7 @@ export async function saveNormalizedGamesForUser(args: {
             result.errors.push({
                 index,
                 id: game.id,
+                code: gameImportErrorCode(e),
                 error: e instanceof Error ? e.message : 'Failed to save game',
             });
         }

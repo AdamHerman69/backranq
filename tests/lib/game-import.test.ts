@@ -94,6 +94,9 @@ describe('game import provenance and PGN invalidation', () => {
             id: 'db-game-1',
             pgn: originalPgn,
             sourcePgnHash: hashSourcePgn(originalPgn),
+            sourceUsername: 'Ada',
+            sourceAccountId: 'lichess-account-1',
+            userSide: 'WHITE',
         });
         prismaMock.analyzedGame.updateMany.mockResolvedValue({
             count: 1,
@@ -125,6 +128,9 @@ describe('game import provenance and PGN invalidation', () => {
             id: 'db-game-1',
             pgn: originalPgn,
             sourcePgnHash: hashSourcePgn(originalPgn),
+            sourceUsername: 'Ada',
+            sourceAccountId: 'lichess-account-1',
+            userSide: 'WHITE',
         });
         prismaMock.analyzedGame.updateMany.mockResolvedValue({
             count: 1,
@@ -177,6 +183,66 @@ describe('game import provenance and PGN invalidation', () => {
         ).toBeLessThan(
             prismaMock.trainingMoment.updateMany.mock
                 .invocationCallOrder[0]!
+        );
+    });
+
+    it('rejects a duplicate replay from the opposite side without mutating the snapshot', async () => {
+        prismaMock.analyzedGame.findUnique.mockResolvedValue({
+            id: 'db-game-1',
+            pgn: originalPgn,
+            sourcePgnHash: hashSourcePgn(originalPgn),
+            sourceUsername: 'Ada',
+            sourceAccountId: 'lichess-account-1',
+            userSide: 'WHITE',
+        });
+        const oppositePerspective = game();
+        oppositePerspective.provenance = {
+            ...oppositePerspective.provenance!,
+            username: 'Grace',
+            userSide: 'black',
+        };
+        const { saveNormalizedGamesForUser } = await importGameImport();
+
+        const result = await saveNormalizedGamesForUser({
+            userId: 'user-1',
+            games: [oppositePerspective],
+        });
+
+        expect(result).toMatchObject({
+            saved: 0,
+            errors: [{ code: 'PROVENANCE_CONFLICT' }],
+        });
+        expect(prismaMock.analyzedGame.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('keeps the frozen perspective when an account is unlinked and relinked', async () => {
+        prismaMock.analyzedGame.findUnique.mockResolvedValue({
+            id: 'db-game-1',
+            pgn: originalPgn,
+            sourcePgnHash: hashSourcePgn(originalPgn),
+            sourceUsername: 'Ada',
+            sourceAccountId: 'lichess-account-1',
+            userSide: 'WHITE',
+        });
+        prismaMock.analyzedGame.updateMany.mockResolvedValue({ count: 1 });
+        const replayAfterRelink = game();
+        // A durable source account can be disconnected and recreated. The game
+        // snapshot remains authoritative and is never derived from that row.
+        const { saveNormalizedGamesForUser } = await importGameImport();
+        await saveNormalizedGamesForUser({
+            userId: 'user-1',
+            games: [replayAfterRelink],
+        });
+
+        expect(prismaMock.analyzedGame.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.not.objectContaining({
+                    sourceUsername: expect.anything(),
+                    sourceAccountId: expect.anything(),
+                    userSide: expect.anything(),
+                }),
+            })
         );
     });
 });

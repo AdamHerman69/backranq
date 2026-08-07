@@ -15,6 +15,7 @@ import {
     gamesAnalysisStateWhere,
     parseGamesDateBound,
 } from '@/lib/games/indexFilters';
+import { ManualPgnImportButton } from '@/components/games/ManualPgnImportButton';
 
 function clampInt(v: number, min: number, max: number) {
     return Math.max(min, Math.min(max, v));
@@ -245,6 +246,7 @@ export default async function GamesPage({
             <PageHeader
                 title="Games"
                 subtitle="Your imported games and their analysis status."
+                actions={<ManualPgnImportButton ownerId={userId} />}
             />
 
             <Card className="shadow-none">
