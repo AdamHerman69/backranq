@@ -147,6 +147,12 @@ enum PracticeExposureTerminalReason {
   NAVIGATED_AWAY
 }
 
+enum PracticeDueSweepStatus {
+  SCANNING
+  NOTIFYING
+  COMPLETE
+}
+
 enum TrainingAttemptStatusEventReason {
   SUBMITTED
   RETRY
@@ -365,6 +371,7 @@ enum NotificationChannel {
 
 enum NotificationDeliveryStatus {
   PENDING
+  QUEUED
   PROCESSING
   SENT
   DELIVERED
@@ -398,6 +405,7 @@ model User {
   attemptStatusEvents         TrainingAttemptStatusEvent[]
   practiceReviewStates        PracticeReviewState[]
   practiceReviewEvents        PracticeReviewEvent[]
+  practiceDueSweepUsers       PracticeDueSweepUser[]
   progressAnalyticsEvents     ProgressAnalyticsEvent[]
   progressAnalyticsRateBucket ProgressAnalyticsRateBucket?
   providerSyncStates          ProviderSyncState[]
@@ -538,6 +546,7 @@ model NotificationDelivery {
   recipient         String?
   scheduledFor      DateTime                   @default(now())
   lockedUntil       DateTime?
+  dispatchToken     String?                    @unique @db.Uuid
   attempts          Int                        @default(0)
   providerMessageId String?                    @unique
   lastError         String?                    @db.Text
@@ -550,9 +559,9 @@ model NotificationDelivery {
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([notificationId, channel])
-  @@index([status, scheduledFor])
+  @@index([status, scheduledFor, id])
   @@index([userId, channel, createdAt])
-  @@index([lockedUntil])
+  @@index([status, lockedUntil, id])
 }
 
 model PushSubscription {
@@ -1198,8 +1207,42 @@ model PracticeReviewState {
   events         PracticeReviewEvent[]
 
   @@unique([userId, trainingMomentId, solutionHash, configHash])
-  @@index([userId, nextDueAt])
+  @@index([userId, nextDueAt, id])
+  @@index([nextDueAt, id])
   @@index([trainingMomentId])
+}
+
+/// Durable, bounded scan of one due snapshot. A queue retry always resumes from
+/// the committed raw-state tuple instead of repeating an unbounded aggregate.
+model PracticeDueSweep {
+  id              String                 @id @default(uuid()) @db.Uuid
+  referenceAt     DateTime               @unique
+  status          PracticeDueSweepStatus @default(SCANNING)
+  cursorNextDueAt DateTime?
+  cursorStateId   String?                @db.Uuid
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @default(now()) @updatedAt
+  completedAt     DateTime?
+
+  users PracticeDueSweepUser[]
+
+  @@index([status, completedAt, id])
+}
+
+model PracticeDueSweepUser {
+  sweepId         String   @db.Uuid
+  userId          String   @db.Uuid
+  dueCount        Int
+  dueCountIsExact Boolean  @default(true)
+  earliestDueAt   DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+
+  sweep PracticeDueSweep @relation(fields: [sweepId], references: [id], onDelete: Cascade)
+  user  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([sweepId, userId])
+  @@index([userId, createdAt])
 }
 
 /// Append-only evidence used to derive PracticeReviewState.

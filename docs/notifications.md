@@ -12,8 +12,11 @@ transaction as the product event whenever the event already has a transaction
   at the user's chosen digest hour and timezone.
 - Scheduled Practice reviews derived from the current, verified solution
   semantics. Outstanding reviews may create one reminder per local digest day;
-  retries replace the same daily snapshot instead of inflating its count, and a
-  delivery is cancelled if the user completes the queue before provider send.
+  retries replace the same daily snapshot instead of inflating its count. A
+  bounded live recheck cancels the delivery when it can prove the queue is
+  empty. If that check exhausts its raw-row budget on stale state, the durable
+  sweep snapshot is preserved rather than misreporting an unknown result as
+  zero.
 - New games imported by automatic sync, with off/daily/weekly email options.
 - Terminal analysis and sync failures.
 - Automatic analysis paused at the configured credit reserve and failed Stripe
@@ -116,6 +119,16 @@ which are selected ahead of optional campaigns. Delivery webhooks use both
 SMTP2GO's email ID and the requested `X-Backranq-Delivery-Id` callback field,
 apply monotonic status precedence, and suppress future email after a hard bounce
 or spam complaint.
+
+Practice-due discovery is a durable snapshot sweep. Each queue message scans at
+most 256 raw review-state rows by the `(nextDueAt, id)` index before applying
+current-solution and VERIFIED checks. Only after the raw cursor reaches the end
+does notification fan-out begin, in pages of 50 users with five concurrent
+writes. Counts above 100 are displayed as `100+`. Completed sweep snapshots are
+removed in bounded pages after 30 days; active scans and notification fan-outs
+are never eligible for cleanup. Maintenance resumes the single active sweep
+before creating a newer snapshot, so an exhausted queue retry cannot accumulate
+abandoned active sweeps.
 
 The same daily fallback job reconciles recent terminal analysis/sync jobs and newly
 created users into deduplicated notifications. This repairs the outbox if a

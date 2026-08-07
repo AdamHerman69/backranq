@@ -108,9 +108,13 @@ export async function POST(req: Request) {
                 where: {
                     userId: resolvedDelivery.userId,
                     channel: 'EMAIL',
-                    status: 'PENDING',
+                    status: { in: ['PENDING', 'QUEUED'] },
                 },
-                data: { status: 'SUPPRESSED' },
+                data: {
+                    status: 'SUPPRESSED',
+                    dispatchToken: null,
+                    lockedUntil: null,
+                },
             });
         } else if (event.event === 'unsubscribe') {
             await tx.notificationPreference.upsert({
@@ -137,10 +141,14 @@ export async function POST(req: Request) {
                 where: {
                     userId: resolvedDelivery.userId,
                     channel: 'EMAIL',
-                    status: 'PENDING',
+                    status: { in: ['PENDING', 'QUEUED'] },
                     notification: { type: { in: [...OPTIONAL_TYPES] } },
                 },
-                data: { status: 'CANCELLED' },
+                data: {
+                    status: 'CANCELLED',
+                    dispatchToken: null,
+                    lockedUntil: null,
+                },
             });
         }
     });
@@ -149,6 +157,7 @@ export async function POST(req: Request) {
 
 const STATUS_PRECEDENCE = {
     PENDING: 0,
+    QUEUED: 0,
     PROCESSING: 0,
     SENT: 1,
     FAILED: 2,

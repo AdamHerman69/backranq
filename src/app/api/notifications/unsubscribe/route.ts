@@ -24,7 +24,7 @@ async function unsubscribe(req: Request) {
     await prisma.notificationDelivery.updateMany({
         where: {
             userId,
-            status: 'PENDING',
+            status: { in: ['PENDING', 'QUEUED'] },
             notification: {
                 type: {
                     in: [
@@ -39,7 +39,11 @@ async function unsubscribe(req: Request) {
                 },
             },
         },
-        data: { status: 'CANCELLED' },
+        data: {
+            status: 'CANCELLED',
+            dispatchToken: null,
+            lockedUntil: null,
+        },
     });
     return userId;
 }

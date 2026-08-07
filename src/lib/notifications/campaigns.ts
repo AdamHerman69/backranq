@@ -4,11 +4,13 @@ import { nextDigestAt } from './scheduling';
 import {
     recordAnalysisFailed,
     recordNotification,
-    recordPracticeDue,
     recordSyncFailed,
     recordWelcome,
 } from './service';
-import { listPracticeDueSummaries } from '@/lib/training/practiceDue';
+import {
+    cleanupCompletedPracticeDueSweeps,
+    schedulePracticeDueSweep,
+} from '@/lib/training/practiceDueSweep';
 
 const PAGE_SIZE = 200;
 const WEEK_MS = 7 * 24 * 60 * 60_000;
@@ -33,21 +35,32 @@ export async function reconcileRecentNotificationEvents(
         cursors.analysisCursor === null
             ? []
             : await prisma.analysisJob.findMany({
-            where: { status: 'FAILED', completedAt: { gte: since } },
-            orderBy: [{ completedAt: 'asc' }, { id: 'asc' }],
-            take: PAGE_SIZE,
-            ...(cursors.analysisCursor
-                ? { cursor: { id: cursors.analysisCursor }, skip: 1 }
-                : {}),
-            select: { id: true, userId: true, gameId: true, lastError: true },
-        });
+                  where: {
+                      status: 'FAILED',
+                      completedAt: { gte: since },
+                  },
+                  orderBy: [{ completedAt: 'asc' }, { id: 'asc' }],
+                  take: PAGE_SIZE,
+                  ...(cursors.analysisCursor
+                      ? {
+                            cursor: { id: cursors.analysisCursor },
+                            skip: 1,
+                        }
+                      : {}),
+                  select: {
+                      id: true,
+                      userId: true,
+                      gameId: true,
+                      lastError: true,
+                  },
+              });
     for (const job of analysisJobs) {
-            await recordAnalysisFailed({
-                userId: job.userId,
-                jobId: job.id,
-                gameId: job.gameId,
-                error: job.lastError ?? 'Analysis failed',
-            });
+        await recordAnalysisFailed({
+            userId: job.userId,
+            jobId: job.id,
+            gameId: job.gameId,
+            error: job.lastError ?? 'Analysis failed',
+        });
     }
     analysisFailures = analysisJobs.length;
 
@@ -55,21 +68,29 @@ export async function reconcileRecentNotificationEvents(
         cursors.syncCursor === null
             ? []
             : await prisma.syncJob.findMany({
-            where: { status: 'FAILED', completedAt: { gte: since } },
-            orderBy: [{ completedAt: 'asc' }, { id: 'asc' }],
-            take: PAGE_SIZE,
-            ...(cursors.syncCursor
-                ? { cursor: { id: cursors.syncCursor }, skip: 1 }
-                : {}),
-            select: { id: true, userId: true, provider: true, lastError: true },
-        });
+                  where: {
+                      status: 'FAILED',
+                      completedAt: { gte: since },
+                  },
+                  orderBy: [{ completedAt: 'asc' }, { id: 'asc' }],
+                  take: PAGE_SIZE,
+                  ...(cursors.syncCursor
+                      ? { cursor: { id: cursors.syncCursor }, skip: 1 }
+                      : {}),
+                  select: {
+                      id: true,
+                      userId: true,
+                      provider: true,
+                      lastError: true,
+                  },
+              });
     for (const job of syncJobs) {
-            await recordSyncFailed({
-                userId: job.userId,
-                jobId: job.id,
-                provider: job.provider,
-                error: job.lastError ?? 'Sync failed',
-            });
+        await recordSyncFailed({
+            userId: job.userId,
+            jobId: job.id,
+            provider: job.provider,
+            error: job.lastError ?? 'Sync failed',
+        });
     }
     syncFailures = syncJobs.length;
 
@@ -77,14 +98,14 @@ export async function reconcileRecentNotificationEvents(
         cursors.userCursor === null
             ? []
             : await prisma.user.findMany({
-            where: { createdAt: { gte: since } },
-            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-            take: PAGE_SIZE,
-            ...(cursors.userCursor
-                ? { cursor: { id: cursors.userCursor }, skip: 1 }
-                : {}),
-            select: { id: true },
-        });
+                  where: { createdAt: { gte: since } },
+                  orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+                  take: PAGE_SIZE,
+                  ...(cursors.userCursor
+                      ? { cursor: { id: cursors.userCursor }, skip: 1 }
+                      : {}),
+                  select: { id: true },
+              });
     for (const user of users) await recordWelcome(user.id);
     welcomeUsers = users.length;
 
@@ -98,7 +119,9 @@ export async function reconcileRecentNotificationEvents(
                     ? (analysisJobs.at(-1)?.id ?? null)
                     : null,
             syncCursor:
-                syncJobs.length === PAGE_SIZE ? (syncJobs.at(-1)?.id ?? null) : null,
+                syncJobs.length === PAGE_SIZE
+                    ? (syncJobs.at(-1)?.id ?? null)
+                    : null,
             userCursor:
                 users.length === PAGE_SIZE ? (users.at(-1)?.id ?? null) : null,
         },
@@ -113,29 +136,29 @@ export async function generateDueWeeklyProgressNotifications(
     let eligible = 0;
     let created = 0;
     const preferences = await prisma.notificationPreference.findMany({
-            where: {
-                emailWeeklyProgress: true,
-                optionalEmailsUnsubscribedAt: null,
-                emailSuppressedAt: null,
-                user: { email: { not: null } },
-            },
-            select: { userId: true, timezone: true, digestHour: true },
-            orderBy: { userId: 'asc' },
-            take: PAGE_SIZE,
-            ...(cursor ? { cursor: { userId: cursor }, skip: 1 } : {}),
-        });
-        eligible += preferences.length;
+        where: {
+            emailWeeklyProgress: true,
+            optionalEmailsUnsubscribedAt: null,
+            emailSuppressedAt: null,
+            user: { email: { not: null } },
+        },
+        select: { userId: true, timezone: true, digestHour: true },
+        orderBy: { userId: 'asc' },
+        take: PAGE_SIZE,
+        ...(cursor ? { cursor: { userId: cursor }, skip: 1 } : {}),
+    });
+    eligible += preferences.length;
 
-        const due = preferences.flatMap((preference) => {
-            const period = weeklyPeriod(
-                now,
-                preference.timezone,
-                preference.digestHour
-            );
-            return period ? [{ ...preference, ...period }] : [];
-        });
-        const userIds = due.map((preference) => preference.userId);
-        if (userIds.length > 0) {
+    const due = preferences.flatMap((preference) => {
+        const period = weeklyPeriod(
+            now,
+            preference.timezone,
+            preference.digestHour
+        );
+        return period ? [{ ...preference, ...period }] : [];
+    });
+    const userIds = due.map((preference) => preference.userId);
+    if (userIds.length > 0) {
             const since = new Date(now.getTime() - WEEK_MS);
             const keys = due.map(
                 (preference) =>
@@ -235,7 +258,7 @@ export async function generateDueWeeklyProgressNotifications(
                 });
                 if (!prior) created += 1;
             }
-        }
+    }
 
     return {
         eligible,
@@ -252,26 +275,20 @@ export async function generatePracticeDueNotifications(
     cursor?: string | null
 ) {
     if (cursor === null) {
-        return { dueUsers: 0, processed: 0, nextCursor: null };
+        return {
+            dueUsers: 0,
+            processed: 0,
+            scannedUsers: 0,
+            nextCursor: null,
+        };
     }
-    const summaries = await listPracticeDueSummaries({
-        now,
-        afterUserId: cursor,
-        limit: PAGE_SIZE,
-    });
-    for (const summary of summaries) {
-        await recordPracticeDue({
-            ...summary,
-            generatedAt: now,
-        });
-    }
+    const sweep = await schedulePracticeDueSweep(now);
     return {
-        dueUsers: summaries.length,
-        processed: summaries.length,
-        nextCursor:
-            summaries.length === PAGE_SIZE
-                ? (summaries.at(-1)?.userId ?? null)
-                : null,
+        dueUsers: 0,
+        processed: 0,
+        scannedUsers: 0,
+        nextCursor: null,
+        sweep,
     };
 }
 
@@ -285,15 +302,21 @@ type MaintenanceArgs = ReconcileCursors & {
 export async function runNotificationMaintenance(args: MaintenanceArgs = {}) {
     const referenceAt = args.referenceAt ?? new Date();
     const since = args.since ?? new Date(referenceAt.getTime() - WEEK_MS);
-    const [practiceDue, weekly, reconciled] = await Promise.all([
-        generatePracticeDueNotifications(
-            referenceAt,
-            args.practiceDueCursor
-        ),
-        generateDueWeeklyProgressNotifications(referenceAt, args.weeklyCursor),
-        reconcileRecentNotificationEvents(referenceAt, args, since),
-    ]);
+    const [practiceDue, weekly, reconciled, practiceDueCleanup] =
+        await Promise.all([
+            generatePracticeDueNotifications(
+                referenceAt,
+                args.practiceDueCursor
+            ),
+            generateDueWeeklyProgressNotifications(
+                referenceAt,
+                args.weeklyCursor
+            ),
+            reconcileRecentNotificationEvents(referenceAt, args, since),
+            cleanupCompletedPracticeDueSweeps(referenceAt),
+        ]);
     const hasContinuation =
+        practiceDueCleanup.hasMore ||
         practiceDue.nextCursor !== null ||
         weekly.nextCursor !== null ||
         reconciled.next.analysisCursor !== null ||
@@ -310,13 +333,24 @@ export async function runNotificationMaintenance(args: MaintenanceArgs = {}) {
             userCursor: reconciled.next.userCursor,
             weeklyCursor: weekly.nextCursor,
             practiceDueCursor: practiceDue.nextCursor,
+            practiceDueCleanupCursor:
+                practiceDueCleanup.lastDeletedId,
         };
         const continuation = await publishBackranqQueueMessage(message, {
-            idempotencyKey: `notification-maintenance:${message.referenceAt}:${message.analysisCursor ?? 'done'}:${message.syncCursor ?? 'done'}:${message.userCursor ?? 'done'}:${message.weeklyCursor ?? 'done'}:${message.practiceDueCursor ?? 'done'}`,
+            idempotencyKey: `notification-maintenance:${message.referenceAt}:${message.analysisCursor ?? 'done'}:${message.syncCursor ?? 'done'}:${message.userCursor ?? 'done'}:${message.weeklyCursor ?? 'done'}:${message.practiceDueCursor ?? 'done'}:${message.practiceDueCleanupCursor ?? 'done'}`,
         });
+        if (!continuation.queued && process.env.NODE_ENV === 'production') {
+            throw new Error('Notification maintenance queue is unavailable');
+        }
         continuationQueued = continuation.queued;
     }
-    return { practiceDue, weekly, reconciled, continuationQueued };
+    return {
+        practiceDue,
+        weekly,
+        reconciled,
+        practiceDueCleanup,
+        continuationQueued,
+    };
 }
 
 function weeklyPeriod(now: Date, timezone: string, digestHour: number) {

@@ -69,7 +69,9 @@ export function HomeDashboard() {
         ownerId: string | null;
         status: 'idle' | 'loading' | 'ready' | 'error';
         trainingMomentCount: number;
+        trainingMomentCountIsExact: boolean;
         duePracticeCount: number;
+        duePracticeCountIsExact: boolean;
         gameCount: number;
         unanalyzedGameCount: number;
         syncStatus: SyncStatus | null;
@@ -78,7 +80,9 @@ export function HomeDashboard() {
         ownerId: null,
         status: 'idle',
         trainingMomentCount: 0,
+        trainingMomentCountIsExact: true,
         duePracticeCount: 0,
+        duePracticeCountIsExact: true,
         gameCount: 0,
         unanalyzedGameCount: 0,
         syncStatus: null,
@@ -122,7 +126,12 @@ export function HomeDashboard() {
                     gameRes.json(),
                     unanalyzedRes.json(),
                 ])) as [
-                    { totalEligibleCount?: number; dueCount?: number },
+                    {
+                        availableCount?: number;
+                        availableCountIsExact?: boolean;
+                        dueCount?: number;
+                        dueCountIsExact?: boolean;
+                    },
                     { total?: number },
                     { total?: number },
                 ];
@@ -131,13 +140,17 @@ export function HomeDashboard() {
                 ownerId,
                 status: 'ready',
                 trainingMomentCount:
-                    typeof practiceJson.totalEligibleCount === 'number'
-                        ? practiceJson.totalEligibleCount
+                    typeof practiceJson.availableCount === 'number'
+                        ? practiceJson.availableCount
                         : 0,
+                trainingMomentCountIsExact:
+                    practiceJson.availableCountIsExact !== false,
                 duePracticeCount:
                     typeof practiceJson.dueCount === 'number'
                         ? practiceJson.dueCount
                         : 0,
+                duePracticeCountIsExact:
+                    practiceJson.dueCountIsExact !== false,
                 gameCount:
                     typeof gameJson.total === 'number' ? gameJson.total : 0,
                 unanalyzedGameCount:
@@ -168,7 +181,9 @@ export function HomeDashboard() {
             ownerId,
             status: 'idle',
             trainingMomentCount: 0,
+            trainingMomentCountIsExact: true,
             duePracticeCount: 0,
+            duePracticeCountIsExact: true,
             gameCount: 0,
             unanalyzedGameCount: 0,
             syncStatus: null,
@@ -236,6 +251,12 @@ export function HomeDashboard() {
     const duePracticeCount = dashboardMatchesOwner
         ? dashboard.duePracticeCount
         : 0;
+    const trainingMomentCountIsExact = dashboardMatchesOwner
+        ? dashboard.trainingMomentCountIsExact
+        : true;
+    const duePracticeCountIsExact = dashboardMatchesOwner
+        ? dashboard.duePracticeCountIsExact
+        : true;
     const unanalyzedGameCount = dashboardMatchesOwner
         ? dashboard.unanalyzedGameCount
         : 0;
@@ -320,9 +341,11 @@ export function HomeDashboard() {
                             : dashboardStatus === 'error'
                               ? 'Your games and positions are still here, but their latest status could not be loaded.'
                             : duePracticeCount > 0
-                              ? `${duePracticeCount} practice position${duePracticeCount === 1 ? ' is' : 's are'} due for review.`
+                              ? `${duePracticeCount}${duePracticeCountIsExact ? '' : '+'} practice position${duePracticeCount === 1 && duePracticeCountIsExact ? ' is' : 's are'} due for review.`
                             : hasTrainingMoments
-                            ? `Your next practice position is ready from ${gameCount} games.`
+                            ? `${trainingMomentCount}${trainingMomentCountIsExact ? '' : '+'} practice position${trainingMomentCount === 1 && trainingMomentCountIsExact ? ' is' : 's are'} ready from ${gameCount} games.`
+                            : !trainingMomentCountIsExact
+                              ? 'Practice is still scanning a bounded part of your library. Open Practice to continue safely.'
                             : dashboardSyncStatus === null
                               ? 'Your library is available, but linked-account sync status is temporarily unavailable.'
                             : gameCount > 0
@@ -353,7 +376,9 @@ export function HomeDashboard() {
                 gameCount={gameCount}
                 unanalyzedGameCount={unanalyzedGameCount}
                 trainingMomentCount={trainingMomentCount}
+                trainingMomentCountIsExact={trainingMomentCountIsExact}
                 duePracticeCount={duePracticeCount}
+                duePracticeCountIsExact={duePracticeCountIsExact}
                 analysisBlockedReason={effectiveAnalysisBlockedReason}
                 error={dashboardMatchesOwner ? dashboard.error : null}
                 onRetry={() => void fetchDashboard()}
@@ -378,7 +403,9 @@ function HomeStateCard({
     gameCount,
     unanalyzedGameCount,
     trainingMomentCount,
+    trainingMomentCountIsExact,
     duePracticeCount,
+    duePracticeCountIsExact,
     analysisBlockedReason,
     error,
     onRetry,
@@ -387,7 +414,9 @@ function HomeStateCard({
     gameCount: number;
     unanalyzedGameCount: number;
     trainingMomentCount: number;
+    trainingMomentCountIsExact: boolean;
     duePracticeCount: number;
+    duePracticeCountIsExact: boolean;
     analysisBlockedReason: string | null;
     error: string | null;
     onRetry: () => void;
@@ -526,6 +555,17 @@ function HomeStateCard({
     }
 
     if (state === 'analyzed-no-candidates') {
+        if (!trainingMomentCountIsExact) {
+            return (
+                <NextActionCard
+                    icon={<Clock3 className="h-5 w-5" aria-hidden="true" />}
+                    title="Practice scan can continue"
+                    description="The bounded Home check found no ready position in its first slices. Open Practice to continue from the safe cursor; future-scheduled reviews are not counted as ready."
+                    actionLabel="Check Practice"
+                    href="/practice"
+                />
+            );
+        }
         return (
             <NextActionCard
                 icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
@@ -542,8 +582,8 @@ function HomeStateCard({
             icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
             title={
                 duePracticeCount > 0
-                    ? `${duePracticeCount} review${duePracticeCount === 1 ? '' : 's'} due`
-                    : 'Your positions are ready'
+                    ? `${duePracticeCount}${duePracticeCountIsExact ? '' : '+'} review${duePracticeCount === 1 && duePracticeCountIsExact ? '' : 's'} due`
+                    : `${trainingMomentCount}${trainingMomentCountIsExact ? '' : '+'} practice position${trainingMomentCount === 1 && trainingMomentCountIsExact ? '' : 's'} ready`
             }
             description={
                 duePracticeCount > 0

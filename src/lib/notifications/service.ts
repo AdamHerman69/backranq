@@ -203,6 +203,7 @@ export async function recordPracticeReadyInTransaction(args: {
 export async function recordPracticeDue(args: {
     userId: string;
     dueCount: number;
+    dueCountIsExact: boolean;
     earliestDueAt: Date;
     generatedAt: Date;
 }) {
@@ -223,6 +224,7 @@ export async function recordPracticeDue(args: {
         itemCount: args.dueCount,
         metadata: {
             earliestDueAt: args.earliestDueAt.toISOString(),
+            dueCountIsExact: args.dueCountIsExact,
             generatedAt: args.generatedAt.toISOString(),
             scheduledFor: window.scheduledFor.toISOString(),
         },

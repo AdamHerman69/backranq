@@ -111,6 +111,7 @@ describe('recordNotification', () => {
         await recordPracticeDue({
             userId: 'user-1',
             dueCount: 4,
+            dueCountIsExact: true,
             earliestDueAt: new Date('2026-08-01T09:00:00.000Z'),
             generatedAt: new Date('2026-08-04T08:00:00.000Z'),
         });

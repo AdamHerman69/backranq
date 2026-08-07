@@ -110,16 +110,28 @@ export async function PATCH(req: Request) {
                 where: {
                     userId,
                     channel: 'EMAIL',
-                    status: 'PENDING',
+                    status: { in: ['PENDING', 'QUEUED'] },
                     notification: { type: { in: cancelledEmailTypes } },
                 },
-                data: { status: 'CANCELLED' },
+                data: {
+                    status: 'CANCELLED',
+                    dispatchToken: null,
+                    lockedUntil: null,
+                },
             });
         }
         if (value.pushEnabled === false) {
             await tx.notificationDelivery.updateMany({
-                where: { userId, channel: 'WEB_PUSH', status: 'PENDING' },
-                data: { status: 'CANCELLED' },
+                where: {
+                    userId,
+                    channel: 'WEB_PUSH',
+                    status: { in: ['PENDING', 'QUEUED'] },
+                },
+                data: {
+                    status: 'CANCELLED',
+                    dispatchToken: null,
+                    lockedUntil: null,
+                },
             });
         }
         return updated;

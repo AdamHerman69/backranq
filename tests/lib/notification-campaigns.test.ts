@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { prismaMock, serviceMocks, publishQueueMock, practiceDueMocks } = vi.hoisted(() => ({
+const { prismaMock, serviceMocks, publishQueueMock, practiceDueSweepMocks } = vi.hoisted(() => ({
     prismaMock: {
         analysisJob: { findMany: vi.fn() },
         syncJob: { findMany: vi.fn() },
@@ -18,8 +18,9 @@ const { prismaMock, serviceMocks, publishQueueMock, practiceDueMocks } = vi.hois
         recordPracticeDue: vi.fn(),
     },
     publishQueueMock: vi.fn(),
-    practiceDueMocks: {
-        listPracticeDueSummaries: vi.fn(),
+    practiceDueSweepMocks: {
+        schedulePracticeDueSweep: vi.fn(),
+        cleanupCompletedPracticeDueSweeps: vi.fn(),
     },
 }));
 
@@ -28,7 +29,7 @@ vi.mock('@/lib/notifications/service', () => serviceMocks);
 vi.mock('@/lib/queues/backranq', () => ({
     publishBackranqQueueMessage: publishQueueMock,
 }));
-vi.mock('@/lib/training/practiceDue', () => practiceDueMocks);
+vi.mock('@/lib/training/practiceDueSweep', () => practiceDueSweepMocks);
 
 import {
     generateDueWeeklyProgressNotifications,
@@ -42,7 +43,16 @@ describe('notification campaigns', () => {
         vi.clearAllMocks();
         serviceMocks.recordNotification.mockResolvedValue({ id: 'notification' });
         publishQueueMock.mockResolvedValue({ queued: true, messageId: 'message-1' });
-        practiceDueMocks.listPracticeDueSummaries.mockResolvedValue([]);
+        practiceDueSweepMocks.schedulePracticeDueSweep.mockResolvedValue({
+            sweepId: 'sweep-1',
+            status: 'SCANNING',
+            queued: true,
+        });
+        practiceDueSweepMocks.cleanupCompletedPracticeDueSweeps.mockResolvedValue({
+            deleted: 0,
+            hasMore: false,
+            lastDeletedId: null,
+        });
     });
 
     it('pages through all recent failures and replays existing notification keys to repair delivery', async () => {
@@ -232,32 +242,48 @@ describe('notification campaigns', () => {
         );
     });
 
-    it('creates one bounded daily due notification per due user', async () => {
+    it('starts a durable bounded due sweep instead of scanning users inline', async () => {
         const now = new Date('2026-08-03T14:00:00.000Z');
-        practiceDueMocks.listPracticeDueSummaries.mockResolvedValue([
-            {
-                userId: 'user-1',
-                dueCount: 3,
-                earliestDueAt: new Date(
-                    '2026-08-01T09:00:00.000Z'
-                ),
-            },
-        ]);
 
         await expect(
             generatePracticeDueNotifications(now)
-        ).resolves.toEqual({
-            dueUsers: 1,
-            processed: 1,
+        ).resolves.toMatchObject({
+            dueUsers: 0,
+            processed: 0,
+            scannedUsers: 0,
             nextCursor: null,
+            sweep: { sweepId: 'sweep-1', queued: true },
         });
-        expect(serviceMocks.recordPracticeDue).toHaveBeenCalledWith({
-            userId: 'user-1',
-            dueCount: 3,
-            earliestDueAt: new Date(
-                '2026-08-01T09:00:00.000Z'
-            ),
-            generatedAt: now,
+        expect(practiceDueSweepMocks.schedulePracticeDueSweep).toHaveBeenCalledWith(now);
+        expect(serviceMocks.recordPracticeDue).not.toHaveBeenCalled();
+    });
+
+    it('uses the last deleted sweep id to durably continue retention cleanup', async () => {
+        prismaMock.analysisJob.findMany.mockResolvedValue([]);
+        prismaMock.syncJob.findMany.mockResolvedValue([]);
+        prismaMock.user.findMany.mockResolvedValue([]);
+        practiceDueSweepMocks.cleanupCompletedPracticeDueSweeps.mockResolvedValue({
+            deleted: 25,
+            hasMore: true,
+            lastDeletedId: 'expired-sweep-25',
         });
+
+        await runNotificationMaintenance({
+            referenceAt: new Date('2026-08-07T12:00:00.000Z'),
+            weeklyCursor: null,
+            practiceDueCursor: null,
+        });
+
+        expect(publishQueueMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'notification-maintenance',
+                practiceDueCleanupCursor: 'expired-sweep-25',
+            }),
+            expect.objectContaining({
+                idempotencyKey: expect.stringContaining(
+                    ':expired-sweep-25'
+                ),
+            })
+        );
     });
 });

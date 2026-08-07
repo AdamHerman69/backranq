@@ -4,6 +4,21 @@ import { E2E_USER } from './support/fixtures';
 test('Home keeps available Practice when sync status is unavailable', async ({
     page,
 }) => {
+    await page.route('**/api/training/due', async (route) => {
+        await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+                availableCount: 3,
+                availableCountIsExact: true,
+                dueCount: 0,
+                dueCountIsExact: true,
+                newCount: 3,
+                newCountIsExact: true,
+                earliestDueAt: null,
+            }),
+        });
+    });
     await page.route('**/api/sync/status', async (route) => {
         await route.fulfill({
             status: 503,
@@ -17,7 +32,7 @@ test('Home keeps available Practice when sync status is unavailable', async ({
     const practiceLink = page.getByRole('link', { name: 'Practice now' });
     await expect(practiceLink).toBeVisible();
     await expect(practiceLink).toHaveAttribute('href', '/practice');
-    await expect(page.getByText('Your positions are ready')).toBeVisible();
+    await expect(page.getByText('3 practice positions ready')).toBeVisible();
     await expect(
         page.getByText('Could not load source sync status.')
     ).toBeVisible();
@@ -31,8 +46,12 @@ test('Home shows one dominant connection action when no account is linked', asyn
             status: 200,
             contentType: 'application/json',
             body: JSON.stringify({
-                totalEligibleCount: 0,
+                availableCount: 0,
+                availableCountIsExact: true,
                 dueCount: 0,
+                dueCountIsExact: true,
+                newCount: 0,
+                newCountIsExact: true,
                 earliestDueAt: null,
             }),
         });
@@ -91,8 +110,12 @@ test('Home links a scheduled review count to the due-only queue', async ({
             status: 200,
             contentType: 'application/json',
             body: JSON.stringify({
-                totalEligibleCount: 6,
+                availableCount: 6,
+                availableCountIsExact: true,
                 dueCount: 3,
+                dueCountIsExact: true,
+                newCount: 3,
+                newCountIsExact: true,
                 earliestDueAt: '2026-08-01T09:00:00.000Z',
             }),
         });
@@ -104,6 +127,31 @@ test('Home links a scheduled review count to the due-only queue', async ({
     await expect(
         page.getByRole('link', { name: 'Review due positions' })
     ).toHaveAttribute('href', '/practice?mode=review');
+});
+
+test('Home never presents future-reviewed inventory as ready', async ({
+    page,
+}) => {
+    await page.route('**/api/training/due', async (route) => {
+        await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+                availableCount: 0,
+                availableCountIsExact: true,
+                dueCount: 0,
+                dueCountIsExact: true,
+                newCount: 0,
+                newCountIsExact: true,
+                earliestDueAt: null,
+            }),
+        });
+    });
+
+    await page.goto('/home');
+
+    await expect(page.getByText(/practice position.*ready/i)).toHaveCount(0);
+    await expect(page.getByText('Analyze your imported games')).toBeVisible();
 });
 
 test('public root stays a marketing landing for signed-in visitors', async ({

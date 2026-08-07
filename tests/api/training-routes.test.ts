@@ -121,15 +121,12 @@ describe('canonical training routes', () => {
                 const text = (
                     query as { strings?: readonly string[] }
                 ).strings?.join('');
-                if (
-                    text?.includes(
-                        'INNER JOIN "PracticeReviewState" state'
-                    )
-                ) {
+                if (text?.includes('WITH "rawDue" AS MATERIALIZED')) {
                     return [];
                 }
                 return [
                     {
+                        rawId: momentId,
                         id: momentId,
                         currentSolutionRevisionId: revisionId,
                         createdAt: feedRow.createdAt,
@@ -268,22 +265,20 @@ describe('canonical training routes', () => {
                 const text = (
                     query as { strings?: readonly string[] }
                 ).strings?.join('');
-                if (
-                    text?.includes(
-                        'INNER JOIN "PracticeReviewState" state'
-                    )
-                ) {
+                if (text?.includes('WITH "rawDue" AS MATERIALIZED')) {
                     return [];
                 }
                 newPage += 1;
                 return newPage === 1
                     ? [
                           {
+                              rawId: momentId,
                               id: momentId,
                               currentSolutionRevisionId: revisionId,
                               createdAt: feedRow.createdAt,
                           },
                           {
+                              rawId: '44444444-4444-4444-8444-444444444444',
                               id: '44444444-4444-4444-8444-444444444444',
                               currentSolutionRevisionId: revisionId,
                               createdAt: new Date(

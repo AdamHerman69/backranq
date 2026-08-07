@@ -37,21 +37,31 @@ export type NotificationPreferenceDto = Pick<
     emailSuppressedAt: string | null;
 };
 
-export function notificationCopy(notification: Pick<
-    Notification,
-    'type' | 'title' | 'body' | 'itemCount' | 'secondaryCount'
->) {
+export function notificationCopy(
+    notification: Pick<
+        Notification,
+        'type' | 'title' | 'body' | 'itemCount' | 'secondaryCount'
+    > &
+        Partial<Pick<Notification, 'metadata'>>
+) {
     switch (notification.type) {
         case 'PRACTICE_READY':
             return {
                 title: 'Your new practice is ready',
                 body: `${notification.itemCount} practice position${notification.itemCount === 1 ? '' : 's'} from ${notification.secondaryCount} analyzed game${notification.secondaryCount === 1 ? '' : 's'} ${notification.itemCount === 1 ? 'is' : 'are'} ready.`,
             };
-        case 'PRACTICE_DUE':
+        case 'PRACTICE_DUE': {
+            const dueCountIsExact = !(
+                !!notification.metadata &&
+                typeof notification.metadata === 'object' &&
+                !Array.isArray(notification.metadata) &&
+                notification.metadata.dueCountIsExact === false
+            );
             return {
                 title: 'Your practice review is due',
-                body: `${notification.itemCount} practice position${notification.itemCount === 1 ? ' is' : 's are'} ready for review.`,
+                body: `${notification.itemCount}${dueCountIsExact ? '' : '+'} practice position${notification.itemCount === 1 && dueCountIsExact ? ' is' : 's are'} ready for review.`,
             };
+        }
         case 'NEW_GAMES_SYNCED':
             return {
                 title: 'New games synced',

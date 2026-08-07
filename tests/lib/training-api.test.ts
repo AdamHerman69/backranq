@@ -3,6 +3,7 @@ import {
     getTrainingMomentPrompt,
     InvalidPracticeFeedCursorError,
     listPracticeFeed,
+    PRACTICE_FEED_CURSOR_TTL_MS,
 } from '@/lib/training/readService';
 import {
     parseRecordTrainingAttemptRequest,
@@ -12,6 +13,12 @@ import {
     queryDuePracticeStream,
     queryNewPracticeStream,
 } from '@/lib/training/practiceFeedQueries';
+import {
+    initialDueScheduleCursor,
+    initialNewScheduleCursor,
+    type DueScheduleCandidate,
+    type NewScheduleCandidate,
+} from '@/lib/training/practiceScheduler';
 
 vi.mock('@/lib/training/practiceFeedQueries', () => ({
     queryDuePracticeStream: vi.fn(),
@@ -120,10 +127,29 @@ const promptRow = {
     lastTrainedAt: null,
 };
 
+function dueScan(candidates: DueScheduleCandidate[]) {
+    return {
+        candidates,
+        startedAt: initialDueScheduleCursor(),
+        scannedThrough: { bucket: 'DONE' as const, after: null },
+    };
+}
+
+function newScan(candidates: NewScheduleCandidate[]) {
+    return {
+        candidates,
+        startedAt: initialNewScheduleCursor(),
+        scannedThrough: {
+            after: candidates.at(-1)?.key ?? null,
+            exhausted: true,
+        },
+    };
+}
+
 describe('canonical training API boundary', () => {
     beforeEach(() => {
-        queryDueMock.mockReset().mockResolvedValue([]);
-        queryNewMock.mockReset().mockResolvedValue([
+        queryDueMock.mockReset().mockResolvedValue(dueScan([]));
+        queryNewMock.mockReset().mockResolvedValue(newScan([
             {
                 id: promptRow.id,
                 currentSolutionRevisionId:
@@ -133,7 +159,7 @@ describe('canonical training API boundary', () => {
                     id: promptRow.id,
                 },
             },
-        ]);
+        ]));
     });
     it('returns the complete local grading manifest with each prompt', async () => {
         const db = {
@@ -254,15 +280,12 @@ describe('canonical training API boundary', () => {
                 `20000000-0000-4000-8000-00000000000${index + 1}`,
             ])
         ) as Record<keyof typeof ids, string>;
-        const due = (name: 'due1' | 'due2' | 'due3', lapses: number) => ({
+        const due = (name: 'due1' | 'due2' | 'due3', order: number) => ({
             id: ids[name],
             currentSolutionRevisionId: revisions[name],
             key: {
-                lapseBucket: 1 as const,
-                lapses,
-                nextDueAt: '2026-01-01T00:00:00.000Z',
-                lastReviewedAt: '2025-12-01T00:00:00.000Z',
-                createdAt: '2025-01-01T00:00:00.000Z',
+                bucket: 'LAPSED' as const,
+                nextDueAt: `2026-01-01T00:0${order}:00.000Z`,
                 id: ids[name],
             },
         });
@@ -274,15 +297,15 @@ describe('canonical training API boundary', () => {
                 id: ids[name],
             },
         });
-        queryDueMock.mockResolvedValue([
+        queryDueMock.mockResolvedValue(dueScan([
             due('due1', 3),
             due('due2', 2),
             due('due3', 1),
-        ]);
-        queryNewMock.mockResolvedValue([
+        ]));
+        queryNewMock.mockResolvedValue(newScan([
             fresh('fresh1'),
             fresh('fresh2'),
-        ]);
+        ]));
         const selectedNames = ['fresh1', 'due2', 'due1'] as const;
         const findMany = vi.fn().mockResolvedValue(
             selectedNames.map((name) => ({
@@ -317,7 +340,7 @@ describe('canonical training API boundary', () => {
     it.each(['MEANINGFUL', 'MAJOR'] as const)(
         'passes %s focus to both authoritative SQL streams',
         async (focus) => {
-            queryNewMock.mockResolvedValue([]);
+            queryNewMock.mockResolvedValue(newScan([]));
             await listPracticeFeed({
                 db: {
                     trainingMoment: { findMany: vi.fn() },
@@ -343,16 +366,13 @@ describe('canonical training API boundary', () => {
         const secondRevision =
             '22222222-2222-4222-8222-222222222223';
         const firstKey = {
-            lapseBucket: 1 as const,
-            lapses: 2,
+            bucket: 'LAPSED' as const,
             nextDueAt: '2026-01-01T00:00:00.000Z',
-            lastReviewedAt: '2025-12-01T00:00:00.000Z',
-            createdAt: promptRow.createdAt.toISOString(),
             id: promptRow.id,
         };
-        queryNewMock.mockResolvedValue([]);
+        queryNewMock.mockResolvedValue(newScan([]));
         queryDueMock
-            .mockResolvedValueOnce([
+            .mockResolvedValueOnce(dueScan([
                 {
                     id: promptRow.id,
                     currentSolutionRevisionId:
@@ -362,16 +382,16 @@ describe('canonical training API boundary', () => {
                 {
                     id: secondId,
                     currentSolutionRevisionId: secondRevision,
-                    key: { ...firstKey, lapses: 1, id: secondId },
+                    key: { ...firstKey, id: secondId },
                 },
-            ])
-            .mockResolvedValueOnce([
+            ]))
+            .mockResolvedValueOnce(dueScan([
                 {
                     id: secondId,
                     currentSolutionRevisionId: secondRevision,
-                    key: { ...firstKey, lapses: 1, id: secondId },
+                    key: { ...firstKey, id: secondId },
                 },
-            ]);
+            ]));
         const findMany = vi
             .fn()
             .mockResolvedValueOnce([promptRow])
@@ -394,7 +414,7 @@ describe('canonical training API boundary', () => {
             db: { trainingMoment: { findMany } } as never,
             userId: 'user-1',
             request: { limit: 1, cursor: first.nextCursor! },
-            now: () => new Date('2026-02-02T00:00:00.000Z'),
+            now: () => new Date('2026-02-01T01:00:00.000Z'),
         });
 
         expect(first.items.map((item) => item.id)).toEqual([promptRow.id]);
@@ -402,14 +422,74 @@ describe('canonical training API boundary', () => {
         expect(queryDueMock.mock.calls[1]?.[0]).toEqual(
             expect.objectContaining({
                 feedStartedAt: startedAt,
-                cursor: firstKey,
+                cursor: { bucket: 'LAPSED', after: firstKey },
             })
         );
     });
 
-    it('rejects a cursor that forges a future feed snapshot', async () => {
+    it('returns a signed continuation for an empty stale-only page', async () => {
+        const staleDueKey = {
+            bucket: 'LAPSED' as const,
+            nextDueAt: '2026-01-01T00:00:00.000Z',
+            id: '50000000-0000-4000-8000-000000000001',
+        };
+        const staleNewKey = {
+            createdAt: '2026-01-01T00:00:00.000Z',
+            id: '60000000-0000-4000-8000-000000000001',
+        };
+        queryDueMock.mockResolvedValue({
+            candidates: [],
+            startedAt: initialDueScheduleCursor(),
+            scannedThrough: {
+                bucket: 'LAPSED',
+                after: staleDueKey,
+            },
+        });
+        queryNewMock.mockResolvedValue({
+            candidates: [],
+            startedAt: initialNewScheduleCursor(),
+            scannedThrough: {
+                after: staleNewKey,
+                exhausted: false,
+            },
+        });
+        const findMany = vi.fn();
+        const now = new Date('2026-02-01T00:00:00.000Z');
+
+        const page = await listPracticeFeed({
+            db: { trainingMoment: { findMany } } as never,
+            userId: 'user-1',
+            request: { limit: 10 },
+            now: () => now,
+        });
+
+        expect(page.items).toEqual([]);
+        expect(page.nextCursor).toEqual(expect.any(String));
+        expect(findMany).not.toHaveBeenCalled();
+        const resumedAt = new Date(now.getTime() + 1_000);
+        await listPracticeFeed({
+            db: { trainingMoment: { findMany } } as never,
+            userId: 'user-1',
+            request: { limit: 10, cursor: page.nextCursor! },
+            now: () => resumedAt,
+        });
+        expect(queryDueMock.mock.calls[1]?.[0]).toEqual(
+            expect.objectContaining({
+                feedStartedAt: now,
+                cursor: { bucket: 'LAPSED', after: staleDueKey },
+            })
+        );
+        expect(queryNewMock.mock.calls[1]?.[0]).toEqual(
+            expect.objectContaining({
+                feedStartedAt: now,
+                cursor: { after: staleNewKey, exhausted: false },
+            })
+        );
+    });
+
+    it('rejects a signed cursor whose snapshot payload was forged', async () => {
         const nextId = '11111111-1111-4111-8111-111111111112';
-        queryNewMock.mockResolvedValue([
+        queryNewMock.mockResolvedValue(newScan([
             {
                 id: promptRow.id,
                 currentSolutionRevisionId:
@@ -428,7 +508,7 @@ describe('canonical training API boundary', () => {
                     id: nextId,
                 },
             },
-        ]);
+        ]));
         const findMany = vi.fn().mockResolvedValue([promptRow]);
         const db = {
             trainingMoment: {
@@ -440,19 +520,18 @@ describe('canonical training API boundary', () => {
             userId: 'user-1',
             request: { limit: 1 },
         });
+        const [encoded, signature] = first.nextCursor!.split('.');
         const decoded = JSON.parse(
-            Buffer.from(
-                first.nextCursor!,
-                'base64url'
-            ).toString('utf8')
+            Buffer.from(encoded!, 'base64url').toString('utf8')
         ) as Record<string, unknown>;
-        const cursor = Buffer.from(
+        const forgedPayload = Buffer.from(
             JSON.stringify({
                 ...decoded,
                 feedStartedAt: '2999-01-01T00:00:00.000Z',
             }),
             'utf8'
         ).toString('base64url');
+        const cursor = `${forgedPayload}.${signature}`;
 
         await expect(
             listPracticeFeed({
@@ -464,10 +543,10 @@ describe('canonical training API boundary', () => {
         expect(findMany).toHaveBeenCalledTimes(1);
     });
 
-    it('binds a feed cursor to its normalized filters', async () => {
+    it('binds signed cursors to the authenticated account', async () => {
         const nextId = '11111111-1111-4111-8111-111111111112';
-        queryNewMock
-            .mockResolvedValueOnce([
+        queryNewMock.mockResolvedValue(
+            newScan([
                 {
                     id: promptRow.id,
                     currentSolutionRevisionId:
@@ -487,7 +566,103 @@ describe('canonical training API boundary', () => {
                     },
                 },
             ])
-            .mockResolvedValueOnce([]);
+        );
+        const db = {
+            trainingMoment: {
+                findMany: vi.fn().mockResolvedValue([promptRow]),
+            },
+        };
+        const first = await listPracticeFeed({
+            db: db as never,
+            userId: 'user-1',
+            request: { limit: 1 },
+        });
+
+        await expect(
+            listPracticeFeed({
+                db: db as never,
+                userId: 'user-2',
+                request: { limit: 1, cursor: first.nextCursor! },
+            })
+        ).rejects.toBeInstanceOf(InvalidPracticeFeedCursorError);
+    });
+
+    it('expires a signed feed snapshot without extending it on pagination', async () => {
+        const startedAt = new Date('2026-02-01T00:00:00.000Z');
+        const nextId = '11111111-1111-4111-8111-111111111112';
+        queryNewMock.mockResolvedValue(
+            newScan([
+                {
+                    id: promptRow.id,
+                    currentSolutionRevisionId:
+                        promptRow.currentSolutionRevisionId,
+                    key: {
+                        createdAt: promptRow.createdAt.toISOString(),
+                        id: promptRow.id,
+                    },
+                },
+                {
+                    id: nextId,
+                    currentSolutionRevisionId:
+                        '22222222-2222-4222-8222-222222222223',
+                    key: {
+                        createdAt: '2026-01-01T00:01:00.000Z',
+                        id: nextId,
+                    },
+                },
+            ])
+        );
+        const db = {
+            trainingMoment: {
+                findMany: vi.fn().mockResolvedValue([promptRow]),
+            },
+        };
+        const first = await listPracticeFeed({
+            db: db as never,
+            userId: 'user-1',
+            request: { limit: 1 },
+            now: () => startedAt,
+        });
+
+        await expect(
+            listPracticeFeed({
+                db: db as never,
+                userId: 'user-1',
+                request: { limit: 1, cursor: first.nextCursor! },
+                now: () =>
+                    new Date(
+                        startedAt.getTime() +
+                            PRACTICE_FEED_CURSOR_TTL_MS +
+                            1
+                    ),
+            })
+        ).rejects.toBeInstanceOf(InvalidPracticeFeedCursorError);
+    });
+
+    it('binds a feed cursor to its normalized filters', async () => {
+        const nextId = '11111111-1111-4111-8111-111111111112';
+        queryNewMock
+            .mockResolvedValueOnce(newScan([
+                {
+                    id: promptRow.id,
+                    currentSolutionRevisionId:
+                        promptRow.currentSolutionRevisionId,
+                    key: {
+                        createdAt: promptRow.createdAt.toISOString(),
+                        id: promptRow.id,
+                    },
+                },
+                {
+                    id: nextId,
+                    currentSolutionRevisionId:
+                        '22222222-2222-4222-8222-222222222223',
+                    key: {
+                        createdAt: '2026-01-01T00:01:00.000Z',
+                        id: nextId,
+                    },
+                },
+            ]))
+            .mockResolvedValueOnce(newScan([]));
         const findMany = vi
             .fn()
             .mockResolvedValueOnce([promptRow]);

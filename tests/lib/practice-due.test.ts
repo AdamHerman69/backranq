@@ -1,96 +1,135 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+    queryDuePracticeStream,
+    queryNewPracticeStream,
+} from '@/lib/training/practiceFeedQueries';
 import {
     getPracticeDueSummary,
     getPracticeInventorySummary,
-    listPracticeDueSummaries,
 } from '@/lib/training/practiceDue';
+import {
+    initialDueScheduleCursor,
+    initialNewScheduleCursor,
+} from '@/lib/training/practiceScheduler';
 
-describe('practice due signal', () => {
-    it('counts only due states matching the active verified current semantics', async () => {
-        const due = {
-            userId: '00000000-0000-4000-8000-000000000001',
-            dueCount: 3,
-            earliestDueAt: new Date('2026-08-01T09:00:00.000Z'),
-        };
-        const queryRaw = vi.fn().mockResolvedValue([due]);
-        const now = new Date('2026-08-04T08:00:00.000Z');
+vi.mock('@/lib/training/practiceFeedQueries', () => ({
+    queryDuePracticeStream: vi.fn(),
+    queryNewPracticeStream: vi.fn(),
+}));
 
-        await expect(
-            getPracticeDueSummary(due.userId, now, {
-                $queryRaw: queryRaw,
-            } as never)
-        ).resolves.toEqual(due);
+const queryDueMock = vi.mocked(queryDuePracticeStream);
+const queryNewMock = vi.mocked(queryNewPracticeStream);
 
-        const query = queryRaw.mock.calls[0]?.[0] as {
-            strings: readonly string[];
-            values: readonly unknown[];
-        };
-        const sql = query.strings.join(' ');
-        expect(sql).toContain('WITH "dueUsers" AS');
-        expect(sql).toContain('LIMIT');
-        expect(sql).toMatch(
-            /FROM "dueUsers" users\s+INNER JOIN "PracticeReviewState" state/
-        );
-        expect(sql).toContain('state."nextDueAt" <=');
-        expect(sql).toContain('moment."status" = \'ACTIVE\'');
-        expect(sql).toContain('solution."trainable" = true');
-        expect(sql).toContain("'VERIFIED'::\"VerificationStatus\"");
-        expect(sql).not.toContain('AMBIGUOUS');
-        expect(sql).toContain(
-            'state."solutionHash" = solution."solutionHash"'
-        );
-        expect(sql).toContain(
-            'state."configHash" = solution."configHash"'
-        );
-        expect(query.values).toContain(now);
-        expect(query.values).toContain(due.userId);
+function dueCandidate(index: number) {
+    const id = `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+    return {
+        id,
+        currentSolutionRevisionId: `20000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+        key: {
+            bucket: 'LAPSED' as const,
+            nextDueAt: `2026-08-01T${String(index % 24).padStart(2, '0')}:00:00.000Z`,
+            id: `30000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+        },
+    };
+}
+
+function newCandidate(index: number) {
+    const id = `40000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+    return {
+        id,
+        currentSolutionRevisionId: `50000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+        key: { createdAt: '2026-08-01T00:00:00.000Z', id },
+    };
+}
+
+describe('bounded practice availability signal', () => {
+    beforeEach(() => {
+        queryDueMock.mockReset().mockResolvedValue({
+            candidates: [],
+            startedAt: initialDueScheduleCursor(),
+            scannedThrough: { bucket: 'DONE', after: null },
+        });
+        queryNewMock.mockReset().mockResolvedValue({
+            candidates: [],
+            startedAt: initialNewScheduleCursor(),
+            scannedThrough: { after: null, exhausted: true },
+        });
     });
 
-    it('pages due users by stable user id for scheduler continuation', async () => {
-        const queryRaw = vi.fn().mockResolvedValue([]);
-
-        await listPracticeDueSummaries({
-            now: new Date('2026-08-04T08:00:00.000Z'),
-            afterUserId: '00000000-0000-4000-8000-000000000001',
-            limit: 200,
-            db: { $queryRaw: queryRaw } as never,
+    it('counts only due and new candidates and excludes future-reviewed inventory', async () => {
+        queryDueMock.mockResolvedValue({
+            candidates: [dueCandidate(1), dueCandidate(2)],
+            startedAt: initialDueScheduleCursor(),
+            scannedThrough: { bucket: 'DONE', after: null },
+        });
+        queryNewMock.mockResolvedValue({
+            candidates: [newCandidate(1)],
+            startedAt: initialNewScheduleCursor(),
+            scannedThrough: {
+                after: newCandidate(1).key,
+                exhausted: true,
+            },
         });
 
-        const query = queryRaw.mock.calls[0]?.[0] as {
-            strings: readonly string[];
-        };
-        const sql = query.strings.join(' ');
-        expect(sql).toContain('state."userId" >');
-        expect(sql).toContain('ORDER BY state."userId" ASC');
+        await expect(
+            getPracticeInventorySummary('user-1', new Date(), {} as never)
+        ).resolves.toMatchObject({
+            dueCount: 2,
+            dueCountIsExact: true,
+            newCount: 1,
+            availableCount: 3,
+            availableCountIsExact: true,
+        });
     });
 
-    it('counts all current eligible positions even when none are due yet', async () => {
-        const inventory = {
-            userId: '00000000-0000-4000-8000-000000000001',
-            totalEligibleCount: 6,
-            dueCount: 0,
-            earliestDueAt: null,
-        };
-        const queryRaw = vi.fn().mockResolvedValue([inventory]);
+    it('reports an explicit lower bound when stale raw rows exhaust the slice budget', async () => {
+        queryDueMock.mockResolvedValue({
+            candidates: [],
+            startedAt: initialDueScheduleCursor(),
+            scannedThrough: {
+                bucket: 'LAPSED',
+                after: dueCandidate(99).key,
+            },
+        });
+
+        const summary = await getPracticeInventorySummary(
+            'user-1',
+            new Date(),
+            {} as never
+        );
+
+        expect(summary.dueCount).toBe(0);
+        expect(summary.dueCountIsExact).toBe(false);
+        expect(summary.availableCountIsExact).toBe(false);
+        await expect(
+            getPracticeDueSummary('user-1', new Date(), {} as never)
+        ).resolves.toEqual({ state: 'UNKNOWN' });
+    });
+
+    it('caps counts at 100 and carries exactness into provider rechecks', async () => {
+        queryDueMock.mockResolvedValue({
+            candidates: Array.from({ length: 101 }, (_, index) =>
+                dueCandidate(index + 1)
+            ),
+            startedAt: initialDueScheduleCursor(),
+            scannedThrough: { bucket: 'DONE', after: null },
+        });
 
         await expect(
-            getPracticeInventorySummary(
-                inventory.userId,
-                new Date('2026-08-04T08:00:00.000Z'),
-                { $queryRaw: queryRaw } as never
-            )
-        ).resolves.toEqual(inventory);
+            getPracticeDueSummary('user-1', new Date(), {} as never)
+        ).resolves.toMatchObject({
+            state: 'DUE',
+            summary: {
+                dueCount: 100,
+                dueCountIsExact: false,
+            },
+        });
+    });
 
-        const query = queryRaw.mock.calls[0]?.[0] as {
-            strings: readonly string[];
-        };
-        const sql = query.strings.join(' ');
-        expect(sql).toContain('COUNT(*)::int AS "totalEligibleCount"');
-        expect(sql).toContain('LEFT JOIN "PracticeReviewState" state');
-        expect(sql).toContain(
-            'state."solutionHash" = solution."solutionHash"'
-        );
-        expect(sql).not.toContain('AMBIGUOUS');
+    it('distinguishes an exact empty queue from an unknown bounded scan', async () => {
+        await expect(
+            getPracticeDueSummary('user-1', new Date(), {} as never)
+        ).resolves.toEqual({ state: 'EMPTY' });
     });
 });

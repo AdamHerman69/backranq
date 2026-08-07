@@ -1,20 +1,34 @@
+export type DuePracticeBucket = 'LAPSED' | 'CLEAN';
+
 export type DueScheduleKey = {
-    lapseBucket: 0 | 1;
-    lapses: number;
+    bucket: DuePracticeBucket;
     nextDueAt: string;
-    lastReviewedAt: string;
-    createdAt: string;
     id: string;
 };
+
+export type DueScheduleCursor =
+    | {
+          bucket: DuePracticeBucket;
+          after: DueScheduleKey | null;
+      }
+    | {
+          bucket: 'DONE';
+          after: null;
+      };
 
 export type NewScheduleKey = {
     createdAt: string;
     id: string;
 };
 
+export type NewScheduleCursor = {
+    after: NewScheduleKey | null;
+    exhausted: boolean;
+};
+
 export type PracticeScheduleCursor = {
-    due: DueScheduleKey | null;
-    fresh: NewScheduleKey | null;
+    due: DueScheduleCursor;
+    fresh: NewScheduleCursor;
     patternIndex: number;
 };
 
@@ -30,40 +44,81 @@ export type NewScheduleCandidate = {
     key: NewScheduleKey;
 };
 
+export type DuePracticeScan = {
+    candidates: DueScheduleCandidate[];
+    startedAt: DueScheduleCursor;
+    scannedThrough: DueScheduleCursor;
+};
+
+export type NewPracticeScan = {
+    candidates: NewScheduleCandidate[];
+    startedAt: NewScheduleCursor;
+    scannedThrough: NewScheduleCursor;
+};
+
+export const initialDueScheduleCursor = (): DueScheduleCursor => ({
+    bucket: 'LAPSED',
+    after: null,
+});
+
+export const initialNewScheduleCursor = (): NewScheduleCursor => ({
+    after: null,
+    exhausted: false,
+});
+
+export const initialPracticeScheduleCursor = (): PracticeScheduleCursor => ({
+    due: initialDueScheduleCursor(),
+    fresh: initialNewScheduleCursor(),
+    patternIndex: 0,
+});
+
 const RECOMMENDED_PATTERN = ['DUE', 'DUE', 'NEW'] as const;
 
+function dueCursorAfterConsumption(scan: DuePracticeScan, consumed: number) {
+    if (consumed >= scan.candidates.length) return scan.scannedThrough;
+    if (consumed === 0) return scan.startedAt;
+    const key = scan.candidates[consumed - 1]?.key;
+    return key
+        ? ({ bucket: key.bucket, after: key } satisfies DueScheduleCursor)
+        : scan.startedAt;
+}
+
+function newCursorAfterConsumption(scan: NewPracticeScan, consumed: number) {
+    if (consumed >= scan.candidates.length) return scan.scannedThrough;
+    if (consumed === 0) return scan.startedAt;
+    const key = scan.candidates[consumed - 1]?.key;
+    return key
+        ? ({ after: key, exhausted: false } satisfies NewScheduleCursor)
+        : scan.startedAt;
+}
+
 /**
- * Interleaves two already ordered and bounded database streams. This function
- * never sorts or scans a user's inventory; SQL owns filtering and keyset order.
+ * Interleaves two bounded database scans. Scan watermarks advance past stale
+ * rows only when doing so cannot skip an unconsumed visible candidate.
  */
 export function interleavePracticeStreams(args: {
-    due: readonly DueScheduleCandidate[];
-    fresh: readonly NewScheduleCandidate[];
+    due: DuePracticeScan;
+    fresh: NewPracticeScan;
     mode: 'RECOMMENDED' | 'REVIEW' | 'NEW';
     limit: number;
-    cursor?: PracticeScheduleCursor;
+    patternIndex?: number;
 }) {
     let dueIndex = 0;
     let freshIndex = 0;
-    let patternIndex = args.cursor?.patternIndex ?? 0;
-    let dueCursor = args.cursor?.due ?? null;
-    let freshCursor = args.cursor?.fresh ?? null;
-    const selected: Array<{
-        id: string;
-        currentSolutionRevisionId: string;
-    }> = [];
+    let patternIndex = args.patternIndex ?? 0;
+    const selected: Array<
+        DueScheduleCandidate | NewScheduleCandidate
+    > = [];
 
     const takeDue = () => {
-        const candidate = args.due[dueIndex++];
+        const candidate = args.due.candidates[dueIndex++];
         if (!candidate) return false;
-        dueCursor = candidate.key;
         selected.push(candidate);
         return true;
     };
     const takeFresh = () => {
-        const candidate = args.fresh[freshIndex++];
+        const candidate = args.fresh.candidates[freshIndex++];
         if (!candidate) return false;
-        freshCursor = candidate.key;
         selected.push(candidate);
         return true;
     };
@@ -78,8 +133,8 @@ export function interleavePracticeStreams(args: {
             continue;
         }
         if (
-            dueIndex >= args.due.length &&
-            freshIndex >= args.fresh.length
+            dueIndex >= args.due.candidates.length &&
+            freshIndex >= args.fresh.candidates.length
         ) {
             break;
         }
@@ -92,14 +147,18 @@ export function interleavePracticeStreams(args: {
         }
     }
 
+    const due = dueCursorAfterConsumption(args.due, dueIndex);
+    const fresh = newCursorAfterConsumption(args.fresh, freshIndex);
+    const hasMore =
+        (args.mode !== 'NEW' && due.bucket !== 'DONE') ||
+        (args.mode !== 'REVIEW' && !fresh.exhausted);
+
     return {
         selected,
-        hasMore:
-            (args.mode !== 'NEW' && dueIndex < args.due.length) ||
-            (args.mode !== 'REVIEW' && freshIndex < args.fresh.length),
+        hasMore,
         cursor: {
-            due: dueCursor,
-            fresh: freshCursor,
+            due,
+            fresh,
             patternIndex,
         } satisfies PracticeScheduleCursor,
     };

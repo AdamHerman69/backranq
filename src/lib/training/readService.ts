@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import type {
     PracticeFeedRequest,
@@ -13,7 +13,10 @@ import {
 } from '@/lib/training/practiceFeedQueries';
 import {
     interleavePracticeStreams,
+    initialPracticeScheduleCursor,
+    type DueScheduleCursor,
     type DueScheduleKey,
+    type NewScheduleCursor,
     type NewScheduleKey,
     type PracticeScheduleCursor,
 } from '@/lib/training/practiceScheduler';
@@ -24,76 +27,174 @@ type TrainingReadClient = Pick<
 >;
 
 type PracticeFeedCursor = {
-    version: 1;
+    version: 2;
+    purpose: 'practice-feed';
+    userId: string;
     feedStartedAt: string;
     filterHash: string;
     schedule: PracticeScheduleCursor;
+    issuedAt: number;
+    expiresAt: number;
 };
+
+export const PRACTICE_FEED_CURSOR_TTL_MS = 6 * 60 * 60_000;
+const PRACTICE_FEED_CURSOR_MAX_LENGTH = 1_024;
+const MIN_SAFE_PRACTICE_INSTANT_MS = Date.parse('2000-01-01T00:00:00.000Z');
+const MAX_SAFE_PRACTICE_INSTANT_MS = Date.parse('2100-01-01T00:00:00.000Z');
 
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function encodeCursor(cursor: PracticeFeedCursor): string {
-    return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+function cursorSecret() {
+    const secret =
+        process.env.PRACTICE_FEED_CURSOR_SECRET?.trim() ||
+        process.env.AUTH_SECRET?.trim() ||
+        process.env.NEXTAUTH_SECRET?.trim();
+    if (!secret) throw new Error('Practice feed cursor signing is not configured');
+    return secret;
 }
 
-function decodeCursor(value: string): {
+function encodeCursor(cursor: PracticeFeedCursor): string {
+    const encoded = Buffer.from(JSON.stringify(cursor), 'utf8').toString(
+        'base64url'
+    );
+    const signature = createHmac('sha256', cursorSecret())
+        .update(`practice-feed:${encoded}`)
+        .digest('base64url');
+    const value = `${encoded}.${signature}`;
+    if (value.length > PRACTICE_FEED_CURSOR_MAX_LENGTH) {
+        throw new Error('Practice feed cursor exceeded its safe size');
+    }
+    return value;
+}
+
+function decodeCanonicalBase64Url(value: string): Buffer | null {
+    if (!value || !/^[A-Za-z0-9_-]+$/.test(value)) return null;
+    const decoded = Buffer.from(value, 'base64url');
+    return decoded.toString('base64url') === value ? decoded : null;
+}
+
+function decodeCursor(value: string, args: {
+    userId: string;
+    filterHash: string;
+    requestTime: Date;
+}): {
     feedStartedAt: Date;
     filterHash: string;
     schedule: PracticeScheduleCursor;
+    issuedAt: number;
+    expiresAt: number;
 } | null {
     try {
+        if (!value || value.length > PRACTICE_FEED_CURSOR_MAX_LENGTH) {
+            return null;
+        }
+        const [encoded, signature, extra] = value.split('.');
+        if (!encoded || !signature || extra) return null;
+        const payload = decodeCanonicalBase64Url(encoded);
+        const receivedSignature = decodeCanonicalBase64Url(signature);
+        if (!payload || !receivedSignature) return null;
+        const expectedSignature = createHmac('sha256', cursorSecret())
+            .update(`practice-feed:${encoded}`)
+            .digest();
+        if (
+            receivedSignature.length !== expectedSignature.length ||
+            !timingSafeEqual(receivedSignature, expectedSignature)
+        ) {
+            return null;
+        }
         const decoded = JSON.parse(
-            Buffer.from(value, 'base64url').toString('utf8')
+            payload.toString('utf8')
         ) as Partial<PracticeFeedCursor>;
         if (
-            decoded.version !== 1 ||
+            decoded.version !== 2 ||
+            decoded.purpose !== 'practice-feed' ||
+            decoded.userId !== args.userId ||
             typeof decoded.feedStartedAt !== 'string' ||
             typeof decoded.filterHash !== 'string' ||
+            decoded.filterHash !== args.filterHash ||
             !/^[a-f0-9]{64}$/.test(decoded.filterHash) ||
-            !isPracticeScheduleCursor(decoded.schedule)
+            !isPracticeScheduleCursor(decoded.schedule) ||
+            !Number.isSafeInteger(decoded.issuedAt) ||
+            !Number.isSafeInteger(decoded.expiresAt) ||
+            (decoded.issuedAt ?? Infinity) > args.requestTime.getTime() ||
+            (decoded.expiresAt ?? -Infinity) <= args.requestTime.getTime() ||
+            (decoded.expiresAt ?? 0) - (decoded.issuedAt ?? 0) !==
+                PRACTICE_FEED_CURSOR_TTL_MS
         ) {
             return null;
         }
         const feedStartedAt = new Date(decoded.feedStartedAt);
-        if (!Number.isFinite(feedStartedAt.getTime())) {
+        if (
+            !isSafePracticeInstant(decoded.feedStartedAt) ||
+            feedStartedAt.getTime() > args.requestTime.getTime() ||
+            feedStartedAt.getTime() <
+                args.requestTime.getTime() - PRACTICE_FEED_CURSOR_TTL_MS
+        ) {
             return null;
         }
         return {
             feedStartedAt,
             filterHash: decoded.filterHash,
             schedule: decoded.schedule,
+            issuedAt: decoded.issuedAt!,
+            expiresAt: decoded.expiresAt!,
         };
     } catch {
         return null;
     }
 }
 
-function isIsoDate(value: unknown): value is string {
+function isSafePracticeInstant(value: unknown): value is string {
     if (typeof value !== 'string') return false;
     const parsed = new Date(value);
-    return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+    return (
+        Number.isFinite(parsed.getTime()) &&
+        parsed.toISOString() === value &&
+        parsed.getTime() >= MIN_SAFE_PRACTICE_INSTANT_MS &&
+        parsed.getTime() < MAX_SAFE_PRACTICE_INSTANT_MS
+    );
 }
 
 function isNewScheduleKey(value: unknown): value is NewScheduleKey {
     if (!value || typeof value !== 'object') return false;
     const key = value as Partial<NewScheduleKey>;
     return (
-        isIsoDate(key.createdAt) &&
+        isSafePracticeInstant(key.createdAt) &&
         typeof key.id === 'string' &&
         UUID_RE.test(key.id)
     );
 }
 
 function isDueScheduleKey(value: unknown): value is DueScheduleKey {
-    if (!isNewScheduleKey(value)) return false;
+    if (!value || typeof value !== 'object') return false;
     const key = value as Partial<DueScheduleKey>;
     return (
-        (key.lapseBucket === 0 || key.lapseBucket === 1) &&
-        Number.isSafeInteger(key.lapses) &&
-        (key.lapses ?? -1) >= 0 &&
-        isIsoDate(key.nextDueAt) &&
-        isIsoDate(key.lastReviewedAt)
+        (key.bucket === 'LAPSED' || key.bucket === 'CLEAN') &&
+        isSafePracticeInstant(key.nextDueAt) &&
+        typeof key.id === 'string' &&
+        UUID_RE.test(key.id)
+    );
+}
+
+function isDueScheduleCursor(value: unknown): value is DueScheduleCursor {
+    if (!value || typeof value !== 'object') return false;
+    const cursor = value as Partial<DueScheduleCursor>;
+    if (cursor.bucket === 'DONE') return cursor.after === null;
+    return (
+        (cursor.bucket === 'LAPSED' || cursor.bucket === 'CLEAN') &&
+        (cursor.after === null ||
+            (isDueScheduleKey(cursor.after) &&
+                cursor.after.bucket === cursor.bucket))
+    );
+}
+
+function isNewScheduleCursor(value: unknown): value is NewScheduleCursor {
+    if (!value || typeof value !== 'object') return false;
+    const cursor = value as Partial<NewScheduleCursor>;
+    return (
+        typeof cursor.exhausted === 'boolean' &&
+        (cursor.after === null || isNewScheduleKey(cursor.after))
     );
 }
 
@@ -106,8 +207,8 @@ function isPracticeScheduleCursor(
         Number.isSafeInteger(cursor.patternIndex) &&
         (cursor.patternIndex ?? -1) >= 0 &&
         (cursor.patternIndex ?? 3) < 3 &&
-        (cursor.due === null || isDueScheduleKey(cursor.due)) &&
-        (cursor.fresh === null || isNewScheduleKey(cursor.fresh))
+        isDueScheduleCursor(cursor.due) &&
+        isNewScheduleCursor(cursor.fresh)
     );
 }
 
@@ -204,41 +305,57 @@ export async function listPracticeFeed(args: {
     const filters = args.request.filters ?? {};
     const mode = filters.mode ?? 'RECOMMENDED';
     const filterHash = practiceFilterHash(filters);
+    const requestTime = (args.now ?? (() => new Date()))();
+    if (!Number.isFinite(requestTime.getTime())) {
+        throw new InvalidPracticeFeedCursorError();
+    }
     const cursor = args.request.cursor
-        ? decodeCursor(args.request.cursor)
+        ? decodeCursor(args.request.cursor, {
+              userId: args.userId,
+              filterHash,
+              requestTime,
+          })
         : null;
     if (args.request.cursor && !cursor) {
         throw new InvalidPracticeFeedCursorError();
     }
-    if (cursor && cursor.filterHash !== filterHash) {
-        throw new InvalidPracticeFeedCursorError();
-    }
-    const requestTime = (args.now ?? (() => new Date()))();
     const feedStartedAt = cursor?.feedStartedAt ?? requestTime;
-    if (feedStartedAt.getTime() > requestTime.getTime()) {
-        throw new InvalidPracticeFeedCursorError();
-    }
+    const schedule = cursor?.schedule ?? initialPracticeScheduleCursor();
 
     const streamTake = limit + 1;
     const [due, fresh] = await Promise.all([
         mode === 'NEW'
-            ? Promise.resolve([])
+            ? Promise.resolve({
+                  candidates: [],
+                  startedAt: schedule.due,
+                  scannedThrough: {
+                      bucket: 'DONE' as const,
+                      after: null,
+                  },
+              })
             : queryDuePracticeStream({
                   db: args.db,
                   userId: args.userId,
                   feedStartedAt,
                   filters,
-                  cursor: cursor?.schedule.due,
+                  cursor: schedule.due,
                   take: streamTake,
               }),
         mode === 'REVIEW'
-            ? Promise.resolve([])
+            ? Promise.resolve({
+                  candidates: [],
+                  startedAt: schedule.fresh,
+                  scannedThrough: {
+                      after: schedule.fresh.after,
+                      exhausted: true,
+                  },
+              })
             : queryNewPracticeStream({
                   db: args.db,
                   userId: args.userId,
                   feedStartedAt,
                   filters,
-                  cursor: cursor?.schedule.fresh,
+                  cursor: schedule.fresh,
                   take: streamTake,
               }),
     ]);
@@ -247,13 +364,27 @@ export async function listPracticeFeed(args: {
         fresh,
         mode,
         limit,
-        ...(cursor ? { cursor: cursor.schedule } : {}),
+        patternIndex: schedule.patternIndex,
     });
     if (scheduled.selected.length === 0) {
         return {
             items: [],
             appliedFilters: filters,
-            nextCursor: null,
+            nextCursor: scheduled.hasMore
+                ? encodeCursor({
+                      version: 2,
+                      purpose: 'practice-feed',
+                      userId: args.userId,
+                      feedStartedAt: feedStartedAt.toISOString(),
+                      filterHash,
+                      schedule: scheduled.cursor,
+                      issuedAt: cursor?.issuedAt ?? requestTime.getTime(),
+                      expiresAt:
+                          cursor?.expiresAt ??
+                          requestTime.getTime() +
+                              PRACTICE_FEED_CURSOR_TTL_MS,
+                  })
+                : null,
         };
     }
 
@@ -294,10 +425,17 @@ export async function listPracticeFeed(args: {
         nextCursor:
             scheduled.hasMore
                 ? encodeCursor({
-                      version: 1,
+                      version: 2,
+                      purpose: 'practice-feed',
+                      userId: args.userId,
                       feedStartedAt: feedStartedAt.toISOString(),
                       filterHash,
                       schedule: scheduled.cursor,
+                      issuedAt: cursor?.issuedAt ?? requestTime.getTime(),
+                      expiresAt:
+                          cursor?.expiresAt ??
+                          requestTime.getTime() +
+                              PRACTICE_FEED_CURSOR_TTL_MS,
                   })
                 : null,
     };

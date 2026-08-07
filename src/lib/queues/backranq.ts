@@ -28,17 +28,28 @@ export type BackranqQueueMessage =
     | { type: 'dispatch-analysis'; requestedAt: string }
     | { type: 'analysis-job'; jobId: string; dispatchToken: string }
     | { type: 'weekly-master-run'; runId: string }
-    | { type: 'notification-delivery'; deliveryId: string }
+    | {
+          type: 'notification-delivery';
+          deliveryId: string;
+          dispatchToken: string;
+      }
     | { type: 'notification-sweep'; requestedAt: string }
+    | { type: 'practice-due-sweep'; sweepId: string }
+    | {
+          type: 'practice-due-notify';
+          sweepId: string;
+          afterUserId?: string;
+      }
     | {
           type: 'notification-maintenance';
           referenceAt: string;
           since: string;
-          analysisCursor: string | null;
-          syncCursor: string | null;
-          userCursor: string | null;
-          weeklyCursor: string | null;
-          practiceDueCursor: string | null;
+          analysisCursor?: string | null;
+          syncCursor?: string | null;
+          userCursor?: string | null;
+          weeklyCursor?: string | null;
+          practiceDueCursor?: string | null;
+          practiceDueCleanupCursor?: string | null;
       };
 
 export type BackranqQueuePublishResult = {

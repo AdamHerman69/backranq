@@ -23,6 +23,10 @@ import {
     processNotificationDelivery,
 } from '@/lib/notifications/delivery';
 import { runNotificationMaintenance } from '@/lib/notifications/campaigns';
+import {
+    processPracticeDueNotificationPage,
+    processPracticeDueSweepPage,
+} from '@/lib/training/practiceDueSweep';
 import { processWeeklyMasterRun } from '@/lib/master/pipelineRunner';
 
 export async function processBackranqQueueMessage(message: BackranqQueueMessage) {
@@ -30,7 +34,10 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
         return processWeeklyMasterRun(message.runId);
     }
     if (message.type === 'notification-delivery') {
-        return processNotificationDelivery(message.deliveryId);
+        return processNotificationDelivery(
+            message.deliveryId,
+            message.dispatchToken
+        );
     }
     if (message.type === 'notification-sweep') {
         return dispatchPendingNotificationDeliveries();
@@ -45,6 +52,15 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
             weeklyCursor: message.weeklyCursor,
             practiceDueCursor: message.practiceDueCursor,
         });
+    }
+    if (message.type === 'practice-due-sweep') {
+        return processPracticeDueSweepPage(message.sweepId);
+    }
+    if (message.type === 'practice-due-notify') {
+        return processPracticeDueNotificationPage(
+            message.sweepId,
+            message.afterUserId
+        );
     }
     if (message.type === 'sync-all') {
         const [sync, automation] = await Promise.all([

@@ -17,8 +17,13 @@ export async function GET() {
     const practice = await getPracticeInventorySummary(userId);
     return NextResponse.json(
         {
-            totalEligibleCount: practice?.totalEligibleCount ?? 0,
+            availableCount: practice?.availableCount ?? 0,
+            availableCountIsExact:
+                practice?.availableCountIsExact ?? true,
             dueCount: practice?.dueCount ?? 0,
+            dueCountIsExact: practice?.dueCountIsExact ?? true,
+            newCount: practice?.newCount ?? 0,
+            newCountIsExact: practice?.newCountIsExact ?? true,
             earliestDueAt:
                 practice?.earliestDueAt?.toISOString() ?? null,
         },

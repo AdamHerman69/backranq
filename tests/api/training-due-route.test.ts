@@ -23,8 +23,12 @@ describe('GET /api/training/due', () => {
     it('returns current inventory and due counts without caching', async () => {
         getPracticeInventorySummaryMock.mockResolvedValue({
             userId: 'user-1',
-            totalEligibleCount: 8,
+            availableCount: 8,
+            availableCountIsExact: true,
             dueCount: 5,
+            dueCountIsExact: true,
+            newCount: 3,
+            newCountIsExact: true,
             earliestDueAt: new Date('2026-08-01T09:00:00.000Z'),
         });
         const route = await importRoute();
@@ -36,8 +40,12 @@ describe('GET /api/training/due', () => {
             'private, no-store'
         );
         await expect(readJson(response)).resolves.toEqual({
-            totalEligibleCount: 8,
+            availableCount: 8,
+            availableCountIsExact: true,
             dueCount: 5,
+            dueCountIsExact: true,
+            newCount: 3,
+            newCountIsExact: true,
             earliestDueAt: '2026-08-01T09:00:00.000Z',
         });
         expect(getPracticeInventorySummaryMock).toHaveBeenCalledWith(
@@ -48,15 +56,23 @@ describe('GET /api/training/due', () => {
     it('keeps caught-up inventory distinct from no candidates', async () => {
         getPracticeInventorySummaryMock.mockResolvedValue({
             userId: 'user-1',
-            totalEligibleCount: 6,
+            availableCount: 0,
+            availableCountIsExact: true,
             dueCount: 0,
+            dueCountIsExact: true,
+            newCount: 0,
+            newCountIsExact: true,
             earliestDueAt: null,
         });
         const route = await importRoute();
 
         await expect(readJson(await route.GET())).resolves.toEqual({
-            totalEligibleCount: 6,
+            availableCount: 0,
+            availableCountIsExact: true,
             dueCount: 0,
+            dueCountIsExact: true,
+            newCount: 0,
+            newCountIsExact: true,
             earliestDueAt: null,
         });
     });
