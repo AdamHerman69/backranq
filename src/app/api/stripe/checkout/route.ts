@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { isRecord } from '@/lib/api/validation';
 import {
+    ComplimentaryCheckoutNotAllowedError,
     createStripeCheckoutSession,
     type PaidBillingPlan,
 } from '@/lib/services/stripeBilling';
@@ -40,7 +41,14 @@ export async function POST(req: Request) {
                         ? error.message
                         : 'Could not create checkout session',
             },
-            { status: stripeConfigurationError(error) ? 503 : 500 }
+            {
+                status:
+                    error instanceof ComplimentaryCheckoutNotAllowedError
+                        ? 409
+                        : stripeConfigurationError(error)
+                          ? 503
+                          : 500,
+            }
         );
     }
 }

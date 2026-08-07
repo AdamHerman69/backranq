@@ -4,7 +4,7 @@ import { notFound, redirect } from 'next/navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { auth } from '@/lib/auth';
-import { getAdminPrincipal } from '@/lib/auth/admin';
+import { getAdminPrincipal, roleHasCapability } from '@/lib/auth/admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,10 +32,15 @@ export default async function AdminLayout({
                     </div>
                     <Badge variant="outline">{principal.role}</Badge>
                 </div>
-                <nav aria-label="Admin">
+                <nav aria-label="Admin" className="flex flex-wrap gap-2">
                     <Button asChild variant="secondary" size="sm">
                         <Link href="/admin/weekly-master">Weekly Master</Link>
                     </Button>
+                    {roleHasCapability(principal.role, 'PREMIUM_MANAGE') ? (
+                        <Button asChild variant="secondary" size="sm">
+                            <Link href="/admin/premium">Premium</Link>
+                        </Button>
+                    ) : null}
                 </nav>
             </div>
             {children}

@@ -3,15 +3,10 @@ import type Stripe from 'stripe';
 import { prisma } from '@/lib/prisma';
 import { appUrl, getStripeClient } from '@/lib/stripe';
 import {
-    DEFAULT_AUTO_ANALYSIS_DAILY_GAME_LIMIT,
-    DEFAULT_AUTO_ANALYSIS_MONTHLY_GAME_LIMIT,
-    DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT,
-    DEFAULT_SERVER_CREDITS_BALANCE,
-    DEFAULT_STOP_WHEN_CREDITS_BELOW,
     getOrCreateDefaultBillingAccount,
+    reconcileBillingAccountInTransaction,
 } from '@/lib/services/billingAccounts';
 import { scheduleAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
-import { nextMonthlyRenewAt } from '@/lib/billing/periods';
 
 export type PaidBillingPlan = Exclude<BillingPlan, 'FREE'>;
 export type StripeEventFence = {
@@ -19,38 +14,12 @@ export type StripeEventFence = {
     eventCreatedAt?: Date | null;
 };
 
-type BillingPlanEntitlements = {
-    plan: BillingPlan;
-    monthlyServerCreditsLimit: number;
-    autoAnalysisMonthlyGameLimit: number;
-    autoAnalysisDailyGameLimit: number;
-    stopWhenCreditsBelow: number;
-};
-
-const FREE_ENTITLEMENTS: BillingPlanEntitlements = {
-    plan: 'FREE',
-    monthlyServerCreditsLimit: DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT,
-    autoAnalysisMonthlyGameLimit: DEFAULT_AUTO_ANALYSIS_MONTHLY_GAME_LIMIT,
-    autoAnalysisDailyGameLimit: DEFAULT_AUTO_ANALYSIS_DAILY_GAME_LIMIT,
-    stopWhenCreditsBelow: DEFAULT_STOP_WHEN_CREDITS_BELOW,
-};
-
-const PAID_PLAN_ENTITLEMENTS: Record<PaidBillingPlan, BillingPlanEntitlements> = {
-    PLUS: {
-        plan: 'PLUS',
-        monthlyServerCreditsLimit: 1_000,
-        autoAnalysisMonthlyGameLimit: 500,
-        autoAnalysisDailyGameLimit: 50,
-        stopWhenCreditsBelow: 0,
-    },
-    PRO: {
-        plan: 'PRO',
-        monthlyServerCreditsLimit: 5_000,
-        autoAnalysisMonthlyGameLimit: 5_000,
-        autoAnalysisDailyGameLimit: 250,
-        stopWhenCreditsBelow: 0,
-    },
-};
+export class ComplimentaryCheckoutNotAllowedError extends Error {
+    constructor() {
+        super('Paid checkout is unavailable while complimentary Premium is active');
+        this.name = 'ComplimentaryCheckoutNotAllowedError';
+    }
+}
 
 export function stripePriceIdForPlan(plan: PaidBillingPlan) {
     const priceId =
@@ -74,8 +43,12 @@ export async function createStripeCheckoutSession(args: {
     email?: string | null;
     plan: PaidBillingPlan;
 }) {
-    const stripe = getStripeClient();
     const account = await getOrCreateDefaultBillingAccount(args.userId);
+    if (account.planSource === 'ADMIN' || account.planSource === 'COMPLIMENTARY') {
+        throw new ComplimentaryCheckoutNotAllowedError();
+    }
+
+    const stripe = getStripeClient();
     const customerId =
         account.stripeCustomerId ??
         (await createStripeCustomer({
@@ -182,9 +155,6 @@ export async function applyStripeSubscription(
 
     const active = isPaidSubscriptionStatus(subscription.status);
     const plan = active ? billingPlanForStripePriceId(priceId) : 'FREE';
-    const entitlements = active
-        ? PAID_PLAN_ENTITLEMENTS[plan as PaidBillingPlan]
-        : FREE_ENTITLEMENTS;
 
     const billingUpdate = await upsertBillingAccountFromStripe({
         userId,
@@ -194,7 +164,7 @@ export async function applyStripeSubscription(
         priceId,
         currentPeriodStart: subscriptionCurrentPeriodStart(subscription),
         currentPeriodEnd: subscriptionCurrentPeriodEnd(subscription),
-        entitlements,
+        stripePlan: plan,
         eventId: overrides.eventId,
         eventCreatedAt: overrides.eventCreatedAt,
     });
@@ -207,35 +177,37 @@ export async function markStripeSubscriptionDeleted(
     subscription: Stripe.Subscription,
     eventFence: StripeEventFence = {}
 ) {
-    await prisma.billingAccount.updateMany({
-        where: {
-            stripeSubscriptionId: subscription.id,
-            ...(eventFence.eventCreatedAt
-                ? {
-                      OR: [
-                          { stripeLastEventCreatedAt: null },
-                          {
-                              stripeLastEventCreatedAt: {
-                                  lte: eventFence.eventCreatedAt,
-                              },
-                          },
-                      ],
-                  }
-                : {}),
-        },
-        data: {
-            ...billingAccountEntitlementData(FREE_ENTITLEMENTS),
-            stripeSubscriptionId: subscription.id,
-            stripeSubscriptionStatus: subscription.status,
-            stripePriceId: subscription.items.data[0]?.price.id ?? null,
-            stripeCurrentPeriodEnd: subscriptionCurrentPeriodEnd(subscription),
-            ...(eventFence.eventCreatedAt
-                ? {
-                      stripeLastEventCreatedAt: eventFence.eventCreatedAt,
-                      stripeLastEventId: eventFence.eventId ?? null,
-                  }
-                : {}),
-        },
+    await runSerializableBillingUpdate(async (tx) => {
+        const existing = await tx.billingAccount.findFirst({
+            where: { stripeSubscriptionId: subscription.id },
+        });
+        if (!existing || stripeEventIsStaleOrDuplicate(existing, eventFence)) {
+            return { applied: false };
+        }
+        const now = eventFence.eventCreatedAt ?? new Date();
+        await tx.billingAccount.update({
+            where: { userId: existing.userId },
+            data: {
+                stripePlan: 'FREE',
+                stripeSubscriptionId: subscription.id,
+                stripeSubscriptionStatus: subscription.status,
+                stripePriceId: subscription.items.data[0]?.price.id ?? null,
+                stripeCurrentPeriodEnd:
+                    subscriptionCurrentPeriodEnd(subscription),
+                ...(eventFence.eventCreatedAt
+                    ? {
+                          stripeLastEventCreatedAt: eventFence.eventCreatedAt,
+                          stripeLastEventId: eventFence.eventId ?? null,
+                      }
+                    : {}),
+            },
+        });
+        await reconcileBillingAccountInTransaction({
+            tx,
+            userId: existing.userId,
+            now,
+        });
+        return { applied: true };
     });
 }
 
@@ -258,7 +230,7 @@ async function upsertBillingAccountFromStripe(args: {
     priceId: string;
     currentPeriodStart: Date | null;
     currentPeriodEnd: Date | null;
-    entitlements: BillingPlanEntitlements;
+    stripePlan: BillingPlan;
     eventId?: string | null;
     eventCreatedAt?: Date | null;
 }) {
@@ -271,7 +243,7 @@ async function upsertBillingAccountFromStripe(args: {
             return { capacityIncreased: false, applied: false };
         }
 
-        const paid = args.entitlements.plan !== 'FREE';
+        const paid = args.stripePlan !== 'FREE';
         const becamePaid =
             paid &&
             (existing === null ||
@@ -288,26 +260,8 @@ async function upsertBillingAccountFromStripe(args: {
             args.currentPeriodEnd < storedPeriodEnd
                 ? storedPeriodEnd
                 : args.currentPeriodEnd;
-        const entitlementCreditDelta =
-            paid && existing
-                ? Math.max(
-                      0,
-                      args.entitlements.monthlyServerCreditsLimit -
-                          existing.monthlyServerCreditsLimit
-                  )
-                : 0;
-        const balanceGrant =
-            existing == null
-                ? args.entitlements.monthlyServerCreditsLimit
-                : billingPeriodAdvanced || becamePaid
-                  ? Math.max(
-                        0,
-                        args.entitlements.monthlyServerCreditsLimit -
-                            existing.serverCreditsBalance
-                    )
-                  : entitlementCreditDelta;
         const data = {
-            ...billingAccountEntitlementData(args.entitlements),
+            stripePlan: args.stripePlan,
             stripeCustomerId: args.customerId,
             stripeSubscriptionId: args.subscriptionId,
             stripeSubscriptionStatus: args.subscriptionStatus,
@@ -319,34 +273,6 @@ async function upsertBillingAccountFromStripe(args: {
                       stripeLastEventId: args.eventId ?? null,
                   }
                 : {}),
-            ...(billingPeriodAdvanced
-                ? {
-                      serverCreditsBalance: Math.max(
-                          existing?.serverCreditsBalance ??
-                              DEFAULT_SERVER_CREDITS_BALANCE,
-                          args.entitlements.monthlyServerCreditsLimit
-                      ),
-                      monthlyServerCreditsUsed: 0,
-                      serverCreditsPeriodStart:
-                          args.currentPeriodStart ?? now,
-                      serverCreditsRenewAt:
-                          args.currentPeriodEnd ?? nextMonthlyRenewAt(now),
-                  }
-                : balanceGrant > 0 && existing
-                  ? {
-                        serverCreditsBalance:
-                            existing.serverCreditsBalance + balanceGrant,
-                        ...(becamePaid
-                            ? {
-                                  serverCreditsRenewAt:
-                                      args.currentPeriodEnd ??
-                                      nextMonthlyRenewAt(now),
-                                  serverCreditsPeriodStart:
-                                      args.currentPeriodStart ?? now,
-                              }
-                            : {}),
-                    }
-                  : {}),
         };
 
         await tx.billingAccount.upsert({
@@ -354,29 +280,35 @@ async function upsertBillingAccountFromStripe(args: {
             update: data,
             create: {
                 userId: args.userId,
-                serverCreditsBalance: Math.max(
-                    DEFAULT_SERVER_CREDITS_BALANCE,
-                    args.entitlements.monthlyServerCreditsLimit
-                ),
-                monthlyServerCreditsUsed: 0,
-                serverCreditsPeriodStart: args.currentPeriodStart ?? now,
-                serverCreditsRenewAt:
-                    args.currentPeriodEnd ?? nextMonthlyRenewAt(now),
                 ...data,
             },
+        });
+        const reconciled = await reconcileBillingAccountInTransaction({
+            tx,
+            userId: args.userId,
+            now,
+            ...(paid &&
+            (billingPeriodAdvanced || becamePaid) &&
+            args.currentPeriodStart &&
+            args.currentPeriodEnd
+                ? {
+                      stripeAllowancePeriod: {
+                          start: args.currentPeriodStart,
+                          end: args.currentPeriodEnd,
+                      },
+                  }
+                : {}),
         });
         return {
             applied: true,
             capacityIncreased:
                 billingPeriodAdvanced ||
-                balanceGrant > 0 ||
-                (existing !== null &&
-                    (args.entitlements.autoAnalysisDailyGameLimit >
-                        existing.autoAnalysisDailyGameLimit ||
-                        args.entitlements.autoAnalysisMonthlyGameLimit >
-                            existing.autoAnalysisMonthlyGameLimit ||
-                        args.entitlements.monthlyServerCreditsLimit >
-                            existing.monthlyServerCreditsLimit)),
+                becamePaid ||
+                existing === null ||
+                reconciled.serverCreditsBalance >
+                    existing.serverCreditsBalance ||
+                reconciled.monthlyServerCreditsLimit >
+                    existing.monthlyServerCreditsLimit,
         };
     });
 }
@@ -424,20 +356,6 @@ function isTransactionWriteConflict(error: unknown) {
         'code' in error &&
         (error as { code?: unknown }).code === 'P2034'
     );
-}
-
-function billingAccountEntitlementData(
-    entitlements: BillingPlanEntitlements
-): BillingPlanEntitlements {
-    return {
-        plan: entitlements.plan,
-        monthlyServerCreditsLimit: entitlements.monthlyServerCreditsLimit,
-        autoAnalysisMonthlyGameLimit:
-            entitlements.autoAnalysisMonthlyGameLimit,
-        autoAnalysisDailyGameLimit:
-            entitlements.autoAnalysisDailyGameLimit,
-        stopWhenCreditsBelow: entitlements.stopWhenCreditsBelow,
-    };
 }
 
 function isPaidSubscriptionStatus(status: Stripe.Subscription.Status) {

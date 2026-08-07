@@ -77,6 +77,7 @@ export default async function SettingsPage() {
                 <BillingSettingsCard
                     billing={{
                         plan: billingAccount.plan,
+                        planSource: billingAccount.planSource,
                         serverCreditsBalance:
                             billingAccount.serverCreditsBalance,
                         monthlyServerCreditsLimit:

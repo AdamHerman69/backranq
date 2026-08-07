@@ -424,6 +424,14 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
         },
     });
 
+    await prisma.adminMembership.create({
+        data: {
+            userId: E2E_USER.id,
+            role: 'ADMIN',
+            active: true,
+        },
+    });
+
     await prisma.billingAccount.create({
         data: {
             userId: E2E_USER.id,

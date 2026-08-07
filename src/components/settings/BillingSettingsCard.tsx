@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 
 type BillingSettings = {
     plan: string;
+    planSource: 'FREE' | 'STRIPE' | 'ADMIN' | 'COMPLIMENTARY';
     serverCreditsBalance: number;
     monthlyServerCreditsLimit: number;
     autoAnalysisMonthlyGameLimit: number;
@@ -76,9 +77,17 @@ export function BillingSettingsCard({
     }
 
     const disabled = !billing.stripeConfigured || loading !== null;
+    const hasComplimentaryPremium =
+        billing.planSource === 'ADMIN' || billing.planSource === 'COMPLIMENTARY';
     const periodEnd = billing.stripeCurrentPeriodEnd
         ? new Date(billing.stripeCurrentPeriodEnd).toLocaleDateString()
         : null;
+    const accessLabel =
+        billing.planSource === 'ADMIN'
+            ? 'administrator access'
+            : billing.planSource === 'COMPLIMENTARY'
+              ? 'complimentary access'
+              : billing.stripeSubscriptionStatus ?? 'free';
 
     return (
         <Card>
@@ -112,7 +121,11 @@ export function BillingSettingsCard({
                     <Button
                         type="button"
                         onClick={() => void redirectToCheckout('PLUS')}
-                        disabled={disabled || billing.plan === 'PLUS'}
+                        disabled={
+                            disabled ||
+                            hasComplimentaryPremium ||
+                            billing.plan === 'PLUS'
+                        }
                     >
                         Choose Plus
                     </Button>
@@ -120,7 +133,11 @@ export function BillingSettingsCard({
                         type="button"
                         variant="outline"
                         onClick={() => void redirectToCheckout('PRO')}
-                        disabled={disabled || billing.plan === 'PRO'}
+                        disabled={
+                            disabled ||
+                            hasComplimentaryPremium ||
+                            billing.plan === 'PRO'
+                        }
                     >
                         Choose Pro
                     </Button>
@@ -135,11 +152,18 @@ export function BillingSettingsCard({
                 </div>
 
                 <div className="text-sm text-muted-foreground">
-                    Status: {billing.stripeSubscriptionStatus ?? 'free'}
-                    {periodEnd ? `, renews ${periodEnd}` : ''}
+                    Status: {accessLabel}
+                    {billing.planSource === 'STRIPE' && periodEnd
+                        ? `, renews ${periodEnd}`
+                        : ''}
                     {!billing.stripeConfigured ? (
                         <span className="block text-destructive">
                             Billing setup incomplete: {billing.stripeMissing.join(', ')}.
+                        </span>
+                    ) : null}
+                    {hasComplimentaryPremium ? (
+                        <span className="block">
+                            Paid checkout is disabled while this access is active.
                         </span>
                     ) : null}
                 </div>
