@@ -42,7 +42,7 @@ async function importProcessor() {
         dispatchPlannedSyncJobs: dispatchPlannedSyncJobsMock,
         processSyncJob: processSyncJobMock,
     }));
-    vi.doMock('@/lib/master/pipeline', () => ({
+    vi.doMock('@/lib/master/pipelineRunner', () => ({
         processWeeklyMasterRun: processWeeklyMasterRunMock,
     }));
     return import('@/lib/services/backranqQueueProcessor');

@@ -21,7 +21,7 @@ function account(overrides: Record<string, unknown> = {}) {
         serverCreditsBalance: 9,
         monthlyServerCreditsUsed: 0,
         serverCreditsPeriodStart: new Date('2026-07-05T00:00:00Z'),
-        serverCreditsRenewAt: new Date('2026-08-05T00:00:00Z'),
+        serverCreditsRenewAt: new Date('2027-08-05T00:00:00Z'),
         monthlyServerCreditsLimit: 10,
         autoAnalysisMonthlyGameLimit: 5,
         autoAnalysisDailyGameLimit: 2,

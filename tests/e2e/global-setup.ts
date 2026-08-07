@@ -189,6 +189,7 @@ async function seedTrainingMoment(
               fen: fixture.fen,
               ply: 0,
               role: 'USER',
+              alternativesComplete: true,
               acceptedMovesUci: fixture.acceptedMovesUci,
               branches: [
                   {
@@ -198,6 +199,7 @@ async function seedTrainingMoment(
                           fen: fenAfterBest,
                           ply: 1,
                           role: 'OPPONENT',
+                          alternativesComplete: true,
                           selectedMoveUci: 'b8c6',
                           branches: [
                               {
@@ -207,6 +209,7 @@ async function seedTrainingMoment(
                                       fen: fenAfterOpponent!,
                                       ply: 2,
                                       role: 'USER',
+                                      alternativesComplete: true,
                                       acceptedMovesUci: [
                                           conditionalMove,
                                       ],
@@ -237,6 +240,7 @@ async function seedTrainingMoment(
               fen: fixture.fen,
               ply: 0,
               role: 'USER',
+              alternativesComplete: true,
               acceptedMovesUci: fixture.acceptedMovesUci,
               branches: [
                   {
