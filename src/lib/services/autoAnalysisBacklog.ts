@@ -12,9 +12,7 @@ import {
     resolveAutoAnalysisPolicy,
     type AutoAnalysisPolicy,
 } from '@/lib/preferences';
-import {
-    eligibleAutoAnalysisGameIds,
-} from '@/lib/services/analysisEligibility';
+import { eligibleAutoAnalysisGameIds } from '@/lib/services/analysisEligibility';
 import {
     AUTO_ANALYSIS_QUEUED_REASONS,
     enqueueAnalysisJob,
@@ -29,6 +27,7 @@ import {
     DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT,
     DEFAULT_SERVER_CREDITS_BALANCE,
     DEFAULT_STOP_WHEN_CREDITS_BELOW,
+    getEffectiveBillingAccount,
     InsufficientServerCreditsError,
     MonthlyServerCreditsLimitExceededError,
     ServerCreditStopThresholdError,
@@ -152,11 +151,7 @@ export function calculateAutoAnalysisCapacity(args: {
     ledger: LedgerRow[];
     now: Date;
 }): AutoAnalysisCapacity {
-    const renewalDue =
-        args.account != null && args.account.serverCreditsRenewAt <= args.now;
-    const monthStart = renewalDue
-        ? args.now
-        : (args.account?.serverCreditsPeriodStart ?? args.now);
+    const monthStart = args.account?.serverCreditsPeriodStart ?? args.now;
     const autoEntries = args.ledger.filter((entry) =>
         entry.autoAnalysis === true ||
         AUTO_ANALYSIS_QUEUED_REASONS.includes(
@@ -208,17 +203,11 @@ function calculateAutoAnalysisCapacityFromSummaries(args: {
     dailyAutoGames: number;
     now: Date;
 }): AutoAnalysisCapacity {
-    const renewalDue =
-        args.account != null && args.account.serverCreditsRenewAt <= args.now;
     const planMonthlyLimit =
         args.account?.monthlyServerCreditsLimit ??
         DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT;
     const currentBalance =
-        args.account == null
-            ? DEFAULT_SERVER_CREDITS_BALANCE
-            : renewalDue
-              ? Math.max(args.account.serverCreditsBalance, planMonthlyLimit)
-              : args.account.serverCreditsBalance;
+        args.account?.serverCreditsBalance ?? DEFAULT_SERVER_CREDITS_BALANCE;
     const creditReserve = Math.max(
         args.account?.stopWhenCreditsBelow ??
             DEFAULT_STOP_WHEN_CREDITS_BELOW,
@@ -227,9 +216,7 @@ function calculateAutoAnalysisCapacityFromSummaries(args: {
     const planMonthlyRemaining = Math.max(
         0,
         planMonthlyLimit -
-            (renewalDue
-                ? 0
-                : (args.account?.monthlyServerCreditsUsed ?? 0)) -
+            (args.account?.monthlyServerCreditsUsed ?? 0) -
             args.allOutstandingReserved
     );
     const planDailyGameLimit =
@@ -910,18 +897,16 @@ async function loadAutoAnalysisCapacity(
     policy: AutoAnalysisPolicy,
     now: Date
 ) {
-    const account = await prisma.billingAccount.findUnique({
-        where: { userId },
-    });
-    const renewalDue =
-        account !== null && account.serverCreditsRenewAt <= now;
-    const monthStart = renewalDue
-        ? now
-        : (account?.serverCreditsPeriodStart ?? now);
+    const account = await getEffectiveBillingAccount(userId);
+    const monthStart = account.serverCreditsPeriodStart;
     const [allTotals, monthlyAutoRuns] = await Promise.all([
         prisma.creditLedgerEntry.groupBy({
             by: ['type'],
-            where: { userId },
+            where: {
+                userId,
+                scope: 'RESERVATION',
+                billingPeriodStart: monthStart,
+            },
             _sum: { credits: true },
         }),
         prisma.analysisRun.findMany({

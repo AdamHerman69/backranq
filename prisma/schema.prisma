@@ -294,11 +294,18 @@ enum OnboardingMasterState {
 }
 
 enum CreditLedgerEntryType {
+  ALLOWANCE_GRANTED
+  ALLOWANCE_EXPIRED
   RESERVED
   CONSUMED
   REFUNDED
   RELEASED
   EXPIRED
+}
+
+enum CreditLedgerEntryScope {
+  ALLOWANCE
+  RESERVATION
 }
 
 enum BillingPlan {
@@ -531,28 +538,35 @@ model PushSubscription {
 }
 
 model BillingAccount {
-  id                           String            @id @default(uuid()) @db.Uuid
-  userId                       String            @unique @db.Uuid
-  plan                         BillingPlan       @default(FREE)
-  planSource                   BillingPlanSource @default(FREE)
-  stripePlan                   BillingPlan       @default(FREE)
-  stripeCustomerId             String?           @unique
-  stripeSubscriptionId         String?           @unique
+  id                           String             @id @default(uuid()) @db.Uuid
+  userId                       String             @unique @db.Uuid
+  plan                         BillingPlan        @default(FREE)
+  planSource                   BillingPlanSource  @default(FREE)
+  stripePlan                   BillingPlan        @default(FREE)
+  stripeCustomerId             String?            @unique
+  stripeSubscriptionId         String?            @unique
   stripeSubscriptionStatus     String?
   stripePriceId                String?
+  stripeCurrentPeriodStart     DateTime?
   stripeCurrentPeriodEnd       DateTime?
   stripeLastEventCreatedAt     DateTime?
   stripeLastEventId            String?
-  serverCreditsBalance         Int               @default(100)
-  monthlyServerCreditsUsed     Int               @default(0)
-  serverCreditsPeriodStart     DateTime          @default(now())
-  serverCreditsRenewAt         DateTime          @default(dbgenerated("(now() + '1 mon'::interval)"))
-  monthlyServerCreditsLimit    Int               @default(100)
-  autoAnalysisMonthlyGameLimit Int               @default(50)
-  autoAnalysisDailyGameLimit   Int               @default(10)
-  stopWhenCreditsBelow         Int               @default(0)
-  createdAt                    DateTime          @default(now())
-  updatedAt                    DateTime          @updatedAt
+  stripeCheckoutReservationId  String?            @unique
+  stripeCheckoutSessionId      String?            @unique
+  stripeCheckoutPlan           BillingPlan?
+  stripeCheckoutExpiresAt      DateTime?
+  stripeCheckoutFencePlan      BillingPlan?
+  stripeCheckoutFenceSource    BillingPlanSource?
+  serverCreditsBalance         Int                @default(100)
+  monthlyServerCreditsUsed     Int                @default(0)
+  serverCreditsPeriodStart     DateTime           @default(now())
+  serverCreditsRenewAt         DateTime           @default(dbgenerated("(now() + '1 mon'::interval)"))
+  monthlyServerCreditsLimit    Int                @default(100)
+  autoAnalysisMonthlyGameLimit Int                @default(50)
+  autoAnalysisDailyGameLimit   Int                @default(10)
+  stopWhenCreditsBelow         Int                @default(0)
+  createdAt                    DateTime           @default(now())
+  updatedAt                    DateTime           @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -846,17 +860,19 @@ model AnalysisRun {
 }
 
 model CreditLedgerEntry {
-  id             String                @id @default(uuid()) @db.Uuid
-  userId         String                @db.Uuid
-  analysisJobId  String?               @db.Uuid
-  analysisRunId  String?               @db.Uuid
-  gameId         String?               @db.Uuid
-  type           CreditLedgerEntryType
-  credits        Int
-  idempotencyKey String                @unique
-  reason         String?
-  metadata       Json                  @default(dbgenerated("'{}'::jsonb"))
-  createdAt      DateTime              @default(now())
+  id                 String                 @id @default(uuid()) @db.Uuid
+  userId             String                 @db.Uuid
+  analysisJobId      String?                @db.Uuid
+  analysisRunId      String?                @db.Uuid
+  gameId             String?                @db.Uuid
+  type               CreditLedgerEntryType
+  scope              CreditLedgerEntryScope @default(RESERVATION)
+  billingPeriodStart DateTime
+  credits            Int
+  idempotencyKey     String                 @unique
+  reason             String?
+  metadata           Json                   @default(dbgenerated("'{}'::jsonb"))
+  createdAt          DateTime               @default(now())
 
   user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   analysisJob AnalysisJob?  @relation(fields: [analysisJobId], references: [id], onDelete: SetNull)
@@ -864,6 +880,8 @@ model CreditLedgerEntry {
   game        AnalyzedGame? @relation(fields: [gameId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
+  @@index([userId, scope, createdAt])
+  @@index([userId, scope, billingPeriodStart, type])
   @@index([userId, type, createdAt])
   @@index([analysisJobId])
   @@index([analysisRunId])

@@ -1,11 +1,14 @@
-import type { BillingPlan, Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
+import type {
+    BillingAccount,
+    BillingPlan,
+    BillingPlanSource,
+    Prisma,
+} from '@prisma/client';
 import type Stripe from 'stripe';
 import { prisma } from '@/lib/prisma';
 import { appUrl, getStripeClient } from '@/lib/stripe';
-import {
-    getOrCreateDefaultBillingAccount,
-    reconcileBillingAccountInTransaction,
-} from '@/lib/services/billingAccounts';
+import { reconcileBillingAccountInTransaction } from '@/lib/services/billingAccounts';
 import { scheduleAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
 
 export type PaidBillingPlan = Exclude<BillingPlan, 'FREE'>;
@@ -20,6 +23,36 @@ export class ComplimentaryCheckoutNotAllowedError extends Error {
         this.name = 'ComplimentaryCheckoutNotAllowedError';
     }
 }
+
+export class ActiveSubscriptionRequiresPortalError extends Error {
+    constructor() {
+        super('Manage the active paid subscription in the billing portal');
+        this.name = 'ActiveSubscriptionRequiresPortalError';
+    }
+}
+
+export class CheckoutAlreadyInProgressError extends Error {
+    constructor() {
+        super('A different billing checkout is already in progress');
+        this.name = 'CheckoutAlreadyInProgressError';
+    }
+}
+
+type CheckoutEntitlementFence = {
+    plan: BillingPlan;
+    source: BillingPlanSource;
+};
+
+type CheckoutClaim = {
+    reservationId: string;
+    sessionId: string | null;
+    customerId: string | null;
+    expiresAt: Date;
+    fence: CheckoutEntitlementFence;
+};
+
+const CHECKOUT_RESERVATION_TTL_MS = 2 * 60 * 60 * 1_000;
+const MIN_CHECKOUT_CREATION_WINDOW_MS = 31 * 60 * 1_000;
 
 export function stripePriceIdForPlan(plan: PaidBillingPlan) {
     const priceId =
@@ -43,44 +76,82 @@ export async function createStripeCheckoutSession(args: {
     email?: string | null;
     plan: PaidBillingPlan;
 }) {
-    const account = await getOrCreateDefaultBillingAccount(args.userId);
-    if (account.planSource === 'ADMIN' || account.planSource === 'COMPLIMENTARY') {
-        throw new ComplimentaryCheckoutNotAllowedError();
-    }
-
     const stripe = getStripeClient();
-    const customerId =
-        account.stripeCustomerId ??
-        (await createStripeCustomer({
-            userId: args.userId,
-            email: args.email,
-        }));
-
-    if (!account.stripeCustomerId) {
-        await prisma.billingAccount.update({
-            where: { userId: args.userId },
-            data: { stripeCustomerId: customerId },
-        });
-    }
-
-    return stripe.checkout.sessions.create({
-        mode: 'subscription',
-        customer: customerId,
-        line_items: [{ price: stripePriceIdForPlan(args.plan), quantity: 1 }],
-        success_url: `${appUrl()}/settings?billing=success&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${appUrl()}/settings?billing=cancelled`,
-        client_reference_id: args.userId,
-        subscription_data: {
-            metadata: {
-                userId: args.userId,
-                plan: args.plan,
-            },
-        },
-        metadata: {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const claim = await claimCheckoutReservation({
             userId: args.userId,
             plan: args.plan,
-        },
-    });
+            now: new Date(),
+        });
+        if (claim.sessionId) {
+            const existing = await stripe.checkout.sessions.retrieve(
+                claim.sessionId
+            );
+            if (existing.status === 'open') return existing;
+            if (existing.status === 'complete') {
+                throw new ActiveSubscriptionRequiresPortalError();
+            }
+            await clearCheckoutReservation(args.userId, claim.reservationId);
+            continue;
+        }
+
+        const customerId =
+            claim.customerId ??
+            (await createStripeCustomer({
+                userId: args.userId,
+                email: args.email,
+            }));
+        if (!claim.customerId) {
+            await attachCheckoutCustomer({
+                userId: args.userId,
+                reservationId: claim.reservationId,
+                customerId,
+                fence: claim.fence,
+            });
+        }
+
+        const checkout = await stripe.checkout.sessions.create(
+            {
+                mode: 'subscription',
+                customer: customerId,
+                line_items: [
+                    {
+                        price: stripePriceIdForPlan(args.plan),
+                        quantity: 1,
+                    },
+                ],
+                success_url: `${appUrl()}/settings?billing=success&session_id={CHECKOUT_SESSION_ID}`,
+                cancel_url: `${appUrl()}/settings?billing=cancelled`,
+                expires_at: Math.floor(claim.expiresAt.getTime() / 1_000),
+                client_reference_id: args.userId,
+                subscription_data: {
+                    metadata: {
+                        userId: args.userId,
+                        plan: args.plan,
+                        checkoutReservationId: claim.reservationId,
+                    },
+                },
+                metadata: {
+                    userId: args.userId,
+                    plan: args.plan,
+                    checkoutReservationId: claim.reservationId,
+                },
+            },
+            { idempotencyKey: `checkout-reservation:${claim.reservationId}` }
+        );
+        const attached = await attachCheckoutSession({
+            userId: args.userId,
+            reservationId: claim.reservationId,
+            sessionId: checkout.id,
+            fence: claim.fence,
+        });
+        if (!attached) {
+            await expireCheckoutSession(checkout.id);
+            throw new ComplimentaryCheckoutNotAllowedError();
+        }
+        return checkout;
+    }
+    throw new Error('Could not establish an active Stripe checkout session');
 }
 
 export async function createStripePortalSession(userId: string) {
@@ -192,8 +263,11 @@ export async function markStripeSubscriptionDeleted(
                 stripeSubscriptionId: subscription.id,
                 stripeSubscriptionStatus: subscription.status,
                 stripePriceId: subscription.items.data[0]?.price.id ?? null,
+                stripeCurrentPeriodStart:
+                    subscriptionCurrentPeriodStart(subscription),
                 stripeCurrentPeriodEnd:
                     subscriptionCurrentPeriodEnd(subscription),
+                ...clearedCheckoutReservation(),
                 ...(eventFence.eventCreatedAt
                     ? {
                           stripeLastEventCreatedAt: eventFence.eventCreatedAt,
@@ -211,14 +285,201 @@ export async function markStripeSubscriptionDeleted(
     });
 }
 
+async function claimCheckoutReservation(args: {
+    userId: string;
+    plan: PaidBillingPlan;
+    now: Date;
+}): Promise<CheckoutClaim> {
+    return runSerializableBillingUpdate(async (tx) => {
+        const account = await reconcileBillingAccountInTransaction({
+            tx,
+            userId: args.userId,
+            now: args.now,
+        });
+        assertCheckoutAllowed(account);
+
+        const reservationIsActive =
+            account.stripeCheckoutReservationId !== null &&
+            account.stripeCheckoutExpiresAt !== null &&
+            account.stripeCheckoutExpiresAt > args.now &&
+            (account.stripeCheckoutSessionId !== null ||
+                account.stripeCheckoutExpiresAt.getTime() -
+                    args.now.getTime() >=
+                    MIN_CHECKOUT_CREATION_WINDOW_MS);
+        if (reservationIsActive) {
+            if (account.stripeCheckoutPlan !== args.plan) {
+                throw new CheckoutAlreadyInProgressError();
+            }
+            return {
+                reservationId: account.stripeCheckoutReservationId!,
+                sessionId: account.stripeCheckoutSessionId,
+                customerId: account.stripeCustomerId,
+                expiresAt: account.stripeCheckoutExpiresAt!,
+                fence: {
+                    plan: account.stripeCheckoutFencePlan ?? account.plan,
+                    source:
+                        account.stripeCheckoutFenceSource ?? account.planSource,
+                },
+            };
+        }
+
+        const reservationId = randomUUID();
+        const expiresAt = new Date(
+            args.now.getTime() + CHECKOUT_RESERVATION_TTL_MS
+        );
+        await tx.billingAccount.update({
+            where: { userId: args.userId },
+            data: {
+                stripeCheckoutReservationId: reservationId,
+                stripeCheckoutSessionId: null,
+                stripeCheckoutPlan: args.plan,
+                stripeCheckoutExpiresAt: expiresAt,
+                stripeCheckoutFencePlan: account.plan,
+                stripeCheckoutFenceSource: account.planSource,
+            },
+        });
+        return {
+            reservationId,
+            sessionId: null,
+            customerId: account.stripeCustomerId,
+            expiresAt,
+            fence: { plan: account.plan, source: account.planSource },
+        };
+    });
+}
+
+async function attachCheckoutCustomer(args: {
+    userId: string;
+    reservationId: string;
+    customerId: string;
+    fence: CheckoutEntitlementFence;
+}) {
+    const attached = await runSerializableBillingUpdate(async (tx) => {
+        const account = await reconcileBillingAccountInTransaction({
+            tx,
+            userId: args.userId,
+            now: new Date(),
+        });
+        if (!checkoutFenceMatches(account, args.fence)) return false;
+        assertCheckoutAllowed(account);
+        const result = await tx.billingAccount.updateMany({
+            where: {
+                userId: args.userId,
+                stripeCheckoutReservationId: args.reservationId,
+                stripeCheckoutSessionId: null,
+                stripeCheckoutExpiresAt: { gt: new Date() },
+                stripeCheckoutFencePlan: args.fence.plan,
+                stripeCheckoutFenceSource: args.fence.source,
+            },
+            data: { stripeCustomerId: args.customerId },
+        });
+        return result.count === 1;
+    });
+    if (!attached) throw new ComplimentaryCheckoutNotAllowedError();
+}
+
+async function attachCheckoutSession(args: {
+    userId: string;
+    reservationId: string;
+    sessionId: string;
+    fence: CheckoutEntitlementFence;
+}) {
+    return runSerializableBillingUpdate(async (tx) => {
+        const account = await reconcileBillingAccountInTransaction({
+            tx,
+            userId: args.userId,
+            now: new Date(),
+        });
+        if (!checkoutFenceMatches(account, args.fence)) return false;
+        try {
+            assertCheckoutAllowed(account);
+        } catch {
+            return false;
+        }
+        if (
+            account.stripeCheckoutReservationId === args.reservationId &&
+            account.stripeCheckoutSessionId === args.sessionId
+        ) {
+            return true;
+        }
+        const result = await tx.billingAccount.updateMany({
+            where: {
+                userId: args.userId,
+                stripeCheckoutReservationId: args.reservationId,
+                stripeCheckoutSessionId: null,
+                stripeCheckoutExpiresAt: { gt: new Date() },
+                stripeCheckoutFencePlan: args.fence.plan,
+                stripeCheckoutFenceSource: args.fence.source,
+            },
+            data: { stripeCheckoutSessionId: args.sessionId },
+        });
+        return result.count === 1;
+    });
+}
+
+async function clearCheckoutReservation(
+    userId: string,
+    reservationId: string
+) {
+    await prisma.billingAccount.updateMany({
+        where: { userId, stripeCheckoutReservationId: reservationId },
+        data: clearedCheckoutReservation(),
+    });
+}
+
+async function expireCheckoutSession(sessionId: string) {
+    await getStripeClient().checkout.sessions.expire(sessionId);
+}
+
+function assertCheckoutAllowed(
+    account: Pick<
+        BillingAccount,
+        'planSource' | 'stripePlan' | 'stripeSubscriptionStatus'
+    >
+) {
+    if (
+        account.planSource === 'ADMIN' ||
+        account.planSource === 'COMPLIMENTARY'
+    ) {
+        throw new ComplimentaryCheckoutNotAllowedError();
+    }
+    if (
+        account.stripePlan !== 'FREE' &&
+        isPaidStoredStatus(account.stripeSubscriptionStatus)
+    ) {
+        throw new ActiveSubscriptionRequiresPortalError();
+    }
+}
+
+function checkoutFenceMatches(
+    account: Pick<BillingAccount, 'plan' | 'planSource'>,
+    fence: CheckoutEntitlementFence
+) {
+    return account.plan === fence.plan && account.planSource === fence.source;
+}
+
+function clearedCheckoutReservation() {
+    return {
+        stripeCheckoutReservationId: null,
+        stripeCheckoutSessionId: null,
+        stripeCheckoutPlan: null,
+        stripeCheckoutExpiresAt: null,
+        stripeCheckoutFencePlan: null,
+        stripeCheckoutFenceSource: null,
+    } satisfies Prisma.BillingAccountUpdateInput;
+}
+
 async function createStripeCustomer(args: {
     userId: string;
     email?: string | null;
 }) {
-    const customer = await getStripeClient().customers.create({
-        email: args.email ?? undefined,
-        metadata: { userId: args.userId },
-    });
+    const customer = await getStripeClient().customers.create(
+        {
+            email: args.email ?? undefined,
+            metadata: { userId: args.userId },
+        },
+        { idempotencyKey: `billing-customer:${args.userId}` }
+    );
     return customer.id;
 }
 
@@ -254,19 +515,25 @@ async function upsertBillingAccountFromStripe(args: {
             args.currentPeriodEnd != null &&
             args.currentPeriodEnd > existing.stripeCurrentPeriodEnd;
         const storedPeriodEnd = existing?.stripeCurrentPeriodEnd ?? null;
-        const effectivePeriodEnd =
-            storedPeriodEnd &&
-            args.currentPeriodEnd &&
-            args.currentPeriodEnd < storedPeriodEnd
-                ? storedPeriodEnd
-                : args.currentPeriodEnd;
+        const preserveStoredPeriod =
+            storedPeriodEnd != null &&
+            args.currentPeriodEnd != null &&
+            args.currentPeriodEnd < storedPeriodEnd;
+        const effectivePeriodEnd = preserveStoredPeriod
+            ? storedPeriodEnd
+            : args.currentPeriodEnd;
+        const effectivePeriodStart = preserveStoredPeriod
+            ? (existing?.stripeCurrentPeriodStart ?? args.currentPeriodStart)
+            : args.currentPeriodStart;
         const data = {
             stripePlan: args.stripePlan,
             stripeCustomerId: args.customerId,
             stripeSubscriptionId: args.subscriptionId,
             stripeSubscriptionStatus: args.subscriptionStatus,
             stripePriceId: args.priceId,
+            stripeCurrentPeriodStart: effectivePeriodStart,
             stripeCurrentPeriodEnd: effectivePeriodEnd,
+            ...clearedCheckoutReservation(),
             ...(args.eventCreatedAt
                 ? {
                       stripeLastEventCreatedAt: args.eventCreatedAt,
@@ -287,17 +554,6 @@ async function upsertBillingAccountFromStripe(args: {
             tx,
             userId: args.userId,
             now,
-            ...(paid &&
-            (billingPeriodAdvanced || becamePaid) &&
-            args.currentPeriodStart &&
-            args.currentPeriodEnd
-                ? {
-                      stripeAllowancePeriod: {
-                          start: args.currentPeriodStart,
-                          end: args.currentPeriodEnd,
-                      },
-                  }
-                : {}),
         });
         return {
             applied: true,

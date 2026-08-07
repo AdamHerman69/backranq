@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { isRecord } from '@/lib/api/validation';
 import {
+    ActiveSubscriptionRequiresPortalError,
+    CheckoutAlreadyInProgressError,
     ComplimentaryCheckoutNotAllowedError,
     createStripeCheckoutSession,
     type PaidBillingPlan,
@@ -43,7 +45,9 @@ export async function POST(req: Request) {
             },
             {
                 status:
-                    error instanceof ComplimentaryCheckoutNotAllowedError
+                    error instanceof ComplimentaryCheckoutNotAllowedError ||
+                    error instanceof ActiveSubscriptionRequiresPortalError ||
+                    error instanceof CheckoutAlreadyInProgressError
                         ? 409
                         : stripeConfigurationError(error)
                           ? 503

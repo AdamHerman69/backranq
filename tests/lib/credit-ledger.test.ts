@@ -35,4 +35,52 @@ describe('credit ledger projection', () => {
             committed: 0,
         });
     });
+
+    it('keeps allowance events outside reservation projections across settlement combinations', () => {
+        for (let reserved = 1; reserved <= 25; reserved += 1) {
+            for (let consumed = 0; consumed <= reserved; consumed += 1) {
+                const remaining = reserved - consumed;
+                const released = Math.floor(remaining / 2);
+                const expired = remaining - released;
+                const reservationEvents = [
+                    { type: 'RESERVED' as const, credits: reserved },
+                    ...(consumed > 0
+                        ? [
+                              {
+                                  type: 'CONSUMED' as const,
+                                  credits: consumed,
+                              },
+                          ]
+                        : []),
+                    ...(released > 0
+                        ? [
+                              {
+                                  type: 'RELEASED' as const,
+                                  credits: released,
+                              },
+                          ]
+                        : []),
+                    ...(expired > 0
+                        ? [
+                              {
+                                  type: 'EXPIRED' as const,
+                                  credits: expired,
+                              },
+                          ]
+                        : []),
+                ];
+                const withoutAllowance =
+                    summarizeCreditLedgerEntries(reservationEvents);
+                const withAllowance = summarizeCreditLedgerEntries([
+                    { type: 'ALLOWANCE_GRANTED', credits: 5_000 },
+                    ...reservationEvents,
+                    { type: 'ALLOWANCE_EXPIRED', credits: 5_000 },
+                ]);
+
+                expect(withAllowance).toEqual(withoutAllowance);
+                expect(withAllowance.outstandingReserved).toBe(0);
+                expect(withAllowance.netConsumed).toBe(consumed);
+            }
+        }
+    });
 });

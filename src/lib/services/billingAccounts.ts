@@ -82,6 +82,10 @@ export type BillingCreditWriteResult = {
 };
 
 type LedgerEntryForSummary = Pick<CreditLedgerEntry, 'type' | 'credits'>;
+type LedgerEntryForSettlement = LedgerEntryForSummary & {
+    billingPeriodStart: Date | null;
+    createdAt: Date;
+};
 
 export class BillingAccountError extends CreditLedgerError {
     constructor(message: string) {
@@ -144,6 +148,13 @@ export async function getOrCreateDefaultBillingAccount(userId: string) {
     );
 }
 
+/**
+ * Canonical read for every billing-capacity decision. It materializes the
+ * effective ADMIN/COMPLIMENTARY/STRIPE entitlement and the authoritative
+ * allowance period in the same serializable transaction.
+ */
+export const getEffectiveBillingAccount = getOrCreateDefaultBillingAccount;
+
 export async function reserveServerAnalysisCredits(
     args: ReserveServerAnalysisCreditsArgs
 ): Promise<BillingCreditWriteResult> {
@@ -167,7 +178,11 @@ export async function reserveServerAnalysisCreditsInTransaction(
         userId: writeArgs.userId,
         now,
     });
-    const userSummary = await getLedgerSummary(tx, { userId: writeArgs.userId });
+    const userSummary = await getLedgerSummary(
+        tx,
+        { userId: writeArgs.userId },
+        { billingPeriodStart: account.serverCreditsPeriodStart }
+    );
 
     const effectiveReserve = writeArgs.autoAnalysisBudget
         ? Math.max(
@@ -220,7 +235,9 @@ export async function reserveServerAnalysisCreditsInTransaction(
             tx
         );
     }
-    return createLedgerResult(tx, updatedAccount, 'RESERVED', writeArgs);
+    return createLedgerResult(tx, updatedAccount, 'RESERVED', writeArgs, {
+        billingPeriodStart: account.serverCreditsPeriodStart,
+    });
 }
 
 export async function consumeServerAnalysisCredits(
@@ -245,24 +262,28 @@ export async function consumeServerAnalysisCreditsInTransaction(
         userId: writeArgs.userId,
         now: new Date(),
     });
-    const scopedSummary = await getLedgerSummary(tx, writeArgs);
-    if (scopedSummary.outstandingReserved < writeArgs.credits) {
-        throw new InsufficientReservedCreditsError();
-    }
-    if (
-        account.monthlyServerCreditsUsed + writeArgs.credits >
-        account.monthlyServerCreditsLimit
-    ) {
-        throw new MonthlyServerCreditsLimitExceededError();
-    }
-
-    const updated = await tx.billingAccount.update({
-        where: { userId: writeArgs.userId },
-        data: {
-            monthlyServerCreditsUsed: { increment: writeArgs.credits },
-        },
+    const settlementPeriodStart = await reservationSettlementPeriod({
+        tx,
+        ref: writeArgs,
+        credits: writeArgs.credits,
+        settlement: 'RESERVATION',
+        fallbackPeriodStart: account.serverCreditsPeriodStart,
     });
-    return createLedgerResult(tx, updated, 'CONSUMED', writeArgs);
+    const settlesCurrentPeriod = sameInstant(
+        settlementPeriodStart,
+        account.serverCreditsPeriodStart
+    );
+    const updated = settlesCurrentPeriod
+        ? await tx.billingAccount.update({
+              where: { userId: writeArgs.userId },
+              data: {
+                  monthlyServerCreditsUsed: { increment: writeArgs.credits },
+              },
+          })
+        : account;
+    return createLedgerResult(tx, updated, 'CONSUMED', writeArgs, {
+        billingPeriodStart: settlementPeriodStart,
+    });
 }
 
 export async function releaseServerAnalysisCredits(
@@ -313,25 +334,61 @@ export async function refundServerAnalysisCredits(
             userId: args.userId,
             now: new Date(),
         });
-        const scopedSummary = await getLedgerSummary(tx, args);
-        if (scopedSummary.netConsumed < args.credits) {
+        const settlementPeriodStart = await reservationSettlementPeriod({
+            tx,
+            ref: args,
+            credits: args.credits,
+            settlement: 'CONSUMED',
+            fallbackPeriodStart: account.serverCreditsPeriodStart,
+        });
+        const settlesCurrentPeriod = sameInstant(
+            settlementPeriodStart,
+            account.serverCreditsPeriodStart
+        );
+        if (
+            settlesCurrentPeriod &&
+            account.monthlyServerCreditsUsed < args.credits
+        ) {
             throw new InsufficientConsumedCreditsError();
         }
-
-        const monthlyUsageRefund = Math.min(
-            account.monthlyServerCreditsUsed,
-            args.credits
-        );
-        const updated = await tx.billingAccount.update({
-            where: { userId: args.userId },
-            data: {
-                serverCreditsBalance: { increment: args.credits },
-                monthlyServerCreditsUsed: {
-                    decrement: monthlyUsageRefund,
-                },
-            },
+        const currentOutstanding = settlesCurrentPeriod
+            ? (
+                  await getLedgerSummary(
+                      tx,
+                      { userId: args.userId },
+                      {
+                          billingPeriodStart:
+                              account.serverCreditsPeriodStart,
+                      }
+                  )
+              ).outstandingReserved
+            : 0;
+        const restorableCredits = settlesCurrentPeriod
+            ? restorableCurrentCredits({
+                  account,
+                  monthlyUsedAfter:
+                      account.monthlyServerCreditsUsed - args.credits,
+                  outstandingAfter: currentOutstanding,
+                  requested: args.credits,
+              })
+            : 0;
+        const updated = settlesCurrentPeriod
+            ? await tx.billingAccount.update({
+                  where: { userId: args.userId },
+                  data: {
+                      serverCreditsBalance:
+                          restorableCredits > 0
+                              ? { increment: restorableCredits }
+                              : undefined,
+                      monthlyServerCreditsUsed: {
+                          decrement: args.credits,
+                      },
+                  },
+              })
+            : account;
+        return createLedgerResult(tx, updated, 'REFUNDED', args, {
+            billingPeriodStart: settlementPeriodStart,
         });
-        return createLedgerResult(tx, updated, 'REFUNDED', args);
     }, serializableTransactionOptions());
 }
 
@@ -384,35 +441,57 @@ async function writeReservedCreditReturnInTransaction(
         userId: writeArgs.userId,
         now: new Date(),
     });
-    const scopedSummary = await getLedgerSummary(tx, writeArgs);
-    if (scopedSummary.outstandingReserved < writeArgs.credits) {
-        throw new InsufficientReservedCreditsError();
-    }
-
-    const updated = await tx.billingAccount.update({
-        where: { userId: writeArgs.userId },
-        data: {
-            serverCreditsBalance:
-                type === 'RELEASED'
-                    ? { increment: writeArgs.credits }
-                    : undefined,
-        },
+    const settlementPeriodStart = await reservationSettlementPeriod({
+        tx,
+        ref: writeArgs,
+        credits: writeArgs.credits,
+        settlement: 'RESERVATION',
+        fallbackPeriodStart: account.serverCreditsPeriodStart,
     });
-    void account;
-    return createLedgerResult(tx, updated, type, writeArgs);
+    const restoresCurrentPeriod =
+        type === 'RELEASED' &&
+        sameInstant(settlementPeriodStart, account.serverCreditsPeriodStart);
+    const currentOutstanding = restoresCurrentPeriod
+        ? (
+              await getLedgerSummary(
+                  tx,
+                  { userId: writeArgs.userId },
+                  { billingPeriodStart: account.serverCreditsPeriodStart }
+              )
+          ).outstandingReserved
+        : 0;
+    const restorableCredits = restoresCurrentPeriod
+        ? restorableCurrentCredits({
+              account,
+              monthlyUsedAfter: account.monthlyServerCreditsUsed,
+              outstandingAfter: Math.max(
+                  0,
+                  currentOutstanding - writeArgs.credits
+              ),
+              requested: writeArgs.credits,
+          })
+        : 0;
+    const updated = restorableCredits > 0
+        ? await tx.billingAccount.update({
+              where: { userId: writeArgs.userId },
+              data: {
+                  serverCreditsBalance: { increment: restorableCredits },
+              },
+          })
+        : account;
+    return createLedgerResult(tx, updated, type, writeArgs, {
+        billingPeriodStart: settlementPeriodStart,
+    });
 }
-
-export type StripeAllowancePeriod = {
-    start: Date;
-    end: Date;
-};
 
 export async function reconcileBillingAccountInTransaction(args: {
     tx: BillingTransactionClient;
     userId: string;
     now: Date;
-    stripeAllowancePeriod?: StripeAllowancePeriod;
 }) {
+    const existed = await args.tx.billingAccount.findUnique({
+        where: { userId: args.userId },
+    });
     const account = await args.tx.billingAccount.upsert({
         where: { userId: args.userId },
         update: {},
@@ -444,12 +523,23 @@ export async function reconcileBillingAccountInTransaction(args: {
     const planChanged = account.plan !== effective.plan;
     const sourceChanged =
         (account.planSource ?? 'FREE') !== effective.source;
+    const stripePeriod = activeStripeAllowancePeriod(account);
     const stripePeriodReset =
-        effective.source === 'STRIPE' && !!args.stripeAllowancePeriod;
+        stripePeriod !== null &&
+        (!sameInstant(account.serverCreditsPeriodStart, stripePeriod.start) ||
+            !sameInstant(account.serverCreditsRenewAt, stripePeriod.end));
     const localPeriodReset =
-        effective.source !== 'STRIPE' &&
+        !hasActiveStripeEntitlement(account) &&
         account.serverCreditsRenewAt <= args.now;
     const resetPeriod = stripePeriodReset || localPeriodReset;
+    const limitsChanged =
+        account.monthlyServerCreditsLimit !==
+            entitlements.monthlyServerCreditsLimit ||
+        account.autoAnalysisMonthlyGameLimit !==
+            entitlements.autoAnalysisMonthlyGameLimit ||
+        account.autoAnalysisDailyGameLimit !==
+            entitlements.autoAnalysisDailyGameLimit ||
+        account.stopWhenCreditsBelow !== entitlements.stopWhenCreditsBelow;
 
     let serverCreditsBalance = account.serverCreditsBalance;
     let monthlyServerCreditsUsed = account.monthlyServerCreditsUsed;
@@ -459,15 +549,22 @@ export async function reconcileBillingAccountInTransaction(args: {
     if (resetPeriod) {
         serverCreditsBalance = entitlements.monthlyServerCreditsLimit;
         monthlyServerCreditsUsed = 0;
-        serverCreditsPeriodStart =
-            args.stripeAllowancePeriod?.start ?? args.now;
+        serverCreditsPeriodStart = stripePeriod?.start ?? args.now;
         serverCreditsRenewAt =
-            args.stripeAllowancePeriod?.end ?? nextMonthlyRenewAt(args.now);
-    } else if (planChanged) {
+            stripePeriod?.end ?? nextMonthlyRenewAt(args.now);
+    } else if (planChanged || limitsChanged) {
+        const currentOutstanding = (
+            await getLedgerSummary(
+                args.tx,
+                { userId: args.userId },
+                { billingPeriodStart: account.serverCreditsPeriodStart }
+            )
+        ).outstandingReserved;
         const remainingUnderTarget = Math.max(
             0,
             entitlements.monthlyServerCreditsLimit -
-                account.monthlyServerCreditsUsed
+                account.monthlyServerCreditsUsed -
+                currentOutstanding
         );
         const allowanceIncrease = Math.max(
             0,
@@ -494,18 +591,34 @@ export async function reconcileBillingAccountInTransaction(args: {
         serverCreditsPeriodStart,
         serverCreditsRenewAt,
     };
-    if (
-        !planChanged &&
-        !sourceChanged &&
-        !resetPeriod
-    ) {
+    if (!planChanged && !sourceChanged && !resetPeriod && !limitsChanged) {
+        if (!existed) {
+            await recordAllowanceEntry({
+                tx: args.tx,
+                userId: args.userId,
+                type: 'ALLOWANCE_GRANTED',
+                credits: entitlements.monthlyServerCreditsLimit,
+                billingPeriodStart: account.serverCreditsPeriodStart,
+                now: args.now,
+                transition: `initial:${effective.plan}:${effective.source}`,
+            });
+        }
         return account;
     }
-
-    return args.tx.billingAccount.update({
+    const updated = await args.tx.billingAccount.update({
         where: { userId: args.userId },
         data,
     });
+
+    await recordAllowanceReconciliation({
+        tx: args.tx,
+        userId: args.userId,
+        previous: existed,
+        updated,
+        resetPeriod,
+        now: args.now,
+    });
+    return updated;
 }
 
 async function getOrCreateDefaultBillingAccountInTransaction(args: {
@@ -520,7 +633,8 @@ async function createLedgerResult(
     tx: BillingTransactionClient,
     account: BillingAccount,
     type: CreditLedgerEntryType,
-    args: BillingCreditWriteArgs
+    args: BillingCreditWriteArgs,
+    options: { billingPeriodStart: Date }
 ): Promise<BillingCreditWriteResult> {
     const entry = await tx.creditLedgerEntry.create({
         data: {
@@ -529,6 +643,8 @@ async function createLedgerResult(
             analysisRunId: args.analysisRunId ?? null,
             gameId: args.gameId ?? null,
             type,
+            scope: 'RESERVATION',
+            billingPeriodStart: options.billingPeriodStart,
             credits: args.credits,
             idempotencyKey: args.idempotencyKey,
             reason: args.reason ?? null,
@@ -573,11 +689,20 @@ async function findIdempotentEntry(
 async function getLedgerSummary(
     tx: BillingTransactionClient,
     ref: CreditLedgerReference,
-    options: { createdAtGte?: Date; autoAnalysisOnly?: boolean } = {}
+    options: {
+        createdAtGte?: Date;
+        autoAnalysisOnly?: boolean;
+        billingPeriodStart?: Date;
+    } = {}
 ) {
-    const entries = (await tx.creditLedgerEntry.findMany({
+    const entries = await tx.creditLedgerEntry.groupBy({
+        by: ['type'],
         where: {
             ...ledgerWhere(ref),
+            scope: 'RESERVATION',
+            ...(options.billingPeriodStart
+                ? { billingPeriodStart: options.billingPeriodStart }
+                : {}),
             ...(options.createdAtGte
                 ? { createdAt: { gte: options.createdAtGte } }
                 : {}),
@@ -602,12 +727,14 @@ async function getLedgerSummary(
                   }
                 : {}),
         },
-        select: {
-            type: true,
-            credits: true,
-        },
-    })) as LedgerEntryForSummary[];
-    return summarizeCreditLedgerEntries(entries);
+        _sum: { credits: true },
+    });
+    return summarizeCreditLedgerEntries(
+        (entries ?? []).map((entry) => ({
+            type: entry.type,
+            credits: entry._sum.credits ?? 0,
+        })) as LedgerEntryForSummary[]
+    );
 }
 
 function ledgerWhere(ref: CreditLedgerReference) {
@@ -617,6 +744,202 @@ function ledgerWhere(ref: CreditLedgerReference) {
         ...(ref.analysisRunId ? { analysisRunId: ref.analysisRunId } : {}),
         ...(ref.gameId ? { gameId: ref.gameId } : {}),
     };
+}
+
+async function reservationSettlementPeriod(args: {
+    tx: BillingTransactionClient;
+    ref: CreditLedgerReference;
+    credits: number;
+    settlement: 'RESERVATION' | 'CONSUMED';
+    fallbackPeriodStart: Date;
+}) {
+    const entries = (await args.tx.creditLedgerEntry.findMany({
+        where: {
+            ...ledgerWhere(args.ref),
+            scope: 'RESERVATION',
+        },
+        select: {
+            type: true,
+            credits: true,
+            billingPeriodStart: true,
+            createdAt: true,
+        },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    })) as LedgerEntryForSettlement[];
+    const periods = new Map<
+        number,
+        { start: Date; outstanding: number; consumed: number }
+    >();
+    for (const entry of entries ?? []) {
+        // The database constraint makes this fallback unreachable in stored
+        // rows; it keeps transaction-level callers with synthetic test rows
+        // pinned to the account period instead of inventing a new one.
+        const periodStart =
+            entry.billingPeriodStart ?? args.fallbackPeriodStart;
+        const key = periodStart.getTime();
+        const bucket = periods.get(key) ?? {
+            start: periodStart,
+            outstanding: 0,
+            consumed: 0,
+        };
+        if (entry.type === 'RESERVED') bucket.outstanding += entry.credits;
+        if (entry.type === 'CONSUMED') {
+            bucket.outstanding -= entry.credits;
+            bucket.consumed += entry.credits;
+        }
+        if (entry.type === 'RELEASED' || entry.type === 'EXPIRED') {
+            bucket.outstanding -= entry.credits;
+        }
+        if (entry.type === 'REFUNDED') bucket.consumed -= entry.credits;
+        periods.set(key, bucket);
+    }
+
+    const eligible = Array.from(periods.values())
+        .sort((left, right) => left.start.getTime() - right.start.getTime())
+        .filter((period) =>
+            args.settlement === 'RESERVATION'
+                ? period.outstanding >= args.credits
+                : period.consumed >= args.credits
+        );
+    if (eligible.length === 0) {
+        throw args.settlement === 'RESERVATION'
+            ? new InsufficientReservedCreditsError()
+            : new InsufficientConsumedCreditsError();
+    }
+    return eligible[0]!.start;
+}
+
+function activeStripeAllowancePeriod(
+    account: Pick<
+        BillingAccount,
+        | 'stripePlan'
+        | 'stripeSubscriptionStatus'
+        | 'stripeCurrentPeriodStart'
+        | 'stripeCurrentPeriodEnd'
+    >
+) {
+    if (
+        !hasActiveStripeEntitlement(account) ||
+        !account.stripeCurrentPeriodStart ||
+        !account.stripeCurrentPeriodEnd ||
+        account.stripeCurrentPeriodEnd <= account.stripeCurrentPeriodStart
+    ) {
+        return null;
+    }
+    return {
+        start: account.stripeCurrentPeriodStart,
+        end: account.stripeCurrentPeriodEnd,
+    };
+}
+
+function hasActiveStripeEntitlement(
+    account: Pick<
+        BillingAccount,
+        'stripePlan' | 'stripeSubscriptionStatus'
+    >
+) {
+    return (
+        account.stripePlan !== 'FREE' &&
+        isPaidStripeStatus(account.stripeSubscriptionStatus)
+    );
+}
+
+function isPaidStripeStatus(status: string | null) {
+    return status === 'active' || status === 'trialing';
+}
+
+function sameInstant(left: Date, right: Date) {
+    return left.getTime() === right.getTime();
+}
+
+async function recordAllowanceReconciliation(args: {
+    tx: BillingTransactionClient;
+    userId: string;
+    previous: BillingAccount | null;
+    updated: BillingAccount;
+    resetPeriod: boolean;
+    now: Date;
+}) {
+    const transition = `${args.previous?.plan ?? 'NONE'}:${
+        args.previous?.planSource ?? 'NONE'
+    }->${args.updated.plan}:${args.updated.planSource}`;
+    if (!args.previous) {
+        await recordAllowanceEntry({
+            ...args,
+            type: 'ALLOWANCE_GRANTED',
+            credits: args.updated.monthlyServerCreditsLimit,
+            billingPeriodStart: args.updated.serverCreditsPeriodStart,
+            transition,
+        });
+        return;
+    }
+    if (args.resetPeriod) {
+        await recordAllowanceEntry({
+            ...args,
+            type: 'ALLOWANCE_EXPIRED',
+            credits: args.previous.monthlyServerCreditsLimit,
+            billingPeriodStart: args.previous.serverCreditsPeriodStart,
+            transition,
+        });
+        await recordAllowanceEntry({
+            ...args,
+            type: 'ALLOWANCE_GRANTED',
+            credits: args.updated.monthlyServerCreditsLimit,
+            billingPeriodStart: args.updated.serverCreditsPeriodStart,
+            transition,
+        });
+        return;
+    }
+    const allowanceDelta =
+        args.updated.monthlyServerCreditsLimit -
+        args.previous.monthlyServerCreditsLimit;
+    if (allowanceDelta === 0) return;
+    await recordAllowanceEntry({
+        ...args,
+        type:
+            allowanceDelta > 0
+                ? 'ALLOWANCE_GRANTED'
+                : 'ALLOWANCE_EXPIRED',
+        credits: Math.abs(allowanceDelta),
+        billingPeriodStart: args.updated.serverCreditsPeriodStart,
+        transition,
+    });
+}
+
+async function recordAllowanceEntry(args: {
+    tx: BillingTransactionClient;
+    userId: string;
+    type: 'ALLOWANCE_GRANTED' | 'ALLOWANCE_EXPIRED';
+    credits: number;
+    billingPeriodStart: Date;
+    now: Date;
+    transition: string;
+}) {
+    if (args.credits <= 0) return;
+    const period = args.billingPeriodStart.getTime();
+    const event = args.now.getTime();
+    const idempotencyKey = [
+        'allowance',
+        args.userId,
+        period,
+        args.type,
+        event,
+        args.transition,
+    ].join(':');
+    await args.tx.creditLedgerEntry.upsert({
+        where: { idempotencyKey },
+        update: {},
+        create: {
+            userId: args.userId,
+            type: args.type,
+            scope: 'ALLOWANCE',
+            billingPeriodStart: args.billingPeriodStart,
+            credits: args.credits,
+            idempotencyKey,
+            reason: 'billing-entitlement-reconciliation',
+            metadata: { transition: args.transition },
+        },
+    });
 }
 
 function assertBalanceAvailable(
@@ -644,6 +967,27 @@ function assertMonthlyLimitAvailable(
     if (committedThisMonth + credits > account.monthlyServerCreditsLimit) {
         throw new MonthlyServerCreditsLimitExceededError();
     }
+}
+
+function restorableCurrentCredits(args: {
+    account: BillingAccount;
+    monthlyUsedAfter: number;
+    outstandingAfter: number;
+    requested: number;
+}) {
+    const maximumBalance = Math.max(
+        0,
+        args.account.monthlyServerCreditsLimit -
+            args.monthlyUsedAfter -
+            args.outstandingAfter
+    );
+    return Math.max(
+        0,
+        Math.min(
+            args.requested,
+            maximumBalance - args.account.serverCreditsBalance
+        )
+    );
 }
 
 async function assertAutoAnalysisCapsAvailable(args: {
