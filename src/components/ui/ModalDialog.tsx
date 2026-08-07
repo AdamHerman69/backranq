@@ -1,6 +1,6 @@
 'use client';
 
-import * as React from 'react';
+import type { ReactNode } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 
@@ -18,19 +18,17 @@ export function ModalDialog({
     onOpenChange: (open: boolean) => void;
     title: string;
     description?: string;
-    children: React.ReactNode;
+    children: ReactNode;
     className?: string;
 }) {
-    const descriptionId = React.useId();
-
     return (
         <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
             <DialogPrimitive.Portal>
                 <DialogPrimitive.Overlay className="fixed inset-0 z-[200] bg-black/70" />
                 <DialogPrimitive.Content
-                    aria-describedby={
-                        description ? descriptionId : undefined
-                    }
+                    {...(!description
+                        ? { 'aria-describedby': undefined }
+                        : {})}
                     className={cn(
                         'fixed left-1/2 top-1/2 z-[210] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-background p-5 shadow-xl focus:outline-none focus:ring-2 focus:ring-ring',
                         className
@@ -41,7 +39,6 @@ export function ModalDialog({
                     </DialogPrimitive.Title>
                     {description ? (
                         <DialogPrimitive.Description
-                            id={descriptionId}
                             className="mt-1 text-sm text-muted-foreground"
                         >
                             {description}
