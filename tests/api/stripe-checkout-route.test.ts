@@ -6,16 +6,16 @@ type CheckoutRouteModule = typeof import('@/app/api/stripe/checkout/route');
 
 const createStripeCheckoutSessionMock = vi.fn();
 class ComplimentaryCheckoutNotAllowedError extends Error {}
-class ActiveSubscriptionRequiresPortalError extends Error {}
+class ExistingSubscriptionRequiresPortalError extends Error {}
 class CheckoutAlreadyInProgressError extends Error {}
 
 async function importRoute(): Promise<CheckoutRouteModule> {
     vi.resetModules();
     mockAuthModule();
     vi.doMock('@/lib/services/stripeBilling', () => ({
-        ActiveSubscriptionRequiresPortalError,
         CheckoutAlreadyInProgressError,
         ComplimentaryCheckoutNotAllowedError,
+        ExistingSubscriptionRequiresPortalError,
         createStripeCheckoutSession: createStripeCheckoutSessionMock,
     }));
     return import('@/app/api/stripe/checkout/route');
@@ -108,8 +108,8 @@ describe('POST /api/stripe/checkout', () => {
 
     it('routes an existing paid subscription to the portal flow', async () => {
         createStripeCheckoutSessionMock.mockRejectedValue(
-            new ActiveSubscriptionRequiresPortalError(
-                'Manage the active paid subscription in the billing portal'
+            new ExistingSubscriptionRequiresPortalError(
+                'Manage the existing paid subscription in the billing portal'
             )
         );
         const route = await importRoute();
@@ -118,7 +118,7 @@ describe('POST /api/stripe/checkout', () => {
 
         expect(response.status).toBe(409);
         await expect(readJson(response)).resolves.toEqual({
-            error: 'Manage the active paid subscription in the billing portal',
+            error: 'Manage the existing paid subscription in the billing portal',
         });
     });
 });

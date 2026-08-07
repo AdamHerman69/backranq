@@ -5,6 +5,7 @@ import type {
     Prisma,
 } from '@prisma/client';
 import { billingPlanRank } from '@/lib/billing/plans';
+import { stripeSubscriptionProvidesAccess } from '@/lib/billing/stripeContract';
 
 type EntitlementClient = Pick<
     Prisma.TransactionClient,
@@ -56,7 +57,7 @@ export async function resolveEffectiveBillingEntitlement(args: {
     if (
         args.account.stripePlan != null &&
         args.account.stripePlan !== 'FREE' &&
-        isPaidStripeStatus(args.account.stripeSubscriptionStatus)
+        stripeSubscriptionProvidesAccess(args.account.stripeSubscriptionStatus)
     ) {
         candidates.push({
             plan: args.account.stripePlan,
@@ -82,8 +83,4 @@ export async function resolveEffectiveBillingEntitlement(args: {
         if (planDifference !== 0) return planDifference;
         return SOURCE_PRIORITY[right.source] - SOURCE_PRIORITY[left.source];
     })[0]!;
-}
-
-function isPaidStripeStatus(status: string | null) {
-    return status === 'active' || status === 'trialing';
 }

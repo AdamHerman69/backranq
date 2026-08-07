@@ -305,7 +305,50 @@ describe('stripe billing price mapping', () => {
                 userId: 'user-1',
                 plan: 'PLUS',
             })
-        ).rejects.toThrow(billing.ActiveSubscriptionRequiresPortalError);
+        ).rejects.toThrow(billing.ExistingSubscriptionRequiresPortalError);
+        expect(checkoutCreateMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['past_due', 'incomplete', 'unpaid', 'paused'])(
+        'routes a non-terminal %s subscription to the billing portal',
+        async (status) => {
+            const billing = await importStripeBilling();
+            billingAccountState = storedBillingAccount({
+                stripePlan: 'PLUS',
+                stripeSubscriptionStatus: status,
+                stripeSubscriptionId: 'sub_1',
+                stripeCustomerId: 'cus_1',
+            });
+
+            await expect(
+                billing.createStripeCheckoutSession({
+                    userId: 'user-1',
+                    plan: 'PRO',
+                })
+            ).rejects.toThrow(billing.ExistingSubscriptionRequiresPortalError);
+            expect(customersCreateMock).not.toHaveBeenCalled();
+            expect(checkoutCreateMock).not.toHaveBeenCalled();
+        }
+    );
+
+    it('prioritizes managing a live Stripe contract under administrator access', async () => {
+        const billing = await importStripeBilling();
+        prismaMock.adminMembership.findUnique.mockResolvedValue({ active: true });
+        billingAccountState = storedBillingAccount({
+            plan: 'PRO',
+            planSource: 'ADMIN',
+            stripePlan: 'PLUS',
+            stripeSubscriptionStatus: 'active',
+            stripeSubscriptionId: 'sub_1',
+            stripeCustomerId: 'cus_1',
+        });
+
+        await expect(
+            billing.createStripeCheckoutSession({
+                userId: 'user-1',
+                plan: 'PRO',
+            })
+        ).rejects.toThrow(billing.ExistingSubscriptionRequiresPortalError);
         expect(checkoutCreateMock).not.toHaveBeenCalled();
     });
 
@@ -551,29 +594,32 @@ describe('stripe billing price mapping', () => {
         expect(scheduleAutoAnalysisWakeupMock).not.toHaveBeenCalled();
     });
 
-    it('maps non-paid subscription statuses back to free entitlements', async () => {
-        const billing = await importStripeBilling();
-        billingAccountState = storedBillingAccount({
-            plan: 'PLUS',
-            planSource: 'STRIPE',
-            stripePlan: 'PLUS',
-            serverCreditsBalance: 1000,
-            stripePriceId: 'price_plus',
-            stripeSubscriptionStatus: 'active',
-        });
+    it.each(['past_due', 'incomplete', 'unpaid', 'paused'])(
+        'keeps the %s commercial plan while removing its entitlement',
+        async (status) => {
+            const billing = await importStripeBilling();
+            billingAccountState = storedBillingAccount({
+                plan: 'PLUS',
+                planSource: 'STRIPE',
+                stripePlan: 'PLUS',
+                serverCreditsBalance: 1000,
+                stripePriceId: 'price_plus',
+                stripeSubscriptionStatus: 'active',
+            });
 
-        await billing.applyStripeSubscription(subscription({ status: 'past_due' }));
+            await billing.applyStripeSubscription(subscription({ status }));
 
-        expect(billingAccountState).toMatchObject({
-            plan: 'FREE',
-            planSource: 'FREE',
-            stripePlan: 'FREE',
-            monthlyServerCreditsLimit: 100,
-            autoAnalysisMonthlyGameLimit: 50,
-            autoAnalysisDailyGameLimit: 10,
-            stripeSubscriptionStatus: 'past_due',
-        });
-    });
+            expect(billingAccountState).toMatchObject({
+                plan: 'FREE',
+                planSource: 'FREE',
+                stripePlan: 'PLUS',
+                monthlyServerCreditsLimit: 100,
+                autoAnalysisMonthlyGameLimit: 50,
+                autoAnalysisDailyGameLimit: 10,
+                stripeSubscriptionStatus: status,
+            });
+        }
+    );
 
     it('retrieves checkout subscriptions and applies them with checkout identifiers', async () => {
         const billing = await importStripeBilling();

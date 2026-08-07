@@ -17,6 +17,7 @@ import {
 import { nextMonthlyRenewAt } from '@/lib/billing/periods';
 import { BILLING_PLAN_ENTITLEMENTS } from '@/lib/billing/plans';
 import { resolveEffectiveBillingEntitlement } from '@/lib/billing/entitlements';
+import { stripeSubscriptionProvidesAccess } from '@/lib/billing/stripeContract';
 
 export const SERVER_ANALYSIS_BILLING_POLICY_V2 =
     'server-analysis-quality-price-v2';
@@ -840,12 +841,8 @@ function hasActiveStripeEntitlement(
 ) {
     return (
         account.stripePlan !== 'FREE' &&
-        isPaidStripeStatus(account.stripeSubscriptionStatus)
+        stripeSubscriptionProvidesAccess(account.stripeSubscriptionStatus)
     );
-}
-
-function isPaidStripeStatus(status: string | null) {
-    return status === 'active' || status === 'trialing';
 }
 
 function sameInstant(left: Date, right: Date) {

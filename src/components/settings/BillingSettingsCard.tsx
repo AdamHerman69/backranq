@@ -3,18 +3,22 @@
 import * as React from 'react';
 import { CreditCard } from 'lucide-react';
 import { toast } from 'sonner';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import type { BillingPresentation } from '@/lib/billing/presentation';
+import {
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+} from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
-type BillingSettings = {
-    plan: string;
-    planSource: 'FREE' | 'STRIPE' | 'ADMIN' | 'COMPLIMENTARY';
+export type BillingSettings = {
+    presentation: BillingPresentation;
     serverCreditsBalance: number;
     monthlyServerCreditsLimit: number;
     autoAnalysisMonthlyGameLimit: number;
     autoAnalysisDailyGameLimit: number;
-    stripeSubscriptionStatus: string | null;
-    stripeCurrentPeriodEnd: string | null;
     canOpenPortal: boolean;
     stripeConfigured: boolean;
     stripeMissing: string[];
@@ -77,17 +81,8 @@ export function BillingSettingsCard({
     }
 
     const disabled = !billing.stripeConfigured || loading !== null;
-    const hasComplimentaryPremium =
-        billing.planSource === 'ADMIN' || billing.planSource === 'COMPLIMENTARY';
-    const periodEnd = billing.stripeCurrentPeriodEnd
-        ? new Date(billing.stripeCurrentPeriodEnd).toLocaleDateString()
-        : null;
-    const accessLabel =
-        billing.planSource === 'ADMIN'
-            ? 'administrator access'
-            : billing.planSource === 'COMPLIMENTARY'
-              ? 'complimentary access'
-              : billing.stripeSubscriptionStatus ?? 'free';
+    const { access, checkoutBlocked, checkoutBlockedReason, paidSubscription } =
+        billing.presentation;
 
     return (
         <Card>
@@ -101,8 +96,32 @@ export function BillingSettingsCard({
                 </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <Metric label="Plan" value={billing.plan} />
+                <div className="grid gap-3 sm:grid-cols-2">
+                    <BillingState
+                        label="Access"
+                        value={`${access.planLabel} — ${access.sourceLabel}`}
+                        description="This is the plan currently providing your Backranq features and capacity."
+                    />
+                    <BillingState
+                        label="Paid subscription"
+                        value={
+                            paidSubscription
+                                ? `${paidSubscription.planLabel} — ${paidSubscription.statusLabel}`
+                                : 'None'
+                        }
+                        description={
+                            paidSubscription?.description ??
+                            'No live paid Stripe subscription is attached to this account.'
+                        }
+                        tone={
+                            paidSubscription?.actionRequired
+                                ? 'destructive'
+                                : 'default'
+                        }
+                    />
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
                     <Metric
                         label="Credits"
                         value={`${billing.serverCreditsBalance}/${billing.monthlyServerCreditsLimit}`}
@@ -123,8 +142,8 @@ export function BillingSettingsCard({
                         onClick={() => void redirectToCheckout('PLUS')}
                         disabled={
                             disabled ||
-                            hasComplimentaryPremium ||
-                            billing.plan === 'PLUS'
+                            checkoutBlocked ||
+                            access.plan === 'PLUS'
                         }
                     >
                         Choose Plus
@@ -135,8 +154,8 @@ export function BillingSettingsCard({
                         onClick={() => void redirectToCheckout('PRO')}
                         disabled={
                             disabled ||
-                            hasComplimentaryPremium ||
-                            billing.plan === 'PRO'
+                            checkoutBlocked ||
+                            access.plan === 'PRO'
                         }
                     >
                         Choose Pro
@@ -151,17 +170,23 @@ export function BillingSettingsCard({
                     </Button>
                 </div>
 
-                <div className="text-sm text-muted-foreground">
-                    Status: {accessLabel}
-                    {billing.planSource === 'STRIPE' && periodEnd
-                        ? `, renews ${periodEnd}`
-                        : ''}
+                <div className="space-y-1 text-sm text-muted-foreground">
                     {!billing.stripeConfigured ? (
                         <span className="block text-destructive">
                             Billing setup incomplete: {billing.stripeMissing.join(', ')}.
                         </span>
                     ) : null}
-                    {hasComplimentaryPremium ? (
+                    {paidSubscription?.continuesAlongsideAccess ? (
+                        <span className="block font-medium text-foreground">
+                            Your paid subscription continues while this access is
+                            active. Use Manage billing to change or cancel it.
+                        </span>
+                    ) : checkoutBlockedReason === 'EXISTING_CONTRACT' ? (
+                        <span className="block">
+                            Use Manage billing to change or cancel your existing
+                            paid subscription.
+                        </span>
+                    ) : checkoutBlockedReason === 'ELEVATED_ACCESS' ? (
                         <span className="block">
                             Paid checkout is disabled while this access is active.
                         </span>
@@ -169,6 +194,36 @@ export function BillingSettingsCard({
                 </div>
             </CardContent>
         </Card>
+    );
+}
+
+function BillingState({
+    label,
+    value,
+    description,
+    tone = 'default',
+}: {
+    label: string;
+    value: string;
+    description: string;
+    tone?: 'default' | 'destructive';
+}) {
+    return (
+        <div className="rounded-md border p-3" aria-label={label}>
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {label}
+            </div>
+            <div
+                className={`mt-1 text-sm font-semibold ${
+                    tone === 'destructive' ? 'text-destructive' : ''
+                }`}
+            >
+                {value}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+                {description}
+            </div>
+        </div>
     );
 }
 

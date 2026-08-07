@@ -71,4 +71,22 @@ describe('effective billing entitlement', () => {
             grantId: null,
         });
     });
+
+    it('does not turn a non-terminal past-due contract into access', async () => {
+        await expect(
+            resolveEffectiveBillingEntitlement({
+                tx: tx(false),
+                userId: 'user-1',
+                account: {
+                    stripePlan: 'PLUS',
+                    stripeSubscriptionStatus: 'past_due',
+                },
+                now: new Date('2026-08-06T00:00:00Z'),
+            })
+        ).resolves.toEqual({
+            plan: 'FREE',
+            source: 'FREE',
+            grantId: null,
+        });
+    });
 });

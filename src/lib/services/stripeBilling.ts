@@ -8,6 +8,10 @@ import type {
 import type Stripe from 'stripe';
 import { prisma } from '@/lib/prisma';
 import { appUrl, getStripeClient } from '@/lib/stripe';
+import {
+    hasLiveStripeContract,
+    stripeSubscriptionProvidesAccess,
+} from '@/lib/billing/stripeContract';
 import { reconcileBillingAccountInTransaction } from '@/lib/services/billingAccounts';
 import { scheduleAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
 
@@ -24,10 +28,10 @@ export class ComplimentaryCheckoutNotAllowedError extends Error {
     }
 }
 
-export class ActiveSubscriptionRequiresPortalError extends Error {
+export class ExistingSubscriptionRequiresPortalError extends Error {
     constructor() {
-        super('Manage the active paid subscription in the billing portal');
-        this.name = 'ActiveSubscriptionRequiresPortalError';
+        super('Manage the existing paid subscription in the billing portal');
+        this.name = 'ExistingSubscriptionRequiresPortalError';
     }
 }
 
@@ -89,7 +93,7 @@ export async function createStripeCheckoutSession(args: {
             );
             if (existing.status === 'open') return existing;
             if (existing.status === 'complete') {
-                throw new ActiveSubscriptionRequiresPortalError();
+                throw new ExistingSubscriptionRequiresPortalError();
             }
             await clearCheckoutReservation(args.userId, claim.reservationId);
             continue;
@@ -224,8 +228,9 @@ export async function applyStripeSubscription(
     const priceId = subscription.items.data[0]?.price.id;
     if (!priceId) throw new Error('Stripe subscription has no price item');
 
-    const active = isPaidSubscriptionStatus(subscription.status);
-    const plan = active ? billingPlanForStripePriceId(priceId) : 'FREE';
+    const plan = hasLiveStripeContract(subscription.status)
+        ? billingPlanForStripePriceId(priceId)
+        : 'FREE';
 
     const billingUpdate = await upsertBillingAccountFromStripe({
         userId,
@@ -434,20 +439,17 @@ async function expireCheckoutSession(sessionId: string) {
 function assertCheckoutAllowed(
     account: Pick<
         BillingAccount,
-        'planSource' | 'stripePlan' | 'stripeSubscriptionStatus'
+        'planSource' | 'stripeSubscriptionStatus'
     >
 ) {
+    if (hasLiveStripeContract(account.stripeSubscriptionStatus)) {
+        throw new ExistingSubscriptionRequiresPortalError();
+    }
     if (
         account.planSource === 'ADMIN' ||
         account.planSource === 'COMPLIMENTARY'
     ) {
         throw new ComplimentaryCheckoutNotAllowedError();
-    }
-    if (
-        account.stripePlan !== 'FREE' &&
-        isPaidStoredStatus(account.stripeSubscriptionStatus)
-    ) {
-        throw new ActiveSubscriptionRequiresPortalError();
     }
 }
 
@@ -504,11 +506,16 @@ async function upsertBillingAccountFromStripe(args: {
             return { capacityIncreased: false, applied: false };
         }
 
-        const paid = args.stripePlan !== 'FREE';
+        const paid =
+            args.stripePlan !== 'FREE' &&
+            stripeSubscriptionProvidesAccess(args.subscriptionStatus);
         const becamePaid =
             paid &&
             (existing === null ||
-                !isPaidStoredStatus(existing.stripeSubscriptionStatus));
+                existing.stripePlan === 'FREE' ||
+                !stripeSubscriptionProvidesAccess(
+                    existing.stripeSubscriptionStatus
+                ));
         const billingPeriodAdvanced =
             paid &&
             existing?.stripeCurrentPeriodEnd != null &&
@@ -612,14 +619,6 @@ function isTransactionWriteConflict(error: unknown) {
         'code' in error &&
         (error as { code?: unknown }).code === 'P2034'
     );
-}
-
-function isPaidSubscriptionStatus(status: Stripe.Subscription.Status) {
-    return status === 'active' || status === 'trialing';
-}
-
-function isPaidStoredStatus(status: string | null) {
-    return status === 'active' || status === 'trialing';
 }
 
 function stringId(value: string | { id: string } | null | undefined) {

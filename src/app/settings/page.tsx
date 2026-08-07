@@ -9,6 +9,7 @@ import { BillingSettingsCard } from '@/components/settings/BillingSettingsCard';
 import { getOrCreateDefaultBillingAccount } from '@/lib/services/billingAccounts';
 import { PracticeDefaultsCard } from '@/components/settings/PracticeDefaultsCard';
 import { NotificationSettingsCard } from '@/components/settings/NotificationSettingsCard';
+import { presentBillingAccount } from '@/lib/billing/presentation';
 
 export default async function SettingsPage() {
     const session = await auth();
@@ -37,6 +38,14 @@ export default async function SettingsPage() {
         chesscomUsername: user.chesscomUsername,
     };
     const billingAccount = await getOrCreateDefaultBillingAccount(userId);
+    const billingPresentation = presentBillingAccount({
+        plan: billingAccount.plan,
+        planSource: billingAccount.planSource,
+        stripePlan: billingAccount.stripePlan,
+        stripeSubscriptionStatus: billingAccount.stripeSubscriptionStatus,
+        stripeCurrentPeriodEnd:
+            billingAccount.stripeCurrentPeriodEnd?.toISOString() ?? null,
+    });
     const stripeMissing = [
         !process.env.STRIPE_SECRET_KEY ? 'STRIPE_SECRET_KEY' : null,
         !process.env.STRIPE_WEBHOOK_SECRET ? 'STRIPE_WEBHOOK_SECRET' : null,
@@ -76,8 +85,7 @@ export default async function SettingsPage() {
             <section id="billing" className="scroll-mt-24">
                 <BillingSettingsCard
                     billing={{
-                        plan: billingAccount.plan,
-                        planSource: billingAccount.planSource,
+                        presentation: billingPresentation,
                         serverCreditsBalance:
                             billingAccount.serverCreditsBalance,
                         monthlyServerCreditsLimit:
@@ -86,11 +94,6 @@ export default async function SettingsPage() {
                             billingAccount.autoAnalysisMonthlyGameLimit,
                         autoAnalysisDailyGameLimit:
                             billingAccount.autoAnalysisDailyGameLimit,
-                        stripeSubscriptionStatus:
-                            billingAccount.stripeSubscriptionStatus,
-                        stripeCurrentPeriodEnd:
-                            billingAccount.stripeCurrentPeriodEnd?.toISOString() ??
-                            null,
                         canOpenPortal: !!billingAccount.stripeCustomerId,
                         stripeConfigured: stripeMissing.length === 0,
                         stripeMissing,
