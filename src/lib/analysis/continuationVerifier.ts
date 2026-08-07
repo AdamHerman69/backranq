@@ -23,9 +23,16 @@ import {
     type TablebaseWdl,
 } from '@/lib/analysis/tablebase';
 import type {
+    AcceptanceFrontier,
+    GradingPolicyV3,
     SolutionShape,
     VerificationStatus,
 } from '@/lib/training/contracts';
+import { normalizeGradingPolicy } from '@/lib/training/config';
+import {
+    acceptanceFrontierFromMultiPv,
+    confirmAcceptanceFrontier,
+} from '@/lib/training/acceptanceFrontier';
 
 export const CONTINUATION_STOP_REASONS = [
     'CHECKMATE',
@@ -77,6 +84,7 @@ export type VerifiedSolutionNode = {
     acceptedMovesUci: string[];
     selectedMoveUci?: string;
     alternativesComplete: boolean;
+    acceptanceFrontier?: AcceptanceFrontier;
     tablebase?: TablebaseEvidence;
     branches: VerifiedSolutionBranch[];
     stopReason?: ContinuationStopReason;
@@ -90,6 +98,7 @@ export type ContinuationVerifierOptions = {
     maxUserBranches?: number;
     maxAcceptedWinningChanceLoss?: number;
     fallbackMaxAcceptedCpLoss?: number;
+    gradingPolicy?: GradingPolicyV3;
     nodesPerPosition?: number | null;
     maxDepth?: number | null;
     movetimeMs?: number;
@@ -132,6 +141,7 @@ type ResolvedVerifierOptions = {
     maxUserBranches: number;
     maxAcceptedWinningChanceLoss: number;
     fallbackMaxAcceptedCpLoss: number;
+    gradingPolicy: GradingPolicyV3;
     nodesPerPosition: number | null;
     maxDepth: number | null;
     movetimeMs: number;
@@ -154,6 +164,15 @@ function resolvedOptions(
         2,
         Math.min(16, Math.trunc(options.multiPv ?? 5))
     );
+    const gradingPolicy =
+        options.gradingPolicy ??
+        normalizeGradingPolicy({
+            success: {
+                maxCpLoss: options.fallbackMaxAcceptedCpLoss ?? 100,
+                maxWinChanceLoss:
+                    options.maxAcceptedWinningChanceLoss ?? 0.1,
+            },
+        });
     return {
         maxPlies: Math.max(1, Math.min(32, options.maxPlies ?? 8)),
         maxPositions: Math.max(
@@ -178,8 +197,10 @@ function resolvedOptions(
         ),
         fallbackMaxAcceptedCpLoss: Math.max(
             0,
-            options.fallbackMaxAcceptedCpLoss ?? 50
+            options.fallbackMaxAcceptedCpLoss ??
+                gradingPolicy.success.maxCpLoss
         ),
+        gradingPolicy,
         nodesPerPosition:
             options.nodesPerPosition === null
                 ? null
@@ -202,6 +223,20 @@ function analysisLimit(options: ResolvedVerifierOptions): AnalysisLimit {
             : options.maxDepth != null
               ? { depth: options.maxDepth }
               : { movetimeMs: options.movetimeMs }),
+        timeoutMs: options.timeoutMs,
+        signal: options.signal,
+    };
+}
+
+function confirmationAnalysisLimit(
+    options: ResolvedVerifierOptions
+): AnalysisLimit {
+    return {
+        ...(options.nodesPerPosition != null
+            ? { nodes: options.nodesPerPosition * 2 }
+            : options.maxDepth != null
+              ? { depth: options.maxDepth + 2 }
+              : { movetimeMs: options.movetimeMs * 2 }),
         timeoutMs: options.timeoutMs,
         signal: options.signal,
     };
@@ -512,6 +547,17 @@ function shouldExpandEngineFrontier(args: {
     const lines = canonicalRootMoveLines(returned);
     if (lines.length !== returned.length || lines.length === 0) {
         return false;
+    }
+    if (args.repetitionMoves.length === 0) {
+        return (
+            acceptanceFrontierFromMultiPv({
+                lines,
+                requestedMultiPv: args.requestedMultiPv,
+                alternativesComplete:
+                    args.analyzed.alternativesComplete,
+                policy: args.options.gradingPolicy,
+            }).status !== 'STABLE'
+        );
     }
     const frontier = returned.at(-1);
     if (!frontier) return false;
@@ -925,6 +971,64 @@ export async function verifyConditionalContinuation(args: {
             return stopNode(fen, ply, 'NO_STABLE_LINE', 'ENGINE');
         }
         requestedMultiPv = analyzedMultiPv;
+        let confirmedAcceptanceFrontier: AcceptanceFrontier | null = null;
+        if (role === 'USER' && repetitionMoves.length === 0) {
+            const firstFrontier = acceptanceFrontierFromMultiPv({
+                lines: analyzed.lines,
+                requestedMultiPv,
+                alternativesComplete: analyzed.alternativesComplete,
+                policy: options.gradingPolicy,
+            });
+            if (firstFrontier.status === 'STABLE') {
+                try {
+                    const confirmation =
+                        await args.engine.analyzeMultiPv({
+                            fen,
+                            multiPv: requestedMultiPv,
+                            ...confirmationAnalysisLimit(options),
+                        });
+                    const nextFrontier =
+                        acceptanceFrontierFromMultiPv({
+                            lines: confirmation.lines,
+                            requestedMultiPv,
+                            alternativesComplete:
+                                confirmation.alternativesComplete,
+                            policy: options.gradingPolicy,
+                        });
+                    confirmedAcceptanceFrontier =
+                        confirmAcceptanceFrontier(
+                            firstFrontier,
+                            nextFrontier
+                        );
+                    analyzed = confirmation;
+                    if (
+                        confirmedAcceptanceFrontier.status !==
+                        'STABLE'
+                    ) {
+                        worsenStatus(
+                            state,
+                            'AMBIGUOUS',
+                            `Accepted-move frontier changed during confirmation at ply ${ply}`
+                        );
+                    }
+                } catch (error) {
+                    if (options.signal?.aborted) throw error;
+                    confirmedAcceptanceFrontier = {
+                        ...firstFrontier,
+                        status: 'UNSTABLE',
+                        effectiveCutoffCp: null,
+                        boundaryGapCp: null,
+                    };
+                    worsenStatus(
+                        state,
+                        'UNSTABLE',
+                        `Accepted-move confirmation failed at ply ${ply}`
+                    );
+                }
+            } else {
+                confirmedAcceptanceFrontier = firstFrontier;
+            }
+        }
         const rejectedEngineLines = analyzed.lines.filter(
             (line) => !isExactEngineLine(line)
         );
@@ -1001,6 +1105,22 @@ export async function verifyConditionalContinuation(args: {
                 lines[0],
                 options
             );
+        const engineAcceptanceFrontier =
+            role === 'USER' && repetitionMoves.length === 0
+                ? confirmedAcceptanceFrontier ??
+                  acceptanceFrontierFromMultiPv({
+                      lines: rawExactLines,
+                      requestedMultiPv,
+                      alternativesComplete:
+                          analyzed.alternativesComplete,
+                      policy: options.gradingPolicy,
+                  })
+                : null;
+        const acceptedEngineMoveSet = new Set(
+            engineAcceptanceFrontier?.moves.map(
+                (move) => move.moveUci
+            ) ?? []
+        );
         const selectedEngineLines =
             role === 'USER'
                 ? ruleIsBest
@@ -1010,7 +1130,15 @@ export async function verifyConditionalContinuation(args: {
                               options
                           )
                       )
-                    : acceptedEngineLines(lines, options)
+                    : engineAcceptanceFrontier
+                      ? lines.filter((line) =>
+                            acceptedEngineMoveSet.has(
+                                line.pvUci[0]
+                                    ?.trim()
+                                    .toLowerCase() ?? ''
+                            )
+                        )
+                      : acceptedEngineLines(lines, options)
                 : lines.slice(0, 1);
         const engineCandidates = selectedEngineLines
             .filter(
@@ -1102,7 +1230,10 @@ export async function verifyConditionalContinuation(args: {
             analyzed.alternativesComplete !== false &&
             (role === 'OPPONENT' ||
                 (selected.length <= options.maxUserBranches &&
-                    frontierExhausted));
+                    (engineAcceptanceFrontier
+                        ? engineAcceptanceFrontier.status ===
+                          'STABLE'
+                        : frontierExhausted)));
         if (!alternativesComplete) {
             worsenStatus(
                 state,
@@ -1162,6 +1293,12 @@ export async function verifyConditionalContinuation(args: {
                     : [],
             selectedMoveUci: branches[0]!.moveUci,
             alternativesComplete,
+            ...(engineAcceptanceFrontier
+                ? {
+                      acceptanceFrontier:
+                          engineAcceptanceFrontier,
+                  }
+                : {}),
             branches,
         };
     };

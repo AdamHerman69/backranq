@@ -3,11 +3,9 @@
 import {
     useCallback,
     useEffect,
-    useMemo,
     useRef,
     useState,
 } from 'react';
-import { Chess, type Square } from 'chess.js';
 import dynamic from 'next/dynamic';
 import {
     ChevronRight,
@@ -16,8 +14,9 @@ import {
     RotateCcw,
     WifiOff,
 } from 'lucide-react';
-import { Chessboard } from 'react-chessboard';
 
+import { PostMoveStory } from '@/components/training/PostMoveStory';
+import { PuzzleBoard } from '@/components/training/PuzzleBoard';
 import {
     filtersForReviewAgain,
     hasEffectivePracticeFocus,
@@ -35,24 +34,14 @@ import {
     TabsTrigger,
 } from '@/components/ui/tabs';
 import { usePracticeFeed } from '@/lib/hooks/usePracticeFeed';
-import type { TrainingReviewDto } from '@/lib/training/api';
-import {
-    formatOutcomeDifference,
-    formatScoreForTrainingSide,
-    formatSignedOutcomeDifference,
-    lessonLabel,
-    moveLabel,
-    moveLineLabels,
-    sourceLabel,
-    themeLabel,
-} from '@/lib/training/presentation';
+import { legalMoveFromInput } from '@/lib/training/boardInput';
+import { bestMoveReviewArrows } from '@/lib/training/boardPresentation';
 import {
     feedbackForTrainingState,
     type TrainerAttemptPhase,
 } from '@/lib/training/trainerState';
 import { cn } from '@/lib/utils';
 
-type PromotionPiece = 'q' | 'r' | 'b' | 'n';
 type TrainerViewMode = 'solve' | 'analyze';
 type RevealIntent = 'solution' | 'analysis' | null;
 
@@ -78,197 +67,12 @@ const TrainingAnalysisWorkspace = dynamic(
     }
 );
 
-type PendingPromotion = {
-    from: Square;
-    to: Square;
-    choices: PromotionPiece[];
-};
-
 function gradeLabel(grade: string): string {
     return grade
         .toLowerCase()
         .split('_')
         .map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`)
         .join(' ');
-}
-
-function ReviewPanel({
-    review,
-    rootFen,
-    grade,
-}: {
-    review: TrainingReviewDto;
-    rootFen: string;
-    grade: string | null;
-}) {
-    const playedAt = new Date(review.source.playedAt);
-    const sourceDate = Number.isNaN(playedAt.getTime())
-        ? review.source.playedAt
-        : playedAt.toLocaleDateString();
-    const acceptedAlternatives = Array.from(
-        new Set([
-            ...review.acceptedMovesUci,
-            ...(grade === 'BEST' || grade === 'GOOD'
-                ? [review.submittedMoveUci]
-                : []),
-        ])
-    ).filter(
-        (move): move is string =>
-            Boolean(move) &&
-            move?.trim().toLowerCase() !==
-                review.bestMoveUci.trim().toLowerCase()
-    );
-    const bestLine = moveLineLabels(rootFen, review.bestLineUci);
-
-    return (
-        <Card role="region" aria-label="Position review">
-            <CardHeader className="pb-3">
-                <CardTitle className="text-base">Position review</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-5 text-sm">
-                <dl className="grid gap-3 sm:grid-cols-2">
-                    <div>
-                        <dt className="text-muted-foreground">Your move</dt>
-                        <dd className="mt-1 font-medium">
-                            {moveLabel(rootFen, review.submittedMoveUci)}
-                        </dd>
-                    </div>
-                    <div>
-                        <dt className="text-muted-foreground">Best move</dt>
-                        <dd className="mt-1 font-medium">
-                            {moveLabel(rootFen, review.bestMoveUci)}
-                        </dd>
-                    </div>
-                    <div>
-                        <dt className="text-muted-foreground">
-                            Move played in the game
-                        </dt>
-                        <dd className="mt-1 font-medium">
-                            {moveLabel(rootFen, review.originalMoveUci)}
-                        </dd>
-                    </div>
-                    <div>
-                        <dt className="text-muted-foreground">
-                            Position before the decision
-                        </dt>
-                        <dd className="mt-1 font-medium">
-                            {formatScoreForTrainingSide(
-                                review.scoreAtStart,
-                                review.trainingSide
-                            )}
-                        </dd>
-                    </div>
-                </dl>
-
-                {acceptedAlternatives.length > 0 ||
-                !review.acceptedMovesComplete ? (
-                    <div>
-                        <div className="text-muted-foreground">
-                            {review.acceptedMovesComplete
-                                ? 'Other good moves'
-                                : 'Known good alternatives'}
-                        </div>
-                        {acceptedAlternatives.length > 0 ? (
-                            <div className="mt-2 flex flex-wrap gap-2">
-                                {acceptedAlternatives.map((move) => (
-                                    <Badge
-                                        key={move}
-                                        variant="secondary"
-                                    >
-                                        {moveLabel(rootFen, move)}
-                                    </Badge>
-                                ))}
-                            </div>
-                        ) : null}
-                        {!review.acceptedMovesComplete ? (
-                            <p className="mt-2 text-xs text-muted-foreground">
-                                This is not an exhaustive list. Other legal
-                                moves are evaluated when you play them.
-                            </p>
-                        ) : null}
-                    </div>
-                ) : null}
-
-                {bestLine.length > 0 ? (
-                    <div>
-                        <div className="text-muted-foreground">
-                            Best continuation
-                        </div>
-                        <p className="mt-1 font-medium">
-                            {bestLine.join(' ')}
-                        </p>
-                    </div>
-                ) : null}
-
-                {review.comparison ? (
-                    <dl className="grid gap-3 rounded-lg border bg-muted/30 p-3 sm:grid-cols-2">
-                        <div>
-                            <dt className="text-muted-foreground">
-                                Distance from the best move
-                            </dt>
-                            <dd className="mt-1 font-medium">
-                                {formatOutcomeDifference({
-                                    winChance:
-                                        review.comparison
-                                            .bestGapWinChance,
-                                    cp: review.comparison.bestGapCp,
-                                })}
-                            </dd>
-                        </div>
-                        <div>
-                            <dt className="text-muted-foreground">
-                                Change versus your game
-                            </dt>
-                            <dd className="mt-1 font-medium">
-                                {formatSignedOutcomeDifference({
-                                    winChance:
-                                        review.comparison
-                                            .recoveredWinChance,
-                                    cp: review.comparison.recoveredCp,
-                                })}
-                            </dd>
-                        </div>
-                    </dl>
-                ) : null}
-
-                <div className="border-t pt-4">
-                    <div className="mt-2 flex flex-wrap gap-2">
-                        {review.sourceKinds.map((value) => (
-                            <Badge
-                                key={`source:${value}`}
-                                variant="secondary"
-                            >
-                                {sourceLabel(value)}
-                            </Badge>
-                        ))}
-                        {review.lessonKinds.map((value) => (
-                            <Badge
-                                key={`lesson:${value}`}
-                                variant="outline"
-                            >
-                                {lessonLabel(value)}
-                            </Badge>
-                        ))}
-                        {review.themes.map((value) => (
-                            <Badge
-                                key={`theme:${value}`}
-                                variant="outline"
-                            >
-                                {themeLabel(value)}
-                            </Badge>
-                        ))}
-                    </div>
-                    <p className="mt-3 text-xs text-muted-foreground">
-                        {review.source.provider === 'lichess'
-                            ? 'Lichess'
-                            : 'Chess.com'}{' '}
-                        game · {sourceDate} · move{' '}
-                        {Math.floor(review.source.decisionPly / 2) + 1}
-                    </p>
-                </div>
-            </CardContent>
-        </Card>
-    );
 }
 
 function feedbackClass(
@@ -323,13 +127,12 @@ export function TrainingTrainer({
     );
     const nextPosition = training.next;
     const [flipped, setFlipped] = useState(false);
-    const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
-    const [pendingPromotion, setPendingPromotion] =
-        useState<PendingPromotion | null>(null);
     const [viewMode, setViewMode] =
         useState<TrainerViewMode>('solve');
     const [revealIntent, setRevealIntent] =
-        useState<RevealIntent>(null);
+        useState<RevealIntent>(() =>
+            initialViewMode === 'analyze' ? 'analysis' : null
+        );
     const [analysisSession, setAnalysisSession] = useState<{
         promptId: string;
         initialFen: string;
@@ -344,9 +147,6 @@ export function TrainingTrainer({
     const previousPromptIdRef = useRef<string | null>(null);
     const previousPhaseRef =
         useRef<TrainerAttemptPhase>('READY');
-    const initialAnalysisHandledRef = useRef(
-        initialViewMode !== 'analyze'
-    );
 
     const replaceViewInUrl = useCallback(
         (mode: TrainerViewMode) => {
@@ -370,8 +170,6 @@ export function TrainingTrainer({
         const prompt = training.prompt;
         const positionFen = training.positionFen;
         if (!prompt || !positionFen) return;
-        setSelectedSquare(null);
-        setPendingPromotion(null);
         setKeyboardMove('');
         setKeyboardMoveError(null);
         setAnalysisSession((current) =>
@@ -392,16 +190,12 @@ export function TrainingTrainer({
 
     const returnToSolve = useCallback(() => {
         setViewMode('solve');
-        setSelectedSquare(null);
-        setPendingPromotion(null);
         replaceViewInUrl('solve');
     }, [replaceViewInUrl]);
 
     const requestAnalysis = useCallback(() => {
         if (viewMode === 'analyze') return;
         if (training.canReveal) {
-            setSelectedSquare(null);
-            setPendingPromotion(null);
             setRevealIntent('analysis');
             return;
         }
@@ -421,6 +215,8 @@ export function TrainingTrainer({
     const goToNextPosition = useCallback(() => {
         returnToSolve();
         setAnalysisSession(null);
+        setKeyboardMove('');
+        setKeyboardMoveError(null);
         void nextPosition();
     }, [nextPosition, returnToSolve]);
 
@@ -432,117 +228,8 @@ export function TrainingTrainer({
         return () => media.removeEventListener('change', update);
     }, []);
 
-    const legalTargets = useMemo(() => {
-        if (!selectedSquare || !training.positionFen || !training.canMove) {
-            return new Set<Square>();
-        }
-        try {
-            const chess = new Chess(training.positionFen);
-            return new Set(
-                chess
-                    .moves({ square: selectedSquare, verbose: true })
-                    .map((move) => move.to as Square)
-            );
-        } catch {
-            return new Set<Square>();
-        }
-    }, [selectedSquare, training.canMove, training.positionFen]);
-
-    const squareStyles = useMemo(() => {
-        const styles: Record<string, React.CSSProperties> = {};
-        if (selectedSquare) {
-            styles[selectedSquare] = {
-                backgroundColor: 'rgba(59, 130, 246, 0.32)',
-            };
-        }
-        for (const square of legalTargets) {
-            styles[square] = {
-                background:
-                    'radial-gradient(circle, rgba(59,130,246,0.52) 0 18%, transparent 20%)',
-            };
-        }
-        return styles;
-    }, [legalTargets, selectedSquare]);
-
-    const reviewArrows = useMemo(() => {
-        const bestMove = training.review?.bestMoveUci
-            .trim()
-            .toLowerCase();
-        if (!bestMove || bestMove.length < 4) return [];
-        return [
-            {
-                startSquare: bestMove.slice(0, 2) as Square,
-                endSquare: bestMove.slice(2, 4) as Square,
-                color: 'rgba(16, 185, 129, 0.82)',
-            },
-        ];
-    }, [training.review?.bestMoveUci]);
-
-    const selectSquare = useCallback(
-        (square: Square) => {
-            if (!training.positionFen || !training.canMove) return;
-            try {
-                const chess = new Chess(training.positionFen);
-                const piece = chess.get(square);
-                if (piece?.color === chess.turn()) {
-                    setSelectedSquare((current) =>
-                        current === square ? null : square
-                    );
-                } else {
-                    setSelectedSquare(null);
-                }
-            } catch {
-                setSelectedSquare(null);
-            }
-        },
-        [training.canMove, training.positionFen]
-    );
-
-    const submitLegalMove = useCallback(
-        (from: Square, to: Square, promotion?: PromotionPiece): boolean => {
-            if (!training.positionFen || !training.canMove) return false;
-            try {
-                const chess = new Chess(training.positionFen);
-                const move = chess.move({ from, to, promotion });
-                if (!move) return false;
-                const moveUci = `${move.from}${move.to}${move.promotion ?? ''}`;
-                setSelectedSquare(null);
-                setPendingPromotion(null);
-                void training.submitMove({
-                    moveUci,
-                    fenAfterMove: chess.fen(),
-                });
-                return true;
-            } catch {
-                return false;
-            }
-        },
-        [training]
-    );
-
-    const playOrChoosePromotion = useCallback(
-        (from: Square, to: Square): boolean => {
-            if (!training.positionFen || !training.canMove) return false;
-            try {
-                const chess = new Chess(training.positionFen);
-                const choices = Array.from(
-                    new Set(
-                        chess
-                            .moves({ square: from, verbose: true })
-                            .filter((move) => move.to === to && move.promotion)
-                            .map((move) => move.promotion as PromotionPiece)
-                    )
-                );
-                if (choices.length > 0) {
-                    setPendingPromotion({ from, to, choices });
-                    return true;
-                }
-            } catch {
-                return false;
-            }
-            return submitLegalMove(from, to);
-        },
-        [submitLegalMove, training.canMove, training.positionFen]
+    const reviewArrows = bestMoveReviewArrows(
+        training.review?.bestMoveUci
     );
 
     const submitKeyboardMove = useCallback(() => {
@@ -553,34 +240,19 @@ export function TrainingTrainer({
         ) {
             return;
         }
-        try {
-            const chess = new Chess(training.positionFen);
-            const notation = keyboardMove.trim();
-            const normalized = notation.toLowerCase();
-            const move = /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(
-                normalized
-            )
-                ? chess.move({
-                      from: normalized.slice(0, 2),
-                      to: normalized.slice(2, 4),
-                      promotion:
-                          normalized.slice(4, 5) || undefined,
-                  })
-                : chess.move(notation);
-            if (!move) throw new Error('Illegal move');
+        const move = legalMoveFromInput(
+            training.positionFen,
+            keyboardMove
+        );
+        if (move) {
             setKeyboardMove('');
             setKeyboardMoveError(null);
-            setSelectedSquare(null);
-            setPendingPromotion(null);
-            void training.submitMove({
-                moveUci: `${move.from}${move.to}${move.promotion ?? ''}`,
-                fenAfterMove: chess.fen(),
-            });
-        } catch {
-            setKeyboardMoveError(
-                'Enter a legal move such as Nf3, O-O, or g1f3.'
-            );
+            void training.submitMove(move);
+            return;
         }
+        setKeyboardMoveError(
+            'Enter a legal move such as Nf3, O-O, or g1f3.'
+        );
     }, [keyboardMove, training]);
 
     const promptText = training.prompt
@@ -594,9 +266,7 @@ export function TrainingTrainer({
         training.phase === 'GRADED' ||
         training.phase === 'REVEALED' ||
         training.phase === 'UNRESOLVED';
-    const boardFen = training.review
-        ? training.prompt?.fen
-        : training.positionFen;
+    const boardFen = training.displayFen ?? training.positionFen;
     const hasCustomFocus = hasEffectivePracticeFocus(
         training.practiceFilters,
         training.appliedPracticeFilters
@@ -616,8 +286,6 @@ export function TrainingTrainer({
                 onApply={(filters) => {
                     returnToSolve();
                     setAnalysisSession(null);
-                    setSelectedSquare(null);
-                    setPendingPromotion(null);
                     setKeyboardMove('');
                     setKeyboardMoveError(null);
                     training.resetFeed(filters);
@@ -632,39 +300,10 @@ export function TrainingTrainer({
             previousPromptIdRef.current &&
             promptId !== previousPromptIdRef.current
         ) {
-            returnToSolve();
-            setAnalysisSession(null);
             promptHeadingRef.current?.focus();
         }
         previousPromptIdRef.current = promptId;
-        setKeyboardMove('');
-        setKeyboardMoveError(null);
-    }, [returnToSolve, training.prompt?.id]);
-
-    useEffect(() => {
-        if (
-            initialAnalysisHandledRef.current ||
-            !training.prompt ||
-            !training.positionFen
-        ) {
-            return;
-        }
-        initialAnalysisHandledRef.current = true;
-        if (training.canReveal) {
-            setRevealIntent('analysis');
-        } else if (
-            training.phase === 'GRADED' ||
-            training.phase === 'REVEALED'
-        ) {
-            enterAnalysis();
-        }
-    }, [
-        enterAnalysis,
-        training.canReveal,
-        training.phase,
-        training.positionFen,
-        training.prompt,
-    ]);
+    }, [training.prompt?.id]);
 
     useEffect(() => {
         const wasTerminal =
@@ -837,76 +476,21 @@ export function TrainingTrainer({
                         )}
                     >
                         <div className="min-w-0">
-                            <div
-                                className="rounded-xl border bg-card p-1 shadow-sm sm:p-2"
-                                role="group"
-                                aria-label={promptText ?? 'Chess practice board'}
-                            >
-                                <Chessboard
-                                    options={{
-                                        position:
-                                            boardFen ?? training.positionFen,
-                                        boardOrientation:
-                                            (training.prompt.sideToMove === 'w') !==
-                                            flipped
-                                                ? 'white'
-                                                : 'black',
-                                        allowDragging: training.canMove,
-                                        allowDrawingArrows: false,
-                                        arrows: reviewArrows,
-                                        showAnimations: !reducedMotion,
-                                        animationDurationInMs: reducedMotion ? 0 : 180,
-                                        squareStyles,
-                                        canDragPiece: ({ square }) => {
-                                            if (
-                                                !training.canMove ||
-                                                !square ||
-                                                !training.positionFen
-                                            ) {
-                                                return false;
-                                            }
-                                            try {
-                                                const chess = new Chess(
-                                                    training.positionFen
-                                                );
-                                                const piece = chess.get(
-                                                    square as Square
-                                                );
-                                                return Boolean(
-                                                    piece &&
-                                                        piece.color === chess.turn()
-                                                );
-                                            } catch {
-                                                return false;
-                                            }
-                                        },
-                                        onSquareClick: ({ square }) => {
-                                            if (!square) return;
-                                            const target = square as Square;
-                                            if (
-                                                selectedSquare &&
-                                                legalTargets.has(target)
-                                            ) {
-                                                playOrChoosePromotion(
-                                                    selectedSquare,
-                                                    target
-                                                );
-                                                return;
-                                            }
-                                            selectSquare(target);
-                                        },
-                                        onPieceDrop: training.canMove
-                                            ? ({ sourceSquare, targetSquare }) => {
-                                                  if (!targetSquare) return false;
-                                                  return playOrChoosePromotion(
-                                                      sourceSquare as Square,
-                                                      targetSquare as Square
-                                                  );
-                                              }
-                                            : undefined,
-                                    }}
-                                />
-                            </div>
+                            <PuzzleBoard
+                                key={`${training.prompt.id}:${training.prompt.solutionRevisionId}`}
+                                positionFen={boardFen ?? training.prompt.fen}
+                                sideToMove={training.prompt.sideToMove}
+                                flipped={flipped}
+                                canMove={training.canMove}
+                                arrows={reviewArrows}
+                                reducedMotion={reducedMotion}
+                                ariaLabel={
+                                    promptText ?? 'Chess practice board'
+                                }
+                                onMove={(move) => {
+                                    void training.submitMove(move);
+                                }}
+                            />
 
                             <div
                                 ref={feedbackRef}
@@ -993,8 +577,6 @@ export function TrainingTrainer({
                                                 variant="outline"
                                                 className="min-h-11"
                                                 onClick={() => {
-                                                    setSelectedSquare(null);
-                                                    setPendingPromotion(null);
                                                     setRevealIntent('solution');
                                                 }}
                                             >
@@ -1132,7 +714,7 @@ export function TrainingTrainer({
                             </Card>
 
                             {training.review ? (
-                                <ReviewPanel
+                                <PostMoveStory
                                     review={training.review}
                                     rootFen={training.prompt.fen}
                                     grade={training.grade}
@@ -1169,7 +751,7 @@ export function TrainingTrainer({
                             onNext={goToNextPosition}
                         >
                             {training.review ? (
-                                <ReviewPanel
+                                <PostMoveStory
                                     review={training.review}
                                     rootFen={training.prompt.fen}
                                     grade={training.grade}
@@ -1179,47 +761,6 @@ export function TrainingTrainer({
                     ) : null}
                 </TabsContent>
             </Tabs>
-
-            <ModalDialog
-                open={pendingPromotion !== null}
-                onOpenChange={(open) => {
-                    if (!open) setPendingPromotion(null);
-                }}
-                title="Promote pawn to"
-                description="Choose the piece before the move is checked."
-            >
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    {(
-                        [
-                            ['q', 'Queen'],
-                            ['r', 'Rook'],
-                            ['b', 'Bishop'],
-                            ['n', 'Knight'],
-                        ] as const
-                    )
-                        .filter(([piece]) =>
-                            pendingPromotion?.choices.includes(piece)
-                        )
-                        .map(([piece, label]) => (
-                            <Button
-                                key={piece}
-                                type="button"
-                                variant="outline"
-                                aria-label={`Promote to ${label}`}
-                                onClick={() => {
-                                    if (!pendingPromotion) return;
-                                    submitLegalMove(
-                                        pendingPromotion.from,
-                                        pendingPromotion.to,
-                                        piece
-                                    );
-                                }}
-                            >
-                                {label}
-                            </Button>
-                        ))}
-                </div>
-            </ModalDialog>
 
             <ModalDialog
                 open={revealIntent !== null}

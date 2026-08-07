@@ -146,6 +146,7 @@ const MIX_TOLERANCE = 0.15;
 function emptyGradeCounts(): ProgressGradeCounts {
     return {
         BEST: 0,
+        STRONG: 0,
         GOOD: 0,
         IMPROVED: 0,
         REPEATED_MISTAKE: 0,
@@ -154,7 +155,11 @@ function emptyGradeCounts(): ProgressGradeCounts {
 }
 
 function isFullSolve(grade: AttemptGrade | null) {
-    return grade === 'BEST' || grade === 'GOOD';
+    return (
+        grade === 'BEST' ||
+        grade === 'STRONG' ||
+        grade === 'GOOD'
+    );
 }
 
 function matchesFilters(

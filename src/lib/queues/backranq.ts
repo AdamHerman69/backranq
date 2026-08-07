@@ -27,6 +27,7 @@ export type BackranqQueueMessage =
       }
     | { type: 'dispatch-analysis'; requestedAt: string }
     | { type: 'analysis-job'; jobId: string; dispatchToken: string }
+    | { type: 'weekly-master-run'; runId: string }
     | { type: 'notification-delivery'; deliveryId: string }
     | { type: 'notification-sweep'; requestedAt: string }
     | {

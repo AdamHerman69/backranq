@@ -124,11 +124,12 @@ const STANDARD_TRAINING_MOMENTS = [
 ] as const;
 
 const GRADING_POLICY = {
-    version: 2,
+    version: 3,
     pov: 'TRAINING_SIDE',
     best: { maxCpLoss: 20, maxWinChanceLoss: 0.03 },
+    strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
     success: {
-        maxCpLoss: 80,
+        maxCpLoss: 100,
         maxWinChanceLoss: 0.1,
         preserveOutcome: true,
     },
@@ -136,7 +137,7 @@ const GRADING_POLICY = {
         minRecoveredCp: 50,
         minRecoveredWinChance: 0.08,
     },
-    unknownMove: 'DYNAMIC',
+    unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
     matePolicy: 'EXACT',
     tablebasePolicy: 'EXACT',
 } as const;
@@ -188,6 +189,7 @@ async function seedTrainingMoment(
               fen: fixture.fen,
               ply: 0,
               role: 'USER',
+              alternativesComplete: true,
               acceptedMovesUci: fixture.acceptedMovesUci,
               branches: [
                   {
@@ -197,6 +199,7 @@ async function seedTrainingMoment(
                           fen: fenAfterBest,
                           ply: 1,
                           role: 'OPPONENT',
+                          alternativesComplete: true,
                           selectedMoveUci: 'b8c6',
                           branches: [
                               {
@@ -206,6 +209,7 @@ async function seedTrainingMoment(
                                       fen: fenAfterOpponent!,
                                       ply: 2,
                                       role: 'USER',
+                                      alternativesComplete: true,
                                       acceptedMovesUci: [
                                           conditionalMove,
                                       ],
@@ -236,6 +240,7 @@ async function seedTrainingMoment(
               fen: fixture.fen,
               ply: 0,
               role: 'USER',
+              alternativesComplete: true,
               acceptedMovesUci: fixture.acceptedMovesUci,
               branches: [
                   {
@@ -296,6 +301,20 @@ async function seedTrainingMoment(
             trainable: true,
             bestMoveUci: fixture.bestMoveUci,
             acceptedMovesUci: fixture.acceptedMovesUci,
+            acceptanceFrontier: {
+                version: 1,
+                status: 'STABLE',
+                targetCutoffCp: 100,
+                effectiveCutoffCp: 70,
+                boundaryGapCp: 40,
+                moves: fixture.acceptedMovesUci.map(
+                    (moveUci, index) => ({
+                        moveUci,
+                        tier: index === 0 ? 'BEST' : 'GOOD',
+                    })
+                ),
+                firstRejectedMoveUci: null,
+            },
             bestLine: fixture.bestLineUci,
             solutionTree,
             scoreAtStart: scoreBefore,

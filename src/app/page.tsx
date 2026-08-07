@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 
 import { SignInButton } from '@/components/auth/SignInButton';
+import { DualOnboardingHero } from '@/components/landing/DualOnboardingHero';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { auth } from '@/lib/auth';
@@ -57,34 +58,7 @@ export default async function LandingPage() {
             </header>
 
             <main className="space-y-20 pb-16 sm:space-y-24">
-                <section className="relative overflow-hidden">
-                    <div
-                        className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-200/60 via-transparent to-transparent dark:from-zinc-800/40"
-                        aria-hidden="true"
-                    />
-                    <div className="mx-auto max-w-4xl px-4 pb-14 pt-16 text-center sm:pb-20 sm:pt-24">
-                        <p className="mb-5 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                            Personal chess practice
-                        </p>
-                        <h1 className="text-balance text-4xl font-bold tracking-tight sm:text-6xl lg:text-7xl">
-                            Stop solving random puzzles.
-                            <span className="mt-2 block bg-gradient-to-r from-zinc-600 to-zinc-950 bg-clip-text text-transparent dark:from-zinc-100 dark:to-zinc-500">
-                                Practice your decisions.
-                            </span>
-                        </h1>
-                        <p className="mx-auto mt-7 max-w-2xl text-pretty text-lg leading-8 text-muted-foreground">
-                            Backranq turns critical decisions from your own games
-                            into focused positions. No category hints, no
-                            tactical spoilers—just find the best move you can.
-                        </p>
-                        <div className="mt-10">
-                            <LandingActions
-                                isSignedIn={isSignedIn}
-                                size="large"
-                            />
-                        </div>
-                    </div>
-                </section>
+                <DualOnboardingHero isSignedIn={isSignedIn} />
 
                 <section
                     className="mx-auto max-w-6xl px-4"

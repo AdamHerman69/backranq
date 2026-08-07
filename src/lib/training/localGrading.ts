@@ -168,7 +168,22 @@ export function gradeKnownLocalMove(args: {
         !acceptedByTree &&
         !branch
     ) {
-        return null;
+        if (!args.node.alternativesComplete) return null;
+        return {
+            result: {
+                status: 'GRADED',
+                grade: 'DIFFERENT_MISTAKE',
+                accepted: false,
+            },
+            source: 'PRECOMPUTED',
+            scoreAfter: null,
+            comparison: null,
+            evidence: {
+                kind: 'OUTSIDE_CONFIRMED_ACCEPTED_SET',
+                acceptanceFrontier:
+                    args.manifest.acceptanceFrontier,
+            },
+        };
     }
 
     const metrics = knownMetrics({
@@ -186,7 +201,10 @@ export function gradeKnownLocalMove(args: {
             ? 'REPEATED_MISTAKE'
             : assessment?.grade ??
               (branch?.best ? 'BEST' : 'GOOD');
-    const accepted = grade === 'BEST' || grade === 'GOOD';
+    const accepted =
+        grade === 'BEST' ||
+        grade === 'STRONG' ||
+        grade === 'GOOD';
 
     return {
         result: {
@@ -284,6 +302,19 @@ function stableEngineEvidence(args: {
     trainingSide: 'w' | 'b';
 }): boolean {
     if (!args.firstScore || !args.secondScore) return false;
+    // WDL is the authoritative outcome signal when both passes provide it.
+    // A deeper pass may legitimately promote the same decisive outcome from
+    // a large centipawn score to a forced mate; that is stronger evidence, not
+    // instability. Compare the shared outcome before requiring score kinds to
+    // match.
+    if (
+        typeof args.firstWdlChance === 'number' &&
+        Number.isFinite(args.firstWdlChance) &&
+        typeof args.secondWdlChance === 'number' &&
+        Number.isFinite(args.secondWdlChance)
+    ) {
+        return Math.abs(args.firstWdlChance - args.secondWdlChance) <= 0.05;
+    }
     if (
         args.firstScore.kind === 'mate' ||
         args.secondScore.kind === 'mate'
@@ -312,8 +343,8 @@ function stableEngineEvidence(args: {
         args.secondScore,
         args.trainingSide
     );
-    const firstChance = args.firstWdlChance ?? first.chance;
-    const secondChance = args.secondWdlChance ?? second.chance;
+    const firstChance = first.chance;
+    const secondChance = second.chance;
     if (firstChance != null && secondChance != null) {
         return Math.abs(firstChance - secondChance) <= 0.05;
     }
@@ -623,5 +654,6 @@ export function aggregateTrainingGrade(
         return 'IMPROVED';
     }
     if (grades.some((grade) => grade === 'GOOD')) return 'GOOD';
+    if (grades.some((grade) => grade === 'STRONG')) return 'STRONG';
     return 'BEST';
 }

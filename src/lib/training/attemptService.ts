@@ -142,7 +142,9 @@ async function recordReviewEvidence(args: {
     });
     const success =
         !args.revealed &&
-        (args.grade === 'BEST' || args.grade === 'GOOD');
+        (args.grade === 'BEST' ||
+            args.grade === 'STRONG' ||
+            args.grade === 'GOOD');
     const intervalBeforeDays = existing?.intervalDays ?? 0;
     const intervalAfterDays = success
         ? existing?.successes

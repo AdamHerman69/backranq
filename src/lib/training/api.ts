@@ -1,6 +1,7 @@
 import type {
     AttemptGrade,
-    GradingPolicyV2,
+    AcceptanceFrontier,
+    GradingPolicyV3,
     PovScore,
     TrainingLessonKind,
     TrainingSourceKind,
@@ -88,7 +89,8 @@ export type TrainingGradingManifestDto = {
     positionHistory: string[];
     originalMoveUci: string;
     originalScoreAfter: PovScore;
-    gradingPolicy: GradingPolicyV2;
+    gradingPolicy: GradingPolicyV3;
+    acceptanceFrontier: AcceptanceFrontier;
     solutionTree: TrainingSolutionTreeNodeDto;
     moveAssessments: TrainingMoveAssessmentDto[];
     review: TrainingReviewDto;

@@ -15,13 +15,14 @@ export function AppShell({
 }) {
   const pathname = usePathname();
   const hideChrome = pathname === "/" || pathname === "/login";
+  const isAdmin = pathname === "/admin" || pathname.startsWith("/admin/");
 
   if (hideChrome) return <>{children}</>;
 
   return (
     <div className="min-h-dvh">
       <header className="sticky top-0 z-40 w-full border-b bg-background/80 backdrop-blur">
-        {disableBackgroundAnalysisBar ? null : <BackgroundAnalysisBar />}
+        {disableBackgroundAnalysisBar || isAdmin ? null : <BackgroundAnalysisBar />}
         <div className="container flex h-14 items-center justify-between gap-3">
           <AppNav />
         </div>

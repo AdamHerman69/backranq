@@ -61,6 +61,7 @@ describe('Progress dashboard rendering', () => {
             gradedFullSolve: progressRate(2, 4),
             gradeCounts: {
                 BEST: 1,
+                STRONG: 0,
                 GOOD: 1,
                 IMPROVED: 1,
                 REPEATED_MISTAKE: 1,

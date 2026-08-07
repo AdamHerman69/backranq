@@ -141,7 +141,16 @@ function assertSolutionHash(solution: SolutionRevisionInput) {
                 .filter(Boolean)
         )
     );
+    const frontierMoves = solution.acceptanceFrontier.moves.map(
+        (move) => normalizeUci(move.moveUci)
+    );
     if (
+        frontierMoves.length !== acceptedMoves.length ||
+        frontierMoves.some(
+            (move, index) => move !== acceptedMoves[index]
+        ) ||
+        (solution.acceptanceFrontier.status !== 'STABLE' &&
+            solution.trainable) ||
         acceptedMoves.some((move) => !rootAssessments.has(move)) ||
         rootAssessments.get(normalizeUci(solution.bestMoveUci))?.grade !==
             'BEST'
@@ -305,7 +314,8 @@ function revisionCreateData(args: {
                     .map(normalizeUci)
                     .filter(Boolean)
             )
-        ).sort(),
+        ),
+        acceptanceFrontier: json(solution.acceptanceFrontier),
         bestLine: json(solution.bestLineUci.map(normalizeUci)),
         solutionTree: json(solution.solutionTree),
         scoreAtStart:

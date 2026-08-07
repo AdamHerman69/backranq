@@ -63,6 +63,11 @@ export function feedbackForTrainingState({
                 tone: 'positive',
                 message: 'Best move — well found.',
             };
+        case 'STRONG':
+            return {
+                tone: 'positive',
+                message: 'Strong move — a high-quality solution.',
+            };
         case 'GOOD':
             return {
                 tone: 'positive',

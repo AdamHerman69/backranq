@@ -117,6 +117,18 @@ describe('training moment contracts', () => {
             trainable: true,
             bestMoveUci: 'E2E4',
             acceptedMovesUci: ['d2d4', 'e2e4'],
+            acceptanceFrontier: {
+                version: 1 as const,
+                status: 'STABLE' as const,
+                targetCutoffCp: 100,
+                effectiveCutoffCp: 80,
+                boundaryGapCp: 40,
+                moves: [
+                    { moveUci: 'e2e4', tier: 'BEST' as const },
+                    { moveUci: 'd2d4', tier: 'GOOD' as const },
+                ],
+                firstRejectedMoveUci: 'g1f3',
+            },
             moveAssessments: [
                 {
                     positionKey: 'root',
@@ -292,14 +304,14 @@ describe('training config normalization', () => {
         const config = resolveTrainingConfig();
 
         expect(config).toMatchObject({
-            version: 2,
+            version: 3,
             coveragePreset: 'ALL_CONFIRMED',
             minWinChanceLoss: 0.03,
             fallbackMinCpLoss: 30,
             gradingTolerance: 'PRACTICAL',
             gradingPolicy: {
                 pov: 'TRAINING_SIDE',
-                unknownMove: 'DYNAMIC',
+                unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
                 matePolicy: 'EXACT',
                 tablebasePolicy: 'EXACT',
             },

@@ -34,11 +34,11 @@ describe('analysis preference bounds', () => {
         expect(options.maxConfirmationNodes).toBe(800_000);
         expect(options.minWinningChanceLoss).toBe(0.12);
         expect(options.fallbackMinCpLoss).toBe(150);
-        expect(options.maxAcceptedWinningChanceLoss).toBe(0.025);
-        expect(options.fallbackMaxAcceptedCpLoss).toBe(25);
+        expect(options.maxAcceptedWinningChanceLoss).toBe(0.075);
+        expect(options.fallbackMaxAcceptedCpLoss).toBe(75);
         expect(options.gradingPolicy?.success).toEqual({
-            maxCpLoss: 25,
-            maxWinChanceLoss: 0.025,
+            maxCpLoss: 75,
+            maxWinChanceLoss: 0.075,
             preserveOutcome: true,
         });
         expect(options).not.toHaveProperty('maxPuzzlesPerGame');

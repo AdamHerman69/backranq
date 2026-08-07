@@ -1,7 +1,7 @@
 import {
     TRAINING_CONTRACT_VERSION,
     hashCanonicalTrainingValue,
-    type GradingPolicyV2,
+    type GradingPolicyV3,
 } from './contracts';
 
 export const TRAINING_COVERAGE_PRESETS = [
@@ -26,9 +26,10 @@ export type TrainingConfigInput = {
     fallbackMinCpLoss?: number;
     gradingTolerance?: TrainingGradingTolerance;
     gradingPolicy?: Partial<{
-        best: Partial<GradingPolicyV2['best']>;
-        success: Partial<GradingPolicyV2['success']>;
-        improvement: Partial<GradingPolicyV2['improvement']>;
+        best: Partial<GradingPolicyV3['best']>;
+        strong: Partial<GradingPolicyV3['strong']>;
+        success: Partial<GradingPolicyV3['success']>;
+        improvement: Partial<GradingPolicyV3['improvement']>;
     }>;
 };
 
@@ -38,7 +39,7 @@ export type ResolvedTrainingConfig = {
     minWinChanceLoss: number;
     fallbackMinCpLoss: number;
     gradingTolerance: TrainingGradingTolerance;
-    gradingPolicy: GradingPolicyV2;
+    gradingPolicy: GradingPolicyV3;
 };
 
 const coverageDefaults: Record<
@@ -61,13 +62,14 @@ const coverageDefaults: Record<
 
 const gradingDefaults: Record<
     TrainingGradingTolerance,
-    Pick<GradingPolicyV2, 'best' | 'success' | 'improvement'>
+    Pick<GradingPolicyV3, 'best' | 'strong' | 'success' | 'improvement'>
 > = {
     STRICT: {
-        best: { maxCpLoss: 5, maxWinChanceLoss: 0.01 },
+        best: { maxCpLoss: 10, maxWinChanceLoss: 0.01 },
+        strong: { maxCpLoss: 30, maxWinChanceLoss: 0.03 },
         success: {
-            maxCpLoss: 25,
-            maxWinChanceLoss: 0.025,
+            maxCpLoss: 75,
+            maxWinChanceLoss: 0.075,
             preserveOutcome: true,
         },
         improvement: {
@@ -76,10 +78,11 @@ const gradingDefaults: Record<
         },
     },
     PRACTICAL: {
-        best: { maxCpLoss: 15, maxWinChanceLoss: 0.02 },
+        best: { maxCpLoss: 20, maxWinChanceLoss: 0.02 },
+        strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
         success: {
-            maxCpLoss: 50,
-            maxWinChanceLoss: 0.05,
+            maxCpLoss: 100,
+            maxWinChanceLoss: 0.1,
             preserveOutcome: true,
         },
         improvement: {
@@ -88,10 +91,11 @@ const gradingDefaults: Record<
         },
     },
     LENIENT: {
-        best: { maxCpLoss: 25, maxWinChanceLoss: 0.03 },
+        best: { maxCpLoss: 30, maxWinChanceLoss: 0.03 },
+        strong: { maxCpLoss: 70, maxWinChanceLoss: 0.07 },
         success: {
-            maxCpLoss: 80,
-            maxWinChanceLoss: 0.08,
+            maxCpLoss: 130,
+            maxWinChanceLoss: 0.13,
             preserveOutcome: true,
         },
         improvement: {
@@ -140,7 +144,7 @@ function validTolerance(
 export function normalizeGradingPolicy(
     input: TrainingConfigInput['gradingPolicy'],
     tolerance: TrainingGradingTolerance = 'PRACTICAL'
-): GradingPolicyV2 {
+): GradingPolicyV3 {
     const safeTolerance = validTolerance(tolerance)
         ? tolerance
         : 'PRACTICAL';
@@ -155,16 +159,32 @@ export function normalizeGradingPolicy(
             defaults.best.maxWinChanceLoss
         ),
     };
-    const success = {
+    const strong = {
         maxCpLoss: Math.max(
             best.maxCpLoss,
+            clampCp(
+                input?.strong?.maxCpLoss,
+                defaults.strong.maxCpLoss
+            )
+        ),
+        maxWinChanceLoss: Math.max(
+            best.maxWinChanceLoss,
+            clampProbability(
+                input?.strong?.maxWinChanceLoss,
+                defaults.strong.maxWinChanceLoss
+            )
+        ),
+    };
+    const success = {
+        maxCpLoss: Math.max(
+            strong.maxCpLoss,
             clampCp(
                 input?.success?.maxCpLoss,
                 defaults.success.maxCpLoss
             )
         ),
         maxWinChanceLoss: Math.max(
-            best.maxWinChanceLoss,
+            strong.maxWinChanceLoss,
             clampProbability(
                 input?.success?.maxWinChanceLoss,
                 defaults.success.maxWinChanceLoss
@@ -180,6 +200,7 @@ export function normalizeGradingPolicy(
         version: TRAINING_CONTRACT_VERSION,
         pov: 'TRAINING_SIDE',
         best,
+        strong,
         success,
         improvement: {
             minRecoveredCp: clampCp(
@@ -191,7 +212,7 @@ export function normalizeGradingPolicy(
                 defaults.improvement.minRecoveredWinChance
             ),
         },
-        unknownMove: 'DYNAMIC',
+        unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
         matePolicy: 'EXACT',
         tablebasePolicy: 'EXACT',
     };

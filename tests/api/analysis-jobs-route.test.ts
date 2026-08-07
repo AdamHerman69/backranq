@@ -44,7 +44,7 @@ function billingAccount(overrides: Record<string, unknown> = {}) {
         serverCreditsBalance: 99,
         monthlyServerCreditsUsed: 0,
         serverCreditsPeriodStart: new Date('2026-07-05T00:00:00Z'),
-        serverCreditsRenewAt: new Date('2026-08-05T00:00:00Z'),
+        serverCreditsRenewAt: new Date('2027-08-05T00:00:00Z'),
         monthlyServerCreditsLimit: 100,
         autoAnalysisMonthlyGameLimit: 50,
         autoAnalysisDailyGameLimit: 10,

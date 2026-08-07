@@ -9,16 +9,10 @@ import {
 import { useSession } from 'next-auth/react';
 
 import type {
-    GradedPracticeResult,
-    PracticeResult,
     PracticeFilters,
     RecordTrainingAttemptRequest,
-    RecordedTrainingAttemptStepDto,
-    RevealedPracticeResult,
     TrainingPromptDto,
-    TrainingSolutionTreeNodeDto,
 } from '@/lib/training/api';
-import { StockfishClient } from '@/lib/analysis/stockfishClient';
 import {
     fetchTrainingMoment,
     fetchPracticeFeed,
@@ -31,17 +25,11 @@ import {
     trainingQueueStorageKey,
     type QueuedTrainingAttempt,
 } from '@/lib/training/offlineQueue';
+import { newClientId } from '@/lib/training/clientIds';
 import {
-    reviewFromTrainingResponse,
-    type TrainerAttemptPhase,
-} from '@/lib/training/trainerState';
-import {
-    aggregateTrainingGrade,
-    gradeKnownLocalMove,
-    gradeUnknownLocalMove,
-    localContinuationForMove,
-    type LocalMoveEvaluation,
-} from '@/lib/training/localGrading';
+    usePuzzleSession,
+    type PuzzleSessionCompletion,
+} from '@/lib/hooks/usePuzzleSession';
 import {
     abortCoordinatedPracticeFeedRequest,
     startCoordinatedPracticeFeedRequest,
@@ -120,16 +108,6 @@ export function practiceFeedLoadErrorAfterEvent(
     return currentError;
 }
 
-type LastSubmission = {
-    momentId: string;
-    node: TrainingSolutionTreeNodeDto;
-    stepIndex: number;
-    moveUci: string;
-    timeSpentMs: number;
-    fenBefore: string;
-    fenAfterMove: string;
-};
-
 type ActiveExposure = {
     clientExposureId: string;
     momentId: string;
@@ -138,20 +116,6 @@ type ActiveExposure = {
     terminalRecorded: boolean;
     terminalPending: boolean;
 };
-
-function newClientAttemptId(): string {
-    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-        return crypto.randomUUID();
-    }
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(
-        /[xy]/g,
-        (character) => {
-            const random = Math.floor(Math.random() * 16);
-            const value = character === 'x' ? random : (random & 0x3) | 0x8;
-            return value.toString(16);
-        }
-    );
-}
 
 function errorMessage(error: unknown): string {
     if (error instanceof TrainingClientError) return error.message;
@@ -215,7 +179,6 @@ export function usePracticeFeed(
     const { data: session } = useSession();
     const ownerId = ownerIdOverride ?? session?.user?.id ?? null;
 
-    const [prompt, setPrompt] = useState<TrainingPromptDto | null>(null);
     const [buffer, setBuffer] = useState<TrainingPromptDto[]>([]);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [feedStarted, setFeedStarted] = useState(false);
@@ -230,25 +193,10 @@ export function usePracticeFeed(
     const [feedHadPositions, setFeedHadPositions] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
 
-    const [positionFen, setPositionFen] = useState<string | null>(null);
-    const [phase, setPhase] = useState<TrainerAttemptPhase>('READY');
-    const [response, setResponse] = useState<
-        PracticeResult | RevealedPracticeResult | null
-    >(null);
     const [error, setError] = useState<string | null>(null);
     const [online, setOnline] = useState(navigatorIsOnline);
     const [queuedCount, setQueuedCount] = useState(0);
-    const [engineClient, setEngineClient] =
-        useState<StockfishClient | null>(null);
 
-    const clientAttemptIdRef = useRef<string | null>(null);
-    const promptStartedAtRef = useRef(Date.now());
-    const lastSubmissionRef = useRef<LastSubmission | null>(null);
-    const currentNodeRef =
-        useRef<TrainingSolutionTreeNodeDto | null>(null);
-    const recordedStepsRef =
-        useRef<RecordedTrainingAttemptStepDto[]>([]);
-    const engineRef = useRef<StockfishClient | null>(null);
     const flushInFlightRef = useRef(false);
     const advanceInFlightRef = useRef(false);
     const bufferRef = useRef<TrainingPromptDto[]>([]);
@@ -266,14 +214,20 @@ export function usePracticeFeed(
         >(null);
     const activeExposureRef = useRef<ActiveExposure | null>(null);
     const progressStartRecordedRef = useRef(false);
-
-    const getOrCreateEngine = useCallback(() => {
-        if (engineRef.current) return engineRef.current;
-        const engine = new StockfishClient();
-        engineRef.current = engine;
-        setEngineClient(engine);
-        return engine;
-    }, []);
+    const completionSinkRef = useRef<
+        (completion: PuzzleSessionCompletion) => void
+    >(() => undefined);
+    const puzzleSession = usePuzzleSession({
+        unresolvedMode: 'RETRY',
+        prewarmEngine: true,
+        onCompleted: (completion) =>
+            completionSinkRef.current(completion),
+    });
+    const {
+        activatePrompt: activatePuzzlePrompt,
+        clearPrompt: clearPuzzlePrompt,
+        phase: puzzlePhase,
+    } = puzzleSession;
 
     const recommendationKey =
         entry === 'progress'
@@ -299,7 +253,7 @@ export function usePracticeFeed(
             void recordPracticeExposureEvent({
                 kind: 'TERMINAL',
                 clientExposureId: exposure.clientExposureId,
-                clientEventId: newClientAttemptId(),
+                clientEventId: newClientId(),
                 momentId: exposure.momentId,
                 solutionRevisionId:
                     exposure.solutionRevisionId,
@@ -380,7 +334,7 @@ export function usePracticeFeed(
             finishExposure('REPLACED');
             const shownAt = new Date().toISOString();
             const exposure: ActiveExposure = {
-                clientExposureId: newClientAttemptId(),
+                clientExposureId: newClientId(),
                 momentId: next.id,
                 solutionRevisionId: next.solutionRevisionId,
                 shownAt,
@@ -391,7 +345,7 @@ export function usePracticeFeed(
             void recordPracticeExposureEvent({
                 kind: 'SHOWN',
                 clientExposureId: exposure.clientExposureId,
-                clientEventId: newClientAttemptId(),
+                clientEventId: newClientId(),
                 momentId: next.id,
                 solutionRevisionId: next.solutionRevisionId,
                 shownAt,
@@ -408,15 +362,12 @@ export function usePracticeFeed(
                 void recordProgressEvent({
                     eventName:
                         'PRACTICE_STARTED_FROM_PROGRESS',
-                    clientEventId: newClientAttemptId(),
+                    clientEventId: newClientId(),
                     occurredAt: shownAt,
                     recommendationKey,
                 });
             }
-            setPrompt(next);
-            setPositionFen(next.fen);
-            setPhase('READY');
-            setResponse(null);
+            activatePuzzlePrompt(next);
             setError(null);
             setLoadError((current) =>
                 practiceFeedLoadErrorAfterEvent(
@@ -424,14 +375,13 @@ export function usePracticeFeed(
                     'PROMPT_ACTIVATED'
                 )
             );
-            clientAttemptIdRef.current = null;
-            lastSubmissionRef.current = null;
-            currentNodeRef.current =
-                next.grading.solutionTree;
-            recordedStepsRef.current = [];
-            promptStartedAtRef.current = Date.now();
         },
-        [entry, finishExposure, recommendationKey]
+        [
+            entry,
+            finishExposure,
+            activatePuzzlePrompt,
+            recommendationKey,
+        ]
     );
 
     useEffect(
@@ -607,8 +557,7 @@ export function usePracticeFeed(
                 if (first) {
                     activatePrompt(first);
                 } else {
-                    setPrompt(null);
-                    setPositionFen(null);
+                    clearPuzzlePrompt();
                 }
             } catch (caught) {
                 if (
@@ -625,8 +574,7 @@ export function usePracticeFeed(
                     })
                 );
                 setLoadError(errorMessage(caught));
-                setPrompt(null);
-                setPositionFen(null);
+                clearPuzzlePrompt();
             } finally {
                 if (
                     !signal.aborted &&
@@ -641,6 +589,7 @@ export function usePracticeFeed(
             feedRequest,
             initialMomentId,
             replaceBuffer,
+            clearPuzzlePrompt,
             startFeedPageRequest,
             updateCursor,
         ]
@@ -660,7 +609,7 @@ export function usePracticeFeed(
         feedExhaustedRef.current = false;
         appliedFiltersRef.current = {};
         requestedFiltersRef.current = feedRequest.filters;
-        setPrompt(null);
+        clearPuzzlePrompt();
         replaceBuffer([]);
         setNextCursor(null);
         setFeedStarted(false);
@@ -681,7 +630,12 @@ export function usePracticeFeed(
                 feedGenerationRef.current += 1;
             }
         };
-    }, [feedRequest.filters, loadInitial, replaceBuffer]);
+    }, [
+        feedRequest.filters,
+        loadInitial,
+        clearPuzzlePrompt,
+        replaceBuffer,
+    ]);
 
     useEffect(() => {
         const onOnline = () => setOnline(true);
@@ -693,30 +647,6 @@ export function usePracticeFeed(
             window.removeEventListener('offline', onOffline);
         };
     }, []);
-
-    useEffect(() => {
-        if (!prompt || engineRef.current) return;
-        const timeoutId = window.setTimeout(() => {
-            try {
-                const engine = getOrCreateEngine();
-                void engine.getIdentity().catch(() => {
-                    // The worker can still be retried lazily on an unknown move.
-                });
-            } catch {
-                // Known moves remain instant even when this device cannot start
-                // the optional local fallback engine.
-            }
-        }, 0);
-        return () => window.clearTimeout(timeoutId);
-    }, [getOrCreateEngine, prompt]);
-
-    useEffect(
-        () => () => {
-            engineRef.current?.terminate();
-            engineRef.current = null;
-        },
-        []
-    );
 
     useEffect(() => {
         if (
@@ -796,305 +726,17 @@ export function usePracticeFeed(
         [online, ownerId, queueRecord]
     );
 
-    const applyLocalEvaluation = useCallback(
-        (
-            evaluation: LocalMoveEvaluation,
-            submission: LastSubmission
-        ) => {
-            if (!prompt || !clientAttemptIdRef.current) return;
-            const clientAttemptId = clientAttemptIdRef.current;
-            if (evaluation.result.status === 'UNRESOLVED') {
-                setResponse({
-                    attemptId: clientAttemptId,
-                    status: 'UNRESOLVED',
-                    reason: evaluation.result.reason,
-                });
-                setPositionFen(submission.fenAfterMove);
-                setPhase('UNRESOLVED');
-                return;
-            }
-
-            const userStep: RecordedTrainingAttemptStepDto = {
-                stepIndex: submission.stepIndex,
-                actor: 'USER',
-                fenBefore: submission.fenBefore,
-                moveUci: submission.moveUci,
-                grade: evaluation.result.grade,
-                source: evaluation.source,
-                comparison: evaluation.comparison,
-                timeSpentMs: submission.timeSpentMs,
-            };
-            const stepsWithUser = [
-                ...recordedStepsRef.current,
-                userStep,
-            ];
-            const continuation = evaluation.result.accepted
-                ? localContinuationForMove({
-                      node: submission.node,
-                      moveUci: submission.moveUci,
-                  })
-                : null;
-            if (continuation) {
-                const engineStep: RecordedTrainingAttemptStepDto = {
-                    stepIndex: submission.stepIndex + 1,
-                    actor: 'ENGINE',
-                    fenBefore: submission.fenAfterMove,
-                    moveUci: continuation.opponentMoveUci,
-                };
-                recordedStepsRef.current = [
-                    ...stepsWithUser,
-                    engineStep,
-                ];
-                currentNodeRef.current =
-                    continuation.nextUserNode;
-                setResponse({
-                    attemptId: clientAttemptId,
-                    status: 'AWAITING_CONTINUATION',
-                    nextStepIndex: submission.stepIndex + 2,
-                    opponentMove: {
-                        moveUci:
-                            continuation.opponentMoveUci,
-                        fenAfter:
-                            continuation.fenAfterOpponentMove,
-                    },
-                });
-                setPositionFen(
-                    continuation.fenAfterOpponentMove
-                );
-                setPhase('AWAITING_MOVE');
-                setError(null);
-                promptStartedAtRef.current = Date.now();
-                return;
-            }
-
-            recordedStepsRef.current = stepsWithUser;
-            const userSteps = stepsWithUser.filter(
-                (step) => step.actor === 'USER'
-            );
-            const aggregateGrade = aggregateTrainingGrade(
-                userSteps.flatMap((step) =>
-                    step.grade ? [step.grade] : []
-                )
-            );
-            const comparison =
-                userSteps.length === 1
-                    ? evaluation.comparison
-                    : null;
-            const review = {
-                ...prompt.grading.review,
-                submittedMoveUci:
-                    userSteps[0]?.moveUci ?? null,
-                comparison,
-            };
-            setResponse({
-                attemptId: clientAttemptId,
-                status: 'GRADED',
-                grade: aggregateGrade,
-                accepted:
-                    aggregateGrade === 'BEST' ||
-                    aggregateGrade === 'GOOD',
-                review,
-            });
-            setPositionFen(submission.fenAfterMove);
-            setPhase('GRADED');
-            setError(null);
-            const sources = userSteps.flatMap((step) =>
-                step.source ? [step.source] : []
-            );
-            const gradingSource = sources.includes('DYNAMIC')
-                ? 'DYNAMIC'
-                : sources.includes('TABLEBASE')
-                  ? 'TABLEBASE'
-                  : 'PRECOMPUTED';
-            const persistence = persistRecord(prompt.id, {
-                kind: 'RECORD',
-                clientAttemptId,
-                solutionRevisionId:
-                    prompt.solutionRevisionId,
-                status: 'GRADED',
-                grade: aggregateGrade,
-                gradingSource,
-                comparison,
-                steps: stepsWithUser,
-            });
-            finishExposureAfterPersistence(
-                persistence,
-                'MOVE_SUBMITTED'
-            );
-        },
-        [
-            finishExposureAfterPersistence,
-            persistRecord,
-            prompt,
-        ]
-    );
-
-    const submitMove = useCallback(
-        async ({
-            moveUci,
-            fenAfterMove,
-        }: {
-            moveUci: string;
-            fenAfterMove: string;
-        }) => {
-            const node = currentNodeRef.current;
-            if (
-                !prompt ||
-                !positionFen ||
-                !node ||
-                node.role !== 'USER' ||
-                (phase !== 'READY' && phase !== 'AWAITING_MOVE')
-            ) {
-                return;
-            }
-            const elapsed = Math.max(
-                0,
-                Math.min(
-                    Date.now() - promptStartedAtRef.current,
-                    86_400_000
-                )
-            );
-            clientAttemptIdRef.current ??= newClientAttemptId();
-            const submission: LastSubmission = {
-                momentId: prompt.id,
-                node,
-                stepIndex: recordedStepsRef.current.length,
-                moveUci,
-                timeSpentMs: elapsed,
-                fenBefore: positionFen,
-                fenAfterMove,
-            };
-            lastSubmissionRef.current = submission;
-            setPositionFen(fenAfterMove);
-            setResponse(null);
-            setError(null);
-
-            const known = gradeKnownLocalMove({
-                manifest: prompt.grading,
-                node,
-                moveUci,
-            });
-            if (known) {
-                applyLocalEvaluation(known, submission);
-                return;
-            }
-
-            setPhase('SUBMITTING');
-            try {
-                const engine = getOrCreateEngine();
-                const evaluated = await gradeUnknownLocalMove({
-                    engine,
-                    manifest: prompt.grading,
-                    node,
-                    moveUci,
-                    positionHistory: [
-                        ...prompt.grading.positionHistory,
-                        ...recordedStepsRef.current.map(
-                            (step) => step.fenBefore
-                        ),
-                    ],
-                });
-                applyLocalEvaluation(evaluated, submission);
-            } catch {
-                setResponse({
-                    attemptId:
-                        clientAttemptIdRef.current!,
-                    status: 'UNRESOLVED',
-                    reason: 'ENGINE_UNAVAILABLE',
-                });
-                setPhase('UNRESOLVED');
-            }
-        },
-        [
-            applyLocalEvaluation,
-            getOrCreateEngine,
-            phase,
-            positionFen,
-            prompt,
-        ]
-    );
-
-    const retryGrading = useCallback(async () => {
-        const submission = lastSubmissionRef.current;
-        if (!submission || !prompt || phase !== 'UNRESOLVED') {
-            return;
-        }
-        setPhase('SUBMITTING');
+    completionSinkRef.current = (completion) => {
         setError(null);
-        try {
-            const engine = getOrCreateEngine();
-            const evaluated = await gradeUnknownLocalMove({
-                engine,
-                manifest: prompt.grading,
-                node: submission.node,
-                moveUci: submission.moveUci,
-                positionHistory: [
-                    ...prompt.grading.positionHistory,
-                    ...recordedStepsRef.current.map(
-                        (step) => step.fenBefore
-                    ),
-                ],
-            });
-            applyLocalEvaluation(evaluated, submission);
-        } catch {
-            setPhase('UNRESOLVED');
-        }
-    }, [
-        applyLocalEvaluation,
-        getOrCreateEngine,
-        phase,
-        prompt,
-    ]);
-
-    const reveal = useCallback(() => {
-        if (
-            !prompt ||
-            !(
-                phase === 'READY' ||
-                phase === 'AWAITING_MOVE' ||
-                phase === 'UNRESOLVED'
-            )
-        ) {
-            return;
-        }
-        const clientAttemptId =
-            clientAttemptIdRef.current ?? newClientAttemptId();
-        clientAttemptIdRef.current = clientAttemptId;
-        const firstSubmittedMove =
-            recordedStepsRef.current.find(
-                (step) => step.actor === 'USER'
-            )?.moveUci ??
-            lastSubmissionRef.current?.moveUci ??
-            null;
-        const revealed: RevealedPracticeResult = {
-            attemptId: clientAttemptId,
-            status: 'REVEALED',
-            review: {
-                ...prompt.grading.review,
-                submittedMoveUci: firstSubmittedMove,
-                comparison: null,
-            },
-        };
-        setResponse(revealed);
-        setPhase('REVEALED');
-        setError(null);
-        const persistence = persistRecord(prompt.id, {
-            kind: 'RECORD',
-            clientAttemptId,
-            solutionRevisionId: prompt.solutionRevisionId,
-            status: 'REVEALED',
-            steps: recordedStepsRef.current,
-        });
+        const persistence = persistRecord(
+            completion.prompt.id,
+            completion.request
+        );
         finishExposureAfterPersistence(
             persistence,
-            'REVEALED'
+            completion.terminalReason
         );
-    }, [
-        finishExposureAfterPersistence,
-        persistRecord,
-        phase,
-        prompt,
-    ]);
+    };
 
     const flushQueue = useCallback(async () => {
         if (!ownerId || !online || flushInFlightRef.current) return;
@@ -1140,8 +782,8 @@ export function usePracticeFeed(
         try {
             if (
                 loading ||
-                phase === 'SUBMITTING' ||
-                phase === 'AWAITING_MOVE'
+                puzzlePhase === 'SUBMITTING' ||
+                puzzlePhase === 'AWAITING_MOVE'
             ) {
                 return;
             }
@@ -1161,8 +803,7 @@ export function usePracticeFeed(
             }
 
             if (feedStartedRef.current && feedExhaustedRef.current) {
-                setPrompt(null);
-                setPositionFen(null);
+                clearPuzzlePrompt();
                 return;
             }
 
@@ -1188,8 +829,7 @@ export function usePracticeFeed(
                     setFeedHadPositions(true);
                     activatePrompt(nextPrompt);
                 } else {
-                    setPrompt(null);
-                    setPositionFen(null);
+                    clearPuzzlePrompt();
                 }
             } catch (caught) {
                 if (generation !== feedGenerationRef.current) return;
@@ -1206,7 +846,8 @@ export function usePracticeFeed(
         activatePrompt,
         finishExposure,
         loading,
-        phase,
+        clearPuzzlePrompt,
+        puzzlePhase,
         replaceBuffer,
         startFeedPageRequest,
     ]);
@@ -1227,26 +868,25 @@ export function usePracticeFeed(
             seenPromptKeysRef.current = new Set();
             setLoading(true);
             setLoadError(null);
-            setPrompt(null);
-            setPositionFen(null);
+            clearPuzzlePrompt();
             replaceBuffer([]);
             setNextCursor(null);
             setFeedStarted(false);
             setAppliedFilters({});
             setFeedExhausted(false);
             setFeedHadPositions(false);
-            setResponse(null);
             setError(null);
-            clientAttemptIdRef.current = null;
-            lastSubmissionRef.current = null;
-            currentNodeRef.current = null;
-            recordedStepsRef.current = [];
             setFeedRequest((current) => ({
                 filters,
                 revision: current.revision + 1,
             }));
         },
-        [finishExposure, initialMomentId, replaceBuffer]
+        [
+            finishExposure,
+            initialMomentId,
+            clearPuzzlePrompt,
+            replaceBuffer,
+        ]
     );
 
     const retryFeed = useCallback(() => {
@@ -1261,24 +901,8 @@ export function usePracticeFeed(
         }));
     }, []);
 
-    const grade =
-        response?.status === 'GRADED'
-            ? (response as GradedPracticeResult).grade
-            : null;
-    const unresolved =
-        response?.status === 'UNRESOLVED'
-            ? {
-                  reason: response.reason,
-              }
-            : null;
-
     return {
-        prompt,
-        positionFen,
-        phase,
-        grade,
-        unresolved,
-        review: reviewFromTrainingResponse(response),
+        ...puzzleSession,
         loading,
         feedExhausted,
         feedHadPositions,
@@ -1287,16 +911,6 @@ export function usePracticeFeed(
         error,
         online,
         queuedCount,
-        engineClient,
-        getOrCreateEngine,
-        canMove: phase === 'READY' || phase === 'AWAITING_MOVE',
-        canReveal:
-            (phase === 'READY' ||
-                phase === 'AWAITING_MOVE' ||
-                phase === 'UNRESOLVED'),
-        submitMove,
-        reveal,
-        retryGrading,
         flushQueue,
         next,
         resetFeed,
