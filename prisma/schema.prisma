@@ -436,16 +436,16 @@ model User {
 /// deliberately separate from Auth.js Account: signing in proves application
 /// identity, while this row defines the game source that sync is allowed to use.
 model ChessAccountConnection {
-  id                 String                        @id @default(uuid()) @db.Uuid
-  userId             String                        @db.Uuid
+  id                 String           @id @default(uuid()) @db.Uuid
+  userId             String           @db.Uuid
   provider           SyncProvider
   providerAccountId  String?
   username           String
   usernameNormalized String
   origin             ConnectionOrigin
-  verifiedAt         DateTime                      @default(now())
-  createdAt          DateTime                      @default(now())
-  updatedAt          DateTime                      @updatedAt
+  verifiedAt         DateTime         @default(now())
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
