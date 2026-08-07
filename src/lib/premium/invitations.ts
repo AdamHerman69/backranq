@@ -1,15 +1,25 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { render } from 'react-email';
 import { Prisma } from '@prisma/client';
+
 import PremiumInvitationEmail from '@/emails/PremiumInvitationEmail';
 import { prisma } from '@/lib/prisma';
 import { appUrl } from '@/lib/stripe';
-import { sendSmtp2GoEmail } from '@/lib/notifications/smtp2go';
+import {
+    sendSmtp2GoEmail,
+    Smtp2GoAmbiguousSendError,
+} from '@/lib/notifications/smtp2go';
 import { reconcileBillingAccountInTransaction } from '@/lib/services/billingAccounts';
 import { scheduleAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
+import type {
+    PremiumDeliveryResult,
+} from '@/lib/premium/adminContracts';
 
-const INVITATION_LIFETIME_MS = 14 * 24 * 60 * 60 * 1_000;
+export const PREMIUM_INVITATION_LIFETIME_MS = 14 * 24 * 60 * 60 * 1_000;
+const DELIVERY_LEASE_MS = 2 * 60 * 1_000;
 const MAX_EMAIL_LENGTH = 254;
+const MAX_TOKEN_LENGTH = 200;
+const MAX_TRANSACTION_ATTEMPTS = 3;
 const SIMPLE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function normalizeAccountEmail(value: string) {
@@ -39,157 +49,26 @@ export function premiumInvitationTokenHash(token: string) {
     return createHash('sha256').update(token).digest('hex');
 }
 
-export async function createAndSendPremiumInvitation(args: {
-    invitedById: string;
-    adminMembershipId: string;
-    auditAction:
-        | 'PREMIUM_INVITATION_CREATE'
-        | 'PREMIUM_INVITATION_RESEND';
-    email: string;
-    now?: Date;
-}) {
-    const now = args.now ?? new Date();
-    const address = validateInvitationEmail(args.email);
-    const token = randomBytes(32).toString('base64url');
-    const tokenHash = premiumInvitationTokenHash(token);
-    const expiresAt = new Date(now.getTime() + INVITATION_LIFETIME_MS);
-
-    const invitation = await runSerializable(async (tx) => {
-        const existingUser = await tx.user.findFirst({
-            where: {
-                email: { equals: address.normalized, mode: 'insensitive' },
-            },
-            select: { id: true },
-        });
-        if (existingUser) {
-            const activeAdmin = await tx.adminMembership.findUnique({
-                where: { userId: existingUser.id },
-                select: { active: true },
-            });
-            if (activeAdmin?.active) {
-                throw new PremiumInvitationError(
-                    'This account already has administrator Pro access'
-                );
-            }
-            const activeGrant = await tx.planGrant.findFirst({
-                where: {
-                    userId: existingUser.id,
-                    revokedAt: null,
-                    startsAt: { lte: now },
-                    OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-                },
-                select: { id: true },
-            });
-            if (activeGrant) {
-                throw new PremiumInvitationError(
-                    'This account already has complimentary Pro access'
-                );
-            }
-        }
-
-        const invitation = await tx.premiumInvitation.upsert({
-            where: { activeKey: address.normalized },
-            update: {
-                email: address.email,
-                emailNormalized: address.normalized,
-                tokenHash,
-                plan: 'PRO',
-                invitedById: args.invitedById,
-                expiresAt,
-                acceptedById: null,
-                acceptedAt: null,
-                revokedAt: null,
-                emailSentAt: null,
-                providerEmailId: null,
-                lastEmailError: null,
-            },
-            create: {
-                email: address.email,
-                emailNormalized: address.normalized,
-                activeKey: address.normalized,
-                tokenHash,
-                plan: 'PRO',
-                invitedById: args.invitedById,
-                expiresAt,
-            },
-        });
-        await tx.adminAuditLog.create({
-            data: {
-                adminMembershipId: args.adminMembershipId,
-                action: args.auditAction,
-                targetType: 'PremiumInvitation',
-                targetId: invitation.id,
-                metadata: {
-                    emailNormalized: address.normalized,
-                    expiresAt: expiresAt.toISOString(),
-                },
-            },
-        });
-        return invitation;
-    });
-
-    try {
-        const providerEmailId = await sendInvitationEmail({
-            invitationId: invitation.id,
-            email: invitation.email,
-            token,
-        });
-        return prisma.premiumInvitation.update({
-            where: { id: invitation.id },
-            data: {
-                emailSentAt: new Date(),
-                providerEmailId,
-                lastEmailError: null,
-            },
-        });
-    } catch (error) {
-        const message = safeErrorMessage(error);
-        await prisma.premiumInvitation.update({
-            where: { id: invitation.id },
-            data: { lastEmailError: message },
-        });
-        throw new PremiumInvitationError(
-            'The invitation was saved, but its email could not be confirmed as sent'
-        );
+/**
+ * Invitation tokens are deterministic per invitation generation so an
+ * ambiguous provider response can be retried without invalidating a link that
+ * may already be in flight. Only the hash is persisted in Postgres.
+ */
+export function premiumInvitationToken(
+    invitationId: string,
+    generation: number
+) {
+    if (!Number.isInteger(generation) || generation < 1) {
+        throw new PremiumInvitationError('Invalid invitation generation');
     }
-}
-
-export async function revokePremiumInvitation(args: {
-    invitationId: string;
-    adminMembershipId: string;
-}) {
-    const result = await runSerializable(async (tx) => {
-        const update = await tx.premiumInvitation.updateMany({
-            where: {
-                id: args.invitationId,
-                activeKey: { not: null },
-                acceptedAt: null,
-                revokedAt: null,
-            },
-            data: {
-                activeKey: null,
-                revokedAt: new Date(),
-            },
-        });
-        if (update.count === 1) {
-            await tx.adminAuditLog.create({
-                data: {
-                    adminMembershipId: args.adminMembershipId,
-                    action: 'PREMIUM_INVITATION_REVOKE',
-                    targetType: 'PremiumInvitation',
-                    targetId: args.invitationId,
-                },
-            });
-        }
-        return update;
-    });
-    if (result.count !== 1) {
-        throw new PremiumInvitationError('Invitation is no longer pending');
-    }
+    const signature = createHmac('sha256', invitationTokenSecret())
+        .update(`backranq-premium-invitation:v1:${invitationId}:${generation}`)
+        .digest('base64url');
+    return `${invitationId}.${generation}.${signature}`;
 }
 
 export async function invitationPreview(token: string) {
-    if (!token || token.length > 200) return null;
+    if (!validTokenInput(token)) return null;
     return prisma.premiumInvitation.findUnique({
         where: { tokenHash: premiumInvitationTokenHash(token) },
         select: {
@@ -210,131 +89,249 @@ export async function acceptPremiumInvitation(args: {
     userId: string;
     now?: Date;
 }) {
+    if (!validTokenInput(args.token)) {
+        throw new PremiumInvitationError('Invitation is invalid');
+    }
     const now = args.now ?? new Date();
-    const result = await runSerializable(async (tx) => {
-        const user = await tx.user.findUnique({
-            where: { id: args.userId },
-            select: { id: true, email: true },
-        });
-        if (!user?.email) {
-            throw new PremiumInvitationError(
-                'Sign in with the invited email address to continue'
-            );
-        }
-        const invitation = await tx.premiumInvitation.findUnique({
-            where: {
-                tokenHash: premiumInvitationTokenHash(args.token),
-            },
-        });
-        if (!invitation) {
-            throw new PremiumInvitationError('Invitation is invalid');
-        }
-        if (
-            invitation.acceptedAt &&
-            invitation.acceptedById === user.id
-        ) {
-            const account = await reconcileBillingAccountInTransaction({
-                tx,
-                userId: user.id,
-                now,
-            });
-            return { userId: user.id, account };
-        }
-        if (
-            invitation.revokedAt ||
-            !invitation.activeKey ||
-            invitation.expiresAt <= now
-        ) {
-            throw new PremiumInvitationError(
-                'Invitation has expired or was revoked'
-            );
-        }
-        if (
-            normalizeAccountEmail(user.email) !==
-            invitation.emailNormalized
-        ) {
-            throw new PremiumInvitationError(
-                'This invitation belongs to a different email address'
-            );
-        }
+    const result = await runWithWriteConflictRetry(() =>
+        prisma.$transaction(
+            async (tx) => {
+                const user = await tx.user.findUnique({
+                    where: { id: args.userId },
+                    select: { id: true, email: true },
+                });
+                if (!user?.email) {
+                    throw new PremiumInvitationError(
+                        'Sign in with the invited email address to continue'
+                    );
+                }
+                const invitation = await tx.premiumInvitation.findUnique({
+                    where: {
+                        tokenHash: premiumInvitationTokenHash(args.token),
+                    },
+                });
+                if (!invitation) {
+                    throw new PremiumInvitationError('Invitation is invalid');
+                }
+                if (
+                    invitation.acceptedAt &&
+                    invitation.acceptedById === user.id
+                ) {
+                    const account = await reconcileBillingAccountInTransaction({
+                        tx,
+                        userId: user.id,
+                        now,
+                    });
+                    return { userId: user.id, account };
+                }
+                if (
+                    invitation.revokedAt ||
+                    !invitation.activeKey ||
+                    invitation.expiresAt <= now
+                ) {
+                    throw new PremiumInvitationError(
+                        'Invitation has expired or was revoked'
+                    );
+                }
+                if (
+                    normalizeAccountEmail(user.email) !==
+                    invitation.emailNormalized
+                ) {
+                    throw new PremiumInvitationError(
+                        'This invitation belongs to a different email address'
+                    );
+                }
 
-        await tx.planGrant.upsert({
-            where: { invitationId: invitation.id },
-            update: {},
-            create: {
-                userId: user.id,
-                plan: invitation.plan,
-                source: 'ADMIN_INVITATION',
-                invitationId: invitation.id,
-                grantedById: invitation.invitedById,
-                startsAt: now,
-                note: `Accepted invitation for ${invitation.emailNormalized}`,
+                await tx.planGrant.upsert({
+                    where: { invitationId: invitation.id },
+                    update: {},
+                    create: {
+                        userId: user.id,
+                        plan: invitation.plan,
+                        source: 'ADMIN_INVITATION',
+                        invitationId: invitation.id,
+                        grantedById: invitation.invitedById,
+                        startsAt: now,
+                        note: `Accepted invitation for ${invitation.emailNormalized}`,
+                    },
+                });
+                const accepted = await tx.premiumInvitation.updateMany({
+                    where: {
+                        id: invitation.id,
+                        activeKey: invitation.activeKey,
+                        acceptedAt: null,
+                        revokedAt: null,
+                    },
+                    data: {
+                        activeKey: null,
+                        acceptedById: user.id,
+                        acceptedAt: now,
+                    },
+                });
+                if (accepted.count !== 1) {
+                    throw writeConflict();
+                }
+                const account = await reconcileBillingAccountInTransaction({
+                    tx,
+                    userId: user.id,
+                    now,
+                });
+                return { userId: user.id, account };
             },
-        });
-        await tx.premiumInvitation.update({
-            where: { id: invitation.id },
-            data: {
-                activeKey: null,
-                acceptedById: user.id,
-                acceptedAt: now,
-            },
-        });
-        const account = await reconcileBillingAccountInTransaction({
-            tx,
-            userId: user.id,
-            now,
-        });
-        return { userId: user.id, account };
-    });
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+        )
+    );
 
     scheduleAutoAnalysisWakeup(result.userId, 'billing');
     return result.account;
 }
 
-export async function revokePlanGrant(args: {
-    grantId: string;
-    revokedById: string;
-    adminMembershipId: string;
+/**
+ * Claims and sends exactly one token generation. A newer generation cannot be
+ * created while this lease is live, and every completion is a generation/lease
+ * compare-and-set, so an old worker can never overwrite newer delivery state.
+ */
+export async function deliverPremiumInvitationGeneration(args: {
+    invitationId: string;
+    generation: number;
     now?: Date;
-}) {
+}): Promise<PremiumDeliveryResult> {
     const now = args.now ?? new Date();
-    const result = await runSerializable(async (tx) => {
-        const grant = await tx.planGrant.findUnique({
-            where: { id: args.grantId },
-            select: { id: true, userId: true, revokedAt: true, note: true },
-        });
-        if (!grant || grant.revokedAt) {
-            throw new PremiumInvitationError('Premium access is no longer active');
-        }
-        await tx.planGrant.update({
-            where: { id: grant.id },
-            data: {
-                revokedAt: now,
-                note: [
-                    grant.note,
-                    `Revoked by administrator ${args.revokedById}`,
-                ]
-                    .filter(Boolean)
-                    .join(' · '),
-            },
-        });
-        await tx.adminAuditLog.create({
-            data: {
-                adminMembershipId: args.adminMembershipId,
-                action: 'PREMIUM_GRANT_REVOKE',
-                targetType: 'PlanGrant',
-                targetId: grant.id,
-                metadata: { userId: grant.userId },
-            },
-        });
-        const account = await reconcileBillingAccountInTransaction({
-            tx,
-            userId: grant.userId,
-            now,
-        });
-        return { userId: grant.userId, account };
+    const leaseToken = randomUUID();
+    const leaseUntil = new Date(now.getTime() + DELIVERY_LEASE_MS);
+    const claimed = await prisma.premiumInvitation.updateMany({
+        where: {
+            id: args.invitationId,
+            deliveryGeneration: args.generation,
+            deliveryStatus: { in: ['PENDING', 'SENDING'] },
+            activeKey: { not: null },
+            acceptedAt: null,
+            revokedAt: null,
+            expiresAt: { gt: now },
+            OR: [
+                { deliveryStatus: 'PENDING' },
+                { deliveryLeaseUntil: { lte: now } },
+            ],
+        },
+        data: {
+            deliveryStatus: 'SENDING',
+            deliveryLeaseToken: leaseToken,
+            deliveryLeaseUntil: leaseUntil,
+            lastDeliveryAttemptAt: now,
+            deliveryAttempts: { increment: 1 },
+            lastEmailError: null,
+        },
     });
-    return result.account;
+    if (claimed.count !== 1) {
+        return currentDeliveryResult(args, false);
+    }
+
+    const invitation = await prisma.premiumInvitation.findUnique({
+        where: { id: args.invitationId },
+        select: {
+            id: true,
+            email: true,
+            deliveryGeneration: true,
+            deliveryLeaseToken: true,
+        },
+    });
+    if (
+        !invitation ||
+        invitation.deliveryGeneration !== args.generation ||
+        invitation.deliveryLeaseToken !== leaseToken
+    ) {
+        return currentDeliveryResult(args, false);
+    }
+
+    const token = premiumInvitationToken(invitation.id, args.generation);
+    try {
+        const providerEmailId = await sendInvitationEmail({
+            invitationId: invitation.id,
+            email: invitation.email,
+            token,
+        });
+        return completeDelivery({
+            ...args,
+            leaseToken,
+            status: 'SENT',
+            providerEmailId,
+            message: null,
+        });
+    } catch (error) {
+        const ambiguous = error instanceof Smtp2GoAmbiguousSendError;
+        const message = safeErrorMessage(error);
+        return completeDelivery({
+            ...args,
+            leaseToken,
+            status: ambiguous ? 'AMBIGUOUS' : 'FAILED',
+            providerEmailId: null,
+            message,
+        });
+    }
+}
+
+async function completeDelivery(args: {
+    invitationId: string;
+    generation: number;
+    leaseToken: string;
+    status: 'SENT' | 'AMBIGUOUS' | 'FAILED';
+    providerEmailId: string | null;
+    message: string | null;
+}) {
+    const completedAt = new Date();
+    const updated = await prisma.premiumInvitation.updateMany({
+        where: {
+            id: args.invitationId,
+            deliveryGeneration: args.generation,
+            deliveryStatus: 'SENDING',
+            deliveryLeaseToken: args.leaseToken,
+        },
+        data: {
+            deliveryStatus: args.status,
+            deliveryLeaseToken: null,
+            deliveryLeaseUntil: null,
+            emailSentAt: args.status === 'SENT' ? completedAt : null,
+            providerEmailId: args.providerEmailId,
+            lastEmailError: args.message,
+        },
+    });
+    if (updated.count !== 1) {
+        return currentDeliveryResult(args, true);
+    }
+    return {
+        invitationId: args.invitationId,
+        generation: args.generation,
+        status: args.status,
+        attempted: true,
+        message: args.message,
+    } satisfies PremiumDeliveryResult;
+}
+
+async function currentDeliveryResult(
+    args: { invitationId: string; generation: number },
+    attempted: boolean
+): Promise<PremiumDeliveryResult> {
+    const current = await prisma.premiumInvitation.findUnique({
+        where: { id: args.invitationId },
+        select: {
+            deliveryGeneration: true,
+            deliveryStatus: true,
+            lastEmailError: true,
+        },
+    });
+    if (!current) {
+        throw new PremiumInvitationError('Invitation no longer exists');
+    }
+    return {
+        invitationId: args.invitationId,
+        generation: current.deliveryGeneration,
+        status: current.deliveryStatus,
+        attempted,
+        message:
+            current.deliveryGeneration === args.generation
+                ? current.lastEmailError
+                : 'A newer invitation generation is already active',
+    };
 }
 
 async function sendInvitationEmail(args: {
@@ -367,6 +364,39 @@ async function sendInvitationEmail(args: {
     });
 }
 
+export async function runWithWriteConflictRetry<T>(
+    operation: () => Promise<T>
+): Promise<T> {
+    for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
+        try {
+            return await operation();
+        } catch (error) {
+            if (attempt < MAX_TRANSACTION_ATTEMPTS && isWriteConflict(error)) {
+                continue;
+            }
+            throw error;
+        }
+    }
+    throw new Error('Premium transaction retry limit exceeded');
+}
+
+function validTokenInput(token: string) {
+    return token.length > 0 && token.length <= MAX_TOKEN_LENGTH;
+}
+
+function invitationTokenSecret() {
+    const secret =
+        process.env.PREMIUM_INVITATION_TOKEN_SECRET ??
+        process.env.AUTH_SECRET ??
+        process.env.NEXTAUTH_SECRET;
+    if (!secret) {
+        throw new PremiumInvitationError(
+            'Premium invitation token secret is not configured'
+        );
+    }
+    return secret;
+}
+
 function safeErrorMessage(error: unknown) {
     return (error instanceof Error ? error.message : 'Unknown email error').slice(
         0,
@@ -374,10 +404,17 @@ function safeErrorMessage(error: unknown) {
     );
 }
 
-async function runSerializable<T>(
-    operation: (tx: Prisma.TransactionClient) => Promise<T>
-) {
-    return prisma.$transaction(operation, {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+function isWriteConflict(error: unknown) {
+    return (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: unknown }).code === 'P2034'
+    );
+}
+
+function writeConflict() {
+    return Object.assign(new Error('Concurrent Premium mutation conflict'), {
+        code: 'P2034',
     });
 }

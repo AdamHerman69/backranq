@@ -1,6 +1,5 @@
 import { Gift, Mail, ShieldCheck } from 'lucide-react';
 
-import { AdminSubmitButton } from '@/components/admin/AdminSubmitButton';
 import { PageHeader } from '@/components/app/PageHeader';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -10,7 +9,6 @@ import {
     CardHeader,
     CardTitle,
 } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import {
     Table,
     TableBody,
@@ -23,30 +21,17 @@ import { requireAdminSession } from '@/lib/auth/admin';
 import { prisma } from '@/lib/prisma';
 
 import {
-    invitePremiumAction,
-    resendPremiumInvitationAction,
-    revokePlanGrantAction,
-    revokePremiumInvitationAction,
-} from './actions';
-
-const NOTICES: Record<string, string> = {
-    'invitation-sent': 'The Pro invitation was sent.',
-    'invitation-resent': 'A fresh invitation link was sent.',
-    'invitation-revoked': 'The pending invitation was revoked.',
-    'access-revoked': 'Complimentary Pro access was revoked.',
-};
+    PremiumCommandButton,
+    PremiumInviteForm,
+} from './PremiumCommandControls';
 
 export const dynamic = 'force-dynamic';
 
-export default async function PremiumAdminPage({
-    searchParams,
-}: {
-    searchParams?: Promise<{ notice?: string; error?: string }>;
-}) {
+export default async function PremiumAdminPage() {
     await requireAdminSession('PREMIUM_MANAGE');
 
     const now = new Date();
-    const [invitations, grants, query] = await Promise.all([
+    const [invitations, grants] = await Promise.all([
         prisma.premiumInvitation.findMany({
             where: {
                 activeKey: { not: null },
@@ -68,10 +53,7 @@ export default async function PremiumAdminPage({
             orderBy: { createdAt: 'desc' },
             take: 100,
         }),
-        searchParams ??
-            Promise.resolve<{ notice?: string; error?: string }>({}),
     ]);
-    const notice = query.notice ? NOTICES[query.notice] : null;
     const emailConfigured = Boolean(
         process.env.SMTP2GO_API_KEY && process.env.BACKRANQ_EMAIL_FROM
     );
@@ -83,19 +65,6 @@ export default async function PremiumAdminPage({
                 subtitle="Invite people to complimentary Backranq Pro and manage active access."
             />
 
-            {notice ? (
-                <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
-                    {notice}
-                </p>
-            ) : null}
-            {query.error ? (
-                <p
-                    role="alert"
-                    className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
-                >
-                    {query.error}
-                </p>
-            ) : null}
             {!emailConfigured ? (
                 <p
                     role="alert"
@@ -120,26 +89,7 @@ export default async function PremiumAdminPage({
                         </CardDescription>
                     </CardHeader>
                     <CardContent>
-                        <form
-                            action={invitePremiumAction}
-                            className="flex flex-col gap-3 sm:flex-row"
-                        >
-                            <Input
-                                type="email"
-                                name="email"
-                                required
-                                maxLength={254}
-                                autoComplete="email"
-                                placeholder="friend@example.com"
-                                aria-label="Invitation email"
-                            />
-                            <AdminSubmitButton
-                                pendingLabel="Sending…"
-                                disabled={!emailConfigured}
-                            >
-                                Send invitation
-                            </AdminSubmitButton>
-                        </form>
+                        <PremiumInviteForm disabled={!emailConfigured} />
                     </CardContent>
                 </Card>
 
@@ -164,8 +114,8 @@ export default async function PremiumAdminPage({
                         Pending invitations
                     </CardTitle>
                     <CardDescription>
-                        Resending rotates the token and invalidates the previous
-                        link.
+                        A confirmed resend rotates the token. Failed or ambiguous
+                        delivery retries reuse the same valid link.
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -190,11 +140,9 @@ export default async function PremiumAdminPage({
                                     {invitations.map((invitation) => {
                                         const expired =
                                             invitation.expiresAt <= now;
-                                        const status = invitation.lastEmailError
-                                            ? 'Email issue'
-                                            : invitation.emailSentAt
-                                              ? 'Sent'
-                                              : 'Pending';
+                                        const status = deliveryLabel(
+                                            invitation.deliveryStatus
+                                        );
                                         return (
                                             <TableRow key={invitation.id}>
                                                 <TableCell className="font-medium">
@@ -203,7 +151,8 @@ export default async function PremiumAdminPage({
                                                 <TableCell>
                                                     <Badge
                                                         variant={
-                                                            invitation.lastEmailError
+                                                            invitation.deliveryStatus ===
+                                                                'FAILED'
                                                                 ? 'destructive'
                                                                 : 'secondary'
                                                         }
@@ -218,50 +167,30 @@ export default async function PremiumAdminPage({
                                                 </TableCell>
                                                 <TableCell>
                                                     <div className="flex justify-end gap-2">
-                                                        <form
-                                                            action={
-                                                                resendPremiumInvitationAction
-                                                            }
+                                                        <PremiumCommandButton
+                                                            command={{
+                                                                type: 'RESEND_INVITATION',
+                                                                invitationId:
+                                                                    invitation.id,
+                                                            }}
+                                                            size="sm"
+                                                            variant="outline"
+                                                            disabled={!emailConfigured}
                                                         >
-                                                            <input
-                                                                type="hidden"
-                                                                name="email"
-                                                                value={
-                                                                    invitation.email
-                                                                }
-                                                            />
-                                                            <AdminSubmitButton
-                                                                pendingLabel="Sending…"
-                                                                size="sm"
-                                                                variant="outline"
-                                                                disabled={
-                                                                    !emailConfigured
-                                                                }
-                                                            >
-                                                                Resend
-                                                            </AdminSubmitButton>
-                                                        </form>
-                                                        <form
-                                                            action={
-                                                                revokePremiumInvitationAction
-                                                            }
+                                                            Resend
+                                                        </PremiumCommandButton>
+                                                        <PremiumCommandButton
+                                                            command={{
+                                                                type: 'REVOKE_INVITATION',
+                                                                invitationId:
+                                                                    invitation.id,
+                                                            }}
+                                                            confirmMessage={`Revoke the invitation for ${invitation.email}?`}
+                                                            size="sm"
+                                                            variant="ghost"
                                                         >
-                                                            <input
-                                                                type="hidden"
-                                                                name="invitationId"
-                                                                value={
-                                                                    invitation.id
-                                                                }
-                                                            />
-                                                            <AdminSubmitButton
-                                                                pendingLabel="Revoking…"
-                                                                confirmMessage={`Revoke the invitation for ${invitation.email}?`}
-                                                                size="sm"
-                                                                variant="ghost"
-                                                            >
-                                                                Revoke
-                                                            </AdminSubmitButton>
-                                                        </form>
+                                                            Revoke
+                                                        </PremiumCommandButton>
                                                     </div>
                                                 </TableCell>
                                             </TableRow>
@@ -324,25 +253,17 @@ export default async function PremiumAdminPage({
                                                     {grant.createdAt.toLocaleDateString()}
                                                 </TableCell>
                                                 <TableCell className="text-right">
-                                                    <form
-                                                        action={
-                                                            revokePlanGrantAction
-                                                        }
+                                                    <PremiumCommandButton
+                                                        command={{
+                                                            type: 'REVOKE_GRANT',
+                                                            grantId: grant.id,
+                                                        }}
+                                                        confirmMessage={`Revoke complimentary Pro for ${label}?`}
+                                                        size="sm"
+                                                        variant="outline"
                                                     >
-                                                        <input
-                                                            type="hidden"
-                                                            name="grantId"
-                                                            value={grant.id}
-                                                        />
-                                                        <AdminSubmitButton
-                                                            pendingLabel="Revoking…"
-                                                            confirmMessage={`Revoke complimentary Pro for ${label}?`}
-                                                            size="sm"
-                                                            variant="outline"
-                                                        >
-                                                            Revoke access
-                                                        </AdminSubmitButton>
-                                                    </form>
+                                                        Revoke access
+                                                    </PremiumCommandButton>
                                                 </TableCell>
                                             </TableRow>
                                         );
@@ -355,4 +276,19 @@ export default async function PremiumAdminPage({
             </Card>
         </div>
     );
+}
+
+function deliveryLabel(status: string) {
+    switch (status) {
+        case 'SENDING':
+            return 'Sending';
+        case 'SENT':
+            return 'Sent';
+        case 'AMBIGUOUS':
+            return 'Delivery unknown';
+        case 'FAILED':
+            return 'Email issue';
+        default:
+            return 'Pending';
+    }
 }

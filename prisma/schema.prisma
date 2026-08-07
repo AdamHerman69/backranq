@@ -318,6 +318,14 @@ enum PlanGrantSource {
   ADMIN_INVITATION
 }
 
+enum PremiumInvitationDeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  AMBIGUOUS
+  FAILED
+}
+
 enum NotificationType {
   PRACTICE_READY
   NEW_GAMES_SYNCED
@@ -579,22 +587,28 @@ model PlanGrant {
 }
 
 model PremiumInvitation {
-  id              String      @id @default(uuid()) @db.Uuid
-  email           String
-  emailNormalized String
-  activeKey       String?     @unique
-  tokenHash       String      @unique
-  plan            BillingPlan @default(PRO)
-  invitedById     String?     @db.Uuid
-  acceptedById    String?     @db.Uuid
-  expiresAt       DateTime
-  acceptedAt      DateTime?
-  revokedAt       DateTime?
-  emailSentAt     DateTime?
-  providerEmailId String?
-  lastEmailError  String?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  id                    String                          @id @default(uuid()) @db.Uuid
+  email                 String
+  emailNormalized       String
+  activeKey             String?                         @unique
+  tokenHash             String                          @unique
+  plan                  BillingPlan                     @default(PRO)
+  invitedById           String?                         @db.Uuid
+  acceptedById          String?                         @db.Uuid
+  expiresAt             DateTime
+  acceptedAt            DateTime?
+  revokedAt             DateTime?
+  deliveryGeneration    Int                             @default(1)
+  deliveryStatus        PremiumInvitationDeliveryStatus @default(PENDING)
+  deliveryAttempts      Int                             @default(0)
+  deliveryLeaseToken    String?
+  deliveryLeaseUntil    DateTime?
+  lastDeliveryAttemptAt DateTime?
+  emailSentAt           DateTime?
+  providerEmailId       String?
+  lastEmailError        String?
+  createdAt             DateTime                        @default(now())
+  updatedAt             DateTime                        @updatedAt
 
   invitedBy  User?      @relation("PremiumInvitationInviter", fields: [invitedById], references: [id], onDelete: SetNull)
   acceptedBy User?      @relation("PremiumInvitationRecipient", fields: [acceptedById], references: [id], onDelete: SetNull)
@@ -604,6 +618,7 @@ model PremiumInvitation {
   @@index([expiresAt])
   @@index([invitedById])
   @@index([acceptedById])
+  @@index([deliveryStatus, deliveryLeaseUntil])
 }
 
 model StripeWebhookEvent {
