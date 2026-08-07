@@ -85,6 +85,7 @@ function invitation(overrides: Record<string, unknown> = {}) {
         deliveryGeneration: 1,
         deliveryStatus: 'SENT',
         deliveryAttempts: 1,
+        deliverySendAttemptId: '44444444-4444-4444-8444-444444444444',
         deliveryLeaseToken: null,
         deliveryLeaseUntil: null,
         lastDeliveryAttemptAt: now,
@@ -150,9 +151,12 @@ describe('Premium admin command service', () => {
         expect(replay).toMatchObject({ replayed: true, result: first.result });
         expect(prismaMock.premiumInvitation.create).toHaveBeenCalledOnce();
         const create = prismaMock.premiumInvitation.create.mock.calls[0]?.[0] as {
-            data: { tokenHash: string };
+            data: { tokenHash: string; deliverySendAttemptId: string };
         };
         expect(create.data.tokenHash).toMatch(/^hash:token:/);
+        expect(create.data.deliverySendAttemptId).toMatch(
+            /^[0-9a-f-]{36}$/
+        );
         expect(JSON.stringify(receipts.get(mutationContext.idempotencyKey))).not.toContain(
             'hash:token:'
         );
@@ -209,11 +213,18 @@ describe('Premium admin command service', () => {
             }),
             data: expect.objectContaining({
                 deliveryGeneration: 2,
+                deliverySendAttemptId: expect.any(String),
                 deliveryStatus: 'PENDING',
                 tokenHash: `hash:token:${invitationId}:2`,
             }),
         });
         expect(receipt.result.deliveryGeneration).toBe(2);
+        const resend = prismaMock.premiumInvitation.updateMany.mock.calls[0]?.[0] as {
+            data: { deliverySendAttemptId: string };
+        };
+        expect(resend.data.deliverySendAttemptId).not.toBe(
+            invitation().deliverySendAttemptId
+        );
         expect(deliveryMock).toHaveBeenCalledWith({
             invitationId,
             generation: 2,
@@ -240,6 +251,7 @@ describe('Premium admin command service', () => {
             where: expect.objectContaining({ deliveryGeneration: 3 }),
             data: expect.objectContaining({
                 deliveryGeneration: 3,
+                deliverySendAttemptId: expect.any(String),
                 tokenHash: `hash:token:${invitationId}:3`,
                 deliveryStatus: 'PENDING',
             }),

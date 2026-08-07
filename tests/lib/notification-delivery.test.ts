@@ -16,6 +16,14 @@ class EmailBudgetUnavailableErrorMock extends Error {
 }
 
 class PracticeEmailWindowClaimedErrorMock extends Error {}
+class EmailAttemptInProgressErrorMock extends Error {
+    readonly retryAt: Date;
+
+    constructor(retryAt: Date) {
+        super('This logical email attempt is already in progress');
+        this.retryAt = retryAt;
+    }
+}
 
 async function importDelivery() {
     vi.resetModules();
@@ -35,6 +43,7 @@ async function importDelivery() {
         getPracticeDueSummary: getPracticeDueSummaryMock,
     }));
     vi.doMock('@/lib/notifications/emailReservations', () => ({
+        EmailAttemptInProgressError: EmailAttemptInProgressErrorMock,
         EmailBudgetUnavailableError: EmailBudgetUnavailableErrorMock,
         PracticeEmailWindowClaimedError: PracticeEmailWindowClaimedErrorMock,
         sendReservedSmtp2GoEmail: sendReservedSmtp2GoEmailMock,
@@ -100,6 +109,14 @@ function practiceDelivery() {
     };
 }
 
+function scheduledDelivery(id: string, scheduledFor: string) {
+    return {
+        id,
+        scheduledFor: new Date(scheduledFor),
+        createdAt: new Date('2026-08-04T08:00:00.000Z'),
+    };
+}
+
 describe('notification email delivery safety', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -152,6 +169,51 @@ describe('notification email delivery safety', () => {
             },
             data: expect.objectContaining({ status: 'CANCELLED', lockedUntil: null }),
         });
+    });
+
+    it('replays a notification logical attempt with a new dispatch token without a second provider call', async () => {
+        const sentAttempts = new Map<string, string>();
+        sendReservedSmtp2GoEmailMock.mockImplementation(
+            async (args: {
+                logicalAttemptKey: string;
+                ownerToken: string;
+                email: unknown;
+            }) => {
+                const replay = sentAttempts.get(args.logicalAttemptKey);
+                if (replay) return replay;
+                const providerId = await sendSmtp2GoEmailMock(args.email);
+                sentAttempts.set(args.logicalAttemptKey, providerId);
+                return providerId;
+            }
+        );
+        const { processNotificationDelivery } = await importDelivery();
+
+        await expect(
+            processNotificationDelivery('delivery-1', 'dispatch-1')
+        ).resolves.toMatchObject({ status: 'SENT' });
+        prismaMock.notificationDelivery.findUniqueOrThrow.mockResolvedValue({
+            ...practiceDelivery(),
+            dispatchToken: 'dispatch-2',
+        });
+        await expect(
+            processNotificationDelivery('delivery-1', 'dispatch-2')
+        ).resolves.toMatchObject({ status: 'SENT' });
+
+        expect(sendSmtp2GoEmailMock).toHaveBeenCalledOnce();
+        expect(sendReservedSmtp2GoEmailMock).toHaveBeenNthCalledWith(
+            1,
+            expect.objectContaining({
+                ownerToken: 'dispatch-1',
+                logicalAttemptKey: 'notification-delivery:delivery-1',
+            })
+        );
+        expect(sendReservedSmtp2GoEmailMock).toHaveBeenNthCalledWith(
+            2,
+            expect.objectContaining({
+                ownerToken: 'dispatch-2',
+                logicalAttemptKey: 'notification-delivery:delivery-1',
+            })
+        );
     });
 
     it('cancels a second practice email when the durable local-day window is already claimed', async () => {
@@ -496,13 +558,25 @@ describe('notification email delivery safety', () => {
         prismaMock.notificationDelivery.findMany.mockResolvedValue([]);
         prismaMock.notificationDelivery.count.mockResolvedValue(0);
         prismaMock.notificationDelivery.findFirst.mockReset();
-        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
-            id: 'next-delivery',
-            scheduledFor: new Date('2026-08-04T11:00:00.000Z'),
-        });
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue(
+            scheduledDelivery(
+                'next-delivery',
+                '2026-08-04T11:00:00.000Z'
+            )
+        );
         const { dispatchPendingNotificationDeliveries } = await importDelivery();
 
         await dispatchPendingNotificationDeliveries();
+
+        expect(prismaMock.notificationDelivery.findFirst).toHaveBeenCalledWith({
+            where: { status: 'PENDING', channel: 'EMAIL' },
+            orderBy: [
+                { scheduledFor: 'asc' },
+                { createdAt: 'asc' },
+                { id: 'asc' },
+            ],
+            select: { id: true, scheduledFor: true, createdAt: true },
+        });
 
         expect(publishBackranqQueueMessageMock).toHaveBeenCalledWith(
             {
@@ -523,10 +597,12 @@ describe('notification email delivery safety', () => {
         prismaMock.notificationDelivery.count.mockResolvedValue(0);
         prismaMock.$queryRaw.mockResolvedValue([]);
         prismaMock.notificationDelivery.findFirst.mockReset();
-        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
-            id: 'overdue-delivery',
-            scheduledFor: new Date('2026-08-04T09:00:00.000Z'),
-        });
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue(
+            scheduledDelivery(
+                'overdue-delivery',
+                '2026-08-04T09:00:00.000Z'
+            )
+        );
         const { dispatchPendingNotificationDeliveries } = await importDelivery();
 
         await dispatchPendingNotificationDeliveries();
@@ -546,10 +622,12 @@ describe('notification email delivery safety', () => {
         prismaMock.notificationDelivery.findMany.mockResolvedValue([]);
         prismaMock.notificationDelivery.count.mockResolvedValue(0);
         prismaMock.notificationDelivery.findFirst.mockReset();
-        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
-            id: 'next-delivery',
-            scheduledFor: new Date('2026-08-04T11:00:00.000Z'),
-        });
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue(
+            scheduledDelivery(
+                'next-delivery',
+                '2026-08-04T11:00:00.000Z'
+            )
+        );
         const { dispatchPendingNotificationDeliveries } = await importDelivery();
 
         await dispatchPendingNotificationDeliveries();
@@ -573,10 +651,12 @@ describe('notification email delivery safety', () => {
         prismaMock.notificationDelivery.findMany.mockResolvedValue([]);
         prismaMock.notificationDelivery.count.mockResolvedValue(0);
         prismaMock.notificationDelivery.findFirst.mockReset();
-        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
-            id: 'next-delivery',
-            scheduledFor: new Date('2026-08-14T10:00:00.000Z'),
-        });
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue(
+            scheduledDelivery(
+                'next-delivery',
+                '2026-08-14T10:00:00.000Z'
+            )
+        );
         const { dispatchPendingNotificationDeliveries } = await importDelivery();
 
         await dispatchPendingNotificationDeliveries();
@@ -598,9 +678,12 @@ describe('notification email delivery safety', () => {
             digestHour: 11,
         });
         prismaMock.notificationDelivery.findFirst.mockReset();
-        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
-            scheduledFor: new Date('2026-08-04T11:00:00.000Z'),
-        });
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue(
+            scheduledDelivery(
+                'digest-delivery',
+                '2026-08-04T11:00:00.000Z'
+            )
+        );
         const { processNotificationDelivery } = await importDelivery();
 
         await expect(processNotificationDelivery('delivery-1', 'dispatch-1')).resolves.toEqual({
@@ -614,9 +697,12 @@ describe('notification email delivery safety', () => {
 
     it('schedules a new sweep after a retryable provider failure', async () => {
         prismaMock.notificationDelivery.findFirst.mockReset();
-        prismaMock.notificationDelivery.findFirst.mockResolvedValue({
-            scheduledFor: new Date('2026-08-04T10:02:00.000Z'),
-        });
+        prismaMock.notificationDelivery.findFirst.mockResolvedValue(
+            scheduledDelivery(
+                'retry-delivery',
+                '2026-08-04T10:02:00.000Z'
+            )
+        );
         sendSmtp2GoEmailMock.mockRejectedValue(new Error('Temporary failure'));
         const { processNotificationDelivery } = await importDelivery();
 

@@ -102,6 +102,7 @@ async function createInvitation(args: {
 }) {
     const address = validateInvitationEmail(args.command.email);
     const invitationId = randomUUID();
+    const deliverySendAttemptId = randomUUID();
     const generation = 1;
     const tokenHash = premiumInvitationTokenHash(
         premiumInvitationToken(invitationId, generation)
@@ -141,6 +142,7 @@ async function createInvitation(args: {
                     invitedById: args.context.principal.userId,
                     expiresAt,
                     deliveryGeneration: generation,
+                    deliverySendAttemptId,
                     deliveryStatus: 'PENDING',
                 },
             });
@@ -185,6 +187,7 @@ async function resendInvitation(args: {
             const expiresAt = new Date(
                 args.now.getTime() + PREMIUM_INVITATION_LIFETIME_MS
             );
+            const deliverySendAttemptId = randomUUID();
             const updated = await tx.premiumInvitation.updateMany({
                 where: {
                     id: invitation.id,
@@ -198,6 +201,7 @@ async function resendInvitation(args: {
                     tokenHash,
                     expiresAt,
                     deliveryGeneration: generation,
+                    deliverySendAttemptId,
                     deliveryStatus: 'PENDING',
                     deliveryLeaseToken: null,
                     deliveryLeaseUntil: null,

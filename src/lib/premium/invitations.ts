@@ -5,7 +5,10 @@ import { Prisma } from '@prisma/client';
 import PremiumInvitationEmail from '@/emails/PremiumInvitationEmail';
 import { prisma } from '@/lib/prisma';
 import { appUrl } from '@/lib/stripe';
-import { sendReservedSmtp2GoEmail } from '@/lib/notifications/emailReservations';
+import {
+    EmailAttemptInProgressError,
+    sendReservedSmtp2GoEmail,
+} from '@/lib/notifications/emailReservations';
 import { Smtp2GoAmbiguousSendError } from '@/lib/notifications/smtp2go';
 import { reconcileBillingAccountInTransaction } from '@/lib/services/billingAccounts';
 import { scheduleAutoAnalysisWakeup } from '@/lib/services/autoAnalysisBacklog';
@@ -230,6 +233,7 @@ export async function deliverPremiumInvitationGeneration(args: {
             id: true,
             email: true,
             deliveryGeneration: true,
+            deliverySendAttemptId: true,
             deliveryLeaseToken: true,
         },
     });
@@ -245,23 +249,34 @@ export async function deliverPremiumInvitationGeneration(args: {
     try {
         const providerEmailId = await sendInvitationEmail({
             invitationId: invitation.id,
+            sendAttemptId: invitation.deliverySendAttemptId,
             ownerToken: leaseToken,
             email: invitation.email,
             token,
-            now,
         });
         return completeDelivery({
             ...args,
+            sendAttemptId: invitation.deliverySendAttemptId,
             leaseToken,
             status: 'SENT',
             providerEmailId,
             message: null,
         });
     } catch (error) {
+        if (error instanceof EmailAttemptInProgressError) {
+            return deferDeliveryUntil({
+                ...args,
+                sendAttemptId: invitation.deliverySendAttemptId,
+                leaseToken,
+                retryAt: error.retryAt,
+                message: error.message,
+            });
+        }
         const ambiguous = error instanceof Smtp2GoAmbiguousSendError;
         const message = safeErrorMessage(error);
         return completeDelivery({
             ...args,
+            sendAttemptId: invitation.deliverySendAttemptId,
             leaseToken,
             status: ambiguous ? 'AMBIGUOUS' : 'FAILED',
             providerEmailId: null,
@@ -270,9 +285,45 @@ export async function deliverPremiumInvitationGeneration(args: {
     }
 }
 
+async function deferDeliveryUntil(args: {
+    invitationId: string;
+    generation: number;
+    sendAttemptId: string;
+    leaseToken: string;
+    retryAt: Date;
+    message: string;
+}): Promise<PremiumDeliveryResult> {
+    const updated = await prisma.premiumInvitation.updateMany({
+        where: {
+            id: args.invitationId,
+            deliveryGeneration: args.generation,
+            deliverySendAttemptId: args.sendAttemptId,
+            deliveryStatus: 'SENDING',
+            deliveryLeaseToken: args.leaseToken,
+        },
+        data: {
+            deliveryStatus: 'SENDING',
+            deliveryLeaseToken: null,
+            deliveryLeaseUntil: args.retryAt,
+            lastEmailError: args.message,
+        },
+    });
+    if (updated.count !== 1) {
+        return currentDeliveryResult(args, true);
+    }
+    return {
+        invitationId: args.invitationId,
+        generation: args.generation,
+        status: 'SENDING',
+        attempted: true,
+        message: args.message,
+    };
+}
+
 async function completeDelivery(args: {
     invitationId: string;
     generation: number;
+    sendAttemptId: string;
     leaseToken: string;
     status: 'SENT' | 'AMBIGUOUS' | 'FAILED';
     providerEmailId: string | null;
@@ -283,6 +334,7 @@ async function completeDelivery(args: {
         where: {
             id: args.invitationId,
             deliveryGeneration: args.generation,
+            deliverySendAttemptId: args.sendAttemptId,
             deliveryStatus: 'SENDING',
             deliveryLeaseToken: args.leaseToken,
         },
@@ -336,10 +388,10 @@ async function currentDeliveryResult(
 
 async function sendInvitationEmail(args: {
     invitationId: string;
+    sendAttemptId: string;
     ownerToken: string;
     email: string;
     token: string;
-    now: Date;
 }) {
     const from = process.env.BACKRANQ_EMAIL_FROM;
     if (!from) throw new Error('BACKRANQ_EMAIL_FROM is not configured');
@@ -358,8 +410,8 @@ async function sendInvitationEmail(args: {
         ownerType: 'PREMIUM_INVITATION',
         ownerId: args.invitationId,
         ownerToken: args.ownerToken,
+        logicalAttemptKey: `premium-invitation:${args.invitationId}:${args.sendAttemptId}`,
         priority: false,
-        now: args.now,
         email: {
             from,
             to: args.email,

@@ -124,7 +124,9 @@ unique local-calendar-day send window per user before provider handoff, so
 concurrent ready/due workers cannot both send. A fixed-size, index-ordered
 recovery pass releases only expired `RESERVED` claims left by a crash before
 provider handoff; `HANDOFF` and `AMBIGUOUS` evidence is never reclaimed
-automatically. Delivery webhooks use both
+automatically. A partial-unique logical-attempt key survives worker-token
+rotation: `SENT` is replayed from its stored provider ID, while `HANDOFF` and
+`AMBIGUOUS` fail closed without another provider call. Delivery webhooks use both
 SMTP2GO's email ID and the requested `X-Backranq-Delivery-Id` callback field,
 apply monotonic status precedence, and suppress future email after a hard bounce
 or spam complaint.

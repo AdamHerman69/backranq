@@ -10,7 +10,7 @@ import {
 const DEFAULT_SMTP2GO_DAILY_SEND_LIMIT = 30;
 const DEFAULT_SMTP2GO_TRANSACTIONAL_RESERVE = 5;
 const EMAIL_RESERVATION_LEASE_MS = 15 * 60_000;
-const MAX_PRACTICE_WINDOW_CLAIM_ATTEMPTS = 2;
+const MAX_RESERVATION_CLAIM_ATTEMPTS = 3;
 const EXPIRED_RESERVATION_RECOVERY_LIMIT = 25;
 
 type EmailSendOwnerType =
@@ -21,6 +21,10 @@ type ReservationHandle = {
     id: string;
     ownerToken: string;
 };
+
+type ReservationClaim =
+    | { kind: 'CLAIMED'; reservation: ReservationHandle }
+    | { kind: 'REPLAYED'; providerMessageId: string };
 
 export class EmailBudgetUnavailableError extends Error {
     readonly retryAt: Date;
@@ -39,6 +43,16 @@ export class PracticeEmailWindowClaimedError extends Error {
     }
 }
 
+export class EmailAttemptInProgressError extends Error {
+    readonly retryAt: Date;
+
+    constructor(retryAt: Date) {
+        super('This logical email attempt is already in progress');
+        this.name = 'EmailAttemptInProgressError';
+        this.retryAt = retryAt;
+    }
+}
+
 /**
  * Reserves the shared SMTP budget and (for Practice) the user's local-day send
  * window in one transaction, fences the irreversible provider handoff with the
@@ -49,20 +63,24 @@ export async function sendReservedSmtp2GoEmail(args: {
     ownerType: EmailSendOwnerType;
     ownerId: string;
     ownerToken: string;
+    logicalAttemptKey: string;
     priority: boolean;
     practiceWindowKey?: string;
     email: Smtp2GoEmail;
-    now?: Date;
+    clock?: () => Date;
 }) {
-    const now = args.now ?? new Date();
-    const reservation = await claimEmailReservation({
+    const now = args.clock?.() ?? new Date();
+    const claim = await claimEmailReservation({
         ownerType: args.ownerType,
         ownerId: args.ownerId,
         ownerToken: args.ownerToken,
+        logicalAttemptKey: args.logicalAttemptKey,
         priority: args.priority,
         practiceWindowKey: args.practiceWindowKey,
         now,
     });
+    if (claim.kind === 'REPLAYED') return claim.providerMessageId;
+    const reservation = claim.reservation;
     await markProviderHandoff(reservation);
 
     let providerMessageId: string;
@@ -120,24 +138,30 @@ async function claimEmailReservation(args: {
     ownerType: EmailSendOwnerType;
     ownerId: string;
     ownerToken: string;
+    logicalAttemptKey: string;
     priority: boolean;
     practiceWindowKey?: string;
     now: Date;
-}): Promise<ReservationHandle> {
+}): Promise<ReservationClaim> {
     await releaseExpiredEmailReservations(args.now);
-    if (args.practiceWindowKey) {
-        await releaseExpiredPracticeWindowReservation(
-            args.practiceWindowKey,
-            args.now
-        );
-    }
     for (
         let attempt = 1;
-        attempt <= MAX_PRACTICE_WINDOW_CLAIM_ATTEMPTS;
+        attempt <= MAX_RESERVATION_CLAIM_ATTEMPTS;
         attempt += 1
     ) {
+        const existing = await resolveExistingLogicalAttempt(
+            args.logicalAttemptKey,
+            args.now
+        );
+        if (existing) return existing;
+        if (args.practiceWindowKey) {
+            await releaseExpiredPracticeWindowReservation(
+                args.practiceWindowKey,
+                args.now
+            );
+        }
         try {
-            return await prisma.$transaction(async (tx) => {
+            const reservation = await prisma.$transaction(async (tx) => {
                 const providerDay = utcDayStart(args.now);
                 await tx.emailProviderDay.upsert({
                     where: { day: providerDay },
@@ -179,6 +203,7 @@ async function claimEmailReservation(args: {
                         ownerType: args.ownerType,
                         ownerId: args.ownerId,
                         ownerToken: args.ownerToken,
+                        logicalAttemptKey: args.logicalAttemptKey,
                         priority: args.priority,
                         practiceWindowKey: args.practiceWindowKey,
                         leaseUntil: new Date(
@@ -189,7 +214,19 @@ async function claimEmailReservation(args: {
                 });
                 return reservation;
             });
+            return { kind: 'CLAIMED', reservation };
         } catch (error) {
+            if (isLogicalAttemptUniqueConflict(error)) {
+                const existing = await resolveExistingLogicalAttempt(
+                    args.logicalAttemptKey,
+                    args.now
+                );
+                if (existing) return existing;
+                if (attempt < MAX_RESERVATION_CLAIM_ATTEMPTS) continue;
+                throw new Error(
+                    'Logical email attempt claim retry limit exceeded'
+                );
+            }
             if (
                 !args.practiceWindowKey ||
                 !isPracticeWindowUniqueConflict(error)
@@ -203,14 +240,73 @@ async function claimEmailReservation(args: {
                 );
             if (
                 released &&
-                attempt < MAX_PRACTICE_WINDOW_CLAIM_ATTEMPTS
+                attempt < MAX_RESERVATION_CLAIM_ATTEMPTS
             ) {
                 continue;
             }
             throw new PracticeEmailWindowClaimedError();
         }
     }
-    throw new PracticeEmailWindowClaimedError();
+    throw new Error('Email reservation claim retry limit exceeded');
+}
+
+async function resolveExistingLogicalAttempt(
+    logicalAttemptKey: string,
+    now: Date
+): Promise<Extract<ReservationClaim, { kind: 'REPLAYED' }> | null> {
+    const current = await prisma.emailSendReservation.findFirst({
+        where: {
+            logicalAttemptKey,
+            status: { not: 'RELEASED' },
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        select: {
+            id: true,
+            ownerToken: true,
+            providerDay: true,
+            priority: true,
+            status: true,
+            leaseUntil: true,
+            providerMessageId: true,
+        },
+    });
+    if (!current) return null;
+    if (current.status === 'SENT') {
+        if (!current.providerMessageId) {
+            throw failClosedAttempt(
+                'A sent logical email attempt is missing its provider ID'
+            );
+        }
+        return {
+            kind: 'REPLAYED',
+            providerMessageId: current.providerMessageId,
+        };
+    }
+    if (current.status === 'HANDOFF' || current.status === 'AMBIGUOUS') {
+        throw failClosedAttempt(
+            'This logical email attempt may already have reached the provider'
+        );
+    }
+    if (current.status === 'RESERVED') {
+        if (current.leaseUntil > now) {
+            throw new EmailAttemptInProgressError(current.leaseUntil);
+        }
+        const released = await releaseExpiredReservation(
+            {
+                id: current.id,
+                ownerToken: current.ownerToken,
+                providerDay: current.providerDay,
+                priority: current.priority,
+            },
+            now
+        );
+        if (!released) {
+            throw new EmailAttemptInProgressError(
+                new Date(now.getTime() + 1_000)
+            );
+        }
+    }
+    return null;
 }
 
 /**
@@ -242,29 +338,43 @@ export async function releaseExpiredEmailReservations(now = new Date()) {
         `);
         let releasedCount = 0;
         for (const candidate of candidates) {
-            const released = await tx.emailSendReservation.updateMany({
-                where: {
-                    id: candidate.id,
-                    ownerToken: candidate.ownerToken,
-                    status: 'RESERVED',
-                    leaseUntil: { lte: now },
-                },
-                data: {
-                    status: 'RELEASED',
-                    practiceWindowKey: null,
-                    lastError: 'Reservation expired before provider handoff',
-                },
-            });
-            if (released.count !== 1) continue;
-            await decrementBudget(
-                tx,
-                candidate.providerDay,
-                candidate.priority
-            );
-            releasedCount += 1;
+            if (await releaseExpiredReservation(candidate, now, tx)) {
+                releasedCount += 1;
+            }
         }
         return releasedCount;
     });
+}
+
+async function releaseExpiredReservation(
+    candidate: {
+        id: string;
+        ownerToken: string;
+        providerDay: Date;
+        priority: boolean;
+    },
+    now: Date,
+    existingTx?: Prisma.TransactionClient
+) {
+    const release = async (tx: Prisma.TransactionClient) => {
+        const released = await tx.emailSendReservation.updateMany({
+            where: {
+                id: candidate.id,
+                ownerToken: candidate.ownerToken,
+                status: 'RESERVED',
+                leaseUntil: { lte: now },
+            },
+            data: {
+                status: 'RELEASED',
+                practiceWindowKey: null,
+                lastError: 'Reservation expired before provider handoff',
+            },
+        });
+        if (released.count !== 1) return false;
+        await decrementBudget(tx, candidate.providerDay, candidate.priority);
+        return true;
+    };
+    return existingTx ? release(existingTx) : prisma.$transaction(release);
 }
 
 async function markProviderHandoff(reservation: ReservationHandle) {
@@ -441,6 +551,14 @@ function nextUtcQuotaWindow(now: Date) {
 }
 
 function isPracticeWindowUniqueConflict(error: unknown) {
+    return uniqueConflictTargets(error, 'practiceWindowKey');
+}
+
+function isLogicalAttemptUniqueConflict(error: unknown) {
+    return uniqueConflictTargets(error, 'logicalAttemptKey');
+}
+
+function uniqueConflictTargets(error: unknown, field: string) {
     if (
         typeof error !== 'object' ||
         error === null ||
@@ -450,11 +568,12 @@ function isPracticeWindowUniqueConflict(error: unknown) {
         return false;
     }
     const target = (error as { meta?: { target?: unknown } }).meta?.target;
-    if (Array.isArray(target)) return target.includes('practiceWindowKey');
-    return (
-        typeof target === 'string' &&
-        target.includes('practiceWindowKey')
-    );
+    if (Array.isArray(target)) return target.includes(field);
+    return typeof target === 'string' && target.includes(field);
+}
+
+function failClosedAttempt(message: string) {
+    return new Smtp2GoAmbiguousSendError(message);
 }
 
 function safeErrorMessage(error: unknown) {

@@ -38,9 +38,18 @@ describe('shared email provider reservations', () => {
                     prismaMock
                 )
         );
+        prismaMock.emailProviderDay.upsert.mockReset();
+        prismaMock.emailProviderDay.updateMany.mockReset();
+        prismaMock.emailSendReservation.create.mockReset();
+        prismaMock.emailSendReservation.findFirst.mockReset();
+        prismaMock.emailSendReservation.findUnique.mockReset();
+        prismaMock.emailSendReservation.updateMany.mockReset();
+        prismaMock.$queryRaw.mockReset();
         prismaMock.emailProviderDay.upsert.mockResolvedValue({});
         prismaMock.emailProviderDay.updateMany.mockResolvedValue({ count: 1 });
         prismaMock.$queryRaw.mockResolvedValue([]);
+        prismaMock.emailSendReservation.findFirst.mockResolvedValue(null);
+        prismaMock.emailSendReservation.findUnique.mockResolvedValue(null);
         prismaMock.emailSendReservation.create.mockImplementation(
             async (...args: unknown[]) => {
                 const input = args[0] as {
@@ -66,10 +75,11 @@ describe('shared email provider reservations', () => {
                 ownerType: 'NOTIFICATION_DELIVERY',
                 ownerId: '11111111-1111-4111-8111-111111111111',
                 ownerToken: '22222222-2222-4222-8222-222222222222',
+                logicalAttemptKey: 'notification-delivery:delivery-1',
                 priority: false,
                 practiceWindowKey: 'practice:user-1:2026-08-07',
                 email: email(),
-                now: new Date('2026-08-07T10:00:00.000Z'),
+                clock: () => new Date('2026-08-07T10:00:00.000Z'),
             })
         ).resolves.toBe('smtp-message-1');
 
@@ -84,6 +94,13 @@ describe('shared email provider reservations', () => {
                 nonPriorityReservedCount: { increment: 1 },
             },
         });
+        expect(prismaMock.emailSendReservation.create).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({
+                    logicalAttemptKey: 'notification-delivery:delivery-1',
+                }),
+            })
+        );
         expect(prismaMock.emailSendReservation.updateMany).toHaveBeenNthCalledWith(
             1,
             expect.objectContaining({
@@ -104,6 +121,160 @@ describe('shared email provider reservations', () => {
                 data: expect.objectContaining({ status: 'SENT' }),
             })
         );
+    });
+
+    it.each([
+        {
+            name: 'notification',
+            ownerType: 'NOTIFICATION_DELIVERY' as const,
+            logicalAttemptKey: 'notification-delivery:delivery-1',
+        },
+        {
+            name: 'Premium',
+            ownerType: 'PREMIUM_INVITATION' as const,
+            logicalAttemptKey:
+                'premium-invitation:invitation-1:55555555-5555-4555-8555-555555555555',
+        },
+    ])(
+        'replays a SENT $name logical attempt across a new outer worker token',
+        async ({ ownerType, logicalAttemptKey }) => {
+            const reservations = await importReservations();
+            const common = {
+                ownerType,
+                ownerId: '11111111-1111-4111-8111-111111111111',
+                logicalAttemptKey,
+                priority: false,
+                email: email(),
+                clock: () => new Date('2026-08-07T10:00:00.000Z'),
+            };
+
+            await expect(
+                reservations.sendReservedSmtp2GoEmail({
+                    ...common,
+                    ownerToken: '22222222-2222-4222-8222-222222222222',
+                })
+            ).resolves.toBe('smtp-message-1');
+            prismaMock.emailSendReservation.findFirst.mockResolvedValue({
+                id: 'reservation-original',
+                ownerToken: '22222222-2222-4222-8222-222222222222',
+                providerDay: new Date('2026-08-07T00:00:00.000Z'),
+                priority: false,
+                status: 'SENT',
+                leaseUntil: new Date('2026-08-07T10:15:00.000Z'),
+                providerMessageId: 'smtp-message-1',
+            });
+
+            await expect(
+                reservations.sendReservedSmtp2GoEmail({
+                    ...common,
+                    ownerToken: '33333333-3333-4333-8333-333333333333',
+                })
+            ).resolves.toBe('smtp-message-1');
+
+            expect(sendSmtp2GoEmailMock).toHaveBeenCalledOnce();
+        }
+    );
+
+    it.each(['HANDOFF', 'AMBIGUOUS'] as const)(
+        'fails closed on a %s logical attempt instead of calling the provider',
+        async (status) => {
+            prismaMock.emailSendReservation.findFirst.mockResolvedValue({
+                id: 'reservation-original',
+                ownerToken: '22222222-2222-4222-8222-222222222222',
+                providerDay: new Date('2026-08-07T00:00:00.000Z'),
+                priority: false,
+                status,
+                leaseUntil: new Date('2026-08-07T10:15:00.000Z'),
+                providerMessageId: null,
+            });
+            const reservations = await importReservations();
+
+            await expect(
+                reservations.sendReservedSmtp2GoEmail({
+                    ownerType: 'PREMIUM_INVITATION',
+                    ownerId: '11111111-1111-4111-8111-111111111111',
+                    ownerToken: '33333333-3333-4333-8333-333333333333',
+                    logicalAttemptKey:
+                        'premium-invitation:invitation-1:attempt-1',
+                    priority: false,
+                    email: email(),
+                    clock: () => new Date('2026-08-07T10:00:00.000Z'),
+                })
+            ).rejects.toThrow('may already have reached the provider');
+            expect(sendSmtp2GoEmailMock).not.toHaveBeenCalled();
+        }
+    );
+
+    it('defers an active RESERVED logical attempt and reclaims it only after expiry', async () => {
+        const now = new Date('2026-08-07T10:00:00.000Z');
+        prismaMock.emailSendReservation.findFirst.mockResolvedValueOnce({
+            id: 'reservation-active',
+            ownerToken: '22222222-2222-4222-8222-222222222222',
+            providerDay: new Date('2026-08-07T00:00:00.000Z'),
+            priority: false,
+            status: 'RESERVED',
+            leaseUntil: new Date('2026-08-07T10:15:00.000Z'),
+            providerMessageId: null,
+        });
+        const reservations = await importReservations();
+        const args = {
+            ownerType: 'NOTIFICATION_DELIVERY' as const,
+            ownerId: '11111111-1111-4111-8111-111111111111',
+            ownerToken: '33333333-3333-4333-8333-333333333333',
+            logicalAttemptKey: 'notification-delivery:delivery-1',
+            priority: false,
+            email: email(),
+            clock: () => now,
+        };
+
+        await expect(
+            reservations.sendReservedSmtp2GoEmail(args)
+        ).rejects.toBeInstanceOf(reservations.EmailAttemptInProgressError);
+        expect(sendSmtp2GoEmailMock).not.toHaveBeenCalled();
+
+        prismaMock.emailSendReservation.findFirst.mockResolvedValueOnce({
+            id: 'reservation-active',
+            ownerToken: '22222222-2222-4222-8222-222222222222',
+            providerDay: new Date('2026-08-07T00:00:00.000Z'),
+            priority: false,
+            status: 'RESERVED',
+            leaseUntil: new Date('2026-08-07T09:59:59.000Z'),
+            providerMessageId: null,
+        });
+        await expect(
+            reservations.sendReservedSmtp2GoEmail(args)
+        ).resolves.toBe('smtp-message-1');
+        expect(prismaMock.emailSendReservation.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    id: 'reservation-active',
+                    status: 'RESERVED',
+                    leaseUntil: { lte: now },
+                }),
+                data: expect.objectContaining({ status: 'RELEASED' }),
+            })
+        );
+        expect(sendSmtp2GoEmailMock).toHaveBeenCalledOnce();
+    });
+
+    it('uses the fresh provider clock after a UTC midnight boundary', async () => {
+        const { sendReservedSmtp2GoEmail } = await importReservations();
+
+        await sendReservedSmtp2GoEmail({
+            ownerType: 'PREMIUM_INVITATION',
+            ownerId: '11111111-1111-4111-8111-111111111111',
+            ownerToken: '22222222-2222-4222-8222-222222222222',
+            logicalAttemptKey: 'premium-invitation:invitation-1:attempt-1',
+            priority: false,
+            email: email(),
+            clock: () => new Date('2026-08-08T00:00:01.000Z'),
+        });
+
+        expect(prismaMock.emailProviderDay.upsert).toHaveBeenCalledWith({
+            where: { day: new Date('2026-08-08T00:00:00.000Z') },
+            create: { day: new Date('2026-08-08T00:00:00.000Z') },
+            update: {},
+        });
     });
 
     it('allows only one concurrent owner of a Practice local-day window', async () => {
@@ -138,10 +309,11 @@ describe('shared email provider reservations', () => {
         const common = {
             ownerType: 'NOTIFICATION_DELIVERY' as const,
             ownerId: '11111111-1111-4111-8111-111111111111',
+            logicalAttemptKey: 'notification-delivery:delivery-1',
             priority: false,
             practiceWindowKey: 'practice:user-1:2026-08-07',
             email: email(),
-            now: new Date('2026-08-07T10:00:00.000Z'),
+            clock: () => new Date('2026-08-07T10:00:00.000Z'),
         };
 
         const results = await Promise.allSettled([
@@ -180,12 +352,47 @@ describe('shared email provider reservations', () => {
                 ownerType: 'NOTIFICATION_DELIVERY',
                 ownerId: '11111111-1111-4111-8111-111111111111',
                 ownerToken: '22222222-2222-4222-8222-222222222222',
+                logicalAttemptKey: 'notification-delivery:delivery-1',
                 priority: false,
                 practiceWindowKey: 'practice:user-1:2026-08-07',
                 email: email(),
-                now: new Date('2026-08-07T10:00:00.000Z'),
+                clock: () => new Date('2026-08-07T10:00:00.000Z'),
             })
         ).rejects.toThrow('unique owner token');
+    });
+
+    it('resolves a concurrent logical-key insert race as a SENT replay', async () => {
+        prismaMock.emailSendReservation.findFirst
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({
+                id: 'reservation-winner',
+                ownerToken: '33333333-3333-4333-8333-333333333333',
+                providerDay: new Date('2026-08-07T00:00:00.000Z'),
+                priority: false,
+                status: 'SENT',
+                leaseUntil: new Date('2026-08-07T10:15:00.000Z'),
+                providerMessageId: 'smtp-winner',
+            });
+        prismaMock.emailSendReservation.create.mockRejectedValue(
+            Object.assign(new Error('unique logical attempt'), {
+                code: 'P2002',
+                meta: { target: ['logicalAttemptKey'] },
+            })
+        );
+        const reservations = await importReservations();
+
+        await expect(
+            reservations.sendReservedSmtp2GoEmail({
+                ownerType: 'NOTIFICATION_DELIVERY',
+                ownerId: '11111111-1111-4111-8111-111111111111',
+                ownerToken: '22222222-2222-4222-8222-222222222222',
+                logicalAttemptKey: 'notification-delivery:delivery-1',
+                priority: false,
+                email: email(),
+                clock: () => new Date('2026-08-07T10:00:00.000Z'),
+            })
+        ).resolves.toBe('smtp-winner');
+        expect(sendSmtp2GoEmailMock).not.toHaveBeenCalled();
     });
 
     it('reclaims only a bounded token-fenced slice of expired RESERVED claims', async () => {
@@ -247,17 +454,19 @@ describe('shared email provider reservations', () => {
             ownerType: 'PREMIUM_INVITATION',
             ownerId: '11111111-1111-4111-8111-111111111111',
             ownerToken: '22222222-2222-4222-8222-222222222222',
+            logicalAttemptKey: 'premium-invitation:invitation-1:attempt-1',
             priority: false,
             email: email(),
-            now: new Date('2026-08-07T10:00:00.000Z'),
+            clock: () => new Date('2026-08-07T10:00:00.000Z'),
         });
         const second = reservations.sendReservedSmtp2GoEmail({
             ownerType: 'NOTIFICATION_DELIVERY',
             ownerId: '33333333-3333-4333-8333-333333333333',
             ownerToken: '44444444-4444-4444-8444-444444444444',
+            logicalAttemptKey: 'notification-delivery:delivery-2',
             priority: false,
             email: email(),
-            now: new Date('2026-08-07T10:00:00.000Z'),
+            clock: () => new Date('2026-08-07T10:00:00.000Z'),
         });
 
         const results = await Promise.allSettled([first, second]);
@@ -288,10 +497,11 @@ describe('shared email provider reservations', () => {
                 ownerType: 'NOTIFICATION_DELIVERY',
                 ownerId: '11111111-1111-4111-8111-111111111111',
                 ownerToken: '22222222-2222-4222-8222-222222222222',
+                logicalAttemptKey: 'notification-delivery:delivery-1',
                 priority: false,
                 practiceWindowKey: 'practice:user-1:2026-08-07',
                 email: email(),
-                now: new Date('2026-08-07T10:00:00.000Z'),
+                clock: () => new Date('2026-08-07T10:00:00.000Z'),
             })
         ).rejects.toThrow('recipient rejected');
 
@@ -327,10 +537,11 @@ describe('shared email provider reservations', () => {
                 ownerType: 'NOTIFICATION_DELIVERY',
                 ownerId: '11111111-1111-4111-8111-111111111111',
                 ownerToken: '22222222-2222-4222-8222-222222222222',
+                logicalAttemptKey: 'notification-delivery:delivery-1',
                 priority: false,
                 practiceWindowKey: 'practice:user-1:2026-08-07',
                 email: email(),
-                now: new Date('2026-08-07T10:00:00.000Z'),
+                clock: () => new Date('2026-08-07T10:00:00.000Z'),
             })
         ).rejects.toThrow('must not be retried automatically');
 

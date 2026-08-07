@@ -2,10 +2,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
 
 const sendEmailMock = vi.fn();
+const sendReservedEmailMock = vi.fn();
 const renderMock = vi.fn();
 const scheduleWakeupMock = vi.fn();
 
 class AmbiguousSendError extends Error {}
+class EmailAttemptInProgressErrorMock extends Error {
+    readonly retryAt: Date;
+
+    constructor(retryAt: Date) {
+        super('This logical email attempt is already in progress');
+        this.retryAt = retryAt;
+    }
+}
 
 async function importInvitations() {
     vi.resetModules();
@@ -22,9 +31,8 @@ async function importInvitations() {
         Smtp2GoAmbiguousSendError: AmbiguousSendError,
     }));
     vi.doMock('@/lib/notifications/emailReservations', () => ({
-        sendReservedSmtp2GoEmail: vi.fn(
-            async (args: { email: unknown }) => sendEmailMock(args.email)
-        ),
+        EmailAttemptInProgressError: EmailAttemptInProgressErrorMock,
+        sendReservedSmtp2GoEmail: sendReservedEmailMock,
     }));
     vi.doMock('@/lib/services/autoAnalysisBacklog', () => ({
         scheduleAutoAnalysisWakeup: scheduleWakeupMock,
@@ -54,6 +62,7 @@ function invitation(overrides: Record<string, unknown> = {}) {
         deliveryGeneration: 1,
         deliveryStatus: 'PENDING',
         deliveryAttempts: 0,
+        deliverySendAttemptId: '33333333-3333-4333-8333-333333333333',
         deliveryLeaseToken: null,
         deliveryLeaseUntil: null,
         lastDeliveryAttemptAt: null,
@@ -116,8 +125,11 @@ describe('premium invitation acceptance', () => {
         vi.unstubAllEnvs();
         vi.stubEnv('PREMIUM_INVITATION_TOKEN_SECRET', 'test-secret-at-least-32-characters-long');
         vi.stubEnv('BACKRANQ_EMAIL_FROM', 'Backranq <hello@example.com>');
-        renderMock.mockResolvedValue('<p>Invitation</p>');
-        sendEmailMock.mockResolvedValue('smtp-message-1');
+        renderMock.mockReset().mockResolvedValue('<p>Invitation</p>');
+        sendEmailMock.mockReset().mockResolvedValue('smtp-message-1');
+        sendReservedEmailMock.mockReset().mockImplementation(
+            async (args: { email: unknown }) => sendEmailMock(args.email)
+        );
     });
 
     it('rejects acceptance from a different signed-in email', async () => {
@@ -262,8 +274,11 @@ describe('premium invitation delivery generations', () => {
         vi.unstubAllEnvs();
         vi.stubEnv('PREMIUM_INVITATION_TOKEN_SECRET', 'test-secret-at-least-32-characters-long');
         vi.stubEnv('BACKRANQ_EMAIL_FROM', 'Backranq <hello@example.com>');
-        renderMock.mockResolvedValue('<p>Invitation</p>');
-        sendEmailMock.mockResolvedValue('smtp-message-1');
+        renderMock.mockReset().mockResolvedValue('<p>Invitation</p>');
+        sendEmailMock.mockReset().mockResolvedValue('smtp-message-1');
+        sendReservedEmailMock.mockReset().mockImplementation(
+            async (args: { email: unknown }) => sendEmailMock(args.email)
+        );
     });
 
     it('stores only a token hash and sends a deterministic generation token', async () => {
@@ -296,9 +311,20 @@ describe('premium invitation delivery generations', () => {
         expect(sent.text).toContain(encodeURIComponent(token));
         expect(sent.text).not.toContain(premium.premiumInvitationTokenHash(token));
         expect(result.status).toBe('SENT');
+        expect(sendReservedEmailMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                logicalAttemptKey:
+                    'premium-invitation:11111111-1111-4111-8111-111111111111:33333333-3333-4333-8333-333333333333',
+            })
+        );
+        expect(sendReservedEmailMock.mock.calls[0]?.[0]).not.toHaveProperty(
+            'clock'
+        );
         expect(prismaMock.premiumInvitation.updateMany).toHaveBeenLastCalledWith({
             where: expect.objectContaining({
                 deliveryGeneration: 1,
+                deliverySendAttemptId:
+                    '33333333-3333-4333-8333-333333333333',
                 deliveryStatus: 'SENDING',
                 deliveryLeaseToken: expect.any(String),
             }),
@@ -307,6 +333,56 @@ describe('premium invitation delivery generations', () => {
                 providerEmailId: 'smtp-message-1',
             }),
         });
+    });
+
+    it('replays one persisted send attempt across a new lease token without a second provider call', async () => {
+        const premium = await importInvitations();
+        const sentAttempts = new Map<string, string>();
+        sendReservedEmailMock.mockImplementation(
+            async (args: {
+                logicalAttemptKey: string;
+                email: unknown;
+            }) => {
+                const replay = sentAttempts.get(args.logicalAttemptKey);
+                if (replay) return replay;
+                const providerId = await sendEmailMock(args.email);
+                sentAttempts.set(args.logicalAttemptKey, providerId);
+                return providerId;
+            }
+        );
+        prismaMock.premiumInvitation.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.premiumInvitation.findUnique.mockImplementation(async () => ({
+            ...invitation(),
+            deliveryLeaseToken: (
+                prismaMock.premiumInvitation.updateMany.mock.calls.at(-1)?.[0] as {
+                    data: { deliveryLeaseToken: string };
+                }
+            ).data.deliveryLeaseToken,
+        }));
+
+        await premium.deliverPremiumInvitationGeneration({
+            invitationId: '11111111-1111-4111-8111-111111111111',
+            generation: 1,
+            now: new Date('2026-08-07T23:59:59.000Z'),
+        });
+        await premium.deliverPremiumInvitationGeneration({
+            invitationId: '11111111-1111-4111-8111-111111111111',
+            generation: 1,
+            now: new Date('2026-08-08T00:00:01.000Z'),
+        });
+
+        expect(sendEmailMock).toHaveBeenCalledOnce();
+        const attempts = sendReservedEmailMock.mock.calls.map(
+            ([args]) =>
+                args as {
+                    ownerToken: string;
+                    logicalAttemptKey: string;
+                }
+        );
+        expect(attempts[0]?.ownerToken).not.toBe(attempts[1]?.ownerToken);
+        expect(attempts[0]?.logicalAttemptKey).toBe(
+            attempts[1]?.logicalAttemptKey
+        );
     });
 
     it('marks an ambiguous provider response without rotating the valid token', async () => {
@@ -342,6 +418,44 @@ describe('premium invitation delivery generations', () => {
             data: expect.objectContaining({
                 deliveryStatus: 'AMBIGUOUS',
                 deliveryLeaseToken: null,
+            }),
+        });
+    });
+
+    it('keeps an active logical attempt fenced until its reservation lease expires', async () => {
+        const premium = await importInvitations();
+        const retryAt = new Date('2026-08-06T00:15:00.000Z');
+        sendReservedEmailMock.mockRejectedValue(
+            new EmailAttemptInProgressErrorMock(retryAt)
+        );
+        prismaMock.premiumInvitation.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.premiumInvitation.findUnique.mockImplementation(async () => ({
+            ...invitation(),
+            deliveryLeaseToken: (
+                prismaMock.premiumInvitation.updateMany.mock.calls[0]?.[0] as {
+                    data: { deliveryLeaseToken: string };
+                }
+            ).data.deliveryLeaseToken,
+        }));
+
+        const result = await premium.deliverPremiumInvitationGeneration({
+            invitationId: '11111111-1111-4111-8111-111111111111',
+            generation: 1,
+            now: new Date('2026-08-06T00:00:00.000Z'),
+        });
+
+        expect(result.status).toBe('SENDING');
+        expect(sendEmailMock).not.toHaveBeenCalled();
+        expect(prismaMock.premiumInvitation.updateMany).toHaveBeenLastCalledWith({
+            where: expect.objectContaining({
+                deliverySendAttemptId:
+                    '33333333-3333-4333-8333-333333333333',
+                deliveryLeaseToken: expect.any(String),
+            }),
+            data: expect.objectContaining({
+                deliveryStatus: 'SENDING',
+                deliveryLeaseToken: null,
+                deliveryLeaseUntil: retryAt,
             }),
         });
     });

@@ -10,6 +10,7 @@ import {
     Smtp2GoQuotaError,
 } from './smtp2go';
 import {
+    EmailAttemptInProgressError,
     EmailBudgetUnavailableError,
     PracticeEmailWindowClaimedError,
     sendReservedSmtp2GoEmail,
@@ -321,18 +322,22 @@ async function scheduleNextNotificationSweep(now: Date) {
         ...(pushConfigured() ? (['WEB_PUSH'] as const) : []),
     ];
     if (channels.length === 0) return null;
-    const next = await prisma.notificationDelivery.findFirst({
-        where: {
-            status: 'PENDING',
-            channel: { in: channels },
-        },
-        orderBy: [
-            { scheduledFor: 'asc' },
-            { createdAt: 'asc' },
-            { id: 'asc' },
-        ],
-        select: { id: true, scheduledFor: true },
-    });
+    const channelHeads = await Promise.all(
+        channels.map((channel) =>
+            prisma.notificationDelivery.findFirst({
+                where: { status: 'PENDING', channel },
+                orderBy: [
+                    { scheduledFor: 'asc' },
+                    { createdAt: 'asc' },
+                    { id: 'asc' },
+                ],
+                select: { id: true, scheduledFor: true, createdAt: true },
+            })
+        )
+    );
+    const next = channelHeads
+        .filter((candidate) => candidate !== null)
+        .sort(compareScheduledDeliveries)[0];
     if (!next) return null;
     const requestedDelaySeconds = Math.max(
         1,
@@ -355,6 +360,17 @@ async function scheduleNextNotificationSweep(now: Date) {
             delaySeconds,
             retentionSeconds: NOTIFICATION_SWEEP_RETENTION_SECONDS,
         }
+    );
+}
+
+function compareScheduledDeliveries(
+    left: { id: string; scheduledFor: Date; createdAt: Date },
+    right: { id: string; scheduledFor: Date; createdAt: Date }
+) {
+    return (
+        left.scheduledFor.getTime() - right.scheduledFor.getTime() ||
+        left.createdAt.getTime() - right.createdAt.getTime() ||
+        left.id.localeCompare(right.id)
     );
 }
 
@@ -603,6 +619,7 @@ async function deliverEmail(delivery: HydratedDelivery) {
             ownerType: 'NOTIFICATION_DELIVERY',
             ownerId: delivery.id,
             ownerToken: delivery.dispatchToken,
+            logicalAttemptKey: `notification-delivery:${delivery.id}`,
             priority: PRIORITY_EMAIL_TYPES.has(delivery.notification.type),
             practiceWindowKey,
             email: {
@@ -618,7 +635,10 @@ async function deliverEmail(delivery: HydratedDelivery) {
             },
         });
     } catch (error) {
-        if (error instanceof EmailBudgetUnavailableError) {
+        if (
+            error instanceof EmailBudgetUnavailableError ||
+            error instanceof EmailAttemptInProgressError
+        ) {
             throw new DeliveryRescheduledError(error.message, error.retryAt);
         }
         if (error instanceof PracticeEmailWindowClaimedError) {

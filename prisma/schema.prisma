@@ -576,7 +576,8 @@ model NotificationDelivery {
   @@index([status, scheduledFor, id])
   @@index([userId, channel, createdAt])
   @@index([status, lockedUntil, id])
-  @@index([status, channel, dispatchPriority, scheduledFor, createdAt, id])
+  @@index([status, channel, dispatchPriority, scheduledFor, createdAt, id], map: "NotificationDelivery_dispatch_stream_idx")
+  @@index([status, channel, scheduledFor, createdAt, id], map: "NotificationDelivery_pending_channel_schedule_idx")
 }
 
 /// One atomic counter row per SMTP2GO UTC accounting day. Both notification
@@ -600,6 +601,9 @@ model EmailSendReservation {
   ownerType         EmailSendOwnerType
   ownerId           String                     @db.Uuid
   ownerToken        String                     @unique @db.Uuid
+  /// Stable across worker/lease-token retries. A partial unique index in the
+  /// migration allows a replacement only after the prior row is RELEASED.
+  logicalAttemptKey String
   priority          Boolean                    @default(false)
   practiceWindowKey String?                    @unique
   status            EmailSendReservationStatus @default(RESERVED)
@@ -708,6 +712,7 @@ model PremiumInvitation {
   deliveryGeneration    Int                             @default(1)
   deliveryStatus        PremiumInvitationDeliveryStatus @default(PENDING)
   deliveryAttempts      Int                             @default(0)
+  deliverySendAttemptId String                          @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   deliveryLeaseToken    String?
   deliveryLeaseUntil    DateTime?
   lastDeliveryAttemptAt DateTime?

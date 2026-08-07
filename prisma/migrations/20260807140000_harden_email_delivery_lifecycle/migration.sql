@@ -11,6 +11,9 @@ CREATE TYPE "EmailSendReservationStatus" AS ENUM (
     'RELEASED'
 );
 
+ALTER TABLE "PremiumInvitation"
+ADD COLUMN "deliverySendAttemptId" UUID NOT NULL DEFAULT gen_random_uuid();
+
 ALTER TABLE "NotificationDelivery"
 ADD COLUMN "dispatchPriority" INTEGER NOT NULL DEFAULT 1;
 
@@ -39,6 +42,25 @@ ON "NotificationDelivery"(
     "id"
 );
 
+CREATE INDEX "NotificationDelivery_pending_channel_schedule_idx"
+ON "NotificationDelivery"(
+    "status",
+    "channel",
+    "scheduledFor",
+    "createdAt",
+    "id"
+);
+
+CREATE INDEX "NotificationDelivery_active_lease_recovery_idx"
+ON "NotificationDelivery"(
+    "lockedUntil" ASC NULLS FIRST,
+    "id"
+)
+WHERE "status" IN (
+    'QUEUED'::"NotificationDeliveryStatus",
+    'PROCESSING'::"NotificationDeliveryStatus"
+);
+
 CREATE TABLE "EmailProviderDay" (
     "day" DATE NOT NULL,
     "reservedCount" INTEGER NOT NULL DEFAULT 0,
@@ -61,6 +83,7 @@ CREATE TABLE "EmailSendReservation" (
     "ownerType" "EmailSendOwnerType" NOT NULL,
     "ownerId" UUID NOT NULL,
     "ownerToken" UUID NOT NULL,
+    "logicalAttemptKey" TEXT NOT NULL,
     "priority" BOOLEAN NOT NULL DEFAULT false,
     "practiceWindowKey" TEXT,
     "status" "EmailSendReservationStatus" NOT NULL DEFAULT 'RESERVED',
@@ -75,6 +98,9 @@ CREATE TABLE "EmailSendReservation" (
 
 CREATE UNIQUE INDEX "EmailSendReservation_ownerToken_key"
 ON "EmailSendReservation"("ownerToken");
+CREATE UNIQUE INDEX "EmailSendReservation_active_logicalAttemptKey_key"
+ON "EmailSendReservation"("logicalAttemptKey")
+WHERE "status" <> 'RELEASED'::"EmailSendReservationStatus";
 CREATE UNIQUE INDEX "EmailSendReservation_practiceWindowKey_key"
 ON "EmailSendReservation"("practiceWindowKey");
 CREATE INDEX "EmailSendReservation_ownerType_ownerId_createdAt_idx"
