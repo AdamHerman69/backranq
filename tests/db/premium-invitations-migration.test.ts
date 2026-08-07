@@ -30,4 +30,17 @@ describe('premium invitations migration', () => {
             );
         }
     });
+
+    it('persists generation-fenced email delivery leases', async () => {
+        const sql = await readFile(migrationPath, 'utf8');
+
+        expect(sql).toContain('CREATE TYPE "PremiumInvitationDeliveryStatus"');
+        expect(sql).toContain('"deliveryGeneration" INTEGER NOT NULL DEFAULT 1');
+        expect(sql).toContain('"deliveryStatus" "PremiumInvitationDeliveryStatus"');
+        expect(sql).toContain('"deliveryLeaseToken" TEXT');
+        expect(sql).toContain('"deliveryLeaseUntil" TIMESTAMP(3)');
+        expect(sql).toContain(
+            '"PremiumInvitation_deliveryStatus_deliveryLeaseUntil_idx"'
+        );
+    });
 });

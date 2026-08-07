@@ -1,5 +1,6 @@
 CREATE TYPE "BillingPlanSource" AS ENUM ('FREE', 'STRIPE', 'ADMIN', 'COMPLIMENTARY');
 CREATE TYPE "PlanGrantSource" AS ENUM ('ADMIN_INVITATION');
+CREATE TYPE "PremiumInvitationDeliveryStatus" AS ENUM ('PENDING', 'SENDING', 'SENT', 'AMBIGUOUS', 'FAILED');
 
 ALTER TABLE "BillingAccount"
 ADD COLUMN "planSource" "BillingPlanSource" NOT NULL DEFAULT 'FREE',
@@ -28,6 +29,12 @@ CREATE TABLE "PremiumInvitation" (
     "expiresAt" TIMESTAMP(3) NOT NULL,
     "acceptedAt" TIMESTAMP(3),
     "revokedAt" TIMESTAMP(3),
+    "deliveryGeneration" INTEGER NOT NULL DEFAULT 1,
+    "deliveryStatus" "PremiumInvitationDeliveryStatus" NOT NULL DEFAULT 'PENDING',
+    "deliveryAttempts" INTEGER NOT NULL DEFAULT 0,
+    "deliveryLeaseToken" TEXT,
+    "deliveryLeaseUntil" TIMESTAMP(3),
+    "lastDeliveryAttemptAt" TIMESTAMP(3),
     "emailSentAt" TIMESTAMP(3),
     "providerEmailId" TEXT,
     "lastEmailError" TEXT,
@@ -60,6 +67,7 @@ CREATE INDEX "PremiumInvitation_emailNormalized_createdAt_idx" ON "PremiumInvita
 CREATE INDEX "PremiumInvitation_expiresAt_idx" ON "PremiumInvitation"("expiresAt");
 CREATE INDEX "PremiumInvitation_invitedById_idx" ON "PremiumInvitation"("invitedById");
 CREATE INDEX "PremiumInvitation_acceptedById_idx" ON "PremiumInvitation"("acceptedById");
+CREATE INDEX "PremiumInvitation_deliveryStatus_deliveryLeaseUntil_idx" ON "PremiumInvitation"("deliveryStatus", "deliveryLeaseUntil");
 
 CREATE UNIQUE INDEX "PlanGrant_invitationId_key" ON "PlanGrant"("invitationId");
 CREATE INDEX "PlanGrant_userId_revokedAt_startsAt_expiresAt_idx" ON "PlanGrant"("userId", "revokedAt", "startsAt", "expiresAt");
