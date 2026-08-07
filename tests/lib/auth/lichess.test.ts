@@ -49,4 +49,27 @@ describe('Lichess OAuth provider', () => {
             email: null,
         });
     });
+
+    it('fails instead of using email as identity when account lookup fails', async () => {
+        const provider = LichessProvider({ clientId: 'test-client' });
+        const request = provider.userinfo?.request;
+        const fetchMock = vi.fn(async (...args: FetchArgs) => {
+            const url = String(args[0]);
+            if (url.endsWith('/api/account')) {
+                return jsonResponse(
+                    { error: 'temporarily unavailable' },
+                    { status: 503 }
+                );
+            }
+            if (url.endsWith('/api/account/email')) {
+                return jsonResponse({ email: 'ada@example.test' });
+            }
+            return new Response(null, { status: 404 });
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(
+            request?.({ tokens: { access_token: 'token' } })
+        ).rejects.toThrow('account=503');
+    });
 });
