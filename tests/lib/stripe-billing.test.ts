@@ -202,6 +202,36 @@ describe('stripe billing price mapping', () => {
         });
     });
 
+    it('keeps an ambiguous sessionless reservation fenced through its real expiry', async () => {
+        const billing = await importStripeBilling();
+        const reservationId =
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        billingAccountState = storedBillingAccount({
+            stripeCheckoutReservationId: reservationId,
+            stripeCheckoutSessionId: null,
+            stripeCheckoutPlan: 'PLUS',
+            stripeCheckoutExpiresAt: new Date(Date.now() + 60_000),
+            stripeCheckoutFencePlan: 'FREE',
+            stripeCheckoutFenceSource: 'FREE',
+        });
+
+        await expect(
+            billing.createStripeCheckoutSession({
+                userId: 'user-1',
+                email: 'user@example.test',
+                plan: 'PLUS',
+            })
+        ).rejects.toBeInstanceOf(
+            billing.CheckoutAlreadyInProgressError
+        );
+
+        expect(checkoutCreateMock).not.toHaveBeenCalled();
+        expect(checkoutRetrieveMock).not.toHaveBeenCalled();
+        expect(
+            billingAccountState?.stripeCheckoutReservationId
+        ).toBe(reservationId);
+    });
+
     it('retries a serializable checkout claim after a write conflict', async () => {
         const billing = await importStripeBilling();
         billingAccountState = storedBillingAccount();

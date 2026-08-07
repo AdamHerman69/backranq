@@ -311,13 +311,20 @@ async function claimCheckoutReservation(args: {
         const reservationIsActive =
             account.stripeCheckoutReservationId !== null &&
             account.stripeCheckoutExpiresAt !== null &&
-            account.stripeCheckoutExpiresAt > args.now &&
-            (account.stripeCheckoutSessionId !== null ||
-                account.stripeCheckoutExpiresAt.getTime() -
-                    args.now.getTime() >=
-                    MIN_CHECKOUT_CREATION_WINDOW_MS);
+            account.stripeCheckoutExpiresAt > args.now;
         if (reservationIsActive) {
             if (account.stripeCheckoutPlan !== args.plan) {
+                throw new CheckoutAlreadyInProgressError();
+            }
+            if (
+                account.stripeCheckoutSessionId === null &&
+                account.stripeCheckoutExpiresAt!.getTime() -
+                    args.now.getTime() <
+                    MIN_CHECKOUT_CREATION_WINDOW_MS
+            ) {
+                // A previous Stripe create may have succeeded while its DB
+                // attach was ambiguous. Keep the idempotency fence until its
+                // real expiry; rotating it here could create a second session.
                 throw new CheckoutAlreadyInProgressError();
             }
             return {
