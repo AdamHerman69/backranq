@@ -1,6 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useReducer,
+    useRef,
+    useState,
+} from 'react';
+import { Chess } from 'chess.js';
 
 import { StockfishClient } from '@/lib/analysis/stockfishClient';
 import type {
@@ -22,6 +30,11 @@ import {
 } from '@/lib/training/localGrading';
 import { buildPostMoveStory } from '@/lib/training/postMoveStory';
 import {
+    boardPresentationDelay,
+    boardPresentationReducer,
+    initialBoardPresentation,
+} from '@/lib/training/boardPresentation';
+import {
     reviewFromTrainingResponse,
     type TrainerAttemptPhase,
 } from '@/lib/training/trainerState';
@@ -33,6 +46,7 @@ type Submission = {
     timeSpentMs: number;
     fenBefore: string;
     fenAfterMove: string;
+    presentationSequenceId: number;
 };
 
 export type PuzzleSessionCompletion = {
@@ -60,6 +74,36 @@ function gradingSource(
     return 'PRECOMPUTED';
 }
 
+function prefersReducedMotion(): boolean {
+    return (
+        typeof window !== 'undefined' &&
+        window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+    );
+}
+
+function nextPaint(): Promise<void> {
+    if (
+        typeof window === 'undefined' ||
+        typeof window.requestAnimationFrame !== 'function'
+    ) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+        window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => resolve());
+        });
+    });
+}
+
+async function waitForBoardPresentation(
+    stage: 'MOVE' | 'GRADE'
+): Promise<void> {
+    await nextPaint();
+    const delay = boardPresentationDelay(stage, prefersReducedMotion());
+    if (delay === 0) return;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+}
+
 export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     const [prompt, setPrompt] = useState<TrainingPromptDto | null>(
         options.initialPrompt ?? null
@@ -77,6 +121,11 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     >(null);
     const [reviewFallback, setReviewFallback] = useState(false);
     const [presentationSettled, setPresentationSettled] = useState(true);
+    const [presentation, dispatchPresentation] = useReducer(
+        boardPresentationReducer,
+        undefined,
+        () => initialBoardPresentation()
+    );
     const [engineClient, setEngineClient] =
         useState<StockfishClient | null>(null);
 
@@ -94,6 +143,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     const generationRef = useRef(0);
     const moveSubmissionInFlightRef = useRef(false);
     const gradingInFlightRef = useRef(false);
+    const presentationSequenceRef = useRef(0);
     const onCompletedRef = useRef(options.onCompleted);
     onCompletedRef.current = options.onCompleted;
 
@@ -113,6 +163,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
 
     const activatePrompt = useCallback((next: TrainingPromptDto) => {
         generationRef.current += 1;
+        presentationSequenceRef.current += 1;
         promptRef.current = next;
         currentNodeRef.current = next.grading.solutionTree;
         stepsRef.current = [];
@@ -128,10 +179,15 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         setResponse(null);
         setReviewFallback(false);
         setPresentationSettled(true);
+        dispatchPresentation({
+            type: 'RESET',
+            sequenceId: presentationSequenceRef.current,
+        });
     }, []);
 
     const clearPrompt = useCallback(() => {
         generationRef.current += 1;
+        presentationSequenceRef.current += 1;
         promptRef.current = null;
         currentNodeRef.current = null;
         stepsRef.current = [];
@@ -146,6 +202,10 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         setResponse(null);
         setReviewFallback(false);
         setPresentationSettled(true);
+        dispatchPresentation({
+            type: 'RESET',
+            sequenceId: presentationSequenceRef.current,
+        });
     }, []);
 
     useEffect(() => {
@@ -192,19 +252,33 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
             };
             setResponse(revealed);
             setSolveFen(submission.fenAfterMove);
-            setDisplayFen(activePrompt.fen);
+            setDisplayFen(submission.fenAfterMove);
             setReviewFallback(true);
             setPhase('REVEALED');
             setPresentationSettled(true);
+            dispatchPresentation({
+                type: 'SETTLE',
+                sequenceId: submission.presentationSequenceId,
+            });
             if (options.stopEngineOnTerminal) stopEngine();
         },
         [options.stopEngineOnTerminal, stopEngine]
     );
 
     const applyEvaluation = useCallback(
-        (evaluation: LocalMoveEvaluation, submission: Submission) => {
+        async (
+            evaluation: LocalMoveEvaluation,
+            submission: Submission,
+            generation: number
+        ) => {
             const activePrompt = promptRef.current;
-            if (!activePrompt || !clientAttemptIdRef.current) return;
+            if (
+                !activePrompt ||
+                !clientAttemptIdRef.current ||
+                generationRef.current !== generation
+            ) {
+                return;
+            }
             if (evaluation.result.status === 'UNRESOLVED') {
                 if (options.unresolvedMode === 'REVEAL') {
                     revealAfterUnresolved(submission, evaluation.comparison);
@@ -219,10 +293,20 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                 setDisplayFen(submission.fenAfterMove);
                 setPhase('UNRESOLVED');
                 setPresentationSettled(true);
+                dispatchPresentation({
+                    type: 'SETTLE',
+                    sequenceId: submission.presentationSequenceId,
+                });
                 return;
             }
 
             setReviewFallback(false);
+            dispatchPresentation({
+                type: 'GRADE_REVEAL',
+                sequenceId: submission.presentationSequenceId,
+                moveUci: submission.moveUci,
+                grade: evaluation.result.grade,
+            });
             const userStep: RecordedTrainingAttemptStepDto = {
                 stepIndex: submission.stepIndex,
                 actor: 'USER',
@@ -241,6 +325,8 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                   })
                 : null;
             if (continuation) {
+                await waitForBoardPresentation('GRADE');
+                if (generationRef.current !== generation) return;
                 stepsRef.current = [
                     ...stepsWithUser,
                     {
@@ -251,7 +337,6 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                     },
                 ];
                 currentNodeRef.current = continuation.nextUserNode;
-                moveSubmissionInFlightRef.current = false;
                 setResponse({
                     attemptId: clientAttemptIdRef.current,
                     status: 'AWAITING_CONTINUATION',
@@ -261,10 +346,22 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                         fenAfter: continuation.fenAfterOpponentMove,
                     },
                 });
+                dispatchPresentation({
+                    type: 'OPPONENT_MOVE',
+                    sequenceId: submission.presentationSequenceId,
+                    moveUci: continuation.opponentMoveUci,
+                });
                 setSolveFen(continuation.fenAfterOpponentMove);
                 setDisplayFen(continuation.fenAfterOpponentMove);
+                await waitForBoardPresentation('MOVE');
+                if (generationRef.current !== generation) return;
+                moveSubmissionInFlightRef.current = false;
                 setPhase('AWAITING_MOVE');
                 setPresentationSettled(true);
+                dispatchPresentation({
+                    type: 'SETTLE',
+                    sequenceId: submission.presentationSequenceId,
+                });
                 promptStartedAtRef.current = Date.now();
                 return;
             }
@@ -292,11 +389,17 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                     comparison,
                 },
             };
+            await waitForBoardPresentation('GRADE');
+            if (generationRef.current !== generation) return;
             setResponse(graded);
             setSolveFen(submission.fenAfterMove);
-            setDisplayFen(activePrompt.fen);
+            setDisplayFen(submission.fenAfterMove);
             setPhase('GRADED');
             setPresentationSettled(true);
+            dispatchPresentation({
+                type: 'SETTLE',
+                sequenceId: submission.presentationSequenceId,
+            });
             onCompletedRef.current?.({
                 prompt: activePrompt,
                 terminalReason: 'MOVE_SUBMITTED',
@@ -343,6 +446,8 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
             }
             moveSubmissionInFlightRef.current = true;
             const generation = generationRef.current;
+            const presentationSequenceId =
+                ++presentationSequenceRef.current;
             clientAttemptIdRef.current ??= newClientId();
             const submission: Submission = {
                 node,
@@ -354,12 +459,24 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                 ),
                 fenBefore: solveFen,
                 fenAfterMove,
+                presentationSequenceId,
             };
             lastSubmissionRef.current = submission;
             setSolveFen(fenAfterMove);
             setDisplayFen(fenAfterMove);
             setResponse(null);
             setReviewFallback(false);
+            setPhase('SUBMITTING');
+            setPresentationSettled(false);
+            dispatchPresentation({
+                type: 'RESET',
+                sequenceId: presentationSequenceId,
+            });
+            dispatchPresentation({
+                type: 'USER_MOVE',
+                sequenceId: presentationSequenceId,
+                moveUci,
+            });
 
             const known = gradeKnownLocalMove({
                 manifest: activePrompt.grading,
@@ -367,13 +484,20 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                 moveUci,
             });
             if (known) {
-                applyEvaluation(known, submission);
+                await waitForBoardPresentation('MOVE');
+                if (generationRef.current !== generation) return;
+                await applyEvaluation(known, submission, generation);
                 return;
             }
 
-            setPhase('SUBMITTING');
             gradingInFlightRef.current = true;
             try {
+                await waitForBoardPresentation('MOVE');
+                if (generationRef.current !== generation) return;
+                dispatchPresentation({
+                    type: 'CHECKING',
+                    sequenceId: presentationSequenceId,
+                });
                 const evaluated = await gradeUnknownLocalMove({
                     engine: getOrCreateEngine(),
                     manifest: activePrompt.grading,
@@ -385,7 +509,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                     ],
                 });
                 if (generationRef.current !== generation) return;
-                applyEvaluation(evaluated, submission);
+                await applyEvaluation(evaluated, submission, generation);
             } catch {
                 if (generationRef.current !== generation) return;
                 stopEngine();
@@ -400,6 +524,10 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                 });
                 setPhase('UNRESOLVED');
                 setPresentationSettled(true);
+                dispatchPresentation({
+                    type: 'SETTLE',
+                    sequenceId: presentationSequenceId,
+                });
             } finally {
                 if (generationRef.current === generation) {
                     gradingInFlightRef.current = false;
@@ -431,6 +559,11 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         const generation = generationRef.current;
         gradingInFlightRef.current = true;
         setPhase('SUBMITTING');
+        setPresentationSettled(false);
+        dispatchPresentation({
+            type: 'CHECKING',
+            sequenceId: submission.presentationSequenceId,
+        });
         try {
             const evaluated = await gradeUnknownLocalMove({
                 engine: getOrCreateEngine(),
@@ -443,11 +576,16 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                 ],
             });
             if (generationRef.current !== generation) return;
-            applyEvaluation(evaluated, submission);
+            await applyEvaluation(evaluated, submission, generation);
         } catch {
             if (generationRef.current === generation) {
                 stopEngine();
                 setPhase('UNRESOLVED');
+                setPresentationSettled(true);
+                dispatchPresentation({
+                    type: 'SETTLE',
+                    sequenceId: submission.presentationSequenceId,
+                });
             }
         } finally {
             if (generationRef.current === generation) {
@@ -473,6 +611,8 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         moveSubmissionInFlightRef.current = true;
         const clientAttemptId =
             clientAttemptIdRef.current ?? newClientId();
+        const presentationSequenceId =
+            ++presentationSequenceRef.current;
         clientAttemptIdRef.current = clientAttemptId;
         const firstSubmittedMove =
             stepsRef.current.find((step) => step.actor === 'USER')?.moveUci ??
@@ -492,6 +632,14 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         setReviewFallback(false);
         setPhase('REVEALED');
         setPresentationSettled(true);
+        dispatchPresentation({
+            type: 'RESET',
+            sequenceId: presentationSequenceId,
+        });
+        dispatchPresentation({
+            type: 'REVIEW_DECISION',
+            sequenceId: presentationSequenceId,
+        });
         onCompletedRef.current?.({
             prompt: activePrompt,
             terminalReason: 'REVEALED',
@@ -511,6 +659,44 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
             ? (response as GradedPracticeResult).grade
             : null;
     const review = reviewFromTrainingResponse(response);
+    const showReviewPosition = useCallback(
+        (position: 'DECISION' | 'ATTEMPT') => {
+            const activePrompt = promptRef.current;
+            if (!activePrompt || !review) return;
+            const sequenceId = presentationSequenceRef.current;
+            if (position === 'DECISION' || !review.submittedMoveUci) {
+                setDisplayFen(activePrompt.fen);
+                dispatchPresentation({
+                    type: 'REVIEW_DECISION',
+                    sequenceId,
+                });
+                return;
+            }
+            try {
+                const chess = new Chess(activePrompt.fen);
+                const move = review.submittedMoveUci.trim().toLowerCase();
+                chess.move({
+                    from: move.slice(0, 2),
+                    to: move.slice(2, 4),
+                    promotion: move.slice(4, 5) || undefined,
+                });
+                setDisplayFen(chess.fen());
+                dispatchPresentation({
+                    type: 'REVIEW_ATTEMPT',
+                    sequenceId,
+                    moveUci: review.submittedMoveUci,
+                    grade,
+                });
+            } catch {
+                setDisplayFen(activePrompt.fen);
+                dispatchPresentation({
+                    type: 'REVIEW_DECISION',
+                    sequenceId,
+                });
+            }
+        },
+        [grade, review]
+    );
     const story = useMemo(
         () =>
             prompt && review
@@ -544,6 +730,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         story,
         attemptTerminal,
         presentationSettled,
+        presentation,
         terminal: attemptTerminal && presentationSettled,
         engineClient,
         canMove: phase === 'READY' || phase === 'AWAITING_MOVE',
@@ -558,6 +745,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         submitMove,
         retryGrading,
         reveal,
+        showReviewPosition,
         beginPresentation,
         settlePresentation,
     };

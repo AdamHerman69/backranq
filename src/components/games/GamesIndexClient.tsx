@@ -10,7 +10,6 @@ import { GamesList } from '@/components/games/GamesList';
 import { GamesSelectionDeleteDialog } from '@/components/games/GamesSelectionDeleteDialog';
 import { GamesSelectionReanalysisDialog } from '@/components/games/GamesSelectionReanalysisDialog';
 import { GamesSelectionToolbar } from '@/components/games/GamesSelectionToolbar';
-import { Card, CardContent } from '@/components/ui/card';
 import type { ManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 import { registerServerAnalysisEnqueue } from '@/lib/games/serverAnalysisTracking';
 import { enqueueServerAnalysisJobs } from '@/lib/services/gameSync';
@@ -37,6 +36,7 @@ export function GamesIndexClient({
     const router = useRouter();
     const [selected, setSelected] = useState<Record<string, boolean>>({});
     const [busy, setBusy] = useState(false);
+    const [selectionMode, setSelectionMode] = useState(false);
     const [reviewAction, setReviewAction] = useState<
         'reanalyze' | 'delete' | null
     >(null);
@@ -172,21 +172,27 @@ export function GamesIndexClient({
 
     return (
         <div className="space-y-6">
-            <Card>
-                <CardContent className="p-4">
-                    <GamesSelectionToolbar
-                        selectedCount={selectedCount}
-                        busy={busy}
-                        hasGames={games.length > 0}
-                        onSelectAll={selectAll}
-                        onDeselectAll={deselectAll}
-                        onReevaluate={() => setReviewAction('reanalyze')}
-                        onDelete={() => setReviewAction('delete')}
-                    />
+            <div className="rounded-2xl border bg-card/65 p-3 sm:p-4">
+                <GamesSelectionToolbar
+                    selectedCount={selectedCount}
+                    busy={busy}
+                    hasGames={games.length > 0}
+                    onSelectAll={selectAll}
+                    onDeselectAll={deselectAll}
+                    onReevaluate={() => setReviewAction('reanalyze')}
+                    onDelete={() => setReviewAction('delete')}
+                />
 
-                    <GamesFilter total={total} initial={initialFilters} />
-                </CardContent>
-            </Card>
+                <GamesFilter
+                    total={total}
+                    initial={initialFilters}
+                    selectionMode={selectionMode}
+                    onSelectionModeChange={(active) => {
+                        setSelectionMode(active);
+                        if (!active) deselectAll();
+                    }}
+                />
+            </div>
 
             <GamesList
                 games={games}
@@ -195,7 +201,11 @@ export function GamesIndexClient({
                 totalPages={totalPages}
                 baseQueryString={baseQueryString}
                 selected={selected}
-                onSelectedChange={(id, v) => setSelected((s) => ({ ...s, [id]: v }))}
+                onSelectedChange={
+                    selectionMode
+                        ? (id, v) => setSelected((s) => ({ ...s, [id]: v }))
+                        : undefined
+                }
                 selectionDisabled={busy}
             />
 

@@ -26,7 +26,7 @@ test.describe('authenticated Progress', () => {
             page.getByRole('form', { name: 'Progress scope' })
         ).toBeVisible();
         await expect(
-            page.getByRole('region', { name: 'Data coverage' })
+            page.getByRole('heading', { name: 'At a glance' })
         ).toBeVisible();
         await expect(
             page.getByRole('heading', { name: 'From your games' })
@@ -36,6 +36,12 @@ test.describe('authenticated Progress', () => {
         ).toBeVisible();
         await expect(
             page.getByRole('heading', { name: 'Review and recurrence' })
+        ).toBeVisible();
+        await page
+            .getByRole('heading', { name: 'Data coverage' })
+            .click();
+        await expect(
+            page.getByRole('region', { name: 'Data coverage' })
         ).toBeVisible();
 
         const primaryNav = page.getByRole('navigation', {
@@ -85,11 +91,14 @@ test.describe('authenticated Progress', () => {
         await page.goto('/progress');
 
         await page
-            .getByLabel('Time window')
-            .selectOption('28');
-        await page.getByRole('button', { name: 'Apply view' }).click();
+            .getByRole('form', { name: 'Progress scope' })
+            .getByRole('link', { name: '28 days' })
+            .click();
 
         await expect(page).toHaveURL(/\/progress\?scope=28$/);
+        await page
+            .getByRole('heading', { name: 'Data coverage' })
+            .click();
         await expect(
             page.getByRole('region', { name: 'Data coverage' })
         ).toBeVisible();

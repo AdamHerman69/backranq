@@ -1,10 +1,14 @@
 'use client';
 
 import * as React from 'react';
+import { BellRing } from 'lucide-react';
 import { toast } from 'sonner';
+import { ErrorState, InlineStatus } from '@/components/ui/async-state';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { ListSkeleton } from '@/components/ui/loading-patterns';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 type Preferences = {
@@ -33,19 +37,37 @@ export function NotificationSettingsCard() {
     const [preferences, setPreferences] = React.useState<Preferences | null>(null);
     const [vapidPublicKey, setVapidPublicKey] = React.useState<string | null>(null);
     const [saving, setSaving] = React.useState(false);
+    const [loadError, setLoadError] = React.useState<string | null>(null);
+
+    const load = React.useCallback(async () => {
+        setLoadError(null);
+        try {
+            const response = await fetch('/api/notifications/preferences', {
+                cache: 'no-store',
+            });
+            if (!response.ok) {
+                throw new Error('Could not load notification settings');
+            }
+            const payload = (await response.json()) as {
+                preferences: Preferences;
+                vapidPublicKey: string | null;
+            };
+            setPreferences(payload.preferences);
+            setVapidPublicKey(payload.vapidPublicKey);
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : 'Could not load settings';
+            setPreferences(null);
+            setLoadError(message);
+            toast.error(message);
+        }
+    }, []);
 
     React.useEffect(() => {
-        void fetch('/api/notifications/preferences', { cache: 'no-store' })
-            .then(async (response) => {
-                if (!response.ok) throw new Error('Could not load notification settings');
-                return response.json() as Promise<{ preferences: Preferences; vapidPublicKey: string | null }>;
-            })
-            .then((payload) => {
-                setPreferences(payload.preferences);
-                setVapidPublicKey(payload.vapidPublicKey);
-            })
-            .catch((error) => toast.error(error instanceof Error ? error.message : 'Could not load settings'));
-    }, []);
+        void load();
+    }, [load]);
 
     async function save(patch: Partial<Preferences>) {
         if (!preferences) return;
@@ -111,20 +133,53 @@ export function NotificationSettingsCard() {
     }
 
     return (
-        <Card id="notifications" className="scroll-mt-24">
-            <CardHeader>
-                <CardTitle>Notifications</CardTitle>
-                <CardDescription>Choose which updates can reach you outside the app.</CardDescription>
+        <Card variant="panel" className="overflow-hidden">
+            <CardHeader className="gap-3 border-b border-border/70 bg-surface-subtle/50 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+                <div className="space-y-1.5">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                        <span className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary">
+                            <BellRing className="h-4 w-4" aria-hidden="true" />
+                        </span>
+                        Notification rhythm
+                    </CardTitle>
+                    <CardDescription>Choose which updates can reach you outside the app.</CardDescription>
+                </div>
+                {saving ? (
+                    <Badge variant="outline" className="w-fit bg-card text-muted-foreground">
+                        Saving…
+                    </Badge>
+                ) : null}
             </CardHeader>
-            <CardContent className="space-y-6">
-                {!preferences ? <p className="text-sm text-muted-foreground">Loading…</p> : (
+            <CardContent className="space-y-6 pt-5">
+                {loadError ? (
+                    <ErrorState
+                        title="Notifications unavailable"
+                        description={loadError}
+                        action={
+                            <Button type="button" variant="outline" onClick={() => void load()}>
+                                Try again
+                            </Button>
+                        }
+                        className="border-0"
+                    />
+                ) : !preferences ? (
+                    <div role="status" aria-label="Loading notification settings">
+                        <ListSkeleton rows={3} />
+                    </div>
+                ) : (
                     <>
                         {preferences.emailSuppressedAt ? (
-                            <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                            <InlineStatus tone="danger">
                                 Email delivery is paused after a bounce or spam complaint. Contact support to restore it.
-                            </p>
+                            </InlineStatus>
                         ) : null}
-                        <div className="space-y-4">
+                        <div className="space-y-2">
+                            <div className="pb-1">
+                                <h3 className="text-sm font-semibold">Email updates</h3>
+                                <p className="mt-0.5 text-xs text-muted-foreground">
+                                    Transactional account email is always sent when required.
+                                </p>
+                            </div>
                             {EMAIL_OPTIONS.map((option) => (
                                 <PreferenceCheckbox
                                     key={option.key}
@@ -136,11 +191,12 @@ export function NotificationSettingsCard() {
                                 />
                             ))}
                         </div>
-                        <div className="grid gap-4 border-t pt-5 md:grid-cols-3">
+                        <div className="grid gap-4 rounded-lg border border-border/70 bg-surface-subtle/45 p-3 sm:p-4 md:grid-cols-3">
                             <label className="space-y-2 text-sm">
                                 <span className="font-medium">Game sync digest</span>
                                 <Select
                                     value={preferences.syncDigestFrequency}
+                                    disabled={saving}
                                     onValueChange={(value) => void save({
                                         syncDigestFrequency: value as Preferences['syncDigestFrequency'],
                                         emailSyncSummary: value !== 'OFF',
@@ -158,6 +214,7 @@ export function NotificationSettingsCard() {
                                 <span className="font-medium">Timezone</span>
                                 <Input
                                     value={preferences.timezone}
+                                    disabled={saving}
                                     onChange={(event) => setPreferences({ ...preferences, timezone: event.target.value })}
                                     onBlur={() => void save({ timezone: preferences.timezone })}
                                     placeholder="Europe/Prague"
@@ -170,17 +227,22 @@ export function NotificationSettingsCard() {
                                     min={0}
                                     max={23}
                                     value={preferences.digestHour}
+                                    disabled={saving}
                                     onChange={(event) => setPreferences({ ...preferences, digestHour: Number(event.target.value) })}
                                     onBlur={() => void save({ digestHour: preferences.digestHour })}
                                 />
                             </label>
                         </div>
-                        <div className="flex items-center justify-between gap-4 border-t pt-5">
+                        <div className="flex flex-col gap-3 border-t border-border/70 pt-5 sm:flex-row sm:items-center sm:justify-between">
                             <div>
                                 <p className="text-sm font-medium">Web Push</p>
                                 <p className="text-sm text-muted-foreground">Receive alerts when Backranq is closed.</p>
                             </div>
-                            <Button variant={preferences.pushEnabled ? 'outline' : 'default'} onClick={() => void togglePush(!preferences.pushEnabled)}>
+                            <Button
+                                variant={preferences.pushEnabled ? 'outline' : 'default'}
+                                disabled={saving}
+                                onClick={() => void togglePush(!preferences.pushEnabled)}
+                            >
                                 {preferences.pushEnabled ? 'Disable' : 'Enable'}
                             </Button>
                         </div>
@@ -199,10 +261,10 @@ function PreferenceCheckbox(props: {
     onChange: (checked: boolean) => void;
 }) {
     return (
-        <label className="flex items-start gap-3">
+        <label className="flex min-h-14 items-start gap-3 rounded-md border border-transparent px-2.5 py-2 transition-colors hover:border-border/70 hover:bg-surface-subtle/60">
             <input
                 type="checkbox"
-                className="mt-1 h-4 w-4 rounded border-input"
+                className="mt-0.5 h-5 w-5 shrink-0 rounded border-input accent-primary"
                 checked={props.checked}
                 disabled={props.disabled}
                 onChange={(event) => props.onChange(event.target.checked)}

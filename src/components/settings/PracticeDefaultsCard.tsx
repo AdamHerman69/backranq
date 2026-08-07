@@ -1,9 +1,12 @@
 'use client';
 
 import * as React from 'react';
+import { Target } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
+import { InlineStatus } from '@/components/ui/async-state';
+import { LoadingButton } from '@/components/ui/loading-button';
 import {
     Card,
     CardContent,
@@ -144,88 +147,93 @@ export function PracticeDefaultsCard({ ownerId }: { ownerId: string }) {
     }
 
     return (
-        <Card>
-            <CardHeader>
-                <CardTitle className="text-base">
-                    Default position mix
+        <Card id="practice-defaults" variant="panel" className="scroll-mt-24 overflow-hidden">
+            <CardHeader className="border-b border-border/70 bg-surface-subtle/50">
+                <CardTitle className="flex items-center gap-2 text-base">
+                    <span className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary">
+                        <Target className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    Practice focus
                 </CardTitle>
                 <CardDescription>
-                    Used when you open Practice. You can temporarily override
-                    it in Position focus. This only changes which positions
-                    are selected; it never deletes saved positions.
+                    Choose which personal decisions appear first when you open
+                    Practice. You can still change focus for one session.
                 </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-                <Select
-                    value={mix}
-                    onValueChange={(value) =>
-                        setMix(value as TrainingSessionMix)
-                    }
-                    disabled={loading || busy || loadError !== null}
-                >
-                    <SelectTrigger aria-label="Default position mix">
-                        <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                        <SelectItem value="ALL">
-                            All personal decisions
-                        </SelectItem>
-                        <SelectItem value="MY_MISTAKES">
-                            My mistakes
-                        </SelectItem>
-                        <SelectItem value="MISSED_OPPORTUNITIES">
-                            Missed opportunities
-                        </SelectItem>
-                    </SelectContent>
-                </Select>
+            <CardContent className="space-y-4 pt-5">
+                <label className="block space-y-1.5">
+                    <span className="text-xs font-medium text-muted-foreground">
+                        Default session mix
+                    </span>
+                    <Select
+                        value={mix}
+                        onValueChange={(value) =>
+                            setMix(value as TrainingSessionMix)
+                        }
+                        disabled={loading || busy || loadError !== null}
+                    >
+                        <SelectTrigger aria-label="Default position mix">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="ALL">
+                                All personal decisions
+                            </SelectItem>
+                            <SelectItem value="MY_MISTAKES">
+                                My mistakes
+                            </SelectItem>
+                            <SelectItem value="MISSED_OPPORTUNITIES">
+                                Missed opportunities
+                            </SelectItem>
+                        </SelectContent>
+                    </Select>
+                </label>
                 {loading ? (
-                    <p className="text-sm text-muted-foreground" role="status">
+                    <InlineStatus tone="info" live>
                         Loading your current position mix…
-                    </p>
+                    </InlineStatus>
                 ) : null}
                 {loadError ? (
-                    <div
-                        className="rounded-md border border-destructive/40 bg-destructive/5 p-3"
-                        role="alert"
-                    >
-                        <p className="text-sm text-destructive">
+                    <InlineStatus tone="danger">
+                        <div>
+                            <p>
                             We could not load your current default. Nothing can
                             be saved until it is loaded.
-                        </p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                            {loadError}
-                        </p>
-                        <Button
-                            className="mt-3"
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => void load()}
-                            disabled={loading || busy}
-                        >
-                            Retry
-                        </Button>
-                    </div>
+                            </p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                                {loadError}
+                            </p>
+                            <Button
+                                className="mt-3"
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void load()}
+                                disabled={loading || busy}
+                            >
+                                Retry
+                            </Button>
+                        </div>
+                    </InlineStatus>
                 ) : null}
-                <div className="flex items-center gap-3">
-                    <Button
+                <div className="flex items-center justify-between gap-3 border-t border-border/70 pt-4">
+                    <p
+                        className="text-xs text-muted-foreground"
+                        role="status"
+                    >
+                        {!loading && !loadError && savedMix !== null && mix === savedMix
+                            ? 'Saved'
+                            : 'Changes apply to your next session.'}
+                    </p>
+                    <LoadingButton
                         type="button"
+                        loading={busy}
+                        loadingLabel="Saving…"
                         onClick={save}
                         disabled={!canSave}
                     >
                         Save default
-                    </Button>
-                    {!loading &&
-                    !loadError &&
-                    savedMix !== null &&
-                    mix === savedMix ? (
-                        <p
-                            className="text-xs text-muted-foreground"
-                            role="status"
-                        >
-                            Saved
-                        </p>
-                    ) : null}
+                    </LoadingButton>
                 </div>
             </CardContent>
         </Card>

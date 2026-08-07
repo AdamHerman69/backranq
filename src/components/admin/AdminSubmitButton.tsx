@@ -1,7 +1,8 @@
 'use client';
 
 import { useFormStatus } from 'react-dom';
-import { Button, type ButtonProps } from '@/components/ui/button';
+import type { ButtonProps } from '@/components/ui/button';
+import { LoadingButton } from '@/components/ui/loading-button';
 
 export function AdminSubmitButton({
     pendingLabel,
@@ -11,10 +12,12 @@ export function AdminSubmitButton({
 }: ButtonProps & { pendingLabel: string; confirmMessage?: string }) {
     const { pending } = useFormStatus();
     return (
-        <Button
+        <LoadingButton
             {...props}
             type="submit"
-            disabled={pending || props.disabled}
+            loading={pending}
+            loadingLabel={pendingLabel}
+            disabled={props.disabled}
             onClick={(event) => {
                 props.onClick?.(event);
                 if (
@@ -26,7 +29,7 @@ export function AdminSubmitButton({
                 }
             }}
         >
-            {pending ? pendingLabel : children}
-        </Button>
+            {children}
+        </LoadingButton>
     );
 }

@@ -11,9 +11,13 @@ const config: Config = {
     theme: {
         container: {
             center: true,
-            padding: '2rem',
+            padding: {
+                DEFAULT: '0.75rem',
+                sm: '1.25rem',
+                lg: '2rem',
+            },
             screens: {
-                '2xl': '1400px',
+                '2xl': '1536px',
             },
         },
         extend: {
@@ -39,6 +43,18 @@ const config: Config = {
                     DEFAULT: 'hsl(var(--destructive))',
                     foreground: 'hsl(var(--destructive-foreground))',
                 },
+                success: {
+                    DEFAULT: 'hsl(var(--success))',
+                    foreground: 'hsl(var(--success-foreground))',
+                },
+                warning: {
+                    DEFAULT: 'hsl(var(--warning))',
+                    foreground: 'hsl(var(--warning-foreground))',
+                },
+                info: {
+                    DEFAULT: 'hsl(var(--info))',
+                    foreground: 'hsl(var(--info-foreground))',
+                },
                 muted: {
                     DEFAULT: 'hsl(var(--muted))',
                     foreground: 'hsl(var(--muted-foreground))',
@@ -55,11 +71,59 @@ const config: Config = {
                     DEFAULT: 'hsl(var(--card))',
                     foreground: 'hsl(var(--card-foreground))',
                 },
+                surface: {
+                    subtle: 'hsl(var(--surface-subtle))',
+                    raised: 'hsl(var(--surface-raised))',
+                    inset: 'hsl(var(--surface-inset))',
+                },
+                move: {
+                    best: 'hsl(var(--move-best))',
+                    strong: 'hsl(var(--move-strong))',
+                    good: 'hsl(var(--move-good))',
+                    improved: 'hsl(var(--move-improved))',
+                    repeated: 'hsl(var(--move-repeated))',
+                    different: 'hsl(var(--move-different))',
+                },
+                board: {
+                    light: 'hsl(var(--board-light))',
+                    dark: 'hsl(var(--board-dark))',
+                    selected: 'hsl(var(--board-selected))',
+                    last: 'hsl(var(--board-last-move))',
+                },
+                analysis: {
+                    1: 'hsl(var(--analysis-line-1))',
+                    2: 'hsl(var(--analysis-line-2))',
+                    3: 'hsl(var(--analysis-line-3))',
+                    4: 'hsl(var(--analysis-line-4))',
+                    5: 'hsl(var(--analysis-line-5))',
+                },
             },
             borderRadius: {
-                lg: 'var(--radius)',
-                md: 'calc(var(--radius) - 2px)',
-                sm: 'calc(var(--radius) - 4px)',
+                xs: 'calc(var(--radius-control) - 4px)',
+                sm: 'calc(var(--radius-control) - 2px)',
+                md: 'var(--radius-control)',
+                lg: 'var(--radius-panel)',
+                xl: 'var(--radius-feature)',
+            },
+            boxShadow: {
+                control:
+                    '0 1px 1px hsl(var(--foreground) / 0.04), 0 1px 3px hsl(var(--foreground) / 0.04)',
+                card:
+                    '0 1px 2px hsl(var(--foreground) / 0.035), 0 8px 24px -18px hsl(var(--foreground) / 0.22)',
+                raised:
+                    '0 10px 30px -18px hsl(var(--foreground) / 0.3), 0 2px 8px hsl(var(--foreground) / 0.06)',
+                floating:
+                    '0 24px 60px -24px hsl(var(--foreground) / 0.38), 0 8px 24px -12px hsl(var(--foreground) / 0.16)',
+            },
+            transitionDuration: {
+                instant: 'var(--duration-instant)',
+                fast: 'var(--duration-fast)',
+                base: 'var(--duration-base)',
+                slow: 'var(--duration-slow)',
+            },
+            transitionTimingFunction: {
+                standard: 'var(--ease-standard)',
+                emphasized: 'var(--ease-emphasized)',
             },
             keyframes: {
                 'accordion-down': {
@@ -70,10 +134,26 @@ const config: Config = {
                     from: { height: 'var(--radix-accordion-content-height)' },
                     to: { height: '0' },
                 },
+                shimmer: {
+                    '0%': { backgroundPosition: '200% 0' },
+                    '100%': { backgroundPosition: '-200% 0' },
+                },
+                'soft-enter': {
+                    from: { opacity: '0', transform: 'translateY(8px)' },
+                    to: { opacity: '1', transform: 'translateY(0)' },
+                },
+                'status-pulse': {
+                    '0%, 100%': { opacity: '0.55', transform: 'scale(0.9)' },
+                    '50%': { opacity: '1', transform: 'scale(1)' },
+                },
             },
             animation: {
                 'accordion-down': 'accordion-down 0.2s ease-out',
                 'accordion-up': 'accordion-up 0.2s ease-out',
+                shimmer: 'shimmer 1.6s ease-in-out infinite',
+                'soft-enter':
+                    'soft-enter var(--duration-slow) var(--ease-emphasized) both',
+                'status-pulse': 'status-pulse 1.4s ease-in-out infinite',
             },
         },
     },
@@ -81,4 +161,3 @@ const config: Config = {
 };
 
 export default config;
-

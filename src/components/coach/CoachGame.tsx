@@ -15,6 +15,7 @@ import {
     CheckCircle2,
     FlipHorizontal2,
     Loader2,
+    RotateCcw,
     ShieldCheck,
     WifiOff,
 } from 'lucide-react';
@@ -232,6 +233,7 @@ export function CoachGame({
     const [flipped, setFlipped] = useState(false);
     const [restartDialogOpen, setRestartDialogOpen] = useState(false);
     const [online, setOnline] = useState(true);
+    const [reducedMotion, setReducedMotion] = useState(false);
     const [keyboardMove, setKeyboardMove] = useState('');
     const [keyboardMoveError, setKeyboardMoveError] = useState<string | null>(
         null
@@ -294,6 +296,14 @@ export function CoachGame({
             );
         }
     }, [prepareEngine]);
+
+    useEffect(() => {
+        const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+        const update = () => setReducedMotion(media.matches);
+        update();
+        media.addEventListener('change', update);
+        return () => media.removeEventListener('change', update);
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -1577,6 +1587,8 @@ export function CoachGame({
     }, [canMove, gameFen, selectedSquare]);
 
     const lastMove = moves.at(-1) ?? null;
+    const coachMarkerSquare =
+        phase === 'mistake' && lastMove ? lastMove.to : null;
     const squareStyles = useMemo(() => {
         const styles: Record<string, React.CSSProperties> = {};
         if (lastMove) {
@@ -1749,11 +1761,12 @@ export function CoachGame({
                         You are playing {userColor === 'w' ? 'White' : 'Black'}
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
-                        {phaseMessage(
-                            phase,
-                            userColor,
+                        {isMaiaOpponentModel(
                             activeOpponentModelRef.current
-                        )}
+                        )
+                            ? `${isMaiaTacticalGuardModel(activeOpponentModelRef.current) ? 'Maia + tactical guard' : 'Maia 3'} · ${activeOpponentEloRef.current} Elo`
+                            : `Stockfish · ${getOpponentProfile(activeOpponentRef.current).label}`}{' '}
+                        · coach at {activeThresholdCpRef.current} cp
                     </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -1793,12 +1806,21 @@ export function CoachGame({
                 <div className="min-w-0">
                     <div
                         className={cn(
-                            'rounded-xl border bg-card p-1 shadow-sm transition-colors sm:p-2',
+                            'relative max-w-full overflow-hidden rounded-xl border bg-card p-1 shadow-sm transition-colors sm:p-2',
                             phase === 'mistake' &&
                                 'border-red-500/50 ring-2 ring-red-500/10'
                         )}
                         role="group"
                         aria-label="Coach game board"
+                        data-coach-board
+                        data-coach-last-move={
+                            lastMove
+                                ? `${lastMove.from}${lastMove.to}`
+                                : undefined
+                        }
+                        data-coach-marker-square={
+                            coachMarkerSquare ?? undefined
+                        }
                         aria-busy={
                             phase === 'starting' ||
                             phase === 'preparing' ||
@@ -1808,111 +1830,186 @@ export function CoachGame({
                             phase === 'bot'
                         }
                     >
-                        <Chessboard
-                            options={{
-                                position: gameFen,
-                                boardOrientation:
-                                    (userColor === 'w') !== flipped
-                                        ? 'white'
-                                        : 'black',
-                                allowDragging: canMove,
-                                allowDrawingArrows: false,
-                                squareStyles,
-                                canDragPiece: ({ square }) => {
-                                    if (!canMove || !square) return false;
-                                    return (
-                                        gameRef.current.get(square as Square)
-                                            ?.color === userColor
-                                    );
-                                },
-                                onSquareClick: ({ square }) => {
-                                    if (!square || !canMove) return;
-                                    const target = square as Square;
-                                    if (
-                                        selectedSquare &&
-                                        legalTargets.has(target)
-                                    ) {
-                                        playOrChoosePromotion(
-                                            selectedSquare,
-                                            target
+                        <div className="relative aspect-square w-full touch-manipulation">
+                            <Chessboard
+                                options={{
+                                    position: gameFen,
+                                    boardOrientation:
+                                        (userColor === 'w') !== flipped
+                                            ? 'white'
+                                            : 'black',
+                                    allowDragging: canMove,
+                                    allowDrawingArrows: false,
+                                    showAnimations: !reducedMotion,
+                                    animationDurationInMs: reducedMotion
+                                        ? 0
+                                        : 180,
+                                    squareStyles,
+                                    squareRenderer: ({ square, children }) => (
+                                        <div className="relative h-full w-full">
+                                            {children}
+                                            {coachMarkerSquare === square ? (
+                                                <span
+                                                    className="pointer-events-none absolute right-[5%] top-[5%] z-20 flex h-[28%] min-h-5 min-w-5 items-center justify-center rounded-full border border-red-100 bg-red-500 text-[clamp(11px,2.8vw,17px)] font-black leading-none text-white shadow-lg shadow-red-950/25 animate-in fade-in zoom-in-75 duration-200 motion-reduce:animate-none"
+                                                    role="img"
+                                                    aria-label={`Coach pause on ${square}`}
+                                                    data-coach-move-quality="mistake"
+                                                >
+                                                    !
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                    ),
+                                    canDragPiece: ({ square }) => {
+                                        if (!canMove || !square) return false;
+                                        return (
+                                            gameRef.current.get(
+                                                square as Square
+                                            )?.color === userColor
                                         );
-                                        return;
-                                    }
-                                    const piece =
-                                        gameRef.current.get(target);
-                                    setSelectedSquare((current) =>
-                                        piece?.color === userColor &&
-                                        current !== target
-                                            ? target
-                                            : null
-                                    );
-                                },
-                                onPieceDrop: ({
-                                    sourceSquare,
-                                    targetSquare,
-                                }) => {
-                                    setSelectedSquare(null);
-                                    if (!targetSquare || !canMove) return false;
-                                    return playOrChoosePromotion(
-                                        sourceSquare as Square,
-                                        targetSquare as Square
-                                    );
-                                },
-                            }}
-                        />
+                                    },
+                                    onSquareClick: ({ square }) => {
+                                        if (!square || !canMove) return;
+                                        const target = square as Square;
+                                        if (
+                                            selectedSquare &&
+                                            legalTargets.has(target)
+                                        ) {
+                                            playOrChoosePromotion(
+                                                selectedSquare,
+                                                target
+                                            );
+                                            return;
+                                        }
+                                        const piece =
+                                            gameRef.current.get(target);
+                                        setSelectedSquare((current) =>
+                                            piece?.color === userColor &&
+                                            current !== target
+                                                ? target
+                                                : null
+                                        );
+                                    },
+                                    onPieceDrop: ({
+                                        sourceSquare,
+                                        targetSquare,
+                                    }) => {
+                                        setSelectedSquare(null);
+                                        if (!targetSquare || !canMove) {
+                                            return false;
+                                        }
+                                        return playOrChoosePromotion(
+                                            sourceSquare as Square,
+                                            targetSquare as Square
+                                        );
+                                    },
+                                }}
+                            />
+                            <div className="pointer-events-none absolute inset-x-2 bottom-2 z-30 flex justify-center sm:inset-x-3 sm:bottom-3">
+                                <div
+                                    className={cn(
+                                        'flex max-w-[92%] items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold shadow-xl backdrop-blur-md sm:text-sm',
+                                        'animate-in fade-in slide-in-from-bottom-1 duration-200 motion-reduce:animate-none',
+                                        phase === 'mistake'
+                                            ? 'border-red-200/80 bg-red-950/88 text-red-50'
+                                            : phase === 'error'
+                                              ? 'border-red-200/80 bg-red-950/88 text-red-50'
+                                              : 'border-white/20 bg-zinc-950/82 text-white'
+                                    )}
+                                    role="status"
+                                    aria-live="polite"
+                                    aria-atomic="true"
+                                    data-coach-board-status={phase}
+                                >
+                                    {phase === 'starting' ||
+                                    phase === 'preparing' ||
+                                    phase === 'checking' ||
+                                    phase === 'confirming' ||
+                                    phase === 'recovering' ||
+                                    phase === 'bot' ? (
+                                        <Loader2
+                                            className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none"
+                                            aria-hidden="true"
+                                        />
+                                    ) : phase === 'mistake' ? (
+                                        <AlertTriangle
+                                            className="h-3.5 w-3.5 shrink-0"
+                                            aria-hidden="true"
+                                        />
+                                    ) : phase === 'gameover' ? (
+                                        <CheckCircle2
+                                            className="h-3.5 w-3.5 shrink-0"
+                                            aria-hidden="true"
+                                        />
+                                    ) : (
+                                        <Brain
+                                            className="h-3.5 w-3.5 shrink-0"
+                                            aria-hidden="true"
+                                        />
+                                    )}
+                                    <span className="truncate">
+                                        {phaseMessage(
+                                            phase,
+                                            userColor,
+                                            activeOpponentModelRef.current
+                                        )}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
-                    <div
-                        className={cn(
-                            'mt-3 flex min-h-12 items-center gap-2 rounded-lg border px-3 py-2.5 text-sm',
-                            phase === 'mistake'
-                                ? 'border-red-500/35 bg-red-500/5 text-red-800 dark:text-red-200'
-                                : phase === 'error'
-                                  ? 'border-destructive/35 bg-destructive/5 text-destructive'
-                                  : 'bg-card text-muted-foreground'
-                        )}
-                        role="status"
-                        aria-live="polite"
-                    >
-                        {phase === 'starting' ||
-                        phase === 'preparing' ||
-                        phase === 'checking' ||
-                        phase === 'confirming' ||
-                        phase === 'recovering' ||
-                        phase === 'bot' ? (
-                            <Loader2
-                                className="h-4 w-4 shrink-0 animate-spin"
-                                aria-hidden="true"
+                    {phase === 'mistake' && mistake ? (
+                        <>
+                            <div
+                                className="sticky bottom-[calc(var(--app-bottom-nav-height)+env(safe-area-inset-bottom)+0.5rem)] z-30 mt-3 grid grid-cols-3 gap-2 rounded-2xl border border-red-500/25 bg-background/[0.92] p-2 shadow-lg backdrop-blur lg:hidden"
+                                role="group"
+                                aria-label="Coach pause actions"
+                            >
+                                <Button
+                                    type="button"
+                                    onClick={retryMistake}
+                                    aria-label="Try again"
+                                >
+                                    <RotateCcw aria-hidden="true" />
+                                    <span className="hidden sm:inline">
+                                        Try again
+                                    </span>
+                                    <span className="sm:hidden">Retry</span>
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    onClick={() => setPhase('analysis')}
+                                >
+                                    <Brain aria-hidden="true" />
+                                    Analyze
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={continueAfterMistake}
+                                >
+                                    Continue
+                                </Button>
+                            </div>
+                            <CoachInterventionCard
+                                className="mt-3 lg:hidden"
+                                mistake={mistake}
+                                thresholdCp={activeThresholdCpRef.current}
+                                onAnalyze={() => setPhase('analysis')}
+                                onContinue={continueAfterMistake}
+                                onRetry={retryMistake}
+                                showActions={false}
                             />
-                        ) : phase === 'mistake' ? (
-                            <AlertTriangle
-                                className="h-4 w-4 shrink-0"
-                                aria-hidden="true"
-                            />
-                        ) : phase === 'gameover' ? (
-                            <CheckCircle2
-                                className="h-4 w-4 shrink-0"
-                                aria-hidden="true"
-                            />
-                        ) : (
-                            <Brain
-                                className="h-4 w-4 shrink-0"
-                                aria-hidden="true"
-                            />
-                        )}
-                        <span>
-                            {phaseMessage(
-                                phase,
-                                userColor,
-                                activeOpponentModelRef.current
-                            )}
-                        </span>
-                    </div>
+                        </>
+                    ) : null}
                 </div>
 
                 <div className="min-w-0 space-y-4">
                     {phase === 'mistake' && mistake ? (
                         <CoachInterventionCard
+                            className="hidden lg:block"
                             mistake={mistake}
                             thresholdCp={activeThresholdCpRef.current}
                             onAnalyze={() => setPhase('analysis')}

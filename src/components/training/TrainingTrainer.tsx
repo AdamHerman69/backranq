@@ -75,23 +75,6 @@ function gradeLabel(grade: string): string {
         .join(' ');
 }
 
-function feedbackClass(
-    phase: TrainerAttemptPhase,
-    grade?: Parameters<typeof feedbackForTrainingState>[0]['grade']
-) {
-    const feedback = feedbackForTrainingState({ phase, grade });
-    if (feedback.tone === 'positive') {
-        return 'border-emerald-500/30 bg-emerald-500/5 text-emerald-800 dark:text-emerald-200';
-    }
-    if (feedback.tone === 'negative') {
-        return 'border-red-500/30 bg-red-500/5 text-red-800 dark:text-red-200';
-    }
-    if (feedback.tone === 'warning') {
-        return 'border-amber-500/30 bg-amber-500/5 text-amber-800 dark:text-amber-200';
-    }
-    return 'bg-card text-muted-foreground';
-}
-
 function unresolvedExplanation(
     reason:
         | 'ENGINE_UNAVAILABLE'
@@ -145,6 +128,13 @@ export function TrainingTrainer({
     const [keyboardMoveError, setKeyboardMoveError] = useState<
         string | null
     >(null);
+    const [bestMovePromptId, setBestMovePromptId] = useState<string | null>(
+        null
+    );
+    const showBestMove = bestMovePromptId === training.prompt?.id;
+    const setShowBestMove = (shown: boolean) => {
+        setBestMovePromptId(shown ? (training.prompt?.id ?? null) : null);
+    };
     const promptHeadingRef = useRef<HTMLHeadingElement>(null);
     const feedbackRef = useRef<HTMLDivElement>(null);
     const previousPromptIdRef = useRef<string | null>(null);
@@ -231,9 +221,9 @@ export function TrainingTrainer({
         return () => media.removeEventListener('change', update);
     }, []);
 
-    const reviewArrows = bestMoveReviewArrows(
-        training.review?.bestMoveUci
-    );
+    const reviewArrows = showBestMove
+        ? bestMoveReviewArrows(training.review?.bestMoveUci)
+        : [];
 
     const submitKeyboardMove = useCallback(() => {
         if (
@@ -265,9 +255,47 @@ export function TrainingTrainer({
         phase: training.phase,
         grade: training.grade,
     });
+    const boardFeedback = (() => {
+        if (
+            training.presentation.stage === 'GRADE_REVEAL' &&
+            training.presentation.marker
+        ) {
+            return {
+                message: training.presentation.marker.label,
+                tone: training.presentation.marker.tone,
+            };
+        }
+        if (training.presentation.stage === 'OPPONENT_MOVE') {
+            return {
+                message: 'Opponent replies…',
+                tone: 'neutral' as const,
+            };
+        }
+        if (
+            training.phase === 'SUBMITTING' &&
+            training.presentation.stage !== 'USER_MOVE'
+        ) {
+            return {
+                message: feedback.message,
+                tone: 'neutral' as const,
+                busy: true,
+            };
+        }
+        if (
+            training.phase === 'GRADED' ||
+            training.phase === 'REVEALED' ||
+            training.phase === 'UNRESOLVED' ||
+            training.phase === 'AWAITING_MOVE'
+        ) {
+            return {
+                message: feedback.message,
+                tone: feedback.tone,
+            };
+        }
+        return null;
+    })();
     const terminal =
-        training.phase === 'GRADED' ||
-        training.phase === 'REVEALED' ||
+        training.terminal ||
         training.phase === 'UNRESOLVED';
     const boardFen = training.displayFen ?? training.positionFen;
     const hasCustomFocus = hasEffectivePracticeFocus(
@@ -437,10 +465,9 @@ export function TrainingTrainer({
 
                 <TabsContent
                     value="solve"
-                    className="mt-0 space-y-4"
+                    className="mt-0 flex flex-col gap-4"
                 >
-                    {focusControls}
-                    <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="order-1 flex flex-wrap items-start justify-between gap-3 lg:order-2">
                         <div>
                             <h2
                                 ref={promptHeadingRef}
@@ -484,7 +511,7 @@ export function TrainingTrainer({
 
                     <div
                         className={cn(
-                            'grid gap-4',
+                            'order-2 grid gap-4 lg:order-3',
                             compact
                                 ? 'xl:grid-cols-[minmax(0,560px)_minmax(260px,1fr)]'
                                 : 'lg:grid-cols-[minmax(0,560px)_minmax(280px,1fr)]'
@@ -498,6 +525,8 @@ export function TrainingTrainer({
                                 flipped={flipped}
                                 canMove={training.canMove}
                                 arrows={reviewArrows}
+                                presentation={training.presentation}
+                                feedback={boardFeedback}
                                 reducedMotion={reducedMotion}
                                 ariaLabel={
                                     promptText ?? 'Chess practice board'
@@ -510,22 +539,83 @@ export function TrainingTrainer({
                             <div
                                 ref={feedbackRef}
                                 tabIndex={-1}
-                                className={cn(
-                                    'mt-3 min-h-11 rounded-lg border px-3 py-2.5 text-sm',
-                                    feedbackClass(training.phase, training.grade)
-                                )}
-                                role="status"
-                                aria-live="polite"
-                                aria-atomic="true"
-                            >
-                                <div className="flex items-center gap-2">
-                                    {training.grade ? (
-                                        <Badge variant="outline">
-                                            {gradeLabel(training.grade)}
-                                        </Badge>
-                                    ) : null}
-                                    <span>{feedback.message}</span>
-                                </div>
+                                className="sr-only"
+                                aria-label={`${training.grade ? `${gradeLabel(training.grade)}. ` : ''}${feedback.message}`}
+                            />
+
+                            <div className="sticky bottom-[calc(var(--app-bottom-nav-height)+env(safe-area-inset-bottom)+0.5rem)] z-30 mt-3 flex flex-wrap items-center gap-2 rounded-2xl border bg-background/90 p-2 shadow-lg backdrop-blur md:hidden">
+                                {training.canReveal ? (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="min-h-11 flex-1"
+                                        onClick={() =>
+                                            setRevealIntent('solution')
+                                        }
+                                    >
+                                        Reveal
+                                    </Button>
+                                ) : null}
+                                {training.review?.submittedMoveUci ? (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="min-h-11 flex-1"
+                                        onClick={() => {
+                                            setShowBestMove(false);
+                                            training.showReviewPosition(
+                                                'ATTEMPT'
+                                            );
+                                        }}
+                                    >
+                                        Your move
+                                    </Button>
+                                ) : null}
+                                {training.review ? (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="min-h-11 flex-1"
+                                        onClick={() => {
+                                            setShowBestMove(true);
+                                            training.showReviewPosition(
+                                                'DECISION'
+                                            );
+                                        }}
+                                    >
+                                        Show best
+                                    </Button>
+                                ) : null}
+                                {training.phase === 'UNRESOLVED' ? (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="min-h-11 flex-1"
+                                        onClick={() =>
+                                            void training.retryGrading()
+                                        }
+                                    >
+                                        Retry analysis
+                                    </Button>
+                                ) : null}
+                                {terminal ? (
+                                    <Button
+                                        type="button"
+                                        className="min-h-11 flex-1"
+                                        disabled={training.loading}
+                                        onClick={goToNextPosition}
+                                    >
+                                        {training.loading
+                                            ? 'Loading…'
+                                            : 'Next position'}
+                                        {!training.loading ? (
+                                            <ChevronRight
+                                                className="ml-1 h-4 w-4"
+                                                aria-hidden="true"
+                                            />
+                                        ) : null}
+                                    </Button>
+                                ) : null}
                             </div>
 
                             {training.error ? (
@@ -565,7 +655,7 @@ export function TrainingTrainer({
                                             <Button
                                                 type="button"
                                                 variant="outline"
-                                                className="min-h-11"
+                                                className="min-h-11 max-md:hidden"
                                                 onClick={() =>
                                                     void training.retryGrading()
                                                 }
@@ -590,7 +680,7 @@ export function TrainingTrainer({
                                             <Button
                                                 type="button"
                                                 variant="outline"
-                                                className="min-h-11"
+                                                className="min-h-11 max-md:hidden"
                                                 onClick={() => {
                                                     setRevealIntent('solution');
                                                 }}
@@ -601,7 +691,7 @@ export function TrainingTrainer({
                                         {terminal ? (
                                             <Button
                                                 type="button"
-                                                className="min-h-11"
+                                                className="min-h-11 max-md:hidden"
                                                 disabled={training.loading}
                                                 onClick={goToNextPosition}
                                             >
@@ -733,10 +823,24 @@ export function TrainingTrainer({
                                     review={training.review}
                                     rootFen={training.prompt.fen}
                                     grade={training.grade}
+                                    bestMoveShown={showBestMove}
+                                    onShowAttempt={() => {
+                                        setShowBestMove(false);
+                                        training.showReviewPosition('ATTEMPT');
+                                    }}
+                                    onShowBest={() => {
+                                        setShowBestMove(true);
+                                        training.showReviewPosition('DECISION');
+                                    }}
                                 />
                             ) : null}
                         </div>
                     </div>
+                    {focusControls ? (
+                        <div className="order-3 lg:order-1">
+                            {focusControls}
+                        </div>
+                    ) : null}
                 </TabsContent>
 
                 <TabsContent

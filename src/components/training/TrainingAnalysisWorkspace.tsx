@@ -44,6 +44,12 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import {
+    Tabs,
+    TabsContent,
+    TabsList,
+    TabsTrigger,
+} from '@/components/ui/tabs';
+import {
     formatEngineScoreForWhite,
     formatEngineWdlForWhite,
     whiteExpectedScore,
@@ -95,6 +101,8 @@ type DraftStatus =
     | 'saved'
     | 'session'
     | 'unavailable';
+
+type AnalysisPanel = 'review' | 'moves' | 'engine';
 
 export type PositionAnalysisSeed = {
     sessionKey: string;
@@ -191,7 +199,7 @@ function AnalysisPositionContextBar({
                     type="button"
                     size="sm"
                     variant="ghost"
-                    className="ml-auto h-7 px-2 text-[11px] text-muted-foreground"
+                    className="ml-auto h-11 px-2 text-[11px] text-muted-foreground sm:h-7"
                     onClick={onBackToDecision}
                 >
                     Back to decision
@@ -283,7 +291,10 @@ export function TrainingAnalysisWorkspace({
         useState<PendingPromotion | null>(null);
     const [multiPv, setMultiPv] = useState(TRAINING_ANALYSIS_DEFAULT_MULTIPV);
     const [selectedMultiPv, setSelectedMultiPv] = useState(1);
-    const [analysisEnabled, setAnalysisEnabled] = useState(true);
+    const [analysisEnabled, setAnalysisEnabled] = useState(false);
+    const [activePanel, setActivePanel] = useState<AnalysisPanel>(() =>
+        children ? 'review' : 'moves'
+    );
     const [threatCursorId, setThreatCursorId] = useState<string | null>(null);
     const [clearDialogOpen, setClearDialogOpen] = useState(false);
     const [engineRequestError, setEngineRequestError] = useState<string | null>(
@@ -407,11 +418,20 @@ export function TrainingAnalysisWorkspace({
         }
     }, [onRequestEngine]);
 
-    useEffect(() => {
-        if (!active || engineClient || engineRequestedRef.current) return;
-        const timeoutId = window.setTimeout(requestEngine, 0);
-        return () => window.clearTimeout(timeoutId);
-    }, [active, engineClient, requestEngine]);
+    const selectPanel = useCallback(
+        (panel: AnalysisPanel) => {
+            setActivePanel(panel);
+            if (panel !== 'engine') {
+                setAnalysisEnabled(false);
+                return;
+            }
+            setAnalysisEnabled(true);
+            if (!engineClient && !engineRequestedRef.current) {
+                requestEngine();
+            }
+        },
+        [engineClient, requestEngine]
+    );
 
     useEffect(() => {
         if (!active) {
@@ -507,6 +527,7 @@ export function TrainingAnalysisWorkspace({
             setSelectedSquare(null);
             setPendingPromotion(null);
             setSelectedMultiPv(1);
+            setThreatCursorId(null);
             if (draftReady) setDraftStatus('saving');
         },
         [draftReady]
@@ -585,9 +606,11 @@ export function TrainingAnalysisWorkspace({
                 threatFen !== null
             ) {
                 event.preventDefault();
-                setThreatCursorId((current) =>
-                    current === tree.cursorId ? null : tree.cursorId
+                const activateThreats = !threatMode;
+                setThreatCursorId(
+                    activateThreats ? tree.cursorId : null
                 );
+                if (activateThreats) selectPanel('engine');
             } else if (
                 primaryActionShortcut &&
                 event.key.toLowerCase() ===
@@ -611,7 +634,9 @@ export function TrainingAnalysisWorkspace({
         onNext,
         pendingPromotion,
         primaryActionShortcut,
+        selectPanel,
         threatFen,
+        threatMode,
         tree.cursorId,
         tree.decisionNodeId,
     ]);
@@ -632,6 +657,7 @@ export function TrainingAnalysisWorkspace({
                 setDraftStatus('saving');
                 setSelectedSquare(null);
                 setPendingPromotion(null);
+                setThreatCursorId(null);
                 return true;
             } catch {
                 return false;
@@ -706,7 +732,9 @@ export function TrainingAnalysisWorkspace({
     const engineStatus = engineError
         ? 'Engine unavailable'
         : !engineClient
-          ? 'Engine loading…'
+          ? analysisEnabled
+              ? 'Engine loading…'
+              : 'Engine off'
           : !analysisEnabled
             ? 'Engine paused'
             : liveAnalysis.running
@@ -738,13 +766,13 @@ export function TrainingAnalysisWorkspace({
                         size="sm"
                         variant={threatMode ? 'destructive' : 'outline'}
                         disabled={!draftReady || threatFen === null}
-                        onClick={() =>
-                            setThreatCursorId((current) =>
-                                current === tree.cursorId
-                                    ? null
-                                    : tree.cursorId
-                            )
-                        }
+                        onClick={() => {
+                            const activateThreats = !threatMode;
+                            setThreatCursorId(
+                                activateThreats ? tree.cursorId : null
+                            );
+                            if (activateThreats) selectPanel('engine');
+                        }}
                         aria-pressed={threatMode}
                         title={
                             threatFen === null
@@ -802,7 +830,8 @@ export function TrainingAnalysisWorkspace({
                                         : 'black',
                                 allowDragging: active && draftReady,
                                 allowDrawingArrows: false,
-                                arrows,
+                                arrows:
+                                    activePanel === 'engine' ? arrows : [],
                                 squareStyles,
                                 canDragPiece: ({ square }) => {
                                     if (!active || !draftReady || !square) {
@@ -859,7 +888,7 @@ export function TrainingAnalysisWorkspace({
                     </div>
 
                     <div
-                        className="mt-3 grid grid-cols-[repeat(6,40px)_minmax(0,1fr)] items-center justify-center gap-1"
+                        className="mt-3 grid grid-cols-[repeat(6,44px)] items-center justify-center gap-1 sm:grid-cols-[repeat(6,40px)_minmax(0,1fr)]"
                         role="group"
                         aria-label="Analysis navigation"
                     >
@@ -867,7 +896,7 @@ export function TrainingAnalysisWorkspace({
                             type="button"
                             variant="outline"
                             size="icon"
-                            className="h-10 w-10"
+                            className="h-11 w-11 sm:h-10 sm:w-10"
                             disabled={tree.cursorId === tree.rootId}
                             onClick={() =>
                                 navigateTree(firstTrainingAnalysisNode)
@@ -880,7 +909,7 @@ export function TrainingAnalysisWorkspace({
                             type="button"
                             variant="outline"
                             size="icon"
-                            className="h-10 w-10"
+                            className="h-11 w-11 sm:h-10 sm:w-10"
                             disabled={!cursorNode.parentId}
                             onClick={goToPreviousPosition}
                             aria-label="Previous move"
@@ -891,7 +920,7 @@ export function TrainingAnalysisWorkspace({
                             type="button"
                             variant="outline"
                             size="icon"
-                            className="h-10 w-10"
+                            className="h-11 w-11 sm:h-10 sm:w-10"
                             disabled={siblingCount < 2}
                             onClick={() => goToSibling(-1)}
                             aria-label="Previous variation"
@@ -902,7 +931,7 @@ export function TrainingAnalysisWorkspace({
                             type="button"
                             variant="outline"
                             size="icon"
-                            className="h-10 w-10"
+                            className="h-11 w-11 sm:h-10 sm:w-10"
                             disabled={siblingCount < 2}
                             onClick={() => goToSibling(1)}
                             aria-label="Next variation"
@@ -913,7 +942,7 @@ export function TrainingAnalysisWorkspace({
                             type="button"
                             variant="outline"
                             size="icon"
-                            className="h-10 w-10"
+                            className="h-11 w-11 sm:h-10 sm:w-10"
                             disabled={!hasNextNode}
                             onClick={goToNextPosition}
                             aria-label="Next move"
@@ -924,7 +953,7 @@ export function TrainingAnalysisWorkspace({
                             type="button"
                             variant="outline"
                             size="icon"
-                            className="h-10 w-10"
+                            className="h-11 w-11 sm:h-10 sm:w-10"
                             disabled={atLineEnd}
                             onClick={() =>
                                 navigateTree(lastTrainingAnalysisNode)
@@ -933,7 +962,7 @@ export function TrainingAnalysisWorkspace({
                         >
                             <ChevronsRight className="h-4 w-4" />
                         </Button>
-                        <div className="min-w-0 pl-2 text-sm">
+                        <div className="col-span-6 min-w-0 pt-1 text-center text-sm sm:col-span-1 sm:pl-2 sm:pt-0 sm:text-left">
                             <div className="truncate font-medium">
                                 {cursorDescription(tree)}
                             </div>
@@ -946,320 +975,359 @@ export function TrainingAnalysisWorkspace({
                             </div>
                         </div>
                     </div>
+                    <div
+                        className="mt-2 flex gap-2 overflow-x-auto pb-1"
+                        role="group"
+                        aria-label="Key analysis positions"
+                    >
+                        {anchors.map((anchor) => (
+                            <Button
+                                key={anchor.id}
+                                type="button"
+                                size="sm"
+                                variant={
+                                    tree.cursorId === anchor.id
+                                        ? 'secondary'
+                                        : 'outline'
+                                }
+                                className="shrink-0"
+                                onClick={() => jumpToNode(anchor.id)}
+                            >
+                                {anchor.label}
+                            </Button>
+                        ))}
+                    </div>
                 </div>
 
-                <div className="space-y-4">
-                    <Card>
-                        <CardHeader className="pb-3">
-                            <div className="flex items-center justify-between gap-3">
-                                <CardTitle className="text-base">
-                                    Move tree
-                                </CardTitle>
-                                <span
-                                    className="text-xs text-muted-foreground"
-                                    role="status"
-                                    aria-live="polite"
-                                >
-                                    {draftStatusLabel(draftStatus)}
-                                </span>
-                            </div>
-                        </CardHeader>
-                        <CardContent className="space-y-3">
-                            <TrainingAnalysisMoveTree
-                                tree={tree}
-                                onJump={jumpToNode}
-                                onPromote={promoteVariation}
-                                onDelete={(nodeId) =>
-                                    navigateTree((current) =>
-                                        deleteTrainingAnalysisVariation(
-                                            current,
-                                            nodeId
-                                        )
-                                    )
-                                }
-                            />
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="flex flex-wrap gap-2">
-                                    {anchors.map((anchor) => (
-                                        <Button
-                                            key={anchor.id}
-                                            type="button"
-                                            size="sm"
-                                            variant={
-                                                tree.cursorId === anchor.id
-                                                    ? 'secondary'
-                                                    : 'outline'
-                                            }
-                                            onClick={() =>
-                                                jumpToNode(anchor.id)
-                                            }
-                                        >
-                                            {anchor.label}
-                                        </Button>
-                                    ))}
-                                </div>
-                                <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="ghost"
-                                    onClick={() => setClearDialogOpen(true)}
-                                    disabled={!hasUserVariations}
-                                >
-                                    <RotateCcw
-                                        className="mr-2 h-4 w-4"
-                                        aria-hidden="true"
-                                    />
-                                    Clear analysis
-                                </Button>
-                            </div>
-                        </CardContent>
-                    </Card>
-
-                    <Card>
-                        <CardHeader className="pb-3">
-                            <div className="flex items-center justify-between gap-3">
-                                <CardTitle className="text-base">
-                                    {threatMode
-                                        ? 'Opponent threats'
-                                        : 'Live engine'}
-                                </CardTitle>
-                                <span
-                                    className="text-xs text-muted-foreground"
-                                    role="status"
-                                    aria-live="polite"
-                                >
-                                    {engineStatus}
-                                </span>
-                            </div>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                            {threatMode ? (
-                                <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm">
-                                    <div className="font-medium text-red-700 dark:text-red-300">
-                                        If you did nothing
-                                    </div>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        Stockfish is giving the opponent an
-                                        immediate extra move. Red arrows show
-                                        their strongest threats; the board and
-                                        move tree stay unchanged.
-                                    </p>
-                                </div>
+                <div className="min-w-0 space-y-4">
+                    <Tabs
+                        value={activePanel}
+                        onValueChange={(value) =>
+                            selectPanel(value as AnalysisPanel)
+                        }
+                        data-analysis-panel={activePanel}
+                    >
+                        <TabsList
+                            className={cn(
+                                'grid w-full',
+                                children ? 'grid-cols-3' : 'grid-cols-2'
+                            )}
+                            aria-label="Analysis panels"
+                        >
+                            {children ? (
+                                <TabsTrigger value="review">
+                                    Review
+                                </TabsTrigger>
                             ) : null}
+                            <TabsTrigger value="moves">Moves</TabsTrigger>
+                            <TabsTrigger value="engine">Engine</TabsTrigger>
+                        </TabsList>
 
-                            <div>
-                                <div className="flex items-end justify-between gap-3">
-                                    <div>
-                                        <div className="text-xs text-muted-foreground">
-                                            White evaluation
-                                        </div>
-                                        <div className="font-mono text-2xl font-semibold">
-                                            {evaluationText}
-                                        </div>
+                        {children ? (
+                            <TabsContent value="review" className="mt-3">
+                                <div data-analysis-panel-content="review">
+                                    {children}
+                                </div>
+                            </TabsContent>
+                        ) : null}
+
+                        <TabsContent value="moves" className="mt-3">
+                            <Card data-analysis-panel-content="moves">
+                                <CardHeader className="pb-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <CardTitle className="text-base">
+                                            Move tree
+                                        </CardTitle>
+                                        <span
+                                            className="text-xs text-muted-foreground"
+                                            role="status"
+                                            aria-live="polite"
+                                        >
+                                            {draftStatusLabel(draftStatus)}
+                                        </span>
                                     </div>
-                                    {wdlText ? (
-                                        <div className="text-right text-xs text-muted-foreground">
-                                            {wdlText}
-                                        </div>
-                                    ) : null}
-                                </div>
-                                <div
-                                    className="mt-2 flex h-3 overflow-hidden rounded-full border bg-zinc-900"
-                                    role="img"
-                                    aria-label={`White expected score ${Math.round(whiteScore * 100)} percent`}
-                                >
-                                    <div
-                                        className="h-full bg-zinc-100 transition-[width] dark:bg-zinc-200"
-                                        style={{
-                                            width: `${Math.round(whiteScore * 100)}%`,
-                                        }}
-                                    />
-                                </div>
-                                <p className="mt-1 text-[11px] text-muted-foreground">
-                                    + favors White · − favors Black
-                                </p>
-                            </div>
-
-                            {engineError ? (
-                                <div
-                                    className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
-                                    role="alert"
-                                >
-                                    <p>{engineError}</p>
-                                    {!engineClient ? (
-                                        <Button
-                                            type="button"
-                                            size="sm"
-                                            variant="outline"
-                                            className="mt-2"
-                                            onClick={() => {
-                                                engineRequestedRef.current = false;
-                                                requestEngine();
-                                            }}
-                                        >
-                                            Retry engine
-                                        </Button>
-                                    ) : null}
-                                </div>
-                            ) : analysisEnabled &&
-                              engineClient &&
-                              lines.length === 0 ? (
-                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    {threatMode
-                                        ? 'Calculating opponent threats…'
-                                        : 'Calculating candidate lines…'}
-                                </div>
-                            ) : null}
-
-                            <div className="space-y-2">
-                                {lines.map((line, index) => {
-                                    const san = uciLineToSan(
-                                        engineFen,
-                                        line.pvUci,
-                                        8
-                                    );
-                                    const lineWdl = formatEngineWdlForWhite(
-                                        line.wdl,
-                                        engineFen
-                                    );
-                                    const selected =
-                                        line.multipv ===
-                                        (selectedLine?.multipv ?? 1);
-                                    const colors = threatMode
-                                        ? THREAT_LINE_COLORS
-                                        : LINE_COLORS;
-                                    return (
-                                        <button
-                                            key={line.multipv}
-                                            type="button"
-                                            className={cn(
-                                                'w-full rounded-lg border p-3 text-left transition-colors',
-                                                selected
-                                                    ? threatMode
-                                                        ? 'border-red-500 bg-red-500/5'
-                                                        : 'border-primary bg-primary/5'
-                                                    : 'hover:bg-muted/50'
-                                            )}
-                                            onClick={() =>
-                                                setSelectedMultiPv(
-                                                    line.multipv
-                                                )
-                                            }
-                                            aria-pressed={selected}
-                                        >
-                                            <span className="flex items-start justify-between gap-3">
-                                                <span className="flex min-w-0 items-start gap-2">
-                                                    <span
-                                                        className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full"
-                                                        style={{
-                                                            backgroundColor:
-                                                                colors[index] ??
-                                                                colors[0],
-                                                        }}
-                                                        aria-hidden="true"
-                                                    />
-                                                    <span className="min-w-0">
-                                                        <span className="block font-mono text-sm">
-                                                            {san.length > 0
-                                                                ? san.join(' ')
-                                                                : 'Waiting for a legal line…'}
-                                                        </span>
-                                                        {lineWdl ? (
-                                                            <span className="mt-1 block text-xs text-muted-foreground">
-                                                                {lineWdl}
-                                                            </span>
-                                                        ) : null}
-                                                    </span>
-                                                </span>
-                                                <span className="shrink-0 font-mono text-sm font-medium">
-                                                    {formatEngineScoreForWhite(
-                                                        line.score,
-                                                        engineFen
-                                                    )}
-                                                </span>
-                                            </span>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                <Select
-                                    value={String(multiPv)}
-                                    onValueChange={(value) => {
-                                        setMultiPv(
-                                            Math.max(
-                                                1,
-                                                Math.min(
-                                                    5,
-                                                    Math.trunc(
-                                                        Number(value) || 1
-                                                    )
+                                </CardHeader>
+                                <CardContent className="space-y-3">
+                                    <TrainingAnalysisMoveTree
+                                        tree={tree}
+                                        onJump={jumpToNode}
+                                        onPromote={promoteVariation}
+                                        onDelete={(nodeId) =>
+                                            navigateTree((current) =>
+                                                deleteTrainingAnalysisVariation(
+                                                    current,
+                                                    nodeId
                                                 )
                                             )
-                                        );
-                                        setSelectedMultiPv(1);
-                                    }}
-                                >
-                                    <SelectTrigger
-                                        className="w-[150px]"
-                                        aria-label="Engine lines"
-                                    >
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {[1, 2, 3, 4, 5].map((count) => (
-                                            <SelectItem
-                                                key={count}
-                                                value={String(count)}
+                                        }
+                                    />
+                                    <div className="flex flex-wrap items-center justify-end gap-2">
+                                        <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => setClearDialogOpen(true)}
+                                            disabled={!hasUserVariations}
+                                        >
+                                            <RotateCcw
+                                                className="mr-2 h-4 w-4"
+                                                aria-hidden="true"
+                                            />
+                                            Clear analysis
+                                        </Button>
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+
+                        <TabsContent value="engine" className="mt-3">
+                            <Card data-analysis-panel-content="engine">
+                                <CardHeader className="pb-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <CardTitle className="text-base">
+                                            {threatMode
+                                                ? 'Opponent threats'
+                                                : 'Live engine'}
+                                        </CardTitle>
+                                        <span
+                                            className="text-xs text-muted-foreground"
+                                            role="status"
+                                            aria-live="polite"
+                                        >
+                                            {engineStatus}
+                                        </span>
+                                    </div>
+                                </CardHeader>
+                                <CardContent className="space-y-4">
+                                    {threatMode ? (
+                                        <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm">
+                                            <div className="font-medium text-red-700 dark:text-red-300">
+                                                If you did nothing
+                                            </div>
+                                            <p className="mt-1 text-xs text-muted-foreground">
+                                                Stockfish is giving the opponent an
+                                                immediate extra move. Red arrows show
+                                                their strongest threats; the board and
+                                                move tree stay unchanged.
+                                            </p>
+                                        </div>
+                                    ) : null}
+
+                                    <div>
+                                        <div className="flex items-end justify-between gap-3">
+                                            <div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    White evaluation
+                                                </div>
+                                                <div className="font-mono text-2xl font-semibold">
+                                                    {evaluationText}
+                                                </div>
+                                            </div>
+                                            {wdlText ? (
+                                                <div className="text-right text-xs text-muted-foreground">
+                                                    {wdlText}
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                        <div
+                                            className="mt-2 flex h-3 overflow-hidden rounded-full border bg-zinc-900"
+                                            role="img"
+                                            aria-label={`White expected score ${Math.round(whiteScore * 100)} percent`}
+                                        >
+                                            <div
+                                                className="h-full bg-zinc-100 transition-[width] dark:bg-zinc-200"
+                                                style={{
+                                                    width: `${Math.round(whiteScore * 100)}%`,
+                                                }}
+                                            />
+                                        </div>
+                                        <p className="mt-1 text-[11px] text-muted-foreground">
+                                            + favors White · − favors Black
+                                        </p>
+                                    </div>
+
+                                    {engineError ? (
+                                        <div
+                                            className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+                                            role="alert"
+                                        >
+                                            <p>{engineError}</p>
+                                            {!engineClient ? (
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="outline"
+                                                    className="mt-2"
+                                                    onClick={() => {
+                                                        engineRequestedRef.current = false;
+                                                        requestEngine();
+                                                    }}
+                                                >
+                                                    Retry engine
+                                                </Button>
+                                            ) : null}
+                                        </div>
+                                    ) : analysisEnabled &&
+                                      engineClient &&
+                                      lines.length === 0 ? (
+                                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                            {threatMode
+                                                ? 'Calculating opponent threats…'
+                                                : 'Calculating candidate lines…'}
+                                        </div>
+                                    ) : null}
+
+                                    <div className="space-y-2">
+                                        {lines.map((line, index) => {
+                                            const san = uciLineToSan(
+                                                engineFen,
+                                                line.pvUci,
+                                                8
+                                            );
+                                            const lineWdl = formatEngineWdlForWhite(
+                                                line.wdl,
+                                                engineFen
+                                            );
+                                            const selected =
+                                                line.multipv ===
+                                                (selectedLine?.multipv ?? 1);
+                                            const colors = threatMode
+                                                ? THREAT_LINE_COLORS
+                                                : LINE_COLORS;
+                                            return (
+                                                <button
+                                                    key={line.multipv}
+                                                    type="button"
+                                                    className={cn(
+                                                        'w-full rounded-lg border p-3 text-left transition-colors',
+                                                        selected
+                                                            ? threatMode
+                                                                ? 'border-red-500 bg-red-500/5'
+                                                                : 'border-primary bg-primary/5'
+                                                            : 'hover:bg-muted/50'
+                                                    )}
+                                                    onClick={() =>
+                                                        setSelectedMultiPv(
+                                                            line.multipv
+                                                        )
+                                                    }
+                                                    aria-pressed={selected}
+                                                >
+                                                    <span className="flex items-start justify-between gap-3">
+                                                        <span className="flex min-w-0 items-start gap-2">
+                                                            <span
+                                                                className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full"
+                                                                style={{
+                                                                    backgroundColor:
+                                                                        colors[index] ??
+                                                                        colors[0],
+                                                                }}
+                                                                aria-hidden="true"
+                                                            />
+                                                            <span className="min-w-0">
+                                                                <span className="block font-mono text-sm">
+                                                                    {san.length > 0
+                                                                        ? san.join(' ')
+                                                                        : 'Waiting for a legal line…'}
+                                                                </span>
+                                                                {lineWdl ? (
+                                                                    <span className="mt-1 block text-xs text-muted-foreground">
+                                                                        {lineWdl}
+                                                                    </span>
+                                                                ) : null}
+                                                            </span>
+                                                        </span>
+                                                        <span className="shrink-0 font-mono text-sm font-medium">
+                                                            {formatEngineScoreForWhite(
+                                                                line.score,
+                                                                engineFen
+                                                            )}
+                                                        </span>
+                                                    </span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <Select
+                                            value={String(multiPv)}
+                                            onValueChange={(value) => {
+                                                setMultiPv(
+                                                    Math.max(
+                                                        1,
+                                                        Math.min(
+                                                            5,
+                                                            Math.trunc(
+                                                                Number(value) || 1
+                                                            )
+                                                        )
+                                                    )
+                                                );
+                                                setSelectedMultiPv(1);
+                                            }}
+                                        >
+                                            <SelectTrigger
+                                                className="w-[150px]"
+                                                aria-label="Engine lines"
                                             >
-                                                {count}{' '}
-                                                {count === 1 ? 'line' : 'lines'}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    disabled={
-                                        !engineClient && !engineRequestError
-                                    }
-                                    onClick={() => {
-                                        if (liveAnalysis.running) {
-                                            liveAnalysis.stop();
-                                            setAnalysisEnabled(false);
-                                            return;
-                                        }
-                                        if (!engineClient) {
-                                            requestEngine();
-                                            return;
-                                        }
-                                        if (analysisEnabled) {
-                                            liveAnalysis.start();
-                                        } else {
-                                            setAnalysisEnabled(true);
-                                        }
-                                    }}
-                                >
-                                    {liveAnalysis.running ? (
-                                        <>
-                                            <Pause className="mr-2 h-4 w-4" />
-                                            Pause
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Play className="mr-2 h-4 w-4" />
-                                            {analysisEnabled && currentUpdate
-                                                ? 'Run again'
-                                                : 'Resume'}
-                                        </>
-                                    )}
-                                </Button>
-                            </div>
-                        </CardContent>
-                    </Card>
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {[1, 2, 3, 4, 5].map((count) => (
+                                                    <SelectItem
+                                                        key={count}
+                                                        value={String(count)}
+                                                    >
+                                                        {count}{' '}
+                                                        {count === 1 ? 'line' : 'lines'}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            disabled={
+                                                !engineClient && !engineRequestError
+                                            }
+                                            onClick={() => {
+                                                if (liveAnalysis.running) {
+                                                    liveAnalysis.stop();
+                                                    setAnalysisEnabled(false);
+                                                    return;
+                                                }
+                                                if (!engineClient) {
+                                                    requestEngine();
+                                                    return;
+                                                }
+                                                if (analysisEnabled) {
+                                                    liveAnalysis.start();
+                                                } else {
+                                                    setAnalysisEnabled(true);
+                                                }
+                                            }}
+                                        >
+                                            {liveAnalysis.running ? (
+                                                <>
+                                                    <Pause className="mr-2 h-4 w-4" />
+                                                    Pause
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Play className="mr-2 h-4 w-4" />
+                                                    {analysisEnabled && currentUpdate
+                                                        ? 'Run again'
+                                                        : 'Resume'}
+                                                </>
+                                            )}
+                                        </Button>
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+                    </Tabs>
 
                     <Card>
                         <CardContent className="space-y-3 pt-6">
@@ -1285,8 +1353,6 @@ export function TrainingAnalysisWorkspace({
                             </p>
                         </CardContent>
                     </Card>
-
-                    {children}
                 </div>
             </div>
 

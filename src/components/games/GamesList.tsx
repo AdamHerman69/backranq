@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { GameCard, type GameCardData } from './GameCard';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { EmptyState } from '@/components/ui/async-state';
 
 export function GamesList({
     games,
@@ -31,11 +31,15 @@ export function GamesList({
 
     if (games.length === 0) {
         return (
-            <Card>
-                <CardContent className="py-6 text-sm text-muted-foreground">
-                    No games match your filters.
-                </CardContent>
-            </Card>
+            <EmptyState
+                title="No games in this view"
+                description="Try another filter, or sync your latest games above."
+                action={
+                    <Button asChild variant="outline">
+                        <Link href="/games">Show all games</Link>
+                    </Button>
+                }
+            />
         );
     }
 
@@ -83,4 +87,3 @@ export function GamesList({
         </div>
     );
 }
-

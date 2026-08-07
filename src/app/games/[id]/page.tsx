@@ -66,6 +66,7 @@ export default async function GameDetailPage({
             dbGameId={game.id}
             header={{
                 provider: game.provider,
+                userSide: game.userSide,
                 url: game.url,
                 playedAt: game.playedAt.toISOString(),
                 timeClass: game.timeClass,

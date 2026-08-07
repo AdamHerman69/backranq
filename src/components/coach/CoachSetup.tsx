@@ -209,11 +209,11 @@ export function CoachSetup({
 
     return (
         <section
-            className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(300px,0.7fr)]"
+            className="mx-auto max-w-5xl space-y-4"
             aria-label="Coach game setup"
         >
             {sessionLoaded && resumableSession ? (
-                <Card className="border-primary/30 lg:col-span-2">
+                <Card className="border-primary/30 bg-primary/[0.025]">
                     <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                             <div className="font-medium">
@@ -267,14 +267,14 @@ export function CoachSetup({
                 </Card>
             ) : null}
 
-            <Card>
-                <CardHeader>
+            <Card className="overflow-hidden">
+                <CardHeader className="border-b bg-muted/20 pb-4">
                     <div className="flex items-start justify-between gap-3">
                         <div>
                             <CardTitle>Set up your game</CardTitle>
                             <CardDescription className="mt-2">
-                                Choose how the opponent plays and when the
-                                coach should interrupt.
+                                Pick a side, opponent and level. You can start
+                                as soon as the local coach is ready.
                             </CardDescription>
                         </div>
                         <Badge
@@ -311,8 +311,8 @@ export function CoachSetup({
                         </Badge>
                     </div>
                 </CardHeader>
-                <CardContent className="space-y-5">
-                    <div className="grid gap-4 sm:grid-cols-2">
+                <CardContent className="space-y-5 p-4 sm:p-6">
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                         <label className="space-y-2 text-sm">
                             <span className="font-medium">Your color</span>
                             <Select
@@ -342,7 +342,7 @@ export function CoachSetup({
 
                         <label className="space-y-2 text-sm">
                             <span className="font-medium">
-                                Opponent model
+                                Opponent
                             </span>
                             <Select
                                 value={opponentModel}
@@ -373,7 +373,7 @@ export function CoachSetup({
                             {opponentModel === 'stockfish' ? (
                                 <>
                                     <span className="font-medium">
-                                        Stockfish strength
+                                        Playing level
                                     </span>
                                     <Select
                                         value={opponentId}
@@ -403,7 +403,7 @@ export function CoachSetup({
                             ) : (
                                 <>
                                     <span className="font-medium">
-                                        Maia playing strength
+                                        Playing level
                                     </span>
                                     <div className="relative">
                                         <Input
@@ -439,50 +439,9 @@ export function CoachSetup({
                             )}
                         </label>
 
-                        {tacticalGuardSelected ? (
-                            <label className="space-y-2 text-sm">
-                                <span className="font-medium">
-                                    Opponent guard threshold
-                                </span>
-                                <div className="relative">
-                                    <Input
-                                        type="number"
-                                        min={MAIA_TACTICAL_GUARD_MIN_CP}
-                                        max={MAIA_TACTICAL_GUARD_MAX_CP}
-                                        step={MAIA_TACTICAL_GUARD_CP_STEP}
-                                        inputMode="numeric"
-                                        value={tacticalGuardCp}
-                                        onChange={(event) =>
-                                            onTacticalGuardChange(
-                                                Number(
-                                                    event.currentTarget
-                                                        .value
-                                                ) || 0
-                                            )
-                                        }
-                                        onBlur={() =>
-                                            onTacticalGuardChange(
-                                                normalizedTacticalGuardCp
-                                            )
-                                        }
-                                        aria-label="Tactical guard centipawn threshold"
-                                        className="pr-10 font-mono"
-                                    />
-                                    <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
-                                        cp
-                                    </span>
-                                </div>
-                                <span className="block text-xs text-muted-foreground">
-                                    Reject Maia moves losing at least this
-                                    much. If none survive, play Stockfish’s
-                                    best move.
-                                </span>
-                            </label>
-                        ) : null}
-
-                        <label className="space-y-2 text-sm sm:col-span-2">
+                        <label className="space-y-2 text-sm">
                             <span className="font-medium">
-                                Coach stop threshold
+                                Coach sensitivity
                             </span>
                             <div className="relative">
                                 <Input
@@ -512,40 +471,111 @@ export function CoachSetup({
                                 </span>
                             </div>
                         </label>
+
+                        {tacticalGuardSelected ? (
+                            <label className="space-y-2 text-sm sm:col-span-2 lg:col-span-4">
+                                <span className="font-medium">
+                                    Tactical safety guard
+                                </span>
+                                <div className="relative max-w-xs">
+                                    <Input
+                                        type="number"
+                                        min={MAIA_TACTICAL_GUARD_MIN_CP}
+                                        max={MAIA_TACTICAL_GUARD_MAX_CP}
+                                        step={MAIA_TACTICAL_GUARD_CP_STEP}
+                                        inputMode="numeric"
+                                        value={tacticalGuardCp}
+                                        onChange={(event) =>
+                                            onTacticalGuardChange(
+                                                Number(
+                                                    event.currentTarget
+                                                        .value
+                                                ) || 0
+                                            )
+                                        }
+                                        onBlur={() =>
+                                            onTacticalGuardChange(
+                                                normalizedTacticalGuardCp
+                                            )
+                                        }
+                                        aria-label="Tactical guard centipawn threshold"
+                                        className="pr-10 font-mono"
+                                    />
+                                    <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                                        cp
+                                    </span>
+                                </div>
+                            </label>
+                        ) : null}
                     </div>
 
-                    <div className="grid gap-3 rounded-lg border bg-muted/25 p-4 sm:grid-cols-2">
-                        <div>
-                            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    <div
+                        className="flex flex-col gap-3 rounded-2xl border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between"
+                        data-coach-setup-primary
+                    >
+                        <div className="min-w-0 text-sm">
+                            <div className="font-medium">
                                 {maiaSelected
                                     ? `${tacticalGuardSelected ? 'Maia + tactical guard' : 'Maia 3'} · ${maiaElo} Elo`
                                     : `${selectedOpponent.label} Stockfish`}
                             </div>
-                            <p className="mt-1 text-sm">
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                                Coach pauses at ≥ {normalizedThresholdCp} cp loss
                                 {tacticalGuardSelected
-                                    ? `Keeps Maia’s human move distribution, but rejects candidates at ≥ ${normalizedTacticalGuardCp} cp loss using a ${Math.round(MAIA_TACTICAL_GUARD_NODES / 1_000)}k-node Stockfish check.`
-                                    : opponentModel === 'maia3'
-                                      ? 'Predicts moves people at this rating actually play. Stockfish remains the independent coach and judge.'
-                                    : selectedOpponent.description}
+                                    ? ` · guard at ${normalizedTacticalGuardCp} cp`
+                                    : ''}
                             </p>
                         </div>
-                        <div>
-                            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                Stop at ≥ {normalizedThresholdCp} cp loss
-                            </div>
-                            <p className="mt-1 text-sm">
-                                Near-threshold decisions are confirmed at{' '}
-                                {Math.round(
-                                    COACH_CONFIRMATION_NODES / 1_000
-                                )}
-                                k nodes before the game pauses.
-                            </p>
-                        </div>
+                        <Button
+                            type="button"
+                            size="lg"
+                            className="min-h-12 w-full shrink-0 sm:w-auto sm:min-w-52"
+                            disabled={!startReady}
+                            onClick={onStart}
+                        >
+                            {engineLoading || maiaLoading ? (
+                                <Loader2
+                                    className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none"
+                                    aria-hidden="true"
+                                />
+                            ) : (
+                                <Sparkles
+                                    className="mr-2 h-4 w-4"
+                                    aria-hidden="true"
+                                />
+                            )}
+                            {engineLoading
+                                ? 'Preparing local coach…'
+                                : maiaLoading
+                                  ? 'Preparing Maia opponent…'
+                                  : maiaSelected && maiaPhase !== 'ready'
+                                    ? 'Maia needs attention'
+                                    : 'Start coach game'}
+                        </Button>
                     </div>
+
+                    {engineWarmup === 'error' ? (
+                        <div
+                            className="flex flex-wrap items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"
+                            role="alert"
+                        >
+                            <p className="text-sm text-destructive">
+                                {engineError}
+                            </p>
+                            <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={onRetryEngine}
+                            >
+                                Retry local coach
+                            </Button>
+                        </div>
+                    ) : null}
 
                     {maiaSelected ? (
                         <div
-                            className="rounded-lg border p-4"
+                            className="rounded-xl border p-3"
                             data-maia-phase={maiaPhase}
                         >
                             <div className="flex items-start gap-3">
@@ -588,35 +618,7 @@ export function CoachSetup({
                                                 : 'Preparing human-like opponent…'}
                                     </div>
                                     <p className="mt-1 text-xs text-muted-foreground">
-                                        {maiaModelLabel} · {modelSizeMiB} MiB ·{' '}
-                                        {maiaModelBytes.toLocaleString(
-                                            'en-US'
-                                        )}{' '}
-                                        bytes · {maiaModelProvenance}
-                                    </p>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        <a
-                                            className="underline underline-offset-2"
-                                            href={maiaModelSourceUrl}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                        >
-                                            Immutable model source
-                                        </a>{' '}
-                                        ·{' '}
-                                        <a
-                                            className="underline underline-offset-2"
-                                            href={maiaModelProjectUrl}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                        >
-                                            Maia upstream
-                                        </a>{' '}
-                                        · license status:{' '}
-                                        {maiaModelLicenseStatus.replaceAll(
-                                            '-',
-                                            ' '
-                                        )}
+                                        {maiaModelLabel} · {modelSizeMiB} MiB
                                     </p>
                                     {maiaPhase === 'idle' ? (
                                         <p className="mt-3 text-xs text-muted-foreground">
@@ -689,95 +691,113 @@ export function CoachSetup({
                         </div>
                     ) : null}
 
-                    <Button
-                        type="button"
-                        size="lg"
-                        className="w-full sm:w-auto"
-                        disabled={!startReady}
-                        onClick={onStart}
-                    >
-                        {engineLoading || maiaLoading ? (
-                            <Loader2
-                                className="mr-2 h-4 w-4 animate-spin"
-                                aria-hidden="true"
-                            />
-                        ) : (
-                            <Sparkles
-                                className="mr-2 h-4 w-4"
-                                aria-hidden="true"
-                            />
-                        )}
-                        {engineLoading
-                            ? 'Preparing Stockfish judge…'
-                            : maiaLoading
-                              ? 'Preparing Maia opponent…'
-                              : maiaSelected &&
-                                  maiaPhase !== 'ready'
-                                ? 'Maia needs attention'
-                              : 'Start coach game'}
-                    </Button>
+                    <details className="group rounded-xl border bg-muted/10">
+                        <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
+                            <span className="flex items-center justify-between gap-3">
+                                How coaching and local engines work
+                                <span
+                                    className="text-muted-foreground transition-transform group-open:rotate-180 motion-reduce:transition-none"
+                                    aria-hidden="true"
+                                >
+                                    ↓
+                                </span>
+                            </span>
+                        </summary>
+                        <div className="space-y-5 border-t p-4">
+                            <div className="grid gap-3 rounded-lg border bg-background p-4 sm:grid-cols-2">
+                                <div>
+                                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                        Opponent behavior
+                                    </div>
+                                    <p className="mt-1 text-sm">
+                                        {tacticalGuardSelected
+                                            ? `Keeps Maia’s human move distribution, but rejects candidates at ≥ ${normalizedTacticalGuardCp} cp loss using a ${Math.round(MAIA_TACTICAL_GUARD_NODES / 1_000)}k-node Stockfish check.`
+                                            : opponentModel === 'maia3'
+                                              ? 'Predicts moves people at this rating actually play. Stockfish remains the independent coach and judge.'
+                                              : selectedOpponent.description}
+                                    </p>
+                                </div>
+                                <div>
+                                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                        Coach confirmation
+                                    </div>
+                                    <p className="mt-1 text-sm">
+                                        Near-threshold decisions are confirmed at{' '}
+                                        {Math.round(
+                                            COACH_CONFIRMATION_NODES / 1_000
+                                        )}
+                                        k nodes before the game pauses.
+                                    </p>
+                                </div>
+                            </div>
 
-                    {engineWarmup === 'error' ? (
-                        <div
-                            className="flex flex-wrap items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"
-                            role="alert"
-                        >
-                            <p className="text-sm text-destructive">
-                                {engineError}
-                            </p>
-                            <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                onClick={onRetryEngine}
-                            >
-                                Retry Stockfish judge
-                            </Button>
+                            <ol className="grid gap-3 text-sm sm:grid-cols-3">
+                                {COACH_STEPS.map(([number, title, detail]) => (
+                                    <li
+                                        key={number}
+                                        className="rounded-lg border bg-background p-3"
+                                    >
+                                        <span className="text-xs font-semibold text-primary">
+                                            {number.padStart(2, '0')}
+                                        </span>
+                                        <span className="mt-2 block font-medium">
+                                            {title}
+                                        </span>
+                                        <span className="mt-1 block text-xs text-muted-foreground">
+                                            {detail}
+                                        </span>
+                                    </li>
+                                ))}
+                            </ol>
+
+                            {maiaSelected ? (
+                                <div className="space-y-1 text-xs text-muted-foreground">
+                                    <p>
+                                        {maiaModelBytes.toLocaleString('en-US')}{' '}
+                                        bytes · {maiaModelProvenance}
+                                    </p>
+                                    <p>
+                                        <a
+                                            className="underline underline-offset-2"
+                                            href={maiaModelSourceUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                        >
+                                            Immutable model source
+                                        </a>{' '}
+                                        ·{' '}
+                                        <a
+                                            className="underline underline-offset-2"
+                                            href={maiaModelProjectUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                        >
+                                            Maia upstream
+                                        </a>{' '}
+                                        · license status:{' '}
+                                        {maiaModelLicenseStatus.replaceAll(
+                                            '-',
+                                            ' '
+                                        )}
+                                    </p>
+                                </div>
+                            ) : null}
+
+                            <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3 text-xs text-muted-foreground">
+                                {offlineAssetsReady
+                                    ? maiaSelected &&
+                                      (!maiaOfflineReady ||
+                                          maiaPhase !== 'ready')
+                                        ? maiaPhase === 'idle'
+                                            ? `The coach shell and Stockfish judge are saved offline. The selected Maia opponent is preparing automatically (approximately ${maiaDownloadMiB.toFixed(1)} MiB on first use).`
+                                            : 'The coach shell and Stockfish judge are saved offline. Maia will also be available offline once preparation is saved successfully.'
+                                        : 'The coach shell, Stockfish judge, selected opponent and analysis workspace are saved for a cold offline start.'
+                                    : engineWarmup === 'ready'
+                                      ? 'The Stockfish judge is loaded, so this open session can continue offline. The production app also saves a cold-start offline shell.'
+                                      : 'The Stockfish judge and analysis workspace are prepared locally before a game can start.'}
+                            </div>
                         </div>
-                    ) : null}
-                </CardContent>
-            </Card>
-
-            <Card>
-                <CardHeader>
-                    <CardTitle className="text-base">
-                        How coaching works
-                    </CardTitle>
-                </CardHeader>
-                <CardContent>
-                    <ol className="space-y-4 text-sm">
-                        {COACH_STEPS.map(([number, title, detail]) => (
-                            <li
-                                key={number}
-                                className="flex items-start gap-3"
-                            >
-                                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
-                                    {number}
-                                </span>
-                                <span>
-                                    <span className="font-medium">
-                                        {title}
-                                    </span>
-                                    <span className="mt-0.5 block text-muted-foreground">
-                                        {detail}
-                                    </span>
-                                </span>
-                            </li>
-                        ))}
-                    </ol>
-                    <div className="mt-5 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3 text-xs text-muted-foreground">
-                        {offlineAssetsReady
-                            ? maiaSelected &&
-                              (!maiaOfflineReady ||
-                                  maiaPhase !== 'ready')
-                                ? maiaPhase === 'idle'
-                                    ? `The coach shell and Stockfish judge are saved offline. The selected Maia opponent is preparing automatically (approximately ${maiaDownloadMiB.toFixed(1)} MiB on first use).`
-                                    : 'The coach shell and Stockfish judge are saved offline. Maia will also be available offline once preparation is saved successfully.'
-                                : 'The coach shell, Stockfish judge, selected opponent and analysis workspace are saved for a cold offline start.'
-                            : engineWarmup === 'ready'
-                              ? 'The Stockfish judge is loaded, so this open session can continue offline. The production app also saves a cold-start offline shell.'
-                              : 'The Stockfish judge and analysis workspace are prepared locally before a game can start.'}
-                    </div>
+                    </details>
                 </CardContent>
             </Card>
             <ActionConfirmDialog

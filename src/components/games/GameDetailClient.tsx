@@ -12,7 +12,6 @@ import { GameHeader, type GameHeaderData } from '@/components/games/GameHeader';
 import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import type { ManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 
 export default function GameDetailClient({
@@ -49,57 +48,48 @@ export default function GameDetailClient({
             : normalizedGame.provenance?.userSide === 'white'
               ? ('white' as const)
               : undefined;
+    const gameActions = (
+        <GameActions
+            ownerId={ownerId}
+            dbGameId={dbGameId}
+            normalizedGame={normalizedGame}
+            hasAnalysis={hasAnalysis}
+            trainingMomentCount={trainingMoments.length}
+            serverAnalysisCapacity={serverAnalysisCapacity}
+            onAnalysisSaved={(nextAnalysis) =>
+                setAnalysisState({
+                    analysis: nextAnalysis,
+                    hasAnalysis: true,
+                })
+            }
+        />
+    );
 
     return (
-        <div className="space-y-6">
-            <div>
+        <div className="mx-auto max-w-[1480px] space-y-4 sm:space-y-6">
+            <div className="flex items-center justify-between gap-3">
                 <Button asChild variant="outline" size="sm">
                     <Link href="/games">← Back to Games</Link>
                 </Button>
             </div>
             <GameHeader game={{ ...header, accuracy: { white: analysis?.whiteAccuracy, black: analysis?.blackAccuracy } }} />
 
-            <Card>
-                <CardContent className="pt-6">
-                <GameActions
-                    ownerId={ownerId}
-                    dbGameId={dbGameId}
-                    normalizedGame={normalizedGame}
-                    hasAnalysis={hasAnalysis}
-                    trainingMomentCount={trainingMoments.length}
-                    serverAnalysisCapacity={serverAnalysisCapacity}
-                    onAnalysisSaved={(nextAnalysis) =>
-                        setAnalysisState({
-                            analysis: nextAnalysis,
-                            hasAnalysis: true,
-                        })
-                    }
-                />
-                </CardContent>
-            </Card>
+            {!hasAnalysis ? gameActions : null}
 
-            <Card>
-                <CardContent className="pt-6">
-                <GameViewer
-                    pgn={normalizedGame.pgn}
-                    metaLabel={`${normalizedGame.provider} • ${normalizedGame.timeClass} • ${new Date(normalizedGame.playedAt).toLocaleString()}`}
-                    analysis={analysis}
-                    userBoardOrientation={userBoardOrientation}
-                    initialPly={initialPly}
-                    trainingMoments={trainingMoments.map((moment) => ({
-                        decisionPly: moment.decisionPly,
-                    }))}
-                />
-                </CardContent>
-            </Card>
+            <GameViewer
+                pgn={normalizedGame.pgn}
+                metaLabel={`${normalizedGame.provider} • ${normalizedGame.timeClass} • ${new Date(normalizedGame.playedAt).toLocaleString()}`}
+                analysis={analysis}
+                userBoardOrientation={userBoardOrientation}
+                initialPly={initialPly}
+                trainingMoments={trainingMoments.map((moment) => ({
+                    decisionPly: moment.decisionPly,
+                }))}
+            />
 
-            <Card>
-                <CardContent className="pt-6">
-                <GameTrainingMomentsPreview
-                    trainingMoments={trainingMoments}
-                />
-                </CardContent>
-            </Card>
+            {hasAnalysis ? gameActions : null}
+
+            <GameTrainingMomentsPreview trainingMoments={trainingMoments} />
         </div>
     );
 }

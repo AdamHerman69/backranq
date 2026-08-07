@@ -5,14 +5,11 @@ import { useSyncExternalStore } from 'react';
 
 import { CoachGame } from '@/components/coach/CoachGame';
 import { CoachOfflineRegistration } from '@/components/coach/CoachOfflineRegistration';
-import { Button } from '@/components/ui/button';
 import {
-    Card,
-    CardContent,
-    CardDescription,
-    CardHeader,
-    CardTitle,
-} from '@/components/ui/card';
+    EmptyState,
+    LoadingState,
+} from '@/components/ui/async-state';
+import { Button } from '@/components/ui/button';
 import {
     hasCoachOfflineAccess,
     subscribeToCoachOfflineAccess,
@@ -31,28 +28,24 @@ export function CoachOfflineShell() {
 
     if (accessGranted === null) {
         return (
-            <div role="status" className="text-sm text-muted-foreground">
-                Checking offline coach access…
-            </div>
+            <LoadingState
+                title="Opening your offline coach"
+                description="Checking this device for the saved coach, engine and active game."
+            />
         );
     }
 
     if (!accessGranted) {
         return (
-            <Card>
-                <CardHeader>
-                    <CardTitle>Open Coach online first</CardTitle>
-                    <CardDescription>
-                        Sign in and open Play once while online to prepare
-                        this device for offline coach games.
-                    </CardDescription>
-                </CardHeader>
-                <CardContent>
+            <EmptyState
+                title="Open Coach online first"
+                description="Sign in and open Play once while online to prepare this device for offline coach games."
+                action={
                     <Button asChild>
                         <Link href="/play">Open Play online</Link>
                     </Button>
-                </CardContent>
-            </Card>
+                }
+            />
         );
     }
 

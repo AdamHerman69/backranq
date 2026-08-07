@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
+import { Link2, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { ChessAccountLink } from './ChessAccountLink';
 import {
@@ -10,6 +11,8 @@ import {
     waitForIncrementalSyncJobs,
 } from '@/components/sync/syncClient';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { InlineStatus } from '@/components/ui/async-state';
 import { publishLibraryChanged } from '@/lib/analysis/analysisCompletion';
 import {
     advanceOwnerEpoch,
@@ -195,7 +198,16 @@ export function ProfileForm({ initialUser }: Props) {
                 toast.dismiss(id);
                 throw e;
             }
-            toast.error(e instanceof Error ? e.message : 'Save failed', { id });
+            if (
+                e instanceof Error &&
+                ownerFenceErrorRef.current === e.message
+            ) {
+                toast.dismiss(id);
+            } else {
+                toast.error(e instanceof Error ? e.message : 'Save failed', {
+                    id,
+                });
+            }
             throw e;
         }
     }
@@ -237,7 +249,16 @@ export function ProfileForm({ initialUser }: Props) {
                 toast.dismiss(id);
                 throw e;
             }
-            toast.error(e instanceof Error ? e.message : 'Save failed', { id });
+            if (
+                e instanceof Error &&
+                ownerFenceErrorRef.current === e.message
+            ) {
+                toast.dismiss(id);
+            } else {
+                toast.error(e instanceof Error ? e.message : 'Save failed', {
+                    id,
+                });
+            }
             throw e;
         }
     }
@@ -414,51 +435,71 @@ export function ProfileForm({ initialUser }: Props) {
         }
     }
 
-    return (
-        <div className="space-y-6">
-            <Card>
-                <CardHeader>
-                    <CardTitle className="text-base">Profile</CardTitle>
-                    <CardDescription>
-                        {user.email ?? '—'}
-                        {user.name ? ` • ${user.name}` : ''}
-                    </CardDescription>
-                </CardHeader>
-            </Card>
+    async function syncLinkedProvider(provider: SyncProvider) {
+        if (!writesEnabled) return;
+        const username =
+            provider === 'lichess'
+                ? user.lichessUsername
+                : user.chesscomUsername;
+        const run = captureOwnerRun(ownerEpochRef.current);
+        if (!username || !run || !profileRunIsCurrent(run)) {
+            toast.error('Reload Settings before syncing this account.');
+            return;
+        }
+        await startFirstSync(provider, username, run);
+    }
 
+    return (
+        <div className="space-y-3">
             {ownerFenceError ||
             (!ownerReady && sessionStatus !== 'loading') ? (
-                <div
-                    role="alert"
-                    className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"
-                >
+                <InlineStatus tone="danger">
                     {ownerFenceError ??
                         'Your signed-in account changed. Reload Settings before editing linked chess accounts.'}
-                </div>
+                </InlineStatus>
             ) : null}
 
-            <Card>
-                <CardHeader>
-                    <CardTitle className="text-base">Linked accounts</CardTitle>
-                    <CardDescription>
-                        Link public chess profiles once. New games can then stay
-                        up to date automatically without using analysis
-                        credits.
-                    </CardDescription>
+            <Card variant="panel" className="overflow-hidden">
+                <CardHeader className="gap-3 border-b border-border/70 bg-surface-subtle/50 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+                    <div className="space-y-1.5">
+                        <CardTitle className="flex items-center gap-2 text-base">
+                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary">
+                                <Link2 className="h-4 w-4" aria-hidden="true" />
+                            </span>
+                            Connected accounts
+                        </CardTitle>
+                        <CardDescription>
+                            Link once, sync on demand, and let Backranq keep your
+                            library current in the background.
+                        </CardDescription>
+                    </div>
+                    <Badge variant="outline" className="w-fit gap-1.5 bg-card/80">
+                        <ShieldCheck className="h-3.5 w-3.5 text-success" aria-hidden="true" />
+                        {user.name || user.email || 'Signed in'}
+                    </Badge>
                 </CardHeader>
-                <CardContent className="space-y-6">
-                    <ChessAccountLink
-                        provider="lichess"
-                        currentUsername={user.lichessUsername}
-                        onUpdate={updateLichess}
-                        disabled={!writesEnabled}
-                    />
-                    <ChessAccountLink
-                        provider="chesscom"
-                        currentUsername={user.chesscomUsername}
-                        onUpdate={updateChesscom}
-                        disabled={!writesEnabled}
-                    />
+                <CardContent className="space-y-4 pt-5">
+                    <div className="grid gap-3 xl:grid-cols-2">
+                        <ChessAccountLink
+                            provider="lichess"
+                            currentUsername={user.lichessUsername}
+                            onUpdate={updateLichess}
+                            onSync={() => syncLinkedProvider('lichess')}
+                            disabled={!writesEnabled}
+                        />
+                        <ChessAccountLink
+                            provider="chesscom"
+                            currentUsername={user.chesscomUsername}
+                            onUpdate={updateChesscom}
+                            onSync={() => syncLinkedProvider('chesscom')}
+                            disabled={!writesEnabled}
+                        />
+                    </div>
+                    <InlineStatus tone="info" className="text-xs">
+                        Replacing a username moves future sync to the new profile.
+                        Disconnecting stops future updates; imported games stay in
+                        your library.
+                    </InlineStatus>
                 </CardContent>
             </Card>
         </div>

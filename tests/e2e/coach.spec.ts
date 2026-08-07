@@ -354,6 +354,15 @@ test.describe('offline coach game', () => {
         });
         await expect(intervention).toBeVisible();
         await expect(page.locator('[data-coach-phase="mistake"]')).toBeVisible();
+        await expect(
+            page.getByRole('group', { name: 'Coach game board' })
+        ).toHaveAttribute('data-coach-marker-square', 'f3');
+        await expect(
+            page
+                .getByRole('group', { name: 'Coach game board' })
+                .getByRole('img', { name: 'Coach pause on f3' })
+        ).toBeVisible();
+        await intervention.getByText('Engine evidence').click();
         await expect(intervention.getByText('+0.30')).toBeVisible();
         await expect(intervention.getByText('−3.00')).toBeVisible();
         await expect(
@@ -378,11 +387,19 @@ test.describe('offline coach game', () => {
         ).toBeVisible();
         await expect(
             page.getByRole('heading', { name: 'Live engine' })
-        ).toBeVisible();
+        ).toHaveCount(0);
+        await expect(
+            page.getByRole('tab', { name: 'Review', exact: true })
+        ).toHaveAttribute('data-state', 'active');
         await expect(
             page.getByRole('group', { name: 'Interactive analysis board' })
         ).toHaveAttribute('data-analysis-position-context', 'decision');
+        await page.getByRole('tab', { name: 'Moves', exact: true }).click();
         await expect(page.getByText('Session only')).toBeVisible();
+        await page.getByRole('tab', { name: 'Engine', exact: true }).click();
+        await expect(
+            page.getByRole('heading', { name: 'Live engine' })
+        ).toBeVisible();
         await page.waitForTimeout(500);
         expect(
             await page.evaluate(async () =>
@@ -432,6 +449,46 @@ test.describe('offline coach game', () => {
         await expect(
             page.locator('[data-coach-move-ply="1"]')
         ).toBeVisible();
+    });
+
+    test('keeps mobile pause actions directly below the board and above app navigation', async ({
+        page,
+    }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await startCoach(page);
+
+        const board = page.getByRole('group', { name: 'Coach game board' });
+        const bottomNav = page.getByRole('navigation', { name: 'Main tabs' });
+        const [boardBeforeMove, navBeforeMove] = await Promise.all([
+            board.boundingBox(),
+            bottomNav.boundingBox(),
+        ]);
+        expect(boardBeforeMove).not.toBeNull();
+        expect(navBeforeMove).not.toBeNull();
+        expect(boardBeforeMove!.y).toBeGreaterThanOrEqual(0);
+        expect(boardBeforeMove!.y + boardBeforeMove!.height).toBeLessThanOrEqual(
+            navBeforeMove!.y + 1
+        );
+
+        await clickMove(page, 'f2', 'f3');
+        const actions = page.getByRole('group', { name: 'Coach pause actions' });
+        await expect(actions).toBeVisible();
+        await expect(actions.getByRole('button', { name: 'Try again' })).toBeVisible();
+        await expect(actions.getByRole('button', { name: 'Analyze' })).toBeVisible();
+        await expect(actions.getByRole('button', { name: 'Continue' })).toBeVisible();
+
+        const [boardBox, actionsBox, navBox] = await Promise.all([
+            board.boundingBox(),
+            actions.boundingBox(),
+            bottomNav.boundingBox(),
+        ]);
+        expect(boardBox).not.toBeNull();
+        expect(actionsBox).not.toBeNull();
+        expect(navBox).not.toBeNull();
+        expect(actionsBox!.y).toBeGreaterThanOrEqual(
+            boardBox!.y + boardBox!.height - 1
+        );
+        expect(actionsBox!.y + actionsBox!.height).toBeLessThanOrEqual(navBox!.y + 1);
     });
 
     test('uses the exact user centipawn threshold', async ({ page }) => {
@@ -726,6 +783,20 @@ test.describe('offline coach game', () => {
         await expect(
             page.getByRole('button', { name: 'Start coach game' })
         ).toBeVisible();
+        const startPosition = await page
+            .getByRole('button', { name: 'Start coach game' })
+            .evaluate((element) => {
+                const rect = element.getBoundingClientRect();
+                return {
+                    top: rect.top,
+                    bottom: rect.bottom,
+                    viewportHeight: window.innerHeight,
+                };
+            });
+        expect(startPosition.top).toBeGreaterThanOrEqual(0);
+        expect(startPosition.bottom).toBeLessThanOrEqual(
+            startPosition.viewportHeight
+        );
     });
 
     test('removes saved Maia data and returns to Stockfish', async ({

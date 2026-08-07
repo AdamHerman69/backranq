@@ -4,6 +4,14 @@ import { useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import {
+    BrainCircuit,
+    CloudCog,
+    Download,
+    MoreHorizontal,
+    Target,
+    Trash2,
+} from 'lucide-react';
 import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import { StockfishClient } from '@/lib/analysis/stockfishClient';
@@ -12,6 +20,14 @@ import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
 import { AnalysisProgress, type AnalysisProgressState } from '@/components/analysis/AnalysisProgress';
 import { Button } from '@/components/ui/button';
 import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import type { ManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 import { registerServerAnalysisEnqueue } from '@/lib/games/serverAnalysisTracking';
 import type { EnqueueServerAnalysisJobsResult } from '@/lib/services/gameSync';
@@ -261,55 +277,99 @@ export function GameActions({
         <div className="space-y-4">
             {progress ? <AnalysisProgress state={progress} onCancel={cancel} /> : null}
 
-            <div className="flex flex-wrap items-center gap-2">
-                <Button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setBrowserReviewOpen(true)}
-                >
-                    {actionLabel} in browser
-                </Button>
+            <div className="flex flex-wrap items-center gap-2 rounded-2xl border bg-card/75 p-2.5 shadow-[0_16px_50px_-48px_rgba(15,23,42,0.65)]">
+                {trainingMomentCount > 0 ? (
+                    <Button asChild title="Practice positions from this game">
+                        <Link href="/practice">
+                            <Target aria-hidden="true" />
+                            Practice {trainingMomentCount}{' '}
+                            {trainingMomentCount === 1 ? 'position' : 'positions'}
+                        </Link>
+                    </Button>
+                ) : null}
 
-                <Button
-                    type="button"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => setServerReviewOpen(true)}
-                >
-                    {actionLabel} on server
-                </Button>
+                {!hasAnalysis ? (
+                    <Button
+                        type="button"
+                        variant={trainingMomentCount > 0 ? 'outline' : 'default'}
+                        disabled={busy}
+                        onClick={() => setBrowserReviewOpen(true)}
+                    >
+                        <BrainCircuit aria-hidden="true" />
+                        Analyze free in browser
+                    </Button>
+                ) : null}
 
-                <Button asChild variant="ghost" title="Open practice">
-                    <Link href="/practice">Practice your positions →</Link>
-                </Button>
+                {!hasAnalysis && serverAnalysisCapacity.reservableGames > 0 ? (
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => setServerReviewOpen(true)}
+                    >
+                        <CloudCog aria-hidden="true" />
+                        Analyze in background
+                    </Button>
+                ) : null}
 
-                <Button type="button" variant="outline" onClick={exportPgn}>
-                    Export PGN
-                </Button>
-
-                <Button
-                    type="button"
-                    variant="destructive"
-                    disabled={busy}
-                    onClick={() => setDeleteReviewOpen(true)}
-                >
-                    Delete
-                </Button>
+                <div className="ml-auto">
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                aria-label="More game actions"
+                            >
+                                <MoreHorizontal aria-hidden="true" />
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-60">
+                            <DropdownMenuLabel>Game actions</DropdownMenuLabel>
+                            <DropdownMenuItem
+                                disabled={busy}
+                                onSelect={() => setBrowserReviewOpen(true)}
+                            >
+                                <BrainCircuit className="mr-2" aria-hidden="true" />
+                                {actionLabel} in browser
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                disabled={busy}
+                                onSelect={() => setServerReviewOpen(true)}
+                            >
+                                <CloudCog className="mr-2" aria-hidden="true" />
+                                {actionLabel} in background
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => void exportPgn()}>
+                                <Download className="mr-2" aria-hidden="true" />
+                                Export PGN
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                disabled={busy}
+                                className="text-destructive focus:text-destructive"
+                                onSelect={() => setDeleteReviewOpen(true)}
+                            >
+                                <Trash2 className="mr-2" aria-hidden="true" />
+                                Delete game
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                </div>
             </div>
 
             {!canAnalyze ? (
-                <div className="text-sm text-muted-foreground">
+                <div className="px-1 text-xs text-muted-foreground">
                     This game cannot be analyzed because its frozen player
                     perspective is invalid.
                 </div>
             ) : (
-                <div className="text-sm text-muted-foreground">
-                    Browser analysis is free and this tab must stay open. Both
-                    paths use{' '}
+                <div className="px-1 text-xs text-muted-foreground">
+                    Analysis uses{' '}
                     {serverAnalysisCapacity.analysisQuality === 'THOROUGH'
                         ? 'Thorough'
                         : 'Standard'}{' '}
-                    quality; server analysis costs{' '}
+                    quality. Browser analysis is free; background analysis costs{' '}
                     {serverAnalysisCapacity.creditsPerGame} credits per game.{' '}
                     <Link href="/settings#analysis-defaults" className="underline">
                         Change quality

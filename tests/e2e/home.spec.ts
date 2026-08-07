@@ -184,8 +184,8 @@ test.describe('signed-out IA', () => {
         await page.goto('/');
 
         await expect(
-            page.getByRole('button', { name: 'Get started with Google' }).first()
-        ).toBeVisible();
+            page.getByRole('link', { name: 'Sign in', exact: true })
+        ).toHaveAttribute('href', '/login?callbackUrl=%2Fhome');
         await expect(page.getByRole('link', { name: 'Open app' })).toHaveCount(0);
         await expect(page.getByText(/Welcome back/)).toHaveCount(0);
     });

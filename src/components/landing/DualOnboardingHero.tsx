@@ -9,17 +9,19 @@ import {
     useRef,
     useState,
     type FormEvent,
+    type ReactNode,
 } from 'react';
 import {
+    ArrowRight,
     CheckCircle2,
     CircleAlert,
     Loader2,
     Search,
+    ScanSearch,
     Sparkles,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { StockfishClient } from '@/lib/analysis/stockfishClient';
 import {
@@ -285,71 +287,47 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
         const personal = state.personal;
         if (personal.status === 'IDLE') {
             return (
-                <Card className="border-dashed">
-                    <CardContent className="flex gap-3 p-4 text-sm text-muted-foreground">
-                        <Sparkles className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                        <p>
-                            Enter your username. We will scan recent public games while
-                            you solve this position.
-                        </p>
-                    </CardContent>
-                </Card>
+                <JourneyStatus />
             );
         }
         if (personal.status === 'FETCHING') {
-            return <WorkingStatus title="Finding your recent games…" />;
+            return (
+                <WorkingStatus
+                    title="Finding your recent games"
+                    detail="You can keep solving while the public profile loads."
+                    progress={12}
+                />
+            );
         }
         if (personal.status === 'ANALYZING') {
             const percent = analysisPercent(personal.progress);
             return (
-                <Card>
-                    <CardContent className="space-y-3 p-4" aria-live="polite">
-                        <div className="flex items-center gap-2 text-sm font-medium">
-                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                            {personal.progress.phase === 'CONFIRMING'
-                                ? 'Verifying a promising decision…'
-                                : 'Scanning your recent games…'}
-                        </div>
-                        <div
-                            className="h-2 overflow-hidden rounded-full bg-secondary"
-                            role="progressbar"
-                            aria-label="Personal game analysis progress"
-                            aria-valuemin={0}
-                            aria-valuemax={100}
-                            aria-valuenow={percent}
-                        >
-                            <div
-                                className="h-full rounded-full bg-primary transition-[width]"
-                                style={{ width: `${percent}%` }}
-                            />
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                            Game {personal.progress.gameIndex + 1} of{' '}
-                            {personal.progress.gameCount}. Keep playing—your puzzle will
-                            wait for you when it is ready.
-                        </p>
-                    </CardContent>
-                </Card>
+                <WorkingStatus
+                    title={
+                        personal.progress.phase === 'CONFIRMING'
+                            ? 'Verifying a promising decision'
+                            : 'Scanning your recent games'
+                    }
+                    detail={`Game ${personal.progress.gameIndex + 1} of ${personal.progress.gameCount}. Your position will wait here when it is ready.`}
+                    progress={percent}
+                />
             );
         }
         if (personal.status === 'READY') {
             if (state.activePuzzle.context.kind === 'PERSONAL') {
                 return (
-                    <Card className="border-emerald-500/30 bg-emerald-500/5">
-                        <CardContent className="flex gap-3 p-4 text-sm">
-                            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
-                            <p>This position came from one of your public games.</p>
-                        </CardContent>
-                    </Card>
+                    <ReadyStatus>
+                        This position came from one of your public games.
+                    </ReadyStatus>
                 );
             }
             return (
-                <Card className="border-emerald-500/30 bg-emerald-500/5">
-                    <CardContent className="space-y-3 p-4" aria-live="polite">
-                        <div className="flex gap-2 text-sm font-medium text-emerald-800 dark:text-emerald-200">
-                            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                            <p>Your position is ready. Finish this puzzle first—nothing will interrupt it.</p>
-                        </div>
+                <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.07] p-4 shadow-sm" aria-live="polite">
+                    <div className="flex gap-3 text-sm font-medium text-emerald-900 dark:text-emerald-100">
+                        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                        <p>Your personal position is ready. This puzzle will not be interrupted.</p>
+                    </div>
+                    <div className="mt-3">
                         {state.handoff === 'OFFERED' ? (
                             <Button
                                 type="button"
@@ -368,10 +346,11 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                                 }}
                             >
                                 Now solve a position you actually played
+                                <ArrowRight aria-hidden="true" />
                             </Button>
                         ) : null}
-                    </CardContent>
-                </Card>
+                    </div>
+                </div>
             );
         }
         if (personal.status === 'EMPTY') {
@@ -391,24 +370,76 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
     return (
         <section className="relative overflow-hidden border-b">
             <div
-                className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-zinc-200/70 via-transparent to-transparent dark:from-zinc-800/50"
+                className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-zinc-200/75 via-transparent to-transparent dark:from-zinc-800/50"
                 aria-hidden="true"
             />
-            <div className="mx-auto grid max-w-7xl gap-10 px-4 py-12 sm:px-6 sm:py-16 lg:grid-cols-[minmax(320px,0.78fr)_minmax(0,1.22fr)] lg:items-start lg:gap-14 lg:py-20">
-                <div className="lg:sticky lg:top-8">
+            <div className="mx-auto grid max-w-7xl gap-x-14 gap-y-4 px-2 pb-7 pt-4 sm:gap-y-6 sm:px-6 sm:py-12 lg:grid-cols-[minmax(320px,0.78fr)_minmax(0,1.22fr)] lg:grid-rows-[auto_1fr] lg:items-start lg:py-16">
+                <div className="px-1 lg:col-start-1 lg:row-start-1 lg:px-0">
                     <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                         Personal chess practice
                     </p>
-                    <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
+                    <h1 className="mt-3 text-balance text-3xl font-bold tracking-[-0.035em] sm:text-5xl lg:mt-4 lg:text-6xl">
                         Stop solving random puzzles. Practice your decisions.
                     </h1>
-                    <p className="mt-5 max-w-xl text-pretty text-lg leading-8 text-muted-foreground">
+                    <p className="mt-2 text-pretty text-sm leading-5 text-muted-foreground sm:hidden">
+                        Try the board now. Add a public username below to make the next position yours.
+                    </p>
+                    <p className="mt-5 hidden max-w-xl text-pretty text-lg leading-8 text-muted-foreground sm:block">
                         Enter a public Chess.com or Lichess username. Backranq finds a
                         real training position from your games—and gives you something
                         worth solving while it works.
                     </p>
+                </div>
 
-                    <form className="mt-8 space-y-3" onSubmit={submitIdentity}>
+                <div className="min-w-0 rounded-[1.4rem] border border-border/70 bg-background/90 p-1 shadow-2xl shadow-black/[0.07] backdrop-blur sm:p-5 lg:col-start-2 lg:row-span-2 lg:row-start-1">
+                    <PublicPuzzlePlayer
+                        key={state.activePuzzle.id}
+                        puzzle={state.activePuzzle}
+                        compactLayout
+                        onAttemptStarted={() => {
+                            const active = state.activePuzzle;
+                            if (startedPuzzleIdsRef.current.has(active.id)) return;
+                            startedPuzzleIdsRef.current.add(active.id);
+                            if (active.context.kind !== 'PERSONAL') {
+                                introAttemptStartedRef.current = true;
+                                if (active.context.kind === 'MASTER') {
+                                    emit('MASTER_ATTEMPT_STARTED', {
+                                        puzzleKind: 'MASTER',
+                                        masterState: 'SOLVING',
+                                    });
+                                }
+                            } else if (state.personal.status === 'READY') {
+                                emit('PERSONAL_ATTEMPT_STARTED', {
+                                    runId: state.personal.runId,
+                                    provider: state.personal.identity.provider,
+                                    puzzleKind: 'PERSONAL',
+                                });
+                            }
+                        }}
+                        onTerminal={() => {
+                            if (state.activePuzzle.context.kind === 'PERSONAL') {
+                                dispatch({ type: 'MASTER_TERMINAL' });
+                                if (state.personal.status === 'READY') {
+                                    emit('PERSONAL_ATTEMPT_TERMINAL', {
+                                        runId: state.personal.runId,
+                                        provider: state.personal.identity.provider,
+                                    });
+                                }
+                                return;
+                            }
+                            terminalStateRef.current = true;
+                            dispatch({ type: 'MASTER_TERMINAL' });
+                            if (state.activePuzzle.context.kind === 'MASTER') {
+                                emit('MASTER_ATTEMPT_TERMINAL', {
+                                    masterState: 'TERMINAL',
+                                });
+                            }
+                        }}
+                    />
+                </div>
+
+                <div className="px-1 lg:col-start-1 lg:row-start-2 lg:px-0">
+                    <form className="space-y-3" onSubmit={submitIdentity}>
                         <div className="grid gap-2 sm:grid-cols-[150px_minmax(0,1fr)]">
                             <label className="sr-only" htmlFor="landing-provider">
                                 Chess provider
@@ -471,7 +502,11 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                         </p>
                     </form>
 
-                    <div className="mt-6 text-sm text-muted-foreground">
+                    <div className="mt-4 min-h-[122px]" aria-label="Personal position status">
+                        {statusSlot}
+                    </div>
+
+                    <div className="mt-4 text-sm text-muted-foreground">
                         {isSignedIn ? (
                             <Link href="/home" className="font-medium text-foreground underline underline-offset-4">
                                 Open the full Backranq app
@@ -484,77 +519,86 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                         )}
                     </div>
                 </div>
-
-                <div className="min-w-0 rounded-2xl border bg-background/90 p-4 shadow-xl shadow-black/5 backdrop-blur sm:p-6">
-                    <PublicPuzzlePlayer
-                        key={state.activePuzzle.id}
-                        puzzle={state.activePuzzle}
-                        compactLayout
-                        statusSlot={statusSlot}
-                        onAttemptStarted={() => {
-                            const active = state.activePuzzle;
-                            if (startedPuzzleIdsRef.current.has(active.id)) return;
-                            startedPuzzleIdsRef.current.add(active.id);
-                            if (active.context.kind !== 'PERSONAL') {
-                                introAttemptStartedRef.current = true;
-                                if (active.context.kind === 'MASTER') {
-                                    emit('MASTER_ATTEMPT_STARTED', {
-                                        puzzleKind: 'MASTER',
-                                        masterState: 'SOLVING',
-                                    });
-                                }
-                            } else if (state.personal.status === 'READY') {
-                                emit('PERSONAL_ATTEMPT_STARTED', {
-                                    runId: state.personal.runId,
-                                    provider: state.personal.identity.provider,
-                                    puzzleKind: 'PERSONAL',
-                                });
-                            }
-                        }}
-                        onTerminal={() => {
-                            if (state.activePuzzle.context.kind === 'PERSONAL') {
-                                dispatch({ type: 'MASTER_TERMINAL' });
-                                if (state.personal.status === 'READY') {
-                                    emit('PERSONAL_ATTEMPT_TERMINAL', {
-                                        runId: state.personal.runId,
-                                        provider: state.personal.identity.provider,
-                                    });
-                                }
-                                return;
-                            }
-                            terminalStateRef.current = true;
-                            dispatch({ type: 'MASTER_TERMINAL' });
-                            if (state.activePuzzle.context.kind === 'MASTER') {
-                                emit('MASTER_ATTEMPT_TERMINAL', {
-                                    masterState: 'TERMINAL',
-                                });
-                            }
-                        }}
-                    />
-                </div>
             </div>
         </section>
     );
 }
 
-function WorkingStatus({ title }: { title: string }) {
+function WorkingStatus({
+    title,
+    detail,
+    progress,
+}: {
+    title: string;
+    detail: string;
+    progress: number;
+}) {
     return (
-        <Card>
-            <CardContent className="flex items-center gap-3 p-4 text-sm font-medium" aria-live="polite">
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                {title}
-            </CardContent>
-        </Card>
+        <div className="rounded-2xl border bg-card/90 p-4 shadow-sm" aria-live="polite">
+            <div className="flex items-center gap-3">
+                <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-foreground text-background">
+                    <ScanSearch className="h-4 w-4" aria-hidden="true" />
+                    <span className="absolute -right-1 -top-1 h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-500 ring-2 ring-background" aria-hidden="true" />
+                </span>
+                <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                        {title}…
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</p>
+                </div>
+            </div>
+            <div
+                className="mt-3 h-1.5 overflow-hidden rounded-full bg-secondary"
+                role="progressbar"
+                aria-label="Personal game analysis progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={progress}
+            >
+                <div
+                    className="h-full rounded-full bg-foreground transition-[width] duration-500 ease-out motion-reduce:transition-none"
+                    style={{ width: `${progress}%` }}
+                />
+            </div>
+        </div>
+    );
+}
+
+function JourneyStatus() {
+    return (
+        <div className="rounded-2xl border border-dashed bg-card/50 p-4 text-sm text-muted-foreground">
+            <div className="flex gap-3">
+                <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-foreground" aria-hidden="true" />
+                <div>
+                    <p className="font-medium text-foreground">Your next useful position, in the background.</p>
+                    <p className="mt-1 text-xs leading-5">
+                        Add a public username, keep solving, then switch when your personal position is verified.
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function ReadyStatus({ children }: { children: ReactNode }) {
+    return (
+        <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.07] p-4 text-sm" aria-live="polite">
+            <div className="flex gap-3">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+                <p className="font-medium text-emerald-900 dark:text-emerald-100">{children}</p>
+            </div>
+        </div>
     );
 }
 
 function NoticeStatus({ text }: { text: string }) {
     return (
-        <Card className="border-amber-500/30 bg-amber-500/5">
-            <CardContent className="flex gap-3 p-4 text-sm" aria-live="polite">
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/[0.07] p-4 text-sm" aria-live="polite">
+            <div className="flex gap-3">
                 <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" aria-hidden="true" />
                 <p>{text}</p>
-            </CardContent>
-        </Card>
+            </div>
+        </div>
     );
 }

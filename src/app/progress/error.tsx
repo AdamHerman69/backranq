@@ -4,8 +4,8 @@ import Link from 'next/link';
 import { useEffect } from 'react';
 
 import { PageHeader } from '@/components/app/PageHeader';
+import { ErrorState } from '@/components/ui/async-state';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 
 export default function ProgressError({
     error,
@@ -24,16 +24,11 @@ export default function ProgressError({
                 title="Progress"
                 subtitle="Your games and Practice history are unchanged."
             />
-            <Card role="alert">
-                <CardContent className="py-8">
-                    <h2 className="font-semibold">
-                        Progress is temporarily unavailable
-                    </h2>
-                    <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-                        Backranq could not assemble a trustworthy snapshot. Try
-                        again, or continue with your existing Positions.
-                    </p>
-                    <div className="mt-5 flex flex-wrap gap-2">
+            <ErrorState
+                title="Progress is temporarily unavailable"
+                description="Backranq could not assemble a trustworthy snapshot. Your games and Practice history are unchanged."
+                action={
+                    <div className="flex flex-col gap-2 sm:flex-row">
                         <Button
                             type="button"
                             className="min-h-11"
@@ -51,8 +46,8 @@ export default function ProgressError({
                             </Link>
                         </Button>
                     </div>
-                </CardContent>
-            </Card>
+                }
+            />
         </div>
     );
 }

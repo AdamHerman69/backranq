@@ -6,7 +6,7 @@ import {
     useState,
     type ReactNode,
 } from 'react';
-import { FlipHorizontal2, Loader2 } from 'lucide-react';
+import { FlipHorizontal2 } from 'lucide-react';
 
 import { PostMoveStory } from '@/components/training/PostMoveStory';
 import { PuzzleBoard } from '@/components/training/PuzzleBoard';
@@ -20,19 +20,6 @@ import { legalMoveFromInput } from '@/lib/training/boardInput';
 import { bestMoveReviewArrows } from '@/lib/training/boardPresentation';
 import { feedbackForTrainingState } from '@/lib/training/trainerState';
 import { cn } from '@/lib/utils';
-
-function feedbackClass(tone: 'neutral' | 'positive' | 'warning' | 'negative') {
-    if (tone === 'positive') {
-        return 'border-emerald-500/30 bg-emerald-500/5 text-emerald-800 dark:text-emerald-200';
-    }
-    if (tone === 'negative') {
-        return 'border-red-500/30 bg-red-500/5 text-red-800 dark:text-red-200';
-    }
-    if (tone === 'warning') {
-        return 'border-amber-500/30 bg-amber-500/5 text-amber-800 dark:text-amber-200';
-    }
-    return 'bg-card text-muted-foreground';
-}
 
 export function PublicPuzzlePlayer({
     puzzle,
@@ -52,6 +39,8 @@ export function PublicPuzzlePlayer({
     const [revealOpen, setRevealOpen] = useState(false);
     const [keyboardMove, setKeyboardMove] = useState('');
     const [keyboardError, setKeyboardError] = useState<string | null>(null);
+    const [showBestMove, setShowBestMove] = useState(false);
+    const [reducedMotion, setReducedMotion] = useState(false);
     const terminalReportedRef = useRef(false);
 
     useEffect(() => {
@@ -60,9 +49,17 @@ export function PublicPuzzlePlayer({
         onTerminal?.();
     }, [onTerminal, session.terminal]);
 
-    const reviewArrows = bestMoveReviewArrows(
-        session.review?.bestMoveUci
-    );
+    useEffect(() => {
+        const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+        const update = () => setReducedMotion(media.matches);
+        update();
+        media.addEventListener('change', update);
+        return () => media.removeEventListener('change', update);
+    }, []);
+
+    const reviewArrows = showBestMove
+        ? bestMoveReviewArrows(session.review?.bestMoveUci)
+        : [];
 
     const feedback = session.reviewFallback
         ? {
@@ -73,6 +70,44 @@ export function PublicPuzzlePlayer({
               phase: session.phase,
               grade: session.grade,
           });
+    const boardFeedback = (() => {
+        if (
+            session.presentation.stage === 'GRADE_REVEAL' &&
+            session.presentation.marker
+        ) {
+            return {
+                message: session.presentation.marker.label,
+                tone: session.presentation.marker.tone,
+            };
+        }
+        if (session.presentation.stage === 'OPPONENT_MOVE') {
+            return {
+                message: 'Opponent replies…',
+                tone: 'neutral' as const,
+            };
+        }
+        if (
+            session.phase === 'SUBMITTING' &&
+            session.presentation.stage !== 'USER_MOVE'
+        ) {
+            return {
+                message: feedback.message,
+                tone: 'neutral' as const,
+                busy: true,
+            };
+        }
+        if (
+            session.phase === 'GRADED' ||
+            session.phase === 'REVEALED' ||
+            session.phase === 'AWAITING_MOVE'
+        ) {
+            return {
+                message: feedback.message,
+                tone: feedback.tone,
+            };
+        }
+        return null;
+    })();
     const submitKeyboardMove = () => {
         if (!session.canMove || !keyboardMove.trim()) return;
         const move = legalMoveFromInput(
@@ -90,8 +125,8 @@ export function PublicPuzzlePlayer({
     };
 
     return (
-        <section aria-label="Interactive chess puzzle" className="space-y-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
+        <section aria-label="Interactive chess puzzle" className="space-y-3 sm:space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-2 sm:gap-3">
                 <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                         {puzzle.context.kind === 'PERSONAL'
@@ -130,12 +165,18 @@ export function PublicPuzzlePlayer({
 
             <div
                 className={cn(
-                    'grid gap-4',
+                    'grid gap-3 sm:gap-4',
                     !compactLayout &&
                         'xl:grid-cols-[minmax(0,560px)_minmax(250px,1fr)]'
                 )}
             >
-                <div className="min-w-0">
+                <div
+                    className={cn(
+                        'min-w-0',
+                        compactLayout &&
+                            'mx-auto w-full max-w-[348px] sm:max-w-none'
+                    )}
+                >
                     <PuzzleBoard
                         positionFen={
                             session.displayFen ?? puzzle.prompt.fen
@@ -144,27 +185,52 @@ export function PublicPuzzlePlayer({
                         flipped={flipped}
                         canMove={session.canMove}
                         arrows={reviewArrows}
+                        presentation={session.presentation}
+                        feedback={boardFeedback}
+                        reducedMotion={reducedMotion}
                         ariaLabel={`${puzzle.prompt.sideToMove === 'w' ? 'White' : 'Black'} to move — find the best move`}
                         onMove={(move) => {
                             onAttemptStarted?.();
                             void session.submitMove(move);
                         }}
                     />
-                    <div
-                        className={cn(
-                            'mt-3 min-h-11 rounded-lg border px-3 py-2.5 text-sm',
-                            feedbackClass(feedback.tone)
-                        )}
-                        role="status"
-                        aria-live="polite"
-                        aria-atomic="true"
-                    >
-                        <div className="flex items-center gap-2">
-                            {session.phase === 'SUBMITTING' ? (
-                                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                            ) : null}
-                            <span>{feedback.message}</span>
-                        </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                        {session.canReveal ? (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="min-h-11 flex-1"
+                                onClick={() => setRevealOpen(true)}
+                            >
+                                Reveal
+                            </Button>
+                        ) : null}
+                        {session.review?.submittedMoveUci ? (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="min-h-11 flex-1"
+                                onClick={() => {
+                                    setShowBestMove(false);
+                                    session.showReviewPosition('ATTEMPT');
+                                }}
+                            >
+                                Your move
+                            </Button>
+                        ) : null}
+                        {session.review ? (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="min-h-11 flex-1"
+                                onClick={() => {
+                                    setShowBestMove(true);
+                                    session.showReviewPosition('DECISION');
+                                }}
+                            >
+                                Show best
+                            </Button>
+                        ) : null}
                     </div>
                 </div>
 
@@ -178,18 +244,6 @@ export function PublicPuzzlePlayer({
                                 Play the move you would choose in a real game. Known
                                 moves are graded instantly on this device.
                             </p>
-                            <div className="flex flex-wrap gap-2">
-                                {session.canReveal ? (
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        className="min-h-11"
-                                        onClick={() => setRevealOpen(true)}
-                                    >
-                                        Reveal
-                                    </Button>
-                                ) : null}
-                            </div>
                             {session.canMove ? (
                                 <details className="rounded-lg border px-3 py-2 text-sm">
                                     <summary className="cursor-pointer select-none font-medium">

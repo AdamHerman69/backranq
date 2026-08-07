@@ -72,18 +72,30 @@ export function getClassificationSymbol(
 ): string {
     switch (classification) {
         case 'brilliant':
-            return '!!';
+            return '✦';
         case 'great':
             return '!';
+        case 'best':
+            return '★';
+        case 'excellent':
+            return '✓';
+        case 'good':
+            return '●';
+        case 'book':
+            return '♟';
         case 'inaccuracy':
             return '?!';
         case 'mistake':
             return '?';
         case 'blunder':
             return '??';
-        default:
-            return '';
     }
+}
+
+export function getClassificationLabel(
+    classification: MoveClassification
+): string {
+    return classification.charAt(0).toUpperCase() + classification.slice(1);
 }
 
 /**

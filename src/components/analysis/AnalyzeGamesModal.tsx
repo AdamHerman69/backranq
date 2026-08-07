@@ -259,7 +259,7 @@ export function AnalyzeGamesModal({
           <button
             type="button"
             onClick={close}
-            className="h-9 rounded-md border px-3 text-sm font-medium"
+            className="h-11 rounded-md border px-3 text-sm font-medium sm:h-9"
             disabled={busy}
           >
             Close
@@ -277,7 +277,7 @@ export function AnalyzeGamesModal({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  className="h-9 rounded-md border px-3 text-sm font-medium"
+                  className="h-11 rounded-md border px-3 text-sm font-medium sm:h-9"
                   onClick={resetToAppDefaults}
                   disabled={busy || prefsLoading}
                 >
@@ -285,7 +285,7 @@ export function AnalyzeGamesModal({
                 </button>
                 <button
                   type="button"
-                  className="h-9 rounded-md border px-3 text-sm font-medium"
+                  className="h-11 rounded-md border px-3 text-sm font-medium sm:h-9"
                   onClick={saveAsDefaults}
                   disabled={busy || prefsLoading}
                 >
@@ -313,7 +313,7 @@ export function AnalyzeGamesModal({
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                className="h-9 rounded-md border px-3 text-sm font-medium"
+                className="h-11 rounded-md border px-3 text-sm font-medium sm:h-9"
                 onClick={() => toggleAll(true)}
                 disabled={busy || loading || games.length === 0}
               >
@@ -321,7 +321,7 @@ export function AnalyzeGamesModal({
               </button>
               <button
                 type="button"
-                className="h-9 rounded-md border px-3 text-sm font-medium"
+                className="h-11 rounded-md border px-3 text-sm font-medium sm:h-9"
                 onClick={() => toggleAll(false)}
                 disabled={busy || loading || games.length === 0}
               >
@@ -329,7 +329,7 @@ export function AnalyzeGamesModal({
               </button>
               <button
                 type="button"
-                className="h-9 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground"
+                className="h-11 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground sm:h-9"
                 onClick={analyzeSelected}
                 disabled={
                   busy ||

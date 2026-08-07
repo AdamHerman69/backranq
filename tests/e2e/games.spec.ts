@@ -392,6 +392,7 @@ test.describe('authenticated games library', () => {
         page,
     }) => {
         await page.goto('/games');
+        await page.getByRole('button', { name: 'Select games' }).click();
         await page.getByRole('checkbox', { name: 'Select game' }).first().check();
         await expect(page.getByText('1 selected')).toBeVisible();
 

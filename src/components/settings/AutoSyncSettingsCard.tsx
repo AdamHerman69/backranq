@@ -3,7 +3,6 @@
 import * as React from 'react';
 import { useSession } from 'next-auth/react';
 import {
-    AlertCircle,
     CheckCircle2,
     ChevronDown,
     Cloud,
@@ -14,11 +13,17 @@ import { toast } from 'sonner';
 
 import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import {
+    ErrorState,
+    InlineStatus,
+    LoadingState,
+} from '@/components/ui/async-state';
+import {
     CHESS_CONNECTIONS_CHANGED_EVENT,
     humanizeAutomationBlockReason,
 } from '@/components/sync/syncClient';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { LoadingButton } from '@/components/ui/loading-button';
 import {
     Card,
     CardContent,
@@ -241,10 +246,17 @@ function ProviderStatus({
     state: SyncProviderState | null | undefined;
 }) {
     return (
-        <div className="min-w-0 space-y-1 rounded-md bg-muted/40 p-3">
+        <div className="min-w-0 space-y-2 rounded-md border border-border/60 bg-surface-subtle/60 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-medium">{label}</span>
-                <Badge variant={username ? 'secondary' : 'outline'}>
+                <span className="text-sm font-semibold">{label}</span>
+                <Badge
+                    variant="outline"
+                    className={
+                        username
+                            ? 'border-success/20 bg-success/10 text-success'
+                            : 'bg-card text-muted-foreground'
+                    }
+                >
                     {username
                         ? `@${username}`
                         : username === undefined
@@ -254,8 +266,10 @@ function ProviderStatus({
             </div>
             {username ? (
                 <div className="space-y-0.5 text-xs text-muted-foreground">
-                    <div>Last success: {formatDate(state?.lastSuccessAt)}</div>
-                    <div>Last checked: {formatDate(state?.lastAttemptAt)}</div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1">
+                        <span>Synced {formatDate(state?.lastSuccessAt)}</span>
+                        <span>Checked {formatDate(state?.lastAttemptAt)}</span>
+                    </div>
                     {state?.lastError ? (
                         <div className="break-words text-destructive">
                             {state.lastError}
@@ -487,32 +501,20 @@ export function GameAutomationSettingsCard({
 
     if (loading) {
         return (
-            <Card aria-live="polite">
-                <CardContent className="py-6 text-sm text-muted-foreground">
-                    Loading game automation settings…
-                </CardContent>
-            </Card>
+            <LoadingState
+                title="Loading game automation"
+                description="Checking your linked sources and saved import rules."
+                className="min-h-44"
+            />
         );
     }
 
     if (!draft || loadError) {
         return (
-            <Card>
-                <CardContent className="flex flex-wrap items-center justify-between gap-3 py-6">
-                    <div className="flex items-start gap-2 text-sm">
-                        <AlertCircle
-                            className="mt-0.5 h-4 w-4 text-destructive"
-                            aria-hidden="true"
-                        />
-                        <div>
-                            <div className="font-medium">
-                                Automation settings unavailable
-                            </div>
-                            <div className="text-muted-foreground">
-                                {loadError ?? 'Your saved settings were not changed.'}
-                            </div>
-                        </div>
-                    </div>
+            <ErrorState
+                title="Automation settings unavailable"
+                description={loadError ?? 'Your saved settings were not changed.'}
+                action={
                     <Button
                         type="button"
                         variant="outline"
@@ -521,8 +523,8 @@ export function GameAutomationSettingsCard({
                     >
                         Try again
                     </Button>
-                </CardContent>
-            </Card>
+                }
+            />
         );
     }
 
@@ -534,20 +536,33 @@ export function GameAutomationSettingsCard({
 
     return (
         <>
-            <Card id="game-automation" className="scroll-mt-24">
-                <CardHeader>
-                    <CardTitle className="flex items-center gap-2 text-base">
-                        <Cloud className="h-4 w-4" aria-hidden="true" />
-                        Game automation
-                    </CardTitle>
-                    <CardDescription>
-                        Choose one action for every source and time control.
-                        Ignored games are not imported; Import + analyze creates
-                        training positions automatically.
-                    </CardDescription>
+            <Card id="game-automation" variant="panel" className="scroll-mt-24 overflow-hidden">
+                <CardHeader className="gap-3 border-b border-border/70 bg-surface-subtle/50 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+                    <div className="space-y-1.5">
+                        <CardTitle className="flex items-center gap-2 text-base">
+                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary">
+                                <Cloud className="h-4 w-4" aria-hidden="true" />
+                            </span>
+                            Automatic game flow
+                        </CardTitle>
+                        <CardDescription>
+                            Decide what each source imports and which games become
+                            training positions automatically.
+                        </CardDescription>
+                    </div>
+                    <Badge
+                        variant="outline"
+                        className={
+                            draft.paused
+                                ? 'w-fit border-warning/20 bg-warning/10 text-warning'
+                                : 'w-fit border-success/20 bg-success/10 text-success'
+                        }
+                    >
+                        {draft.paused ? 'Paused' : 'Active'}
+                    </Badge>
                 </CardHeader>
                 <CardContent className="space-y-5">
-                    <label className="flex items-start justify-between gap-4 rounded-md border p-3 text-sm">
+                    <label className="flex min-h-14 items-start justify-between gap-4 rounded-lg border border-border/70 bg-surface-inset/60 p-3 text-sm">
                         <span className="min-w-0">
                             <span className="block font-medium">
                                 Pause all game automation
@@ -559,7 +574,7 @@ export function GameAutomationSettingsCard({
                         </span>
                         <input
                             type="checkbox"
-                            className="mt-1 h-4 w-4 shrink-0 accent-foreground"
+                            className="mt-1 h-5 w-5 shrink-0 accent-primary"
                             checked={draft.paused}
                             disabled={saving}
                             onChange={(event) =>
@@ -582,7 +597,7 @@ export function GameAutomationSettingsCard({
                             return (
                                 <section
                                     key={provider}
-                                    className="space-y-3 rounded-lg border p-3"
+                                    className="space-y-3 rounded-lg border border-border/80 bg-card p-3 shadow-control"
                                     aria-labelledby={`${provider}-automation-title`}
                                 >
                                     <ProviderStatus
@@ -623,12 +638,12 @@ export function GameAutomationSettingsCard({
                                             </Button>
                                         ) : null}
                                     </div>
-                                    <div className="divide-y rounded-md border">
+                                    <div className="divide-y divide-border/70 overflow-hidden rounded-md border border-border/70 bg-surface-subtle/35">
                                         {TIME_CONTROLS.map(
                                             ({ key: timeControl, label: timeLabel }) => (
                                                 <div
                                                     key={timeControl}
-                                                    className="flex items-center justify-between gap-3 p-2.5"
+                                                    className="flex min-h-12 items-center justify-between gap-3 p-2.5"
                                                 >
                                                     <span className="text-sm">
                                                         {timeLabel}
@@ -685,7 +700,7 @@ export function GameAutomationSettingsCard({
                     </div>
 
                     {analysisEnabled ? (
-                        <section className="space-y-4 rounded-lg border p-3">
+                        <section className="space-y-4 rounded-lg border border-border/80 bg-surface-subtle/35 p-3 sm:p-4">
                             <div>
                                 <h3 className="flex items-center gap-2 text-sm font-medium">
                                     <Cpu className="h-4 w-4" aria-hidden="true" />
@@ -731,11 +746,11 @@ export function GameAutomationSettingsCard({
                                     </Select>
                                 </label>
 
-                                <label className="flex items-center justify-between gap-3 self-end rounded-md border px-3 py-2 text-sm">
+                                <label className="flex min-h-10 items-center justify-between gap-3 self-end rounded-md border bg-card px-3 py-2 text-sm">
                                     <span>Rated games only</span>
                                     <input
                                         type="checkbox"
-                                        className="h-4 w-4 accent-foreground"
+                                        className="h-5 w-5 accent-primary"
                                         checked={draft.analysis.ratedOnly}
                                         disabled={saving}
                                         onChange={(event) =>
@@ -830,8 +845,8 @@ export function GameAutomationSettingsCard({
                                 </label>
                             </div>
 
-                            <details className="rounded-md border">
-                                <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                            <details className="rounded-md border bg-card">
+                                <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                                     Advanced eligibility
                                     <ChevronDown
                                         className="h-4 w-4"
@@ -862,14 +877,14 @@ export function GameAutomationSettingsCard({
                             </details>
                         </section>
                     ) : (
-                        <div className="rounded-md bg-muted/60 p-3 text-sm text-muted-foreground">
+                        <InlineStatus tone="neutral">
                             No row is set to Import + analyze, so automatic
                             server analysis is off and cannot spend credits.
-                        </div>
+                        </InlineStatus>
                     )}
 
                     {analysisEnabled && (capacity || billing) ? (
-                        <div className="rounded-md bg-muted/60 p-3 text-sm">
+                        <InlineStatus tone="info" icon={<Cpu aria-hidden="true" />}>
                             <div className="flex flex-wrap gap-x-4 gap-y-1">
                                 <span>
                                     Balance:{' '}
@@ -915,17 +930,17 @@ export function GameAutomationSettingsCard({
                                     ) ?? billing?.limitingReason}
                                 </p>
                             ) : null}
-                        </div>
+                        </InlineStatus>
                     ) : null}
 
                     {validationError ? (
-                        <p className="text-sm text-destructive" role="alert">
+                        <InlineStatus tone="danger">
                             {validationError}
-                        </p>
+                        </InlineStatus>
                     ) : null}
 
                     <div
-                        className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between"
+                        className="flex flex-col-reverse gap-3 border-t border-border/70 pt-4 sm:flex-row sm:items-center sm:justify-between"
                         aria-live="polite"
                     >
                         <div className="text-xs text-muted-foreground">
@@ -944,17 +959,35 @@ export function GameAutomationSettingsCard({
                                     Discard
                                 </Button>
                             ) : null}
-                            <Button
+                            <LoadingButton
                                 type="button"
+                                loading={saving}
+                                loadingLabel="Saving…"
                                 disabled={!dirty || !!validationError || saving}
                                 onClick={requestSave}
                             >
-                                {saving ? 'Saving…' : 'Save automation'}
-                            </Button>
+                                Save automation
+                            </LoadingButton>
                         </div>
                     </div>
                 </CardContent>
             </Card>
+
+            {dirty ? (
+                <div className="fixed inset-x-3 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-30 flex items-center justify-between gap-3 rounded-lg border bg-surface-raised/95 p-2 pl-3 shadow-floating backdrop-blur-md sm:hidden">
+                    <span className="text-xs font-medium">Unsaved automation</span>
+                    <LoadingButton
+                        type="button"
+                        size="sm"
+                        loading={saving}
+                        loadingLabel="Saving…"
+                        disabled={!!validationError}
+                        onClick={requestSave}
+                    >
+                        Save
+                    </LoadingButton>
+                </div>
+            ) : null}
 
             <ActionConfirmDialog
                 open={enableConfirmOpen}

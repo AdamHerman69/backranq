@@ -1,6 +1,7 @@
 import { ExternalLink } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { TrainingReviewDto } from '@/lib/training/api';
 import {
@@ -32,6 +33,9 @@ export function PostMoveStory({
     sourceUrl,
     sourceNotice,
     compact = false,
+    bestMoveShown = false,
+    onShowAttempt,
+    onShowBest,
 }: {
     review: TrainingReviewDto;
     rootFen: string;
@@ -40,6 +44,9 @@ export function PostMoveStory({
     sourceUrl?: string | null;
     sourceNotice?: string | null;
     compact?: boolean;
+    bestMoveShown?: boolean;
+    onShowAttempt?: () => void;
+    onShowBest?: () => void;
 }) {
     const playedAt = new Date(review.source.playedAt);
     const sourceDate = Number.isNaN(playedAt.getTime())
@@ -110,6 +117,40 @@ export function PostMoveStory({
                         </div>
                     ) : null}
                 </dl>
+
+                {onShowBest ? (
+                    <div
+                        className="hidden flex-wrap items-center gap-2 rounded-lg border bg-muted/20 p-2 md:flex"
+                        role="group"
+                        aria-label="Compare positions on the board"
+                    >
+                        {review.submittedMoveUci && onShowAttempt ? (
+                            <Button
+                                type="button"
+                                size="sm"
+                                variant={
+                                    bestMoveShown ? 'outline' : 'secondary'
+                                }
+                                onClick={onShowAttempt}
+                                aria-pressed={!bestMoveShown}
+                            >
+                                Your move
+                            </Button>
+                        ) : null}
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant={bestMoveShown ? 'secondary' : 'outline'}
+                            onClick={onShowBest}
+                            aria-pressed={bestMoveShown}
+                        >
+                            Show best
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                            The best-move arrow appears only when you request it.
+                        </span>
+                    </div>
+                ) : null}
 
                 {acceptedAlternatives.length > 0 ||
                 !review.acceptedMovesComplete ? (

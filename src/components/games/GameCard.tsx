@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { ArrowRight, CircleDot, Target } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -36,6 +37,16 @@ function outcomeBadgeClass(letter: 'W' | 'L' | 'D' | '?') {
     if (letter === 'L') return 'bg-red-500/15 text-red-700 dark:text-red-300';
     if (letter === 'D') return 'bg-amber-500/20 text-amber-700 dark:text-amber-300';
     return 'bg-muted text-muted-foreground';
+}
+
+function outcomeLabel(letter: 'W' | 'L' | 'D' | '?') {
+    return letter === 'W'
+        ? 'Won'
+        : letter === 'L'
+          ? 'Lost'
+          : letter === 'D'
+            ? 'Draw'
+            : 'Unknown';
 }
 
 function timeLabel(tc: GameCardData['timeClass']) {
@@ -109,23 +120,33 @@ export function GameCard({
         : [];
 
     return (
-        <Card>
-            <CardContent className="py-3">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-                    <div className="min-w-0 space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                            <div className="truncate text-sm font-semibold">
+        <Card className="group overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/25 hover:shadow-[0_20px_65px_-55px_rgba(15,23,42,0.72)]">
+            <CardContent className="p-4 sm:p-5">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <div
+                            className={cn(
+                                'mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-xs font-bold',
+                                outcomeBadgeClass(badge)
+                            )}
+                            aria-label={outcomeLabel(badge)}
+                        >
+                            {badge}
+                        </div>
+                        <div className="min-w-0 space-y-1.5">
+                            <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                <div className="truncate text-base font-semibold">
                                 {opponentName}
                                 {typeof opponentRating === 'number'
                                     ? ` (${opponentRating})`
                                     : ''}
                             </div>
                             <Badge className={cn('border-transparent', outcomeBadgeClass(badge))}>
-                                {badge}
+                                {outcomeLabel(badge)}
                             </Badge>
                         </div>
 
-                        <div className="text-xs text-muted-foreground">
+                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
                             {providerLabel} • {timeLabel(game.timeClass)} • {played}
                             {userIsWhite
                                 ? ' • You: White'
@@ -134,54 +155,60 @@ export function GameCard({
                                   : ''}
                         </div>
 
-                        <div className="flex flex-wrap gap-2 pt-0.5">
-                            <Badge variant="secondary">
-                                {opening ? opening : 'Opening: —'}
-                            </Badge>
+                        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                            {opening ? (
+                                <span className="max-w-full truncate text-xs text-muted-foreground">
+                                    {opening}
+                                </span>
+                            ) : null}
                             {game.analyzedAt ? (
-                                <Badge variant="secondary">
+                                <Badge variant="outline">
                                     {typeof accuracy === 'number'
-                                        ? `${userIsWhite ? '♔' : userIsBlack ? '♚' : 'Acc'} ${accuracy.toFixed(1)}%`
+                                        ? `${accuracy.toFixed(1)}% accuracy`
                                         : 'Analyzed'}
                                 </Badge>
                             ) : (
-                                <Badge variant="outline">Not analyzed</Badge>
+                                <Badge variant="outline">
+                                    <CircleDot className="mr-1 h-3 w-3" aria-hidden="true" />
+                                    Needs analysis
+                                </Badge>
                             )}
                         </div>
-
-                        {trainingMoments.length > 0 ? (
-                            <div className="flex flex-wrap gap-1.5 pt-1">
-                                {trainingMoments.map((moment) => (
-                                    <Link
-                                        key={moment.id}
-                                        href={`/practice?momentId=${encodeURIComponent(moment.id)}`}
-                                        title={`Personal practice position at move ${Math.floor(moment.decisionPly / 2) + 1}`}
-                                    >
-                                        <Badge variant="outline" className="cursor-pointer">
-                                            Practice move{' '}
-                                            {Math.floor(
-                                                moment.decisionPly / 2
-                                            ) + 1}
-                                        </Badge>
-                                    </Link>
-                                ))}
-                            </div>
-                        ) : null}
+                        </div>
                     </div>
 
-                    <div className="flex shrink-0 items-center gap-2 self-start">
+                    <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
                         {selectable ? (
                             <input
                                 type="checkbox"
-                                className="h-4 w-4 accent-foreground"
+                                className="h-5 w-5 accent-primary"
                                 checked={!!selected}
                                 disabled={selectionDisabled || !onSelectedChange}
                                 onChange={(e) => onSelectedChange?.(e.target.checked)}
                                 aria-label="Select game"
                             />
                         ) : null}
+                        {trainingMoments.length > 0 ? (
+                            <Button asChild size="sm" variant="secondary">
+                                <Link
+                                    href={`/practice?momentId=${encodeURIComponent(trainingMoments[0]!.id)}`}
+                                >
+                                    <Target aria-hidden="true" />
+                                    {trainingMoments.length}{' '}
+                                    {trainingMoments.length === 1
+                                        ? 'position'
+                                        : 'positions'}
+                                </Link>
+                            </Button>
+                        ) : null}
                         <Button asChild size="sm" variant="outline">
-                            <Link href={`/games/${game.id}`}>View</Link>
+                            <Link href={`/games/${game.id}`}>
+                                Review
+                                <ArrowRight
+                                    className="transition-transform duration-150 group-hover:translate-x-0.5"
+                                    aria-hidden="true"
+                                />
+                            </Link>
                         </Button>
                     </div>
                 </div>

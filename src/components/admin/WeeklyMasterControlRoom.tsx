@@ -4,9 +4,10 @@ import { useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import {
     Activity,
+    AlertTriangle,
     Bot,
+    CheckCircle2,
     ExternalLink,
-    Loader2,
     PauseCircle,
     PlayCircle,
     RefreshCw,
@@ -17,10 +18,13 @@ import { toast } from 'sonner';
 
 import { MasterPuzzlePreview } from '@/components/admin/MasterPuzzlePreview';
 import { PageHeader } from '@/components/app/PageHeader';
+import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
+import { EmptyState, InlineStatus } from '@/components/ui/async-state';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { LoadingButton } from '@/components/ui/loading-button';
 import {
     Table,
     TableBody,
@@ -81,6 +85,12 @@ export function WeeklyMasterControlRoom({
     const [selectedCandidateId, setSelectedCandidateId] = useState(
         snapshot.candidates[0]?.id ?? null
     );
+    const [confirmation, setConfirmation] = useState<{
+        label: string;
+        command: MasterAdminCommand;
+        destructive: boolean;
+        description: string;
+    } | null>(null);
     const selectedCandidate = useMemo(
         () =>
             snapshot.candidates.find(
@@ -93,6 +103,11 @@ export function WeeklyMasterControlRoom({
     const reasonReady = reason.trim().length >= 4;
     const slotKey =
         snapshot.automation.currentSlotKey ?? 'landing-weekly-master';
+    const latestProblemRun = snapshot.latestRuns.find(
+        (run) => run.status === 'FAILED' || run.status === 'BLOCKED'
+    );
+    const automationPaused = snapshot.automation.mode === 'PAUSED';
+    const needsAttention = automationPaused || Boolean(latestProblemRun);
 
     const sendCommand = (command: MasterAdminCommand) => {
         startTransition(async () => {
@@ -129,22 +144,41 @@ export function WeeklyMasterControlRoom({
     const commandButton = (
         label: string,
         command: MasterAdminCommand,
-        opts: { destructive?: boolean; disabled?: boolean } = {}
+        opts: {
+            destructive?: boolean;
+            disabled?: boolean;
+            confirm?: string;
+        } = {}
     ) => (
-        <Button
+        <LoadingButton
             size="sm"
             variant={opts.destructive ? 'destructive' : 'outline'}
-            disabled={pending || !reasonReady || opts.disabled}
-            onClick={() => sendCommand(command)}
+            loading={pending}
+            loadingLabel="Working…"
+            disabled={!reasonReady || opts.disabled}
+            onClick={() => {
+                if (opts.destructive || opts.confirm) {
+                    setConfirmation({
+                        label,
+                        command,
+                        destructive: Boolean(opts.destructive),
+                        description:
+                            opts.confirm ??
+                            `${label}? This temporary correction will be audited with reason “${reason.trim()}”.`,
+                    });
+                    return;
+                }
+                sendCommand(command);
+            }}
         >
-            {pending ? <Loader2 className="animate-spin" /> : null}
             {label}
-        </Button>
+        </LoadingButton>
     );
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-6 sm:space-y-8">
             <PageHeader
+                eyebrow="Operations"
                 title="Weekly Master control room"
                 subtitle={`Autonomous editorial pipeline · ${role.toLowerCase()} access · snapshot ${formatDate(snapshot.generatedAt)}`}
                 actions={
@@ -154,48 +188,78 @@ export function WeeklyMasterControlRoom({
                 }
             />
 
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-                {[
-                    ['Users', snapshot.stats.users],
-                    ['Linked accounts', snapshot.stats.linkedAccounts],
-                    ['Source games', snapshot.stats.sourceGames],
-                    ['Eligible', snapshot.stats.eligibleCandidates],
-                    ['Published', snapshot.stats.publishedPuzzles],
-                    ['Failed runs', snapshot.stats.failedRuns],
-                ].map(([label, value]) => (
-                    <Card key={label}>
-                        <CardContent className="p-4">
-                            <p className="text-xs text-muted-foreground">{label}</p>
-                            <p className="mt-1 text-2xl font-semibold">{value}</p>
-                        </CardContent>
-                    </Card>
-                ))}
-            </div>
-
-            <Card className={snapshot.automation.mode === 'PAUSED' ? 'border-amber-500/50' : 'border-emerald-500/40'}>
-                <CardContent className="flex flex-col gap-4 p-4 lg:flex-row lg:items-end lg:justify-between">
-                    <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                            {snapshot.automation.mode === 'AUTONOMOUS' ? (
-                                <Bot className="text-emerald-600" />
-                            ) : (
-                                <PauseCircle className="text-amber-600" />
-                            )}
-                            <p className="font-semibold">
-                                {snapshot.automation.mode === 'AUTONOMOUS'
-                                    ? 'Autonomy is active'
-                                    : `Automation paused until ${formatDate(snapshot.automation.pausedUntil)}`}
-                            </p>
-                            <Badge variant="outline">
-                                {snapshot.automation.activeOverrideCount} active overrides
-                            </Badge>
+            <Card
+                variant="panel"
+                className={
+                    needsAttention
+                        ? 'overflow-hidden border-warning/35'
+                        : 'overflow-hidden border-success/30'
+                }
+            >
+                <CardHeader className="border-b border-border/70 bg-surface-subtle/50">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex items-start gap-3">
+                            <span
+                                className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${
+                                    needsAttention
+                                        ? 'bg-warning/10 text-warning'
+                                        : 'bg-success/10 text-success'
+                                }`}
+                            >
+                                {automationPaused ? (
+                                    <PauseCircle className="h-4 w-4" aria-hidden="true" />
+                                ) : (
+                                    <Bot className="h-4 w-4" aria-hidden="true" />
+                                )}
+                            </span>
+                            <div>
+                                <CardTitle className="text-base">
+                                    {automationPaused
+                                        ? 'Automation is paused'
+                                        : 'Autonomous pipeline is active'}
+                                </CardTitle>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    {automationPaused
+                                        ? `Pause expires ${formatDate(snapshot.automation.pausedUntil)}.`
+                                        : 'Safe material continues through ingest, analysis, and publication policy.'}
+                                </p>
+                            </div>
                         </div>
-                        <p className="max-w-3xl text-sm text-muted-foreground">
-                            Admin actions are temporary corrections and wake-ups. The
-                            pipeline continues to select safe material by default.
-                        </p>
+                        <Badge
+                            variant="outline"
+                            className={
+                                needsAttention
+                                    ? 'w-fit border-warning/20 bg-warning/10 text-warning'
+                                    : 'w-fit border-success/20 bg-success/10 text-success'
+                            }
+                        >
+                            {needsAttention ? 'Review needed' : 'Operational'}
+                        </Badge>
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                </CardHeader>
+                <CardContent className="space-y-5 pt-5">
+                    <InlineStatus tone={needsAttention ? 'warning' : 'success'}>
+                        {automationPaused
+                            ? 'Next safe action: verify that the pause is intentional before forcing any stage. Let the temporary pause expire when no intervention is needed.'
+                            : latestProblemRun
+                              ? `Next safe action: inspect ${latestProblemRun.stage} run ${latestProblemRun.runKey} below before retrying that stage.`
+                              : 'No action is required. Manual controls are for targeted corrections and wake-ups, not routine operation.'}
+                    </InlineStatus>
+
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+                        <label htmlFor="admin-reason" className="block min-w-0">
+                            <span className="text-sm font-medium">Reason for the next change</span>
+                            <span className="ml-2 text-xs text-muted-foreground">Required · minimum 4 characters</span>
+                            <Input
+                                id="admin-reason"
+                                className="mt-2"
+                                maxLength={500}
+                                value={reason}
+                                onChange={(event) => setReason(event.target.value)}
+                                placeholder="Describe the operational evidence and intended outcome"
+                            />
+                        </label>
+                        <div className="grid grid-cols-1 gap-2 min-[380px]:grid-cols-2 lg:flex lg:flex-wrap lg:justify-end">
                         {can('MASTER_RUN')
                             ? commandButton('Force next ingest', {
                                   type: 'FORCE_PIPELINE',
@@ -215,28 +279,46 @@ export function WeeklyMasterControlRoom({
                                   type: 'PAUSE_AUTOMATION',
                                   expiresAt: expiry(1),
                                   reason,
+                              }, {
+                                  confirm: `Pause autonomous processing for 24 hours? The reason “${reason.trim()}” will be audited.`,
                               })
                             : null}
+                        </div>
                     </div>
                 </CardContent>
             </Card>
 
-            <div>
-                <label htmlFor="admin-reason" className="text-sm font-medium">
-                    Reason for the next change
-                </label>
-                <Input
-                    id="admin-reason"
-                    className="mt-2 max-w-2xl"
-                    maxLength={500}
-                    value={reason}
-                    onChange={(event) => setReason(event.target.value)}
-                    placeholder="Required for every mutation (minimum 4 characters)"
-                />
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                {[
+                    ['Users', snapshot.stats.users],
+                    ['Linked accounts', snapshot.stats.linkedAccounts],
+                    ['Source games', snapshot.stats.sourceGames],
+                    ['Eligible', snapshot.stats.eligibleCandidates],
+                    ['Published', snapshot.stats.publishedPuzzles],
+                    ['Failed runs', snapshot.stats.failedRuns],
+                ].map(([label, value]) => (
+                    <Card key={label} variant="panel">
+                        <CardContent className="p-3.5 sm:p-4">
+                            <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                                {label}
+                            </p>
+                            <p
+                                className={`mt-1 text-2xl font-semibold tracking-[-0.04em] ${
+                                    label === 'Failed runs' && Number(value) > 0
+                                        ? 'text-destructive'
+                                        : ''
+                                }`}
+                            >
+                                {value}
+                            </p>
+                        </CardContent>
+                    </Card>
+                ))}
             </div>
 
             <Tabs defaultValue="pipeline" className="space-y-4">
-                <TabsList className="h-auto max-w-full flex-wrap justify-start">
+                <div className="-mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
+                <TabsList className="h-auto min-w-max flex-nowrap justify-start">
                     <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
                     <TabsTrigger value="roster">Roster</TabsTrigger>
                     <TabsTrigger value="games">Source games</TabsTrigger>
@@ -244,6 +326,7 @@ export function WeeklyMasterControlRoom({
                     <TabsTrigger value="publications">Puzzles</TabsTrigger>
                     {can('USER_VIEW') ? <TabsTrigger value="users">Users</TabsTrigger> : null}
                 </TabsList>
+                </div>
 
                 <TabsContent value="pipeline">
                     <div className="space-y-4">
@@ -285,23 +368,36 @@ export function WeeklyMasterControlRoom({
                             </div>
                         </CardContent>
                     </Card>
-                    <Card>
-                        <CardHeader><CardTitle>Active temporary overrides</CardTitle></CardHeader>
-                        <CardContent>
+                    <Card variant="panel" className="overflow-hidden">
+                        <CardHeader className="border-b border-border/70 bg-surface-subtle/50"><CardTitle className="text-base">Active temporary overrides</CardTitle></CardHeader>
+                        <CardContent className={snapshot.activeOverrides.length === 0 ? 'p-0' : 'p-3 sm:p-4'}>
                             {snapshot.activeOverrides.length === 0 ? (
-                                <p className="text-sm text-muted-foreground">No active overrides. Autonomous policy is fully in control.</p>
+                                <EmptyState
+                                    title="Autonomous policy is fully in control"
+                                    description="No temporary overrides are active."
+                                    icon={<CheckCircle2 aria-hidden="true" />}
+                                    className="rounded-none border-0"
+                                />
                             ) : (
-                                <Table>
+                                <Table className="min-w-[720px]">
                                     <TableHeader><TableRow><TableHead>Kind</TableHead><TableHead>Target</TableHead><TableHead>Expires</TableHead><TableHead>Reason</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
                                     <TableBody>{snapshot.activeOverrides.map((override) => <TableRow key={override.id}><TableCell><Badge variant="outline">{override.kind}</Badge></TableCell><TableCell>{override.targetLabel}</TableCell><TableCell>{formatDate(override.expiresAt)}</TableCell><TableCell className="max-w-sm text-muted-foreground">{override.reason}</TableCell><TableCell>{can('OPS_MUTATE') ? commandButton('Revoke', { type: 'REVOKE_OVERRIDE', overrideId: override.id, reason }, { destructive: true }) : null}</TableCell></TableRow>)}</TableBody>
                                 </Table>
                             )}
                         </CardContent>
                     </Card>
-                    <Card>
-                        <CardHeader><CardTitle>Recent pipeline runs</CardTitle></CardHeader>
-                        <CardContent>
-                            <Table>
+                    <Card variant="panel" className="overflow-hidden">
+                        <CardHeader className="border-b border-border/70 bg-surface-subtle/50"><CardTitle className="text-base">Recent pipeline runs</CardTitle></CardHeader>
+                        <CardContent className={snapshot.latestRuns.length === 0 ? 'p-0' : 'p-3 sm:p-4'}>
+                            {snapshot.latestRuns.length === 0 ? (
+                                <EmptyState
+                                    title="No pipeline runs yet"
+                                    description="Scheduled and manually triggered runs will appear here."
+                                    icon={<AlertTriangle aria-hidden="true" />}
+                                    className="rounded-none border-0"
+                                />
+                            ) : (
+                            <Table className="min-w-[760px]">
                                 <TableHeader><TableRow><TableHead>Run</TableHead><TableHead>Stage</TableHead><TableHead>Status</TableHead><TableHead>Trigger</TableHead><TableHead>Started</TableHead><TableHead>Error</TableHead></TableRow></TableHeader>
                                 <TableBody>
                                     {snapshot.latestRuns.map((run) => (
@@ -316,6 +412,7 @@ export function WeeklyMasterControlRoom({
                                     ))}
                                 </TableBody>
                             </Table>
+                            )}
                         </CardContent>
                     </Card>
                     </div>
@@ -372,6 +469,24 @@ export function WeeklyMasterControlRoom({
                 <span className="inline-flex items-center gap-1"><Users /> User data is minimized; email and OAuth credentials are never returned.</span>
                 <span className="inline-flex items-center gap-1"><PlayCircle /> Manual controls wake the autonomous pipeline; they are not a publishing gate.</span>
             </div>
+
+            <ActionConfirmDialog
+                open={confirmation !== null}
+                onOpenChange={(open) => {
+                    if (!open) setConfirmation(null);
+                }}
+                title={confirmation?.destructive ? 'Confirm destructive correction' : 'Confirm operational change'}
+                description={confirmation?.description ?? ''}
+                confirmLabel={confirmation?.label ?? 'Confirm'}
+                variant={confirmation?.destructive ? 'destructive' : 'default'}
+                busy={pending}
+                onConfirm={() => {
+                    if (!confirmation) return;
+                    const command = confirmation.command;
+                    setConfirmation(null);
+                    sendCommand(command);
+                }}
+            />
         </div>
     );
 }

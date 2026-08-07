@@ -11,6 +11,7 @@ import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import {
     AlertCircle,
+    ArrowRight,
     CheckCircle2,
     Clock3,
     LineChart,
@@ -20,6 +21,7 @@ import {
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { PageSkeleton } from '@/components/ui/loading-patterns';
 import { SyncGamesWidget } from '@/components/sync/SyncGamesWidget';
 import {
     automationBlockAction,
@@ -321,21 +323,24 @@ export function HomeDashboard() {
     // Loading state
     if (isLoading) {
         return (
-            <div className="flex min-h-[60vh] items-center justify-center">
-                <div className="text-muted-foreground">Loading…</div>
-            </div>
+            <PageSkeleton
+                className="mx-auto max-w-6xl"
+                label="Loading your home dashboard"
+            />
         );
     }
 
     return (
-        <div className="space-y-8">
-            {/* Welcome header */}
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div className="mx-auto max-w-6xl space-y-5 sm:space-y-7">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div className="space-y-1">
-                    <h1 className="text-2xl font-semibold tracking-tight">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                        Your chess, distilled
+                    </p>
+                    <h1 className="text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">
                         Welcome back{session?.user?.name ? `, ${session.user.name.split(' ')[0]}` : ''}
                     </h1>
-                    <p className="text-sm text-muted-foreground">
+                    <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground sm:text-base">
                         {dashboardStatus === 'loading' || dashboardStatus === 'idle'
                             ? 'Loading your practice overview…'
                             : dashboardStatus === 'error'
@@ -353,9 +358,12 @@ export function HomeDashboard() {
                                 : 'Sync your first games to get started.'}
                     </p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <Button variant="outline" asChild>
-                        <Link href="/games">View Games</Link>
+                <div className="hidden items-center gap-2 sm:flex">
+                    <Button variant="ghost" asChild>
+                        <Link href="/games">
+                            Games
+                            <ArrowRight aria-hidden="true" />
+                        </Link>
                     </Button>
                 </div>
             </div>
@@ -383,6 +391,16 @@ export function HomeDashboard() {
                 error={dashboardMatchesOwner ? dashboard.error : null}
                 onRetry={() => void fetchDashboard()}
             />
+
+            {dashboardStatus === 'ready' &&
+            productState !== 'no-linked-account' &&
+            productState !== 'no-games' ? (
+                <HomeSummary
+                    gameCount={gameCount}
+                    trainingMomentCount={trainingMomentCount}
+                    duePracticeCount={duePracticeCount}
+                />
+            ) : null}
 
             {productState !== 'no-games' &&
             productState !== 'no-linked-account' ? (
@@ -423,8 +441,8 @@ function HomeStateCard({
 }) {
     if (state === 'loading') {
         return (
-            <Card aria-live="polite">
-                <CardContent className="flex items-center gap-3 py-6">
+            <Card variant="subtle" aria-live="polite">
+                <CardContent className="flex items-center gap-3 py-8">
                     <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
                     <div>
                         <div className="font-medium">Loading your next step</div>
@@ -620,25 +638,47 @@ function NextActionCard({
     secondaryAction?: { label: string; href: string };
 }) {
     return (
-        <Card>
-            <CardContent className="flex flex-wrap items-center justify-between gap-4 py-6">
-                <div className="flex max-w-2xl items-start gap-3">
-                    <div className="mt-0.5 text-muted-foreground">{icon}</div>
+        <Card
+            variant="board"
+            className="group relative isolate overflow-hidden border-primary/15 bg-[radial-gradient(circle_at_top_right,hsl(var(--primary)/0.13),transparent_42%),linear-gradient(135deg,hsl(var(--card)),hsl(var(--surface-subtle)))]"
+        >
+            <div
+                className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full border border-primary/10"
+                aria-hidden="true"
+            />
+            <CardContent className="relative flex min-h-[220px] flex-col justify-between gap-8 p-5 sm:min-h-[248px] sm:p-8 lg:flex-row lg:items-end">
+                <div className="flex max-w-2xl items-start gap-4">
+                    <div className="mt-0.5 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-primary/15 bg-primary/10 text-primary shadow-control [&_svg]:h-5 [&_svg]:w-5">
+                        {icon}
+                    </div>
                     <div>
-                        <div className="font-medium">{title}</div>
-                        <div className="mt-1 text-sm text-muted-foreground">
+                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                            Your next move
+                        </p>
+                        <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] sm:text-3xl">
+                            {title}
+                        </h2>
+                        <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground sm:text-base">
                             {description}
-                        </div>
+                        </p>
                     </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row">
                     {actionLabel && href ? (
-                        <Button asChild>
-                            <Link href={href}>{actionLabel}</Link>
+                        <Button asChild size="lg" className="w-full sm:w-auto">
+                            <Link href={href}>
+                                {actionLabel}
+                                <ArrowRight aria-hidden="true" />
+                            </Link>
                         </Button>
                     ) : null}
                     {secondaryAction ? (
-                        <Button asChild variant="outline">
+                        <Button
+                            asChild
+                            variant="outline"
+                            size="lg"
+                            className="w-full sm:w-auto"
+                        >
                             <Link href={secondaryAction.href}>
                                 {secondaryAction.label}
                             </Link>
@@ -647,5 +687,51 @@ function NextActionCard({
                 </div>
             </CardContent>
         </Card>
+    );
+}
+
+function HomeSummary({
+    gameCount,
+    trainingMomentCount,
+    duePracticeCount,
+}: {
+    gameCount: number;
+    trainingMomentCount: number;
+    duePracticeCount: number;
+}) {
+    const items = [
+        { label: 'Games', value: gameCount, href: '/games' },
+        {
+            label: 'Ready to practice',
+            value: trainingMomentCount,
+            href: '/practice',
+        },
+        {
+            label: 'Due today',
+            value: duePracticeCount,
+            href: '/practice?mode=review',
+        },
+    ];
+
+    return (
+        <section
+            aria-label="Your library at a glance"
+            className="grid grid-cols-3 gap-px overflow-hidden rounded-lg border bg-border"
+        >
+            {items.map((item) => (
+                <Link
+                    key={item.label}
+                    href={item.href}
+                    className="group bg-card px-3 py-4 transition-colors duration-base hover:bg-surface-subtle sm:px-5"
+                >
+                    <span className="block text-xl font-semibold tabular-nums tracking-tight sm:text-2xl">
+                        {item.value}
+                    </span>
+                    <span className="mt-1 block text-[11px] font-medium leading-tight text-muted-foreground sm:text-xs">
+                        {item.label}
+                    </span>
+                </Link>
+            ))}
+        </section>
     );
 }

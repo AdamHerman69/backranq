@@ -1,4 +1,11 @@
-import { ArrowRight, CircleAlert, ShieldCheck } from 'lucide-react';
+import {
+    ArrowRight,
+    ChevronDown,
+    CircleAlert,
+    Compass,
+    ShieldCheck,
+} from 'lucide-react';
+import type { ReactNode } from 'react';
 
 import { PageHeader } from '@/components/app/PageHeader';
 import {
@@ -100,24 +107,47 @@ function RateCard({
     );
 }
 
-function SectionHeading({
+function EvidenceSection({
     id,
     title,
     description,
+    children,
+    defaultOpen = false,
 }: {
     id: string;
     title: string;
     description: string;
+    children: ReactNode;
+    defaultOpen?: boolean;
 }) {
     return (
-        <div className="space-y-1">
-            <h2 id={id} className="text-xl font-semibold tracking-tight">
-                {title}
-            </h2>
-            <p className="max-w-3xl text-sm text-muted-foreground">
-                {description}
-            </p>
-        </div>
+        <details
+            open={defaultOpen || undefined}
+            className="group overflow-hidden rounded-lg border bg-card shadow-control"
+        >
+            <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 transition-colors hover:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/55 sm:px-5 [&::-webkit-details-marker]:hidden">
+                <h2
+                    id={id}
+                    className="flex w-full min-w-0 items-center justify-between gap-4"
+                >
+                    <span className="min-w-0">
+                        <span className="block text-base font-semibold tracking-[-0.01em] sm:text-lg">
+                            {title}
+                        </span>
+                        <span className="mt-0.5 block max-w-3xl text-xs font-normal leading-relaxed text-muted-foreground sm:text-sm">
+                            {description}
+                        </span>
+                    </span>
+                    <ChevronDown
+                        className="h-5 w-5 shrink-0 text-muted-foreground transition-transform duration-base group-open:rotate-180"
+                        aria-hidden="true"
+                    />
+                </h2>
+            </summary>
+            <div className="border-t bg-background/40 p-3 sm:p-5">
+                {children}
+            </div>
+        </details>
     );
 }
 
@@ -129,7 +159,7 @@ function EmptySection({
     description: string;
 }) {
     return (
-        <Card className="shadow-none">
+        <Card variant="subtle">
             <CardContent className="py-6">
                 <div className="font-medium">{title}</div>
                 <p className="mt-1 text-sm text-muted-foreground">
@@ -202,107 +232,95 @@ function coverageNotices(snapshot: ProgressSnapshot) {
 function CoverageStrip({ snapshot }: { snapshot: ProgressSnapshot }) {
     const notices = coverageNotices(snapshot);
     return (
-        <Card
+        <div
             role="region"
-            aria-labelledby="progress-coverage-title"
-            className="shadow-none"
+            aria-label="Data coverage"
+            className="space-y-4"
         >
-            <CardHeader className="pb-3">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                        <CardTitle
-                            id="progress-coverage-title"
-                            className="flex items-center gap-2 text-base"
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                    <ShieldCheck
+                        className="h-4 w-4 text-primary"
+                        aria-hidden="true"
+                    />
+                    Evidence included in this view
+                </div>
+                <Badge variant="outline">
+                    Updated {generatedAtLabel(snapshot.generatedAt)}
+                </Badge>
+            </div>
+            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border lg:grid-cols-4">
+                <div className="bg-card p-3 sm:p-4">
+                    <dt className="text-xs text-muted-foreground">
+                        Source games
+                    </dt>
+                    <dd className="mt-1 text-xl font-semibold tabular-nums">
+                        {number(snapshot.coverage.analyzedRate.n)}
+                    </dd>
+                </div>
+                <div className="bg-card p-3 sm:p-4">
+                    <dt className="text-xs text-muted-foreground">
+                        Current analysis
+                    </dt>
+                    <dd className="mt-1 text-xl font-semibold tabular-nums">
+                        {snapshot.coverage.analyzedRate.x} of{' '}
+                        {snapshot.coverage.analyzedRate.n}
+                    </dd>
+                </div>
+                <div className="bg-card p-3 sm:p-4">
+                    <dt className="text-xs text-muted-foreground">
+                        Eligible Positions
+                    </dt>
+                    <dd className="mt-1 text-xl font-semibold tabular-nums">
+                        {number(snapshot.coverage.eligiblePositions)}
+                    </dd>
+                </div>
+                <div className="bg-card p-3 sm:p-4">
+                    <dt className="text-xs text-muted-foreground">
+                        Positions with assessed outcome
+                    </dt>
+                    <dd className="mt-1 text-xl font-semibold tabular-nums">
+                        {number(
+                            snapshot.firstRecordedTerminalOutcome.positions
+                        )}
+                    </dd>
+                </div>
+            </dl>
+
+            {snapshot.coverage.analyzedRate.n === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                    No source games fall in the selected game-time view.
+                    Practice evidence can still appear below when attempts on
+                    older Positions finished in this window.
+                </p>
+            ) : notices.length > 0 ? (
+                <ul className="space-y-2" aria-label="Coverage limitations">
+                    {notices.map((notice) => (
+                        <li
+                            key={notice}
+                            className="flex items-start gap-2 text-sm text-muted-foreground"
                         >
-                            <ShieldCheck
-                                className="h-4 w-4"
+                            <CircleAlert
+                                className="mt-0.5 h-4 w-4 shrink-0"
                                 aria-hidden="true"
                             />
-                            Data coverage
-                        </CardTitle>
-                        <CardDescription className="mt-1">
-                            What this Progress view can honestly support.
-                        </CardDescription>
-                    </div>
-                    <Badge variant="outline">
-                        Updated {generatedAtLabel(snapshot.generatedAt)}
-                    </Badge>
-                </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-                <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                    <div className="rounded-lg bg-muted/50 p-3">
-                        <dt className="text-xs text-muted-foreground">
-                            Source games
-                        </dt>
-                        <dd className="mt-1 text-xl font-semibold tabular-nums">
-                            {number(snapshot.coverage.analyzedRate.n)}
-                        </dd>
-                    </div>
-                    <div className="rounded-lg bg-muted/50 p-3">
-                        <dt className="text-xs text-muted-foreground">
-                            Current analysis
-                        </dt>
-                        <dd className="mt-1 text-xl font-semibold tabular-nums">
-                            {snapshot.coverage.analyzedRate.x} of{' '}
-                            {snapshot.coverage.analyzedRate.n}
-                        </dd>
-                    </div>
-                    <div className="rounded-lg bg-muted/50 p-3">
-                        <dt className="text-xs text-muted-foreground">
-                            Eligible Positions
-                        </dt>
-                        <dd className="mt-1 text-xl font-semibold tabular-nums">
-                            {number(snapshot.coverage.eligiblePositions)}
-                        </dd>
-                    </div>
-                    <div className="rounded-lg bg-muted/50 p-3">
-                        <dt className="text-xs text-muted-foreground">
-                            Positions with assessed outcome
-                        </dt>
-                        <dd className="mt-1 text-xl font-semibold tabular-nums">
-                            {number(
-                                snapshot.firstRecordedTerminalOutcome.positions
-                            )}
-                        </dd>
-                    </div>
-                </dl>
-
-                {snapshot.coverage.analyzedRate.n === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                        No source games fall in the selected game-time view.
-                        Practice evidence can still appear below when attempts
-                        on older Positions finished in this window.
-                    </p>
-                ) : notices.length > 0 ? (
-                    <ul className="space-y-2" aria-label="Coverage limitations">
-                        {notices.map((notice) => (
-                            <li
-                                key={notice}
-                                className="flex items-start gap-2 text-sm text-muted-foreground"
-                            >
-                                <CircleAlert
-                                    className="mt-0.5 h-4 w-4 shrink-0"
-                                    aria-hidden="true"
-                                />
-                                <span>{notice}</span>
-                            </li>
-                        ))}
-                    </ul>
-                ) : (
-                    <p className="text-sm text-muted-foreground">
-                        All source games in this view have current, succeeded
-                        analysis.
-                    </p>
-                )}
-
-                <p className="border-t pt-3 text-xs text-muted-foreground">
-                    Source-game metrics use game played time. Practice metrics
-                    use terminal attempt time. Pending, skipped and unresolved
-                    attempts are not counted as wrong.
+                            <span>{notice}</span>
+                        </li>
+                    ))}
+                </ul>
+            ) : (
+                <p className="text-sm text-muted-foreground">
+                    All source games in this view have current, succeeded
+                    analysis.
                 </p>
-            </CardContent>
-        </Card>
+            )}
+
+            <p className="border-t pt-3 text-xs text-muted-foreground">
+                Source-game metrics use game played time. Practice metrics use
+                terminal attempt time. Pending, skipped and unresolved attempts
+                are not counted as wrong.
+            </p>
+        </div>
     );
 }
 
@@ -310,15 +328,33 @@ function NextAction({ snapshot }: { snapshot: ProgressSnapshot }) {
     const action = deriveProgressNextAction(snapshot);
     const analyticsContext = progressAnalyticsContext(snapshot);
     return (
-        <Card className="border-primary/30">
-            <CardContent className="flex flex-col gap-4 py-6 sm:flex-row sm:items-center sm:justify-between">
-                <div className="max-w-2xl">
-                    <div className="font-semibold">{action.title}</div>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                        {action.description}
-                    </p>
+        <Card className="relative overflow-hidden border-primary/25 bg-gradient-to-br from-primary/[0.10] via-card to-card shadow-raised">
+            <div
+                className="pointer-events-none absolute -right-16 -top-24 h-56 w-56 rounded-full bg-primary/10 blur-3xl"
+                aria-hidden="true"
+            />
+            <CardContent className="relative flex flex-col gap-4 py-5 sm:flex-row sm:items-center sm:justify-between sm:py-6">
+                <div className="flex max-w-2xl gap-3">
+                    <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-control">
+                        <Compass className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    <div>
+                        <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.16em] text-primary">
+                            Next useful action
+                        </p>
+                        <h2 className="mt-1 text-lg font-semibold tracking-[-0.015em]">
+                            {action.title}
+                        </h2>
+                        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                            {action.description}
+                        </p>
+                    </div>
                 </div>
-                <Button asChild className="min-h-11 shrink-0">
+                <Button
+                    asChild
+                    size="lg"
+                    className="min-h-12 w-full shrink-0 sm:w-auto"
+                >
                     <TrackedProgressLink
                         href={action.href}
                         analyticsContext={analyticsContext}
@@ -331,6 +367,69 @@ function NextAction({ snapshot }: { snapshot: ProgressSnapshot }) {
                 </Button>
             </CardContent>
         </Card>
+    );
+}
+
+function ProgressKpiStrip({ snapshot }: { snapshot: ProgressSnapshot }) {
+    const items = [
+        {
+            label: 'First outcomes met',
+            value: formatProgressRate(
+                snapshot.firstRecordedTerminalOutcome.metObjective
+            ),
+            detail: 'One outcome per attempted Position',
+        },
+        {
+            label: 'Full solves',
+            value: formatProgressRate(snapshot.practice.fullPositionSolve),
+            detail: 'Across graded Practice attempts',
+        },
+        {
+            label: 'Needs review',
+            value: number(snapshot.inventory.needsAnotherLook),
+            detail: 'Already-seen Positions',
+        },
+        {
+            label: 'Current analysis',
+            value: `${number(snapshot.coverage.analyzedRate.x)} of ${number(
+                snapshot.coverage.analyzedRate.n
+            )}`,
+            detail: 'Source games in this view',
+        },
+    ];
+
+    return (
+        <section aria-labelledby="progress-glance-title">
+            <div className="mb-2 flex items-center justify-between gap-3 px-1">
+                <h2
+                    id="progress-glance-title"
+                    className="text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground"
+                >
+                    At a glance
+                </h2>
+                <span className="text-xs text-muted-foreground">
+                    Selected view
+                </span>
+            </div>
+            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border shadow-control lg:grid-cols-4">
+                {items.map((item) => (
+                    <div
+                        key={item.label}
+                        className="min-w-0 bg-card p-3 sm:p-4"
+                    >
+                        <dt className="text-xs font-medium text-muted-foreground">
+                            {item.label}
+                        </dt>
+                        <dd className="mt-1 break-words text-lg font-semibold leading-tight tabular-nums tracking-[-0.02em] sm:text-xl">
+                            {item.value}
+                        </dd>
+                        <p className="mt-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
+                            {item.detail}
+                        </p>
+                    </div>
+                ))}
+            </dl>
+        </section>
     );
 }
 
@@ -409,21 +508,14 @@ function FromGames({ snapshot }: { snapshot: ProgressSnapshot }) {
         },
     ];
 
-    return (
-        <section className="space-y-4" aria-labelledby="from-games-title">
-            <SectionHeading
-                id="from-games-title"
-                title="From your games"
-                description="Where current analysis found eligible personal decisions. These are library observations, not a score."
-            />
-            {positionCount === 0 ? (
-                <EmptySection
-                    title="No eligible Positions in this view"
-                    description="Games may still need analysis, may be stale, or may not match your current Position settings."
-                />
-            ) : (
-                <div className="grid gap-4 lg:grid-cols-2">
-                    <Card className="shadow-none">
+    return positionCount === 0 ? (
+        <EmptySection
+            title="No eligible Positions in this view"
+            description="Games may still need analysis, may be stale, or may not match your current Position settings."
+        />
+    ) : (
+        <div className="grid gap-3 lg:grid-cols-2">
+                    <Card variant="panel">
                         <CardHeader className="pb-3">
                             <CardTitle className="text-base">
                                 Position coverage
@@ -467,7 +559,7 @@ function FromGames({ snapshot }: { snapshot: ProgressSnapshot }) {
                             </dl>
                         </CardContent>
                     </Card>
-                    <Card className="shadow-none">
+                    <Card variant="panel">
                         <CardHeader className="pb-3">
                             <CardTitle className="text-base">
                                 Decision impact
@@ -484,9 +576,7 @@ function FromGames({ snapshot }: { snapshot: ProgressSnapshot }) {
                             />
                         </CardContent>
                     </Card>
-                </div>
-            )}
-        </section>
+        </div>
     );
 }
 
@@ -592,21 +682,14 @@ function InPractice({ snapshot }: { snapshot: ProgressSnapshot }) {
     const terminalAttempts =
         assessableAttempts +
         snapshot.practice.unresolvedExcluded;
-    return (
-        <section className="space-y-4" aria-labelledby="in-practice-title">
-            <SectionHeading
-                id="in-practice-title"
-                title="In Practice"
-                description="How completed attempts went. Reveals and unresolved attempts are shown separately rather than treated as wrong."
-            />
-            {terminalAttempts === 0 ? (
-                <EmptySection
-                    title="No completed attempts yet"
-                    description="Start a mixed Practice feed. The first useful signal appears as counts; percentages wait for at least 10 observations."
-                />
-            ) : (
-                <>
-                    <Card className="shadow-none">
+    return terminalAttempts === 0 ? (
+        <EmptySection
+            title="No completed attempts yet"
+            description="Start a mixed Practice feed. The first useful signal appears as counts; percentages wait for at least 10 observations."
+        />
+    ) : (
+        <div className="space-y-3">
+                    <Card variant="panel">
                         <CardContent className="py-4">
                             <dl className="grid grid-cols-3 gap-3 text-sm">
                                 <div>
@@ -645,7 +728,7 @@ function InPractice({ snapshot }: { snapshot: ProgressSnapshot }) {
                             </dl>
                         </CardContent>
                     </Card>
-                    {assessableAttempts === 0 ? (
+            {assessableAttempts === 0 ? (
                         <EmptySection
                             title="No assessable outcomes yet"
                             description="Completed attempts are unresolved, so Backranq does not infer success or failure from them."
@@ -655,7 +738,7 @@ function InPractice({ snapshot }: { snapshot: ProgressSnapshot }) {
                             <FirstRecordedOutcome
                                 snapshot={snapshot}
                             />
-                            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                                 <RateCard
                                     label="Full Position solved"
                                     description="Every required user decision in the Position met its objective."
@@ -681,7 +764,7 @@ function InPractice({ snapshot }: { snapshot: ProgressSnapshot }) {
                                     }
                                 />
                             </div>
-                            <Card className="shadow-none">
+                            <Card variant="subtle">
                                 <CardContent className="py-4 text-sm">
                                     <div className="font-medium">
                                         Compared with the previous
@@ -697,9 +780,7 @@ function InPractice({ snapshot }: { snapshot: ProgressSnapshot }) {
                             </Card>
                         </>
                     )}
-                </>
-            )}
-        </section>
+        </div>
     );
 }
 
@@ -774,22 +855,15 @@ function ReviewRecurrence({ snapshot }: { snapshot: ProgressSnapshot }) {
         snapshot.actions.needsAnotherLook.filter(
             (action) => !persistentIds.has(action.positionId)
         );
-    return (
-        <section className="space-y-4" aria-labelledby="review-title">
-            <SectionHeading
-                id="review-title"
-                title="Review and recurrence"
-                description="What may deserve another look, and what is known about delayed review. Unobserved rechecks are never counted as failures."
-            />
-            {!hasAttemptHistory ? (
-                <EmptySection
-                    title="Review evidence starts after Practice"
-                    description="Backranq needs a completed attempt before it can recommend an already-seen Position or observe a later recheck."
-                />
-            ) : (
-                <>
-                    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                        <Card className="shadow-none">
+    return !hasAttemptHistory ? (
+        <EmptySection
+            title="Review evidence starts after Practice"
+            description="Backranq needs a completed attempt before it can recommend an already-seen Position or observe a later recheck."
+        />
+    ) : (
+        <div className="space-y-3">
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                        <Card variant="panel">
                             <CardHeader className="pb-3">
                                 <CardTitle className="text-base">
                                     Current inventory
@@ -850,7 +924,7 @@ function ReviewRecurrence({ snapshot }: { snapshot: ProgressSnapshot }) {
                             description="No already-attempted Position currently meets the review or recurrence criteria."
                         />
                     ) : (
-                        <Card className="shadow-none">
+                        <Card variant="panel">
                             <CardHeader className="pb-3">
                                 <CardTitle className="text-base">
                                     Already-seen Positions
@@ -878,9 +952,7 @@ function ReviewRecurrence({ snapshot }: { snapshot: ProgressSnapshot }) {
                             </CardContent>
                         </Card>
                     )}
-                </>
-            )}
-        </section>
+        </div>
     );
 }
 
@@ -973,13 +1045,8 @@ function BreakdownCard({
 
 function Breakdowns({ snapshot }: { snapshot: ProgressSnapshot }) {
     return (
-        <section className="space-y-4" aria-labelledby="breakdowns-title">
-            <SectionHeading
-                id="breakdowns-title"
-                title="Breakdowns"
-                description="Compare like with like. Every row keeps its own denominator and small-sample warning."
-            />
-            <Card role="note" className="shadow-none">
+        <div className="space-y-3">
+            <Card role="note" variant="subtle">
                 <CardContent className="py-4">
                     <dl className="grid gap-3 text-sm sm:grid-cols-2">
                         <div>
@@ -1004,7 +1071,7 @@ function Breakdowns({ snapshot }: { snapshot: ProgressSnapshot }) {
                     </dl>
                 </CardContent>
             </Card>
-            <div className="grid gap-4 xl:grid-cols-2">
+            <div className="grid gap-3 xl:grid-cols-2">
                 <BreakdownCard
                     title="Game phase"
                     kind="phase"
@@ -1033,7 +1100,7 @@ function Breakdowns({ snapshot }: { snapshot: ProgressSnapshot }) {
                     disclosure="A Position can have more than one source label. These rows overlap and must not be added together."
                 />
             </div>
-        </section>
+        </div>
     );
 }
 
@@ -1060,12 +1127,14 @@ export function ProgressDashboard({
 }) {
     const analyticsContext = progressAnalyticsContext(snapshot);
     return (
-        <div className="space-y-8">
+        <div className="space-y-5 sm:space-y-6">
             <ProgressViewTracker context={analyticsContext} />
             <PageHeader
                 title="Progress"
                 subtitle="Understand which decisions are changing and choose the next useful action."
             />
+
+            <NextAction snapshot={snapshot} />
 
             <ProgressScopeForm
                 scope={snapshot.window.scope}
@@ -1073,12 +1142,48 @@ export function ProgressDashboard({
                 availability={snapshot.availability}
             />
 
-            <CoverageStrip snapshot={snapshot} />
-            <NextAction snapshot={snapshot} />
-            <FromGames snapshot={snapshot} />
-            <InPractice snapshot={snapshot} />
-            <ReviewRecurrence snapshot={snapshot} />
-            <Breakdowns snapshot={snapshot} />
+            <ProgressKpiStrip snapshot={snapshot} />
+
+            <div className="space-y-3" aria-label="Progress evidence">
+                <EvidenceSection
+                    id="in-practice-title"
+                    title="In Practice"
+                    description="Completed attempts, first outcomes and solve quality. Reveals and unresolved attempts stay separate from wrong answers."
+                    defaultOpen
+                >
+                    <InPractice snapshot={snapshot} />
+                </EvidenceSection>
+                <EvidenceSection
+                    id="review-title"
+                    title="Review and recurrence"
+                    description="Positions that may deserve another look and evidence from delayed rechecks."
+                >
+                    <ReviewRecurrence snapshot={snapshot} />
+                </EvidenceSection>
+                <EvidenceSection
+                    id="from-games-title"
+                    title="From your games"
+                    description="Where current analysis found eligible personal decisions. These are library observations, not a score."
+                >
+                    <FromGames snapshot={snapshot} />
+                </EvidenceSection>
+                <EvidenceSection
+                    id="breakdowns-title"
+                    title="Breakdowns"
+                    description="Compare like with like. Every row keeps its own denominator and small-sample warning."
+                    defaultOpen={false}
+                >
+                    <Breakdowns snapshot={snapshot} />
+                </EvidenceSection>
+                <EvidenceSection
+                    id="progress-coverage-title"
+                    title="Data coverage"
+                    description="What this view can honestly support, including pending analysis and metric timing."
+                    defaultOpen={false}
+                >
+                    <CoverageStrip snapshot={snapshot} />
+                </EvidenceSection>
+            </div>
         </div>
     );
 }

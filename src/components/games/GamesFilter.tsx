@@ -23,6 +23,7 @@ export type GamesFilters = {
     timeClass: '' | 'bullet' | 'blitz' | 'rapid' | 'classical' | 'unknown';
     result: '' | 'wins' | 'losses' | 'draws';
     analysisState: '' | 'analyzed' | 'needs-analysis';
+    positions: '' | 'has';
     since: string;
     until: string;
     q: string;
@@ -31,15 +32,37 @@ export type GamesFilters = {
 export function GamesFilter({
     total,
     initial,
+    selectionMode = false,
+    onSelectionModeChange,
 }: {
     total: number;
     initial: GamesFilters;
+    selectionMode?: boolean;
+    onSelectionModeChange?: (active: boolean) => void;
 }) {
     const router = useRouter();
     const pathname = usePathname();
 
     const [filters, setFilters] = useState<GamesFilters>(initial);
     const [open, setOpen] = useState(false);
+    const hasAnyFilter = Boolean(
+        filters.provider ||
+            filters.timeClass ||
+            filters.result ||
+            filters.analysisState ||
+            filters.positions ||
+            filters.since ||
+            filters.until ||
+            filters.q
+    );
+    const hasAdvancedFilter = Boolean(
+        filters.provider ||
+            filters.timeClass ||
+            filters.result ||
+            filters.since ||
+            filters.until ||
+            filters.q
+    );
 
     useEffect(() => {
         setFilters(initial);
@@ -47,16 +70,9 @@ export function GamesFilter({
 
     // auto-collapse when there are no active filters
     useEffect(() => {
-        const hasAny =
-            !!filters.provider ||
-            !!filters.timeClass ||
-            !!filters.result ||
-            !!filters.analysisState ||
-            !!filters.since ||
-            !!filters.until ||
-            !!filters.q;
-        if (!hasAny) setOpen(false);
-    }, [filters]);
+        if (hasAdvancedFilter) setOpen(true);
+        else if (!hasAnyFilter) setOpen(false);
+    }, [hasAdvancedFilter, hasAnyFilter]);
 
     function push(nextFilters: GamesFilters) {
         const next = new URLSearchParams();
@@ -66,6 +82,7 @@ export function GamesFilter({
         if (nextFilters.analysisState) {
             next.set('analysisState', nextFilters.analysisState);
         }
+        if (nextFilters.positions) next.set('positions', nextFilters.positions);
         if (nextFilters.since) next.set('since', nextFilters.since);
         if (nextFilters.until) next.set('until', nextFilters.until);
         if (nextFilters.q) next.set('q', nextFilters.q);
@@ -77,7 +94,52 @@ export function GamesFilter({
     }
 
     return (
-        <section className="space-y-3">
+        <section className="space-y-3" aria-label="Game library controls">
+            <div className="flex gap-2 overflow-x-auto pb-1">
+                {[
+                    {
+                        label: 'All games',
+                        active: !filters.analysisState && !filters.positions,
+                        next: {
+                            ...filters,
+                            analysisState: '' as const,
+                            positions: '' as const,
+                        },
+                    },
+                    {
+                        label: 'Needs analysis',
+                        active: filters.analysisState === 'needs-analysis',
+                        next: {
+                            ...filters,
+                            analysisState: 'needs-analysis' as const,
+                            positions: '' as const,
+                        },
+                    },
+                    {
+                        label: 'Has positions',
+                        active: filters.positions === 'has',
+                        next: {
+                            ...filters,
+                            analysisState: '' as const,
+                            positions: 'has' as const,
+                        },
+                    },
+                ].map((item) => (
+                    <Button
+                        key={item.label}
+                        type="button"
+                        size="sm"
+                        variant={item.active ? 'secondary' : 'ghost'}
+                        className="shrink-0 rounded-full"
+                        onClick={() => {
+                            setFilters(item.next);
+                            push(item.next);
+                        }}
+                    >
+                        {item.label}
+                    </Button>
+                ))}
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="text-sm text-muted-foreground">{total} games</div>
                 <div className="flex items-center gap-2">
@@ -88,9 +150,20 @@ export function GamesFilter({
                     >
                         {open ? 'Hide filters' : 'Show filters'}
                     </Button>
-                    <Button type="button" variant="outline" onClick={clear}>
-                        Clear
-                    </Button>
+                    {hasAnyFilter ? (
+                        <Button type="button" variant="outline" onClick={clear}>
+                            Clear
+                        </Button>
+                    ) : null}
+                    {onSelectionModeChange ? (
+                        <Button
+                            type="button"
+                            variant={selectionMode ? 'secondary' : 'ghost'}
+                            onClick={() => onSelectionModeChange(!selectionMode)}
+                        >
+                            {selectionMode ? 'Done selecting' : 'Select games'}
+                        </Button>
+                    ) : null}
                 </div>
             </div>
 

@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import {
+    ArrowRight,
     BrainCircuit,
     CloudCog,
     EyeOff,
@@ -13,6 +14,7 @@ import { DualOnboardingHero } from '@/components/landing/DualOnboardingHero';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { auth } from '@/lib/auth';
+import { AUTH_PROVIDER_UI } from '@/lib/auth/config';
 
 export const metadata: Metadata = {
     title: 'Backranq — Practice decisions from your own chess games',
@@ -26,15 +28,15 @@ export default async function LandingPage() {
 
     return (
         <div className="min-h-dvh">
-            <header className="border-b bg-background/80 backdrop-blur">
-                <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
+            <header className="sticky top-0 z-50 border-b border-border/60 bg-background/85 backdrop-blur-xl">
+                <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-4 px-4 sm:h-16 sm:px-6">
                     <Link
                         href="/"
                         className="inline-flex items-center gap-2 font-semibold tracking-tight"
                         aria-label="Backranq home"
                     >
                         <span
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-foreground text-xs font-bold text-background"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-foreground text-xs font-bold text-background shadow-sm ring-1 ring-foreground/10 transition-transform duration-200 hover:rotate-3"
                             aria-hidden="true"
                         >
                             B
@@ -46,18 +48,16 @@ export default async function LandingPage() {
                             <Link href="/home">Open app</Link>
                         </Button>
                     ) : (
-                        <SignInButton
-                            callbackUrl="/home"
-                            variant="outline"
-                            size="sm"
-                        >
-                            Sign in
-                        </SignInButton>
+                        <Button asChild variant="outline" size="sm">
+                            <Link href="/login?callbackUrl=%2Fhome">
+                                Sign in
+                            </Link>
+                        </Button>
                     )}
                 </div>
             </header>
 
-            <main className="space-y-20 pb-16 sm:space-y-24">
+            <main className="space-y-20 pb-20 sm:space-y-28">
                 <DualOnboardingHero isSignedIn={isSignedIn} />
 
                 <section
@@ -76,7 +76,7 @@ export default async function LandingPage() {
                             positions worth revisiting.
                         </p>
                     </div>
-                    <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-4">
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                         <FeatureCard
                             icon={
                                 <RefreshCw
@@ -124,7 +124,7 @@ export default async function LandingPage() {
                     className="mx-auto max-w-4xl px-4"
                     aria-labelledby="how-it-works-heading"
                 >
-                    <Card className="overflow-hidden">
+                    <Card className="overflow-hidden border-border/70 bg-gradient-to-br from-card via-card to-muted/40 shadow-xl shadow-black/[0.035]">
                         <CardContent className="p-6 sm:p-10">
                             <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:items-start">
                                 <div>
@@ -177,6 +177,34 @@ export default async function LandingPage() {
                     </div>
                 </section>
             </main>
+
+            <footer className="border-t border-border/70">
+                <div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-8 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                    <div className="flex items-center gap-2 font-medium text-foreground">
+                        <span
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-foreground text-[10px] font-bold text-background"
+                            aria-hidden="true"
+                        >
+                            B
+                        </span>
+                        Backranq
+                    </div>
+                    <nav
+                        aria-label="Legal and support"
+                        className="flex flex-wrap gap-x-5 gap-y-2"
+                    >
+                        <Link className="transition-colors hover:text-foreground" href="/privacy">
+                            Privacy
+                        </Link>
+                        <Link className="transition-colors hover:text-foreground" href="/terms">
+                            Terms
+                        </Link>
+                        <Link className="transition-colors hover:text-foreground" href="/support">
+                            Support
+                        </Link>
+                    </nav>
+                </div>
+            </footer>
         </div>
     );
 }
@@ -196,32 +224,42 @@ function LandingActions({
     if (isSignedIn) {
         return (
             <Button asChild className={className}>
-                <Link href="/home">Open app</Link>
+                <Link href="/home">
+                    Open app
+                    <ArrowRight aria-hidden="true" />
+                </Link>
+            </Button>
+        );
+    }
+
+    const enabledProviders = AUTH_PROVIDER_UI.filter(
+        (provider) => provider.enabled
+    );
+
+    if (enabledProviders.length === 0) {
+        return (
+            <Button asChild variant="outline" className={className}>
+                <Link href="/support">Sign-in temporarily unavailable</Link>
             </Button>
         );
     }
 
     return (
         <div className="flex flex-col items-center justify-center gap-3 sm:flex-row sm:flex-wrap">
-            <SignInButton callbackUrl="/home" className={className}>
-                Get started with Google
-            </SignInButton>
             <SignInButton
-                provider="lichess"
+                provider={enabledProviders[0]!.id}
                 callbackUrl="/home"
-                variant="outline"
                 className={className}
             >
-                Sign in with Lichess
+                Get started with {enabledProviders[0]!.label}
             </SignInButton>
-            <SignInButton
-                provider="github"
-                callbackUrl="/home"
-                variant="outline"
-                className={className}
-            >
-                Sign in with GitHub
-            </SignInButton>
+            {enabledProviders.length > 1 ? (
+                <Button asChild variant="outline" className={className}>
+                    <Link href="/login?callbackUrl=%2Fhome">
+                        Other sign-in options
+                    </Link>
+                </Button>
+            ) : null}
         </div>
     );
 }
@@ -236,9 +274,9 @@ function FeatureCard({
     description: string;
 }) {
     return (
-        <Card className="border-0 bg-zinc-50 dark:bg-zinc-900/50">
+        <Card className="group border-border/60 bg-card/70 shadow-none transition-all duration-300 hover:-translate-y-1 hover:border-foreground/15 hover:shadow-xl hover:shadow-black/[0.045]">
             <CardContent className="pt-6">
-                <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-200 dark:bg-zinc-800">
+                <div className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-muted transition-transform duration-300 group-hover:rotate-3 group-hover:scale-105">
                     {icon}
                 </div>
                 <h3 className="font-semibold">{title}</h3>

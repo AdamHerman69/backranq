@@ -4,77 +4,184 @@
 
 @layer base {
     :root {
-        --background: 0 0% 100%;
-        --foreground: 222.2 84% 4.9%;
+        color-scheme: light;
 
-        --card: 0 0% 100%;
-        --card-foreground: 222.2 84% 4.9%;
+        /* Editorial chess studio: warm paper, graphite and verdigris. */
+        --background: 42 33% 97%;
+        --foreground: 222 18% 12%;
 
-        --popover: 0 0% 100%;
-        --popover-foreground: 222.2 84% 4.9%;
+        --card: 40 40% 99%;
+        --card-foreground: 222 18% 12%;
+        --popover: 40 40% 99%;
+        --popover-foreground: 222 18% 12%;
 
-        --primary: 222.2 47.4% 11.2%;
-        --primary-foreground: 210 40% 98%;
+        --primary: 164 64% 27%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 42 18% 93%;
+        --secondary-foreground: 222 16% 18%;
+        --muted: 42 18% 93%;
+        --muted-foreground: 220 9% 42%;
+        --accent: 160 24% 91%;
+        --accent-foreground: 164 64% 22%;
 
-        --secondary: 210 40% 96.1%;
-        --secondary-foreground: 222.2 47.4% 11.2%;
+        --destructive: 7 68% 48%;
+        --destructive-foreground: 0 0% 100%;
+        --success: 151 48% 35%;
+        --success-foreground: 0 0% 100%;
+        --warning: 36 88% 47%;
+        --warning-foreground: 30 45% 13%;
+        --info: 216 72% 51%;
+        --info-foreground: 0 0% 100%;
 
-        --muted: 210 40% 96.1%;
-        --muted-foreground: 215.4 16.3% 46.9%;
+        --border: 40 12% 86%;
+        --input: 40 12% 82%;
+        --ring: 164 56% 38%;
 
-        --accent: 210 40% 96.1%;
-        --accent-foreground: 222.2 47.4% 11.2%;
+        --surface-subtle: 42 24% 95%;
+        --surface-raised: 40 40% 99%;
+        --surface-inset: 42 18% 92%;
 
-        --destructive: 0 84.2% 60.2%;
-        --destructive-foreground: 210 40% 98%;
+        --move-best: 173 76% 35%;
+        --move-strong: 151 55% 39%;
+        --move-good: 133 43% 43%;
+        --move-improved: 217 78% 56%;
+        --move-repeated: 8 72% 52%;
+        --move-different: 36 88% 50%;
 
-        --border: 214.3 31.8% 91.4%;
-        --input: 214.3 31.8% 91.4%;
-        --ring: 222.2 84% 4.9%;
+        --board-light: 43 31% 84%;
+        --board-dark: 161 20% 46%;
+        --board-selected: 207 76% 53%;
+        --board-last-move: 48 91% 57%;
+        --analysis-line-1: 216 82% 58%;
+        --analysis-line-2: 160 64% 43%;
+        --analysis-line-3: 38 91% 54%;
+        --analysis-line-4: 275 68% 61%;
+        --analysis-line-5: 345 76% 59%;
 
-        --radius: 0.6rem;
+        --radius-control: 0.625rem;
+        --radius-panel: 1rem;
+        --radius-feature: 1.5rem;
+        --radius: var(--radius-control);
+
+        --duration-instant: 90ms;
+        --duration-fast: 150ms;
+        --duration-base: 220ms;
+        --duration-slow: 360ms;
+        --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+        --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+
+        --app-header-height: 3rem;
+        --app-bottom-nav-height: 4rem;
     }
 
     .dark {
-        --background: 222.2 84% 4.9%;
-        --foreground: 210 40% 98%;
+        color-scheme: dark;
 
-        --card: 222.2 84% 4.9%;
-        --card-foreground: 210 40% 98%;
+        --background: 222 17% 9%;
+        --foreground: 42 24% 94%;
+        --card: 222 15% 12%;
+        --card-foreground: 42 24% 94%;
+        --popover: 222 15% 12%;
+        --popover-foreground: 42 24% 94%;
 
-        --popover: 222.2 84% 4.9%;
-        --popover-foreground: 210 40% 98%;
+        --primary: 163 52% 55%;
+        --primary-foreground: 166 69% 11%;
+        --secondary: 220 12% 17%;
+        --secondary-foreground: 42 20% 92%;
+        --muted: 220 12% 17%;
+        --muted-foreground: 218 11% 66%;
+        --accent: 164 22% 19%;
+        --accent-foreground: 162 50% 72%;
 
-        --primary: 210 40% 98%;
-        --primary-foreground: 222.2 47.4% 11.2%;
+        --destructive: 7 66% 55%;
+        --destructive-foreground: 0 0% 100%;
+        --success: 151 49% 51%;
+        --success-foreground: 155 62% 10%;
+        --warning: 38 87% 58%;
+        --warning-foreground: 30 50% 11%;
+        --info: 215 81% 66%;
+        --info-foreground: 218 64% 12%;
 
-        --secondary: 217.2 32.6% 17.5%;
-        --secondary-foreground: 210 40% 98%;
+        --border: 220 11% 22%;
+        --input: 220 11% 27%;
+        --ring: 163 52% 55%;
+        --surface-subtle: 222 14% 13%;
+        --surface-raised: 222 14% 15%;
+        --surface-inset: 222 16% 7%;
 
-        --muted: 217.2 32.6% 17.5%;
-        --muted-foreground: 215 20.2% 65.1%;
-
-        --accent: 217.2 32.6% 17.5%;
-        --accent-foreground: 210 40% 98%;
-
-        --destructive: 0 62.8% 30.6%;
-        --destructive-foreground: 210 40% 98%;
-
-        --border: 217.2 32.6% 17.5%;
-        --input: 217.2 32.6% 17.5%;
-        --ring: 212.7 26.8% 83.9%;
+        --board-light: 43 19% 66%;
+        --board-dark: 161 20% 38%;
     }
 
     * {
         @apply border-border;
     }
 
-    html,
-    body {
-        @apply min-h-dvh;
+    html {
+        @apply min-h-dvh scroll-smooth;
+        background: hsl(var(--background));
+        text-rendering: optimizeLegibility;
     }
 
     body {
-        @apply bg-background text-foreground font-sans antialiased;
+        @apply min-h-dvh bg-background font-sans text-foreground antialiased;
+        font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    }
+
+    ::selection {
+        background: hsl(var(--primary) / 0.18);
+        color: hsl(var(--foreground));
+    }
+
+    :focus-visible {
+        scroll-margin: 6rem;
+    }
+
+    button,
+    a,
+    input,
+    select,
+    textarea,
+    summary {
+        -webkit-tap-highlight-color: transparent;
+    }
+}
+
+@layer components {
+    .app-container {
+        @apply mx-auto w-full max-w-7xl px-3 sm:px-5 lg:px-8;
+    }
+
+    .workspace-container {
+        @apply mx-auto w-full max-w-[1600px] px-3 sm:px-5 lg:px-8;
+    }
+
+    .reading-container {
+        @apply mx-auto w-full max-w-5xl px-3 sm:px-5 lg:px-8;
+    }
+
+    .interactive-surface {
+        transition:
+            color var(--duration-fast) var(--ease-standard),
+            background-color var(--duration-fast) var(--ease-standard),
+            border-color var(--duration-fast) var(--ease-standard),
+            box-shadow var(--duration-base) var(--ease-standard),
+            transform var(--duration-fast) var(--ease-standard);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 1ms !important;
+        transition-delay: 0ms !important;
     }
 }

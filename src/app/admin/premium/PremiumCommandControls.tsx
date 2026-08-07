@@ -2,11 +2,12 @@
 
 import { useState, useTransition, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { Button, type ButtonProps } from '@/components/ui/button';
+import type { ButtonProps } from '@/components/ui/button';
+import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import { Input } from '@/components/ui/input';
+import { LoadingButton } from '@/components/ui/loading-button';
 import {
     ADMIN_IDEMPOTENCY_HEADER,
     ADMIN_REQUEST_HEADER,
@@ -51,10 +52,15 @@ export function PremiumInviteForm({ disabled }: { disabled: boolean }) {
                 onChange={(event) => setEmail(event.target.value)}
                 disabled={disabled || pending}
             />
-            <Button type="submit" disabled={disabled || pending}>
-                {pending ? <Loader2 className="animate-spin" /> : null}
-                {pending ? 'Sending…' : 'Send invitation'}
-            </Button>
+            <LoadingButton
+                type="submit"
+                className="w-full sm:w-auto"
+                loading={pending}
+                loadingLabel="Sending…"
+                disabled={disabled}
+            >
+                Send invitation
+            </LoadingButton>
         </form>
     );
 }
@@ -70,9 +76,9 @@ export function PremiumCommandButton({
 }) {
     const router = useRouter();
     const [pending, startTransition] = useTransition();
+    const [confirmOpen, setConfirmOpen] = useState(false);
 
     function run() {
-        if (confirmMessage && !window.confirm(confirmMessage)) return;
         startTransition(async () => {
             const receipt = await sendPremiumCommand(command);
             if (!receipt) return;
@@ -81,16 +87,44 @@ export function PremiumCommandButton({
         });
     }
 
+    const destructive =
+        command.type === 'REVOKE_INVITATION' ||
+        command.type === 'REVOKE_GRANT';
+
     return (
-        <Button
-            {...buttonProps}
-            type="button"
-            disabled={pending || buttonProps.disabled}
-            onClick={run}
-        >
-            {pending ? <Loader2 className="animate-spin" /> : null}
-            {pending ? 'Working…' : children}
-        </Button>
+        <>
+            <LoadingButton
+                {...buttonProps}
+                type="button"
+                loading={pending}
+                loadingLabel="Working…"
+                disabled={buttonProps.disabled}
+                onClick={() => {
+                    if (confirmMessage) {
+                        setConfirmOpen(true);
+                        return;
+                    }
+                    run();
+                }}
+            >
+                {children}
+            </LoadingButton>
+            {confirmMessage ? (
+                <ActionConfirmDialog
+                    open={confirmOpen}
+                    onOpenChange={setConfirmOpen}
+                    title={destructive ? 'Confirm access change' : 'Confirm new invitation link'}
+                    description={confirmMessage}
+                    confirmLabel={destructive ? 'Confirm revoke' : 'Send new link'}
+                    variant={destructive ? 'destructive' : 'default'}
+                    busy={pending}
+                    onConfirm={() => {
+                        setConfirmOpen(false);
+                        run();
+                    }}
+                />
+            ) : null}
+        </>
     );
 }
 

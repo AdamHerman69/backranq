@@ -20,16 +20,15 @@ test('administrator sees the invitation portal and automatic Pro access', async 
         commandRequests += 1;
         await route.abort();
     });
-    page.once('dialog', async (dialog) => {
-        expect(dialog.message()).toContain(
-            'The previously delivered link will stop working.'
-        );
-        await dialog.dismiss();
-    });
     await page
         .getByRole('row', { name: /invited-friend@example\.com/ })
         .getByRole('button', { name: 'Resend' })
         .click();
+    const confirmation = page.getByRole('alertdialog');
+    await expect(confirmation).toContainText(
+        'The previously delivered link will stop working.'
+    );
+    await confirmation.getByRole('button', { name: 'Cancel' }).click();
     await expect.poll(() => commandRequests).toBe(0);
 
     await page.goto('/settings');

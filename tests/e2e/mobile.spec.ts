@@ -2,9 +2,64 @@ import { expect, test } from '@playwright/test';
 
 import { waitForBoard } from './support/board';
 import {
+    E2E_GAMES,
     E2E_TRAINING_MOMENTS,
     practicePath,
 } from './support/fixtures';
+
+test('mobile game review keeps the full board and playback inside the viewport', async ({
+    page,
+}) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/games/${E2E_GAMES.standard}`);
+
+    const summary = page.getByRole('region', { name: 'Game summary' });
+    const board = page.locator('[data-game-review-board]');
+    const playback = page.getByRole('button', { name: 'Play review' });
+    const primaryNav = page.getByRole('navigation', { name: 'Main tabs' });
+    await expect(summary).toBeVisible();
+    await expect(summary.getByLabel('white pieces')).toBeVisible();
+    await expect(summary.getByLabel('black pieces')).toBeVisible();
+    await expect(board).toBeVisible();
+    await expect(playback).toBeVisible();
+
+    const firstViewport = await Promise.all([
+        summary.boundingBox(),
+        board.boundingBox(),
+        playback.boundingBox(),
+        primaryNav.boundingBox(),
+    ]);
+    const [summaryBox, boardBox, playbackBox, navBox] = firstViewport;
+    expect(summaryBox).not.toBeNull();
+    expect(boardBox).not.toBeNull();
+    expect(playbackBox).not.toBeNull();
+    expect(navBox).not.toBeNull();
+    expect(summaryBox!.y).toBeGreaterThanOrEqual(0);
+    expect(boardBox!.y).toBeGreaterThan(summaryBox!.y + summaryBox!.height - 1);
+    expect(boardBox!.y + boardBox!.height).toBeLessThanOrEqual(navBox!.y + 1);
+    expect(playbackBox!.y + playbackBox!.height).toBeLessThanOrEqual(navBox!.y + 1);
+
+    await page.getByRole('button', { name: 'Next move' }).click();
+    await expect(
+        board.locator('[data-game-move-quality="book"]')
+    ).toBeVisible();
+    await expect(board.getByRole('img', { name: 'Book on e4' })).toBeVisible();
+
+    const layout = await board.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+            left: rect.left,
+            right: rect.right,
+            viewport: window.innerWidth,
+            pageOverflow:
+                document.documentElement.scrollWidth > window.innerWidth + 1,
+        };
+    });
+
+    expect(layout.left).toBeGreaterThanOrEqual(0);
+    expect(layout.right).toBeLessThanOrEqual(layout.viewport + 1);
+    expect(layout.pageOverflow).toBe(false);
+});
 
 test('mobile coach setup stays readable and reachable without overflow', async ({
     page,
@@ -26,15 +81,16 @@ test('mobile coach setup stays readable and reachable without overflow', async (
         )
     ).toBe(false);
 
-    await page.getByRole('button', { name: 'Open menu' }).click();
+    const primaryNav = page.getByRole('navigation', { name: 'Main tabs' });
     await expect(
-        page.getByRole('link', { name: 'Play', exact: true })
+        primaryNav.getByRole('link', { name: 'Play', exact: true })
     ).toHaveAttribute('aria-current', 'page');
 });
 
 test('mobile trainer keeps one reachable navigation surface without overflow', async ({
     page,
 }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(
         practicePath(E2E_TRAINING_MOMENTS.wrongMove)
     );
@@ -47,6 +103,25 @@ test('mobile trainer keeps one reachable navigation surface without overflow', a
     await expect(
         page.getByRole('button', { name: 'Reveal', exact: true })
     ).toBeVisible();
+
+    const prompt = page.getByText('White to move — find the best move');
+    const board = page.locator('[data-board-stage]');
+    const reveal = page.getByRole('button', { name: 'Reveal', exact: true });
+    const bottomNav = page.getByRole('navigation', { name: 'Main tabs' });
+    const [promptBox, boardBox, revealBox, navBox] = await Promise.all([
+        prompt.boundingBox(),
+        board.boundingBox(),
+        reveal.boundingBox(),
+        bottomNav.boundingBox(),
+    ]);
+    expect(promptBox).not.toBeNull();
+    expect(boardBox).not.toBeNull();
+    expect(revealBox).not.toBeNull();
+    expect(navBox).not.toBeNull();
+    expect(promptBox!.y).toBeGreaterThanOrEqual(0);
+    expect(boardBox!.y).toBeGreaterThan(promptBox!.y);
+    expect(boardBox!.y + boardBox!.height).toBeLessThanOrEqual(navBox!.y + 1);
+    expect(revealBox!.y + revealBox!.height).toBeLessThanOrEqual(navBox!.y + 1);
 
     const hasHorizontalOverflow = await page.evaluate(
         () => document.documentElement.scrollWidth > window.innerWidth + 1
@@ -80,12 +155,12 @@ test('mobile trainer keeps one reachable navigation surface without overflow', a
         )
     ).toBe(false);
 
-    await page.getByRole('button', { name: 'Open menu' }).click();
+    const primaryNav = page.getByRole('navigation', { name: 'Main tabs' });
     await expect(
-        page.getByRole('link', { name: 'Practice', exact: true })
-    ).toBeVisible();
+        primaryNav.getByRole('link', { name: 'Practice', exact: true })
+    ).toHaveAttribute('aria-current', 'page');
     await expect(
-        page.getByRole('link', { name: 'Train', exact: true })
+        primaryNav.getByRole('link', { name: 'Train', exact: true })
     ).toHaveCount(0);
 });
 
@@ -136,10 +211,13 @@ test('Progress reflows at 320px with reachable canonical navigation', async ({
     await expect(
         page
             .getByRole('form', { name: 'Progress scope' })
-            .getByLabel('Time window')
+            .getByRole('group', { name: 'Time window' })
     ).toBeVisible();
     await expect(
-        page.getByRole('region', { name: 'Data coverage' })
+        page.getByRole('heading', { name: 'At a glance' })
+    ).toBeVisible();
+    await expect(
+        page.getByRole('heading', { name: 'Data coverage' })
     ).toBeVisible();
 
     const hasHorizontalOverflow = await page.evaluate(
@@ -149,9 +227,8 @@ test('Progress reflows at 320px with reachable canonical navigation', async ({
     );
     expect(hasHorizontalOverflow).toBe(false);
 
-    await page.getByRole('button', { name: 'Open menu' }).click();
     const primaryNav = page.getByRole('navigation', {
-        name: 'Primary',
+        name: 'Main tabs',
     });
     await expect(
         primaryNav.getByRole('link', {

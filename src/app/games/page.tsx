@@ -6,7 +6,6 @@ import { SyncGamesWidget } from '@/components/sync/SyncGamesWidget';
 import type { Prisma } from '@prisma/client';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import { PageHeader } from '@/components/app/PageHeader';
-import { Card, CardContent } from '@/components/ui/card';
 import { classifyOpeningFromPgn } from '@/lib/chess/opening';
 import { GamesIndexClient } from '@/components/games/GamesIndexClient';
 import { buildUserGameFiltersWhere } from '@/lib/games/outcome';
@@ -53,6 +52,7 @@ export default async function GamesPage({
             : sp.analysisState === 'analyzed'
               ? 'analyzed'
               : '';
+    const positions = sp.positions === 'has' ? 'has' : '';
     const q = typeof sp.q === 'string' ? sp.q.trim() : '';
 
     const where: Prisma.AnalyzedGameWhereInput = {
@@ -97,6 +97,26 @@ export default async function GamesPage({
     } else {
         if (hasAnalysis === 'true') where.analyzedAt = { not: null };
         if (hasAnalysis === 'false') where.analyzedAt = null;
+    }
+    if (positions === 'has') {
+        where.trainingMoments = {
+            some: {
+                userId,
+                archivedAt: null,
+                status: 'ACTIVE',
+                currentSolutionRevisionId: { not: null },
+                currentSolutionRevision: {
+                    is: {
+                        trainable: true,
+                        verificationStatus: 'VERIFIED',
+                        acceptanceFrontier: {
+                            path: ['status'],
+                            equals: 'STABLE',
+                        },
+                    },
+                },
+            },
+        };
     }
     if (since) {
         const d = parseGamesDateBound(since, 'start');
@@ -251,11 +271,9 @@ export default async function GamesPage({
                 actions={<ManualPgnImportButton ownerId={userId} />}
             />
 
-            <Card className="shadow-none">
-                <CardContent className="p-3 sm:p-4">
-                    <SyncGamesWidget context="games" enableAnalyze variant="banner" />
-                </CardContent>
-            </Card>
+            <div className="rounded-2xl border bg-card/65 p-3 sm:px-4">
+                <SyncGamesWidget context="games" enableAnalyze variant="banner" />
+            </div>
 
             <GamesIndexClient
                 ownerId={userId}
@@ -273,6 +291,7 @@ export default async function GamesPage({
                     } else if (hasAnalysis) {
                         p.set('hasAnalysis', hasAnalysis);
                     }
+                    if (positions) p.set('positions', positions);
                     if (since) p.set('since', since);
                     if (until) p.set('until', until);
                     if (q) p.set('q', q);
@@ -312,6 +331,7 @@ export default async function GamesPage({
                                     ? 'analyzed'
                                     : 'needs-analysis'
                                 : '',
+                    positions,
                     since,
                     until,
                     q,

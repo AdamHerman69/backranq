@@ -1,4 +1,15 @@
+import type { ReactNode } from 'react';
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import {
+    Bell,
+    ChevronRight,
+    CreditCard,
+    SlidersHorizontal,
+    Sparkles,
+    Unplug,
+    UserRound,
+} from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { ProfileForm, type UserProfile } from '@/components/settings/ProfileForm';
@@ -14,6 +25,22 @@ import {
     chessAccountConnectionSelect,
     linkedUsernameSnapshot,
 } from '@/lib/accounts/chessAccountConnections';
+import { Button } from '@/components/ui/button';
+import {
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+} from '@/components/ui/card';
+
+const SETTINGS_LINKS = [
+    { href: '#connections', label: 'Connections', icon: Unplug },
+    { href: '#game-automation', label: 'Automation', icon: Sparkles },
+    { href: '#training', label: 'Training', icon: SlidersHorizontal },
+    { href: '#notifications', label: 'Notifications', icon: Bell },
+    { href: '#billing', label: 'Plan & account', icon: CreditCard },
+] as const;
 
 export default async function SettingsPage() {
     const session = await auth();
@@ -69,44 +96,162 @@ export default async function SettingsPage() {
     ].filter((item): item is string => Boolean(item));
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-8 sm:space-y-10">
             <PageHeader
+                eyebrow="Account"
                 title="Settings"
-                subtitle="Manage connections, game automation, billing and Practice defaults."
+                subtitle="Connect your chess life, decide what runs automatically, and shape how Backranq trains you."
+                actions={
+                    <Button asChild variant="outline" size="sm">
+                        <Link href="/profile">
+                            <UserRound aria-hidden="true" />
+                            Profile
+                        </Link>
+                    </Button>
+                }
             />
 
-            <ProfileForm initialUser={initialUser} />
-            <p className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
-                Replacing a username starts future sync from the newly linked
-                profile. Disconnecting a source stops future updates; games
-                already imported into your library are kept unless you delete
-                them separately.
-            </p>
+            <nav
+                aria-label="Settings sections"
+                className="-mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0"
+            >
+                <div className="flex min-w-max gap-2 sm:min-w-0 sm:flex-wrap">
+                    {SETTINGS_LINKS.map(({ href, label, icon: Icon }) => (
+                        <Link
+                            key={href}
+                            href={href}
+                            className="group inline-flex min-h-11 items-center gap-2 rounded-full border bg-card/75 px-3.5 text-sm font-medium text-muted-foreground shadow-control backdrop-blur-sm transition-[color,border-color,background-color,transform] duration-fast ease-standard hover:-translate-y-px hover:border-primary/25 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-2 sm:min-h-10"
+                        >
+                            <Icon className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+                            {label}
+                        </Link>
+                    ))}
+                </div>
+            </nav>
 
-            <GameAutomationSettingsCard ownerId={initialUser.id} />
-            <NotificationSettingsCard />
+            <SettingsSection
+                id="connections"
+                index="01"
+                title="Chess sources"
+                description="Link the profiles Backranq should watch, then choose exactly what happens when new games arrive."
+            >
+                <div className="space-y-4">
+                    <ProfileForm initialUser={initialUser} />
+                    <GameAutomationSettingsCard ownerId={initialUser.id} />
+                </div>
+            </SettingsSection>
 
-            <section id="billing" className="scroll-mt-24">
-                <BillingSettingsCard
-                    ownerId={initialUser.id}
-                    billing={{
-                        presentation: billingPresentation,
-                        serverCreditsBalance:
-                            billingAccount.serverCreditsBalance,
-                        monthlyServerCreditsLimit:
-                            billingAccount.monthlyServerCreditsLimit,
-                        autoAnalysisMonthlyGameLimit:
-                            billingAccount.autoAnalysisMonthlyGameLimit,
-                        autoAnalysisDailyGameLimit:
-                            billingAccount.autoAnalysisDailyGameLimit,
-                        canOpenPortal: !!billingAccount.stripeCustomerId,
-                        stripeConfigured: stripeMissing.length === 0,
-                        stripeMissing,
-                    }}
-                />
-            </section>
-            <PracticeDefaultsCard ownerId={initialUser.id} />
-            <AnalysisDefaultsCard ownerId={initialUser.id} />
+            <SettingsSection
+                id="training"
+                index="02"
+                title="Training preferences"
+                description="Set the defaults you want every practice and analysis session to start with."
+            >
+                <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
+                    <PracticeDefaultsCard ownerId={initialUser.id} />
+                    <AnalysisDefaultsCard ownerId={initialUser.id} />
+                </div>
+            </SettingsSection>
+
+            <SettingsSection
+                id="notifications"
+                index="03"
+                title="Notifications"
+                description="Keep only the updates that help you return at the right moment."
+            >
+                <NotificationSettingsCard />
+            </SettingsSection>
+
+            <SettingsSection
+                id="plan-account"
+                index="04"
+                title="Plan & account"
+                description="Review capacity and billing first. Session and identity controls stay deliberately separate."
+            >
+                <div className="space-y-4">
+                    <section id="billing" className="scroll-mt-24">
+                        <BillingSettingsCard
+                            ownerId={initialUser.id}
+                            billing={{
+                                presentation: billingPresentation,
+                                serverCreditsBalance:
+                                    billingAccount.serverCreditsBalance,
+                                monthlyServerCreditsLimit:
+                                    billingAccount.monthlyServerCreditsLimit,
+                                autoAnalysisMonthlyGameLimit:
+                                    billingAccount.autoAnalysisMonthlyGameLimit,
+                                autoAnalysisDailyGameLimit:
+                                    billingAccount.autoAnalysisDailyGameLimit,
+                                canOpenPortal: !!billingAccount.stripeCustomerId,
+                                stripeConfigured: stripeMissing.length === 0,
+                                stripeMissing,
+                            }}
+                        />
+                    </section>
+                    <Card variant="subtle">
+                        <CardHeader className="sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+                            <div className="space-y-1.5">
+                                <CardTitle className="text-base">Backranq account</CardTitle>
+                                <CardDescription>
+                                    {initialUser.name || 'Your account'}
+                                    {initialUser.email ? ` · ${initialUser.email}` : ''}
+                                </CardDescription>
+                            </div>
+                            <Button asChild variant="outline" size="sm">
+                                <Link href="/profile">
+                                    Account controls
+                                    <ChevronRight aria-hidden="true" />
+                                </Link>
+                            </Button>
+                        </CardHeader>
+                        <CardContent className="text-xs leading-relaxed text-muted-foreground">
+                            Sign-out and identity details live on your profile, away from everyday training controls.
+                        </CardContent>
+                    </Card>
+                </div>
+            </SettingsSection>
         </div>
+    );
+}
+
+function SettingsSection({
+    id,
+    index,
+    title,
+    description,
+    children,
+}: {
+    id?: string;
+    index: string;
+    title: string;
+    description: string;
+    children: ReactNode;
+}) {
+    return (
+        <section
+            id={id}
+            className="scroll-mt-24 border-t border-border/70 pt-6 sm:pt-8"
+            aria-labelledby={`settings-section-${index}`}
+        >
+            <div className="grid gap-4 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-8 xl:grid-cols-[14rem_minmax(0,1fr)]">
+                <div className="lg:pt-1">
+                    <div className="flex items-baseline gap-2 lg:block">
+                        <span className="font-mono text-[10px] font-semibold tracking-[0.18em] text-primary/70">
+                            {index}
+                        </span>
+                        <h2
+                            id={`settings-section-${index}`}
+                            className="text-base font-semibold tracking-[-0.02em] text-foreground lg:mt-2 lg:text-lg"
+                        >
+                            {title}
+                        </h2>
+                    </div>
+                    <p className="mt-1 max-w-xl text-sm leading-relaxed text-muted-foreground lg:mt-2">
+                        {description}
+                    </p>
+                </div>
+                <div className="min-w-0">{children}</div>
+            </div>
+        </section>
     );
 }

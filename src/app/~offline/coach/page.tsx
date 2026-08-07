@@ -5,10 +5,10 @@ export const dynamic = 'force-static';
 
 export default function OfflineCoachPage() {
     return (
-        <div className="space-y-6">
+        <div className="space-y-4">
             <PageHeader
                 title="Play with a coach"
-                subtitle="Offline coach shell · your active game is saved only on this device."
+                subtitle="Play and review with the local coach—even while this device is offline."
             />
             <CoachOfflineShell />
         </div>

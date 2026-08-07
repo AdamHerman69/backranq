@@ -6,14 +6,11 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { CoachGame } from '@/components/coach/CoachGame';
 import { CoachOfflineRegistration } from '@/components/coach/CoachOfflineRegistration';
-import { Button } from '@/components/ui/button';
 import {
-    Card,
-    CardContent,
-    CardDescription,
-    CardHeader,
-    CardTitle,
-} from '@/components/ui/card';
+    ErrorState,
+    LoadingState,
+} from '@/components/ui/async-state';
+import { Button } from '@/components/ui/button';
 import {
     hasCoachOfflineAccess,
     subscribeToCoachOfflineAccess,
@@ -56,30 +53,22 @@ export function CoachOnlineShell({ ownerId }: { ownerId: string }) {
 
             {sessionStatus === 'loading' ||
             waitingForInitialEnrollment ? (
-                <div
-                    role="status"
-                    className="text-sm text-muted-foreground"
-                >
-                    Securing coach access…
-                </div>
+                <LoadingState
+                    title="Preparing your local coach"
+                    description="Securing this device and restoring any saved game."
+                />
             ) : !ownsSession || accessGranted !== true ? (
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Coach locked after sign-out</CardTitle>
-                        <CardDescription>
-                            This tab stopped the local game because the
-                            account session or this device&apos;s coach
-                            access was revoked.
-                        </CardDescription>
-                    </CardHeader>
-                    <CardContent>
+                <ErrorState
+                    title="Coach locked after sign-out"
+                    description="This tab stopped the local game because the account session or this device’s coach access was revoked."
+                    action={
                         <Button asChild>
                             <Link href="/login?callbackUrl=%2Fplay">
                                 Sign in to Play
                             </Link>
                         </Button>
-                    </CardContent>
-                </Card>
+                    }
+                />
             ) : (
                 <CoachGame ownerId={ownerId} />
             )}

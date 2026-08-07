@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Bell, CheckCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -24,17 +25,29 @@ export function NotificationBell({ enabled }: { enabled: boolean }) {
     const [items, setItems] = React.useState<NotificationItem[]>([]);
     const [unreadCount, setUnreadCount] = React.useState(0);
     const [open, setOpen] = React.useState(false);
+    const [loading, setLoading] = React.useState(enabled);
+    const [loadError, setLoadError] = React.useState(false);
 
     const load = React.useCallback(async () => {
         if (!enabled) return;
-        const response = await fetch('/api/notifications?limit=10', { cache: 'no-store' });
-        if (!response.ok) return;
-        const payload = (await response.json()) as {
-            notifications?: NotificationItem[];
-            unreadCount?: number;
-        };
-        setItems(payload.notifications ?? []);
-        setUnreadCount(payload.unreadCount ?? 0);
+        setLoading(true);
+        try {
+            const response = await fetch('/api/notifications?limit=10', {
+                cache: 'no-store',
+            });
+            if (!response.ok) throw new Error('Notification load failed');
+            const payload = (await response.json()) as {
+                notifications?: NotificationItem[];
+                unreadCount?: number;
+            };
+            setItems(payload.notifications ?? []);
+            setUnreadCount(payload.unreadCount ?? 0);
+            setLoadError(false);
+        } catch {
+            setLoadError(true);
+        } finally {
+            setLoading(false);
+        }
     }, [enabled]);
 
     React.useEffect(() => {
@@ -96,7 +109,36 @@ export function NotificationBell({ enabled }: { enabled: boolean }) {
                     ) : null}
                 </div>
                 <div className="max-h-[26rem] overflow-y-auto">
-                    {items.length === 0 ? (
+                    {loading && items.length === 0 ? (
+                        <div
+                            className="space-y-4 p-4"
+                            role="status"
+                            aria-label="Loading notifications"
+                        >
+                            {Array.from({ length: 3 }).map((_, index) => (
+                                <div key={index} className="space-y-2">
+                                    <Skeleton className="h-4 w-2/5" />
+                                    <Skeleton className="h-3 w-full" />
+                                    <Skeleton className="h-3 w-1/4" />
+                                </div>
+                            ))}
+                        </div>
+                    ) : loadError && items.length === 0 ? (
+                        <div className="p-6 text-center" role="alert">
+                            <p className="text-sm text-muted-foreground">
+                                Notifications could not be loaded.
+                            </p>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="mt-3"
+                                onClick={() => void load()}
+                            >
+                                Try again
+                            </Button>
+                        </div>
+                    ) : items.length === 0 ? (
                         <p className="p-6 text-center text-sm text-muted-foreground">You are all caught up.</p>
                     ) : (
                         items.map((item) => (

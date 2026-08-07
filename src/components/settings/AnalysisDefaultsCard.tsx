@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { Gauge } from "lucide-react";
 import { toast } from "sonner";
 import { EXPECTED_OWNER_HEADER } from "@/lib/auth/ownerContract";
 
@@ -12,6 +13,8 @@ import {
 } from "@/lib/preferences";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { InlineStatus } from "@/components/ui/async-state";
+import { LoadingButton } from "@/components/ui/loading-button";
 import {
   AnalysisDefaultsFields,
   analysisDefaultsAreValid,
@@ -121,76 +124,82 @@ export function AnalysisDefaultsCard({ ownerId }: { ownerId: string }) {
   }
 
   return (
-    <Card id="analysis-defaults" className="scroll-mt-4">
-      <CardHeader>
-        <CardTitle className="text-base">Analysis defaults</CardTitle>
+    <Card id="analysis-defaults" variant="panel" className="scroll-mt-24 overflow-hidden">
+      <CardHeader className="border-b border-border/70 bg-surface-subtle/50">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <span className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary">
+            <Gauge className="h-4 w-4" aria-hidden="true" />
+          </span>
+          Analysis defaults
+        </CardTitle>
         <CardDescription>
-          These settings are used by background analysis (and can be overridden when starting analysis).
+          Set the quality, coverage, and grading used by automatic analysis.
+          You can override them when starting an individual analysis.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 pt-5">
         <AnalysisDefaultsFields
           value={analysisDefaults}
           onChange={setAnalysisDefaults}
           disabled={busy || loading || loadError !== null}
         />
         {loading ? (
-          <p className="text-sm text-muted-foreground" role="status">
+          <InlineStatus tone="info" live>
             Loading your current analysis defaults…
-          </p>
+          </InlineStatus>
         ) : null}
         {loadError ? (
-          <div
-            className="rounded-md border border-destructive/40 bg-destructive/5 p-3"
-            role="alert"
-          >
-            <p className="text-sm text-destructive">
-              We could not load your saved analysis defaults. Nothing can be
-              changed until they are loaded.
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">{loadError}</p>
-            <Button
-              className="mt-3"
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => void load()}
-              disabled={loading || busy}
-            >
-              Retry
-            </Button>
-          </div>
+          <InlineStatus tone="danger">
+            <div>
+              <p>
+                We could not load your saved analysis defaults. Nothing can be
+                changed until they are loaded.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">{loadError}</p>
+              <Button
+                className="mt-3"
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void load()}
+                disabled={loading || busy}
+              >
+                Retry
+              </Button>
+            </div>
+          </InlineStatus>
         ) : null}
-        <div className="flex flex-wrap items-center gap-2">
+        {!valid ? (
+          <InlineStatus tone="danger">
+            Open Advanced analysis and correct the highlighted value before
+            saving.
+          </InlineStatus>
+        ) : null}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/70 pt-4">
+          <p className="text-xs text-muted-foreground" role="status">
+            {!loading && !loadError && savedDefaults !== null && !dirty
+              ? "Saved"
+              : "Changes apply to future analysis."}
+          </p>
+          <div className="flex items-center gap-2">
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={resetToAppDefaults}
             disabled={busy || loading || savedDefaults === null}
           >
             Reset
           </Button>
-          <Button
+          <LoadingButton
             type="button"
+            loading={busy}
+            loadingLabel="Saving…"
             onClick={save}
             disabled={!canSave}
           >
             Save
-          </Button>
-          {!loading &&
-          !loadError &&
-          savedDefaults !== null &&
-          !dirty ? (
-            <p className="text-xs text-muted-foreground" role="status">
-              Saved
-            </p>
-          ) : null}
-          {!valid ? (
-            <p className="text-xs text-destructive" role="status">
-              Open Advanced analysis and correct the highlighted value before
-              saving.
-            </p>
-          ) : null}
+          </LoadingButton>
+          </div>
         </div>
       </CardContent>
     </Card>

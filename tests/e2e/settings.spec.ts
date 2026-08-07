@@ -244,8 +244,10 @@ test('linked-account updates reject a server owner mismatch', async ({
     await username.fill('replacement-user');
     await account.getByRole('button', { name: 'Replace' }).click();
 
-    await expect(page.getByRole('main').getByRole('alert')).toContainText(
-        'signed-in account changed before the update finished'
-    );
+    await expect(
+        page
+            .getByRole('region', { name: 'Chess sources' })
+            .getByRole('alert')
+    ).toContainText('signed-in account changed before the update finished');
     expect(syncRequests).toBe(0);
 });

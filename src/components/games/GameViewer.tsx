@@ -1,10 +1,21 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import Link from 'next/link';
 import { Chess, type Move as VerboseMove, type Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
+import {
+    ChevronLeft,
+    ChevronRight,
+    ChevronsLeft,
+    ChevronsRight,
+    Pause,
+    Play,
+    Target,
+} from 'lucide-react';
 import { extractStartFenFromPgn, parseUci, uciLineToSan } from '@/lib/chess/utils';
 import {
+    getClassificationLabel,
     getClassificationSymbol,
     type MoveClassification,
     type GameAnalysis,
@@ -18,9 +29,8 @@ import {
     whiteExpectedScore,
 } from '@/lib/analysis/evaluation';
 import { useStockfishLiveMultiPvAnalysis } from '@/lib/hooks/useStockfishLiveMultiPvAnalysis';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ErrorState } from '@/components/ui/async-state';
 import {
     Select,
     SelectContent,
@@ -29,6 +39,12 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
+import {
+    Tabs,
+    TabsContent,
+    TabsList,
+    TabsTrigger,
+} from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 
 type TrainingMomentPreview = {
@@ -50,11 +66,6 @@ function initialPlyValue(initialPly: number | undefined, maxPly?: number) {
     const next = Math.max(0, Math.trunc(initialPly));
     return typeof maxPly === 'number' ? clamp(next, 0, maxPly) : next;
 }
-
-type PlyState = {
-    value: number;
-    initialPlyApplied: boolean;
-};
 
 type PvSelection = {
     fen: string;
@@ -160,6 +171,27 @@ function classificationAccent(c: MoveClassification): {
     }
 }
 
+function classificationMarkerClass(c: MoveClassification): string {
+    switch (c) {
+        case 'brilliant':
+            return 'border-fuchsia-100 bg-fuchsia-600 text-white';
+        case 'great':
+        case 'best':
+            return 'border-emerald-100 bg-emerald-600 text-white';
+        case 'excellent':
+        case 'good':
+            return 'border-green-100 bg-green-600 text-white';
+        case 'book':
+            return 'border-slate-100 bg-slate-600 text-white';
+        case 'inaccuracy':
+            return 'border-amber-100 bg-amber-500 text-white';
+        case 'mistake':
+            return 'border-orange-100 bg-orange-600 text-white';
+        case 'blunder':
+            return 'border-red-100 bg-red-600 text-white';
+    }
+}
+
 function extractionReasonLabel(reason: ExtractionDecisionReason): string {
     switch (reason) {
         case 'SAVED':
@@ -243,10 +275,7 @@ export function GameViewer({
     const initialSelectionFen =
         parsed?.positions[initialPlyForState]?.fen ?? parsed?.startFen ?? START_FEN;
 
-    const [plyState, setPlyState] = useState<PlyState>({
-        value: initialPlyForState,
-        initialPlyApplied: !!parsed && hasInitialPly(initialPly),
-    });
+    const [ply, setPly] = useState(initialPlyForState);
     const [showPvArrows, setShowPvArrows] = useState(true);
     const movesScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -256,23 +285,15 @@ export function GameViewer({
         engineStore.getSnapshot,
         engineStore.getServerSnapshot
     );
-    const [analysisEnabled, setAnalysisEnabled] = useState(true);
+    const [analysisEnabled, setAnalysisEnabled] = useState(false);
     const [analysisMultiPv, setAnalysisMultiPv] = useState(3);
+    const [activePanel, setActivePanel] = useState<'review' | 'moves' | 'engine'>(
+        'review'
+    );
+    const [isPlaying, setIsPlaying] = useState(false);
     const [selection, setSelection] = useState<PvSelection>(
         defaultPvSelection(initialSelectionFen)
     );
-
-    const pendingInitialPly =
-        !plyState.initialPlyApplied && parsed && hasInitialPly(initialPly)
-            ? initialPlyValue(initialPly, parsed.positions.length - 1)
-            : null;
-    if (pendingInitialPly !== null) {
-        setPlyState({
-            value: pendingInitialPly,
-            initialPlyApplied: true,
-        });
-    }
-    const ply = pendingInitialPly ?? plyState.value;
 
     const clampedPly = useMemo(() => {
         if (!parsed) return 0;
@@ -290,6 +311,19 @@ export function GameViewer({
     const activeExtractionReceipt =
         clampedPly > 0
             ? extractionReceiptByPly.get(clampedPly - 1)
+            : undefined;
+    const analysisMoveByPly = useMemo(
+        () =>
+            new Map(
+                (analysis?.moves ?? []).map(
+                    (move) => [move.ply, move] as const
+                )
+            ),
+        [analysis?.moves]
+    );
+    const activeAnalyzedMove =
+        clampedPly > 0
+            ? analysisMoveByPly.get(clampedPly - 1)
             : undefined;
 
     // Keep the active move visible in the move list, without scrolling the page.
@@ -322,28 +356,33 @@ export function GameViewer({
         return parsed.positions[clampedPly]?.fen ?? parsed.startFen;
     }, [parsed, clampedPly]);
 
-    if (selection.fen !== fen) {
-        setSelection(defaultPvSelection(fen));
-    }
-
     const setActivePly = useCallback(
         (nextPly: number) => {
             if (!parsed) {
-                setPlyState((prev) => ({
-                    ...prev,
-                    value: Math.max(0, Math.trunc(nextPly)),
-                }));
+                setPly(Math.max(0, Math.trunc(nextPly)));
                 return;
             }
 
             const next = clamp(Math.trunc(nextPly), 0, parsed.positions.length - 1);
             const nextFen = parsed.positions[next]?.fen ?? parsed.startFen;
 
-            setPlyState((prev) => ({ ...prev, value: next }));
+            setPly(next);
             if (nextFen !== fen) setSelection(defaultPvSelection(nextFen));
         },
         [fen, parsed]
     );
+
+    useEffect(() => {
+        if (!isPlaying || !parsed) return;
+        const timer = window.setTimeout(() => {
+            if (clampedPly >= parsed.positions.length - 1) {
+                setIsPlaying(false);
+                return;
+            }
+            setActivePly(clampedPly + 1);
+        }, clampedPly >= parsed.positions.length - 1 ? 0 : 720);
+        return () => window.clearTimeout(timer);
+    }, [clampedPly, isPlaying, parsed, setActivePly]);
 
     // Only construct the engine when analysis is needed.
     useEffect(() => {
@@ -512,17 +551,101 @@ export function GameViewer({
 
     if (!parsed) {
         return (
-            <div className="text-sm text-muted-foreground">
-                Unable to parse PGN.
-            </div>
+            <ErrorState
+                title="This game could not be displayed"
+                description="The saved PGN is incomplete or invalid. You can still open the original game or use the game actions outside this review."
+            />
         );
     }
 
+    const activeAccent = activeAnalyzedMove
+        ? classificationAccent(activeAnalyzedMove.classification)
+        : null;
+
+    const moveRows: { moveNo: number; w?: number; b?: number }[] = [];
+    for (let i = 0; i < parsed.movesSan.length; i += 2) {
+        moveRows.push({
+            moveNo: i / 2 + 1,
+            w: i,
+            b: i + 1 < parsed.movesSan.length ? i + 1 : undefined,
+        });
+    }
+
+    const moveCell = (
+        row: { moveNo: number },
+        idx: number | undefined,
+        side: 'w' | 'b'
+    ) => {
+        if (idx == null) return <div className="h-10" />;
+        const san = parsed.movesSan[idx]!;
+        const analyzedMove = analysisMoveByPly.get(idx);
+        const trainingMoment = trainingMomentByPly.get(idx);
+        const active = clampedPly === idx + 1;
+        const accent = analyzedMove
+            ? classificationAccent(analyzedMove.classification)
+            : null;
+        const symbol = analyzedMove
+            ? getClassificationSymbol(analyzedMove.classification)
+            : null;
+
+        return (
+            <button
+                key={`${side}-${idx}`}
+                id={`game-move-${idx}`}
+                type="button"
+                aria-current={active ? 'true' : undefined}
+                className={cn(
+                    'flex h-10 min-w-0 items-center gap-2 rounded-lg border-l-2 px-2.5 text-left font-mono text-xs transition-all duration-150',
+                    'hover:bg-muted/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    accent?.border ?? 'border-l-border',
+                    active ? 'bg-primary/8 ring-1 ring-primary/25' : 'bg-transparent'
+                )}
+                onClick={() => {
+                    setIsPlaying(false);
+                    setActivePly(idx + 1);
+                }}
+            >
+                <span className="w-7 shrink-0 text-muted-foreground">
+                    {side === 'w' ? `${row.moveNo}.` : '…'}
+                </span>
+                <span className="truncate font-semibold">{san}</span>
+                {symbol && analyzedMove ? (
+                    <span
+                        className={cn(
+                            'ml-auto inline-flex min-w-6 items-center justify-center rounded-md px-1.5 py-0.5 font-sans text-[10px] font-bold',
+                            accent?.badge
+                        )}
+                        title={getClassificationLabel(analyzedMove.classification)}
+                    >
+                        {symbol}
+                    </span>
+                ) : null}
+                {trainingMoment || analyzedMove?.hasTrainingMoment ? (
+                    <span
+                        className="h-2 w-2 shrink-0 rounded-full bg-primary"
+                        title="Practice position"
+                    />
+                ) : null}
+            </button>
+        );
+    };
+
     return (
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
-            <div className="space-y-4">
-                <Card>
-                    <CardContent className="pt-6">
+        <section
+            className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,720px)_minmax(320px,1fr)] lg:items-start xl:gap-6"
+            aria-label="Game review workspace"
+        >
+            <div className="min-w-0 lg:sticky lg:top-20">
+                <div
+                    className="relative mx-auto w-full min-w-0 max-w-[720px] overflow-hidden rounded-[1.25rem] border bg-card p-1.5 shadow-[0_28px_90px_-60px_rgba(15,23,42,0.72)] sm:p-2"
+                    data-game-review-board
+                >
+                    <span className="sr-only" aria-live="polite" aria-atomic="true">
+                        {activeAnalyzedMove
+                            ? `${getClassificationLabel(activeAnalyzedMove.classification)} move: ${activeAnalyzedMove.san}`
+                            : 'Start position'}
+                    </span>
+                    <div className="min-w-0 max-w-full overflow-hidden rounded-[0.9rem]">
                         <Chessboard
                             options={{
                                 position: fen,
@@ -531,412 +654,411 @@ export function GameViewer({
                                 allowDrawingArrows: false,
                                 arrows: showPvArrows ? analysisArrows : [],
                                 squareStyles,
+                                squareRenderer: ({ square, children }) => (
+                                    <div className="relative h-full w-full">
+                                        {children}
+                                        {activeAnalyzedMove &&
+                                        lastMove?.to === square ? (
+                                            <span
+                                                className={cn(
+                                                    'pointer-events-none absolute right-[5%] top-[5%] z-20 flex h-[28%] min-h-5 min-w-5 items-center justify-center rounded-full border text-[clamp(11px,2.8vw,17px)] font-black leading-none shadow-lg',
+                                                    'animate-in fade-in zoom-in-75 duration-200 motion-reduce:animate-none',
+                                                    classificationMarkerClass(
+                                                        activeAnalyzedMove.classification
+                                                    )
+                                                )}
+                                                role="img"
+                                                aria-label={`${getClassificationLabel(activeAnalyzedMove.classification)} on ${square}`}
+                                                data-game-move-quality={
+                                                    activeAnalyzedMove.classification
+                                                }
+                                            >
+                                                {getClassificationSymbol(
+                                                    activeAnalyzedMove.classification
+                                                )}
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                ),
+                                showAnimations: true,
+                                animationDurationInMs: 240,
                             }}
                         />
-                        <div className="mt-4 flex flex-wrap items-center gap-2">
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setActivePly(0)}
-                                disabled={clampedPly === 0}
-                            >
-                                Start
-                            </Button>
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setActivePly(clampedPly - 1)}
-                                disabled={clampedPly === 0}
-                            >
-                                Back
-                            </Button>
-                            <div className="text-sm text-muted-foreground">
-                                Ply {clampedPly} / {parsed.positions.length - 1}
-                            </div>
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() =>
-                                    setActivePly(clampedPly + 1)
-                                }
-                                disabled={clampedPly >= parsed.positions.length - 1}
-                            >
-                                Next
-                            </Button>
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setActivePly(parsed.positions.length - 1)}
-                                disabled={clampedPly >= parsed.positions.length - 1}
-                            >
-                                End
-                            </Button>
-                        </div>
-                    </CardContent>
-                </Card>
-            </div>
-
-            <div className="space-y-4">
-                <div className="space-y-2">
-                    {metaLabel ? (
-                        <div className="text-sm text-muted-foreground">
-                            {metaLabel}
-                        </div>
-                    ) : null}
-                    {analysis ? (
-                        <div className="space-y-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <Badge variant="outline">
-                                    ♔ {analysis.whiteAccuracy?.toFixed(1) ?? '—'}%
-                                </Badge>
-                                <Badge variant="outline">
-                                    ♚ {analysis.blackAccuracy?.toFixed(1) ?? '—'}%
-                                </Badge>
-                                {analysis.trainingExtraction ? (
-                                    <Badge variant="secondary">
-                                        {
-                                            analysis.trainingExtraction.summary
-                                                .savedPositions
-                                        }{' '}
-                                        practice positions from{' '}
-                                        {
-                                            analysis.trainingExtraction.summary
-                                                .userDecisions
-                                        }{' '}
-                                        decisions
-                                    </Badge>
-                                ) : null}
-                            </div>
-                            {analysis.trainingExtraction?.summary
-                                .unresolvedDecisions ? (
-                                <p className="text-xs text-amber-700 dark:text-amber-300">
-                                    {
-                                        analysis.trainingExtraction.summary
-                                            .unresolvedDecisions
-                                    }{' '}
-                                    decision(s) need stronger stable evidence.
-                                </p>
-                            ) : null}
-                        </div>
-                    ) : null}
+                    </div>
                 </div>
 
-                {activeExtractionReceipt ? (
-                    <Card>
-                        <CardContent className="space-y-1 pt-4 text-sm">
-                            <div className="font-medium">
-                                {extractionReasonLabel(
-                                    activeExtractionReceipt.reason
-                                )}
+                <div className="mx-auto mt-2 flex w-full max-w-[720px] items-center justify-between gap-2 rounded-2xl border bg-card/90 p-2 shadow-[0_16px_50px_-45px_rgba(15,23,42,0.55)] backdrop-blur">
+                    <div className="flex items-center gap-1">
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Go to start"
+                            disabled={clampedPly === 0}
+                            onClick={() => {
+                                setIsPlaying(false);
+                                setActivePly(0);
+                            }}
+                        >
+                            <ChevronsLeft aria-hidden="true" />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Previous move"
+                            disabled={clampedPly === 0}
+                            onClick={() => {
+                                setIsPlaying(false);
+                                setActivePly(clampedPly - 1);
+                            }}
+                        >
+                            <ChevronLeft aria-hidden="true" />
+                        </Button>
+                        <Button
+                            variant="default"
+                            size="icon"
+                            aria-label={isPlaying ? 'Pause review' : 'Play review'}
+                            onClick={() => {
+                                if (
+                                    !isPlaying &&
+                                    clampedPly >= parsed.positions.length - 1
+                                ) {
+                                    setActivePly(0);
+                                }
+                                setIsPlaying((current) => !current);
+                            }}
+                        >
+                            {isPlaying ? (
+                                <Pause aria-hidden="true" />
+                            ) : (
+                                <Play aria-hidden="true" />
+                            )}
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Next move"
+                            disabled={clampedPly >= parsed.positions.length - 1}
+                            onClick={() => {
+                                setIsPlaying(false);
+                                setActivePly(clampedPly + 1);
+                            }}
+                        >
+                            <ChevronRight aria-hidden="true" />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Go to end"
+                            disabled={clampedPly >= parsed.positions.length - 1}
+                            onClick={() => {
+                                setIsPlaying(false);
+                                setActivePly(parsed.positions.length - 1);
+                            }}
+                        >
+                            <ChevronsRight aria-hidden="true" />
+                        </Button>
+                    </div>
+                    <div className="pr-2 text-right">
+                        <div className="text-xs font-semibold tabular-nums">
+                            {clampedPly} / {parsed.positions.length - 1}
+                        </div>
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                            ply
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <Tabs
+                value={activePanel}
+                onValueChange={(value) => {
+                    const next = value as 'review' | 'moves' | 'engine';
+                    setActivePanel(next);
+                    setAnalysisEnabled(next === 'engine');
+                }}
+                className="min-w-0 overflow-hidden rounded-[1.25rem] border bg-card/80 shadow-[0_22px_70px_-58px_rgba(15,23,42,0.68)]"
+            >
+                <div className="border-b p-2">
+                    <TabsList className="grid w-full grid-cols-3">
+                        <TabsTrigger value="review">Review</TabsTrigger>
+                        <TabsTrigger value="moves">Moves</TabsTrigger>
+                        <TabsTrigger value="engine">Engine</TabsTrigger>
+                    </TabsList>
+                </div>
+
+                <TabsContent value="review" className="m-0 space-y-4 p-4 sm:p-5">
+                    {clampedPly === 0 ? (
+                        <div className="rounded-2xl bg-muted/45 p-5">
+                            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                                Start position
+                            </p>
+                            <h2 className="mt-2 text-xl font-semibold tracking-tight">
+                                Replay the decisions that shaped the game.
+                            </h2>
+                            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                                Use the controls below the board or select any move
+                                from the move list.
+                            </p>
+                        </div>
+                    ) : activeAnalyzedMove ? (
+                        <div className="space-y-4">
+                            <div className="flex items-start justify-between gap-3">
+                                <div>
+                                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                                        Move {Math.ceil(clampedPly / 2)}
+                                    </p>
+                                    <h2 className="mt-1 text-2xl font-semibold tracking-tight">
+                                        {activeAnalyzedMove.san}
+                                    </h2>
+                                </div>
+                                <span
+                                    className={cn(
+                                        'inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold',
+                                        activeAccent?.badge
+                                    )}
+                                >
+                                    {getClassificationSymbol(
+                                        activeAnalyzedMove.classification
+                                    )}
+                                    {getClassificationLabel(
+                                        activeAnalyzedMove.classification
+                                    )}
+                                </span>
                             </div>
-                            {activeExtractionReceipt.winChanceLoss != null ||
-                            activeExtractionReceipt.cpLoss != null ? (
-                                <div className="text-xs text-muted-foreground">
-                                    {activeExtractionReceipt.winChanceLoss != null
-                                        ? `${(
-                                              activeExtractionReceipt.winChanceLoss *
-                                              100
-                                          ).toFixed(1)}% winning-chance loss`
-                                        : `${Math.round(
-                                              activeExtractionReceipt.cpLoss ?? 0
-                                          )} cp loss`}
+
+                            <div className="rounded-2xl bg-muted/45 p-4">
+                                <p className="text-sm leading-6">
+                                    {activeAnalyzedMove.cpLoss <= 10
+                                        ? 'This kept the position on its strongest course.'
+                                        : `This decision gave up about ${(activeAnalyzedMove.cpLoss / 100).toFixed(2)} pawns of evaluation.`}
+                                </p>
+                                {activeAnalyzedMove.bestMoveSan &&
+                                activeAnalyzedMove.bestMoveSan !==
+                                    activeAnalyzedMove.san ? (
+                                    <p className="mt-2 text-sm text-muted-foreground">
+                                        Best was{' '}
+                                        <span className="font-semibold text-foreground">
+                                            {activeAnalyzedMove.bestMoveSan}
+                                        </span>
+                                        .
+                                    </p>
+                                ) : null}
+                            </div>
+
+                            {activeExtractionReceipt ? (
+                                <div className="rounded-2xl border p-4 text-sm">
+                                    <div className="font-medium">
+                                        {extractionReasonLabel(
+                                            activeExtractionReceipt.reason
+                                        )}
+                                    </div>
+                                    {activeExtractionReceipt.winChanceLoss != null ||
+                                    activeExtractionReceipt.cpLoss != null ? (
+                                        <div className="mt-1 text-xs text-muted-foreground">
+                                            {activeExtractionReceipt.winChanceLoss != null
+                                                ? `${(
+                                                      activeExtractionReceipt.winChanceLoss *
+                                                      100
+                                                  ).toFixed(1)}% winning-chance loss`
+                                                : `${Math.round(
+                                                      activeExtractionReceipt.cpLoss ??
+                                                          0
+                                                  )} cp loss`}
+                                        </div>
+                                    ) : null}
                                 </div>
                             ) : null}
-                        </CardContent>
-                    </Card>
-                ) : null}
 
-                <Card>
-                    <CardHeader className="pb-3">
-                        <div className="flex items-center justify-between gap-2">
-                            <CardTitle className="text-base">
-                                Analysis (local Stockfish)
-                            </CardTitle>
-                            <div className="flex items-center gap-2">
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => setAnalysisEnabled((v) => !v)}
-                                >
-                                    {analysisEnabled ? 'Stop' : 'Start'}
+                            {activeAnalyzedMove.hasTrainingMoment ||
+                            trainingMomentByPly.has(clampedPly - 1) ? (
+                                <Button asChild className="w-full">
+                                    <Link href="/practice">
+                                        <Target aria-hidden="true" />
+                                        Practice this kind of decision
+                                    </Link>
                                 </Button>
-                                <div className="w-[120px]">
-                                    <Select
-                                        value={String(analysisMultiPv)}
-                                        onValueChange={(v) =>
-                                            setAnalysisMultiPv(
-                                                Math.max(
-                                                    1,
-                                                    Math.min(5, Math.trunc(Number(v) || 1))
-                                                )
-                                            )
-                                        }
-                                    >
-                                        <SelectTrigger className="h-8">
-                                            <SelectValue />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {[1, 2, 3, 4, 5].map((n) => (
-                                                <SelectItem key={n} value={String(n)}>
-                                                    MultiPV {n}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
+                            ) : null}
+                        </div>
+                    ) : (
+                        <div className="rounded-2xl bg-muted/45 p-5 text-sm text-muted-foreground">
+                            This move has no saved review classification yet. Open
+                            Engine for live analysis.
+                        </div>
+                    )}
+
+                    {analysis ? (
+                        <div className="grid grid-cols-3 gap-2 border-t pt-4 text-center">
+                            <div>
+                                <div className="font-semibold tabular-nums">
+                                    {analysis.whiteAccuracy?.toFixed(1) ?? '—'}%
                                 </div>
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => setShowPvArrows((v) => !v)}
-                                >
-                                    {showPvArrows ? 'Hide arrows' : 'Show arrows'}
-                                </Button>
+                                <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                                    White
+                                </div>
+                            </div>
+                            <div>
+                                <div className="font-semibold tabular-nums">
+                                    {analysis.blackAccuracy?.toFixed(1) ?? '—'}%
+                                </div>
+                                <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                                    Black
+                                </div>
+                            </div>
+                            <div>
+                                <div className="font-semibold tabular-nums">
+                                    {analysis.trainingExtraction?.summary
+                                        .savedPositions ?? 0}
+                                </div>
+                                <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                                    Positions
+                                </div>
                             </div>
                         </div>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
+                    ) : null}
+                </TabsContent>
+
+                <TabsContent value="moves" className="m-0 p-3 sm:p-4">
+                    <div
+                        ref={movesScrollRef}
+                        className="max-h-[min(62vh,620px)] space-y-1 overflow-auto pr-1"
+                    >
+                        {moveRows.map((row) => (
+                            <div key={row.moveNo} className="grid grid-cols-2 gap-1">
+                                {moveCell(row, row.w, 'w')}
+                                {moveCell(row, row.b, 'b')}
+                            </div>
+                        ))}
+                    </div>
+                </TabsContent>
+
+                <TabsContent value="engine" className="m-0 space-y-4 p-4 sm:p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                            <h2 className="font-semibold">Live Stockfish</h2>
+                            <p className="text-xs text-muted-foreground">
+                                Runs only while this tab is open.
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <div className="w-[112px]">
+                                <Select
+                                    value={String(analysisMultiPv)}
+                                    onValueChange={(value) =>
+                                        setAnalysisMultiPv(
+                                            Math.max(
+                                                1,
+                                                Math.min(
+                                                    5,
+                                                    Math.trunc(Number(value) || 1)
+                                                )
+                                            )
+                                        )
+                                    }
+                                >
+                                    <SelectTrigger className="h-11 sm:h-9">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {[1, 2, 3, 4, 5].map((count) => (
+                                            <SelectItem
+                                                key={count}
+                                                value={String(count)}
+                                            >
+                                                {count} {count === 1 ? 'line' : 'lines'}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setShowPvArrows((current) => !current)}
+                            >
+                                {showPvArrows ? 'Hide arrows' : 'Show arrows'}
+                            </Button>
+                        </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-muted/45 p-4">
                         <div className="flex items-center justify-between gap-3">
-                            <div className="font-mono text-sm text-muted-foreground">
+                            <div className="font-mono text-sm font-semibold">
                                 White {analysisEvalText}
                             </div>
-                            <div className="h-2 w-40 overflow-hidden rounded-full bg-muted">
+                            <div className="h-2 w-32 overflow-hidden rounded-full bg-background">
                                 <div
-                                    className="h-2 bg-foreground/70"
+                                    className="h-full bg-primary transition-[width] duration-300"
                                     style={{
                                         width: `${Math.round(analysisEvalUnit * 100)}%`,
                                     }}
                                 />
                             </div>
                         </div>
-                        <div className="text-[11px] text-muted-foreground">
-                            + favors White · − favors Black
-                        </div>
-
-                        {/* Fixed-height status row to avoid layout shift while scrubbing */}
-                        <div className="flex h-5 items-center gap-2">
+                        <div className="mt-2 flex h-5 items-center gap-2 text-xs text-muted-foreground">
                             <div
                                 className={cn(
-                                    'h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground/70',
+                                    'h-3.5 w-3.5 animate-spin rounded-full border-2 border-muted-foreground/25 border-t-primary',
                                     analysisBusy ? 'opacity-100' : 'opacity-0'
                                 )}
                                 aria-hidden={!analysisBusy}
                             />
-                            <div
+                            {analysisBusy
+                                ? `Thinking${typeof live.depth === 'number' ? ` · depth ${live.depth}` : ''}${typeof live.timeMs === 'number' ? ` · ${(live.timeMs / 1000).toFixed(1)}s` : ''}`
+                                : 'Ready'}
+                            {live.error ? (
+                                <span className="ml-auto text-destructive">
+                                    {live.error}
+                                </span>
+                            ) : null}
+                        </div>
+                    </div>
+
+                    <div className="space-y-2">
+                        {(live.lines ?? []).slice(0, 5).map((line, index) => (
+                            <button
+                                key={index}
+                                type="button"
+                                onClick={() =>
+                                    setSelection({
+                                        fen,
+                                        idx: index,
+                                        key: (line.pvUci ?? []).join(' '),
+                                    })
+                                }
                                 className={cn(
-                                    'text-xs text-muted-foreground',
-                                    analysisBusy ? 'opacity-100' : 'opacity-0'
+                                    'w-full rounded-xl border px-3 py-2.5 text-left transition-all duration-150 hover:-translate-y-px hover:bg-muted/50',
+                                    index === selectedLine &&
+                                        'border-primary/35 bg-primary/5'
                                 )}
                             >
-                                Thinking…
-                                {typeof live.depth === 'number' ? ` d${live.depth}` : ''}
-                                {typeof live.timeMs === 'number'
-                                    ? ` ${(live.timeMs / 1000).toFixed(1)}s`
-                                    : ''}
-                            </div>
-                            <div className="ml-auto text-xs text-red-600">
-                                {live.error ? live.error : null}
-                            </div>
-                        </div>
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-xs font-semibold">
+                                        Line {index + 1}
+                                    </span>
+                                    <span className="font-mono text-xs text-muted-foreground">
+                                        {formatEngineScoreForWhite(line.score, fen)}
+                                    </span>
+                                </div>
+                                <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+                                    {pvSanByLine[index]?.preview ?? ''}
+                                </div>
+                            </button>
+                        ))}
+                    </div>
 
-                        <div className="space-y-2">
-                            {(live.lines ?? []).slice(0, 5).map((l, i) => (
-                                <button
-                                    key={i}
-                                    type="button"
-                                    onClick={() => {
-                                        setSelection({
-                                            fen,
-                                            idx: i,
-                                            key: (l.pvUci ?? []).join(' '),
-                                        });
-                                    }}
-                                    className={
-                                        'w-full rounded-md border px-2 py-1.5 text-left text-sm transition-colors ' +
-                                        (i === selectedLine
-                                            ? 'bg-muted'
-                                            : 'hover:bg-muted/50')
-                                    }
-                                >
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div className="font-medium">#{i + 1}</div>
-                                        <div className="font-mono text-xs text-muted-foreground">
-                                            {formatEngineScoreForWhite(
-                                                l.score,
-                                                fen
-                                            )}
-                                            {typeof live.depth === 'number'
-                                                ? ` d${live.depth}`
-                                                : ''}
-                                        </div>
-                                    </div>
-                                    <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                                        {pvSanByLine[i]?.preview ?? ''}
-                                    </div>
-                                </button>
-                            ))}
-                        </div>
-
-                        <Separator />
-
-                        <div className="font-mono text-[11px] text-muted-foreground">
-                            PV:{' '}
-                            {pvSanByLine[selectedLine]?.full ??
-                                pvSanByLine[0]?.full ??
-                                ''}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                            Use ←/→ (and Home/End) to navigate the game.
-                        </div>
-                    </CardContent>
-                </Card>
-
-                <Card>
-                    <CardHeader className="pb-3">
-                        <CardTitle className="text-base">Moves</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        <div
-                            ref={movesScrollRef}
-                            className="max-h-[420px] space-y-1 overflow-auto pr-1"
-                        >
-                            {(() => {
-                                const rows: { moveNo: number; w?: number; b?: number }[] =
-                                    [];
-                                for (let i = 0; i < parsed.movesSan.length; i += 2) {
-                                    rows.push({
-                                        moveNo: i / 2 + 1,
-                                        w: i,
-                                        b:
-                                            i + 1 < parsed.movesSan.length
-                                                ? i + 1
-                                                : undefined,
-                                    });
-                                }
-                                return rows.map((r) => {
-                                    const renderCell = (
-                                        idx: number | undefined,
-                                        side: 'w' | 'b'
-                                    ) => {
-                                        if (idx == null)
-                                            return <div className="h-8" />;
-                                        const san = parsed.movesSan[idx]!;
-                                        const analyzedMove = analysis?.moves?.find(
-                                            (am) => am.ply === idx
-                                        );
-                                        const trainingMoment =
-                                            trainingMomentByPly.get(idx);
-                                        const symbol = analyzedMove
-                                            ? getClassificationSymbol(
-                                                  analyzedMove.classification
-                                              )
-                                            : '';
-                                        const hasTrainingMoment =
-                                            !!trainingMoment ||
-                                            analyzedMove?.hasTrainingMoment;
-                                        const active = clampedPly === idx + 1;
-                                        const tooltipParts: string[] = [];
-                                        if (analyzedMove) {
-                                            tooltipParts.push(
-                                                `${analyzedMove.classification}`
-                                            );
-                                            if (analyzedMove.cpLoss > 0)
-                                                tooltipParts.push(
-                                                    `-${analyzedMove.cpLoss}cp`
-                                                );
-                                            if (
-                                                analyzedMove.bestMoveSan &&
-                                                analyzedMove.san !==
-                                                    analyzedMove.bestMoveSan
-                                            ) {
-                                                tooltipParts.push(
-                                                    `Best: ${analyzedMove.bestMoveSan}`
-                                                );
-                                            }
-                                        }
-                                        if (trainingMoment)
-                                            tooltipParts.push(
-                                                '📋 Personal practice position'
-                                            );
-                                        const extractionReceipt =
-                                            extractionReceiptByPly.get(idx);
-                                        if (extractionReceipt) {
-                                            tooltipParts.push(
-                                                extractionReasonLabel(
-                                                    extractionReceipt.reason
-                                                )
-                                            );
-                                        }
-
-                                        const accent = analyzedMove
-                                            ? classificationAccent(
-                                                  analyzedMove.classification
-                                              )
-                                            : null;
-
-                                        return (
-                                            <Button
-                                                key={`${side}-${idx}`}
-                                                variant={active ? 'secondary' : 'ghost'}
-                                                className={cn(
-                                                    'h-8 w-full justify-start gap-2 px-2 py-0 font-mono text-[12px]',
-                                                    'border-l-2',
-                                                    accent?.border ?? 'border-l-border',
-                                                    side === 'w'
-                                                        ? 'bg-background'
-                                                        : 'bg-muted/30'
-                                                    ,
-                                                    active && 'ring-1 ring-ring'
-                                                )}
-                                                id={`game-move-${idx}`}
-                                                aria-current={active ? 'true' : undefined}
-                                                title={
-                                                    tooltipParts.length
-                                                        ? tooltipParts.join(' • ')
-                                                        : undefined
-                                                }
-                                                onClick={() => setActivePly(idx + 1)}
-                                            >
-                                                <span className="w-9 shrink-0 text-muted-foreground">
-                                                    {side === 'w'
-                                                        ? `${r.moveNo}.`
-                                                        : '…'}
-                                                </span>
-                                                <span className="truncate">{san}</span>
-                                                {symbol ? (
-                                                    <span
-                                                        className={cn(
-                                                            'ml-auto rounded px-1 py-0.5 text-[10px] font-semibold',
-                                                            accent?.badge ??
-                                                                'bg-muted text-muted-foreground'
-                                                        )}
-                                                    >
-                                                        {symbol}
-                                                    </span>
-                                                ) : (
-                                                    <span className="ml-auto" />
-                                                )}
-                                                {hasTrainingMoment ? (
-                                                    <span className="ml-1 inline-flex h-2 w-2 rounded-full bg-violet-500/80" />
-                                                ) : null}
-                                            </Button>
-                                        );
-                                    };
-
-                                    return (
-                                        <div
-                                            key={r.moveNo}
-                                            className="grid grid-cols-2 gap-1"
-                                        >
-                                            {renderCell(r.w, 'w')}
-                                            {renderCell(r.b, 'b')}
-                                        </div>
-                                    );
-                                });
-                            })()}
-                        </div>
-                    </CardContent>
-                </Card>
-            </div>
-        </div>
+                    <Separator />
+                    <p className="break-words font-mono text-[11px] leading-5 text-muted-foreground">
+                        {pvSanByLine[selectedLine]?.full ??
+                            pvSanByLine[0]?.full ??
+                            'Engine line will appear here.'}
+                    </p>
+                    {metaLabel ? (
+                        <p className="text-[11px] text-muted-foreground">
+                            {metaLabel}
+                        </p>
+                    ) : null}
+                </TabsContent>
+            </Tabs>
+        </section>
     );
 }

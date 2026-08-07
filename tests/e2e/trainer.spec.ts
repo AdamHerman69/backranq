@@ -33,8 +33,28 @@ test.describe('authenticated personal decision practice', () => {
         await expect(page.getByText(/mistake/i)).toHaveCount(0);
         await expect(page.getByText(/quiet move/i)).toHaveCount(0);
 
+        const board = page.getByRole('group', {
+            name: 'White to move — find the best move',
+        });
+        const decisionFen = await board.getAttribute('data-board-fen');
+
         await clickMove(page, 'f1', 'c4');
 
+        await expect(board).toHaveAttribute(
+            'data-board-marker',
+            'REPEATED_MISTAKE'
+        );
+        await expect(board).toHaveAttribute(
+            'data-board-marker-square',
+            'c4'
+        );
+        await expect(
+            board.getByRole('img', { name: 'Repeated mistake on c4' })
+        ).toBeVisible();
+        await expect(board).toHaveAttribute('data-board-last-move', 'f1c4');
+        expect(await board.getAttribute('data-board-fen')).not.toBe(
+            decisionFen
+        );
         await expect(
             page.getByText('That repeats the mistake from the game.')
         ).toBeVisible();
@@ -48,6 +68,19 @@ test.describe('authenticated personal decision practice', () => {
                 .getByText('Nf3', { exact: true })
                 .first()
         ).toBeVisible();
+
+        await page
+            .getByRole('button', { name: 'Show best', exact: true })
+            .first()
+            .click();
+        await expect(board).toHaveAttribute(
+            'data-board-stage',
+            'REVIEW_DECISION'
+        );
+        await expect(board).toHaveAttribute(
+            'data-board-fen',
+            decisionFen ?? ''
+        );
     });
 
     test('grades a downloaded move before background history sync completes', async ({
@@ -89,15 +122,24 @@ test.describe('authenticated personal decision practice', () => {
         );
 
         await page.goto(practicePath(momentId));
+        const board = page.getByRole('group', {
+            name: 'White to move — find the best move',
+        });
         await dragMove(page, 'g1', 'f3');
         await expect(
             page.getByText('Opponent replied. Find the best move.')
         ).toBeVisible();
+        await expect(board).toHaveAttribute('data-board-last-move', 'b8c6');
+        await expect(board).not.toHaveAttribute('data-board-marker', /.+/);
         await expect(page.getByText(/step \d+ \/ \d+/i)).toHaveCount(0);
         await expect(page.getByText(/moves? remaining/i)).toHaveCount(0);
         expect(requestCount).toBe(0);
 
         await dragMove(page, 'f1', 'b5');
+        await expect(board).toHaveAttribute('data-board-marker', 'BEST');
+        await expect(
+            board.getByRole('img', { name: 'Best move on b5' })
+        ).toBeVisible();
         await expect(
             page.getByText('Best move — well found.')
         ).toBeVisible();
@@ -202,12 +244,10 @@ test.describe('authenticated personal decision practice', () => {
         ).toBeVisible();
         await expect(
             page.getByRole('heading', { name: 'Live engine' })
-        ).toBeVisible();
+        ).toHaveCount(0);
         await expect(
-            page.getByText(
-                /^(Engine (loading|starting)…|Analyzing|Analysis complete)/
-            )
-        ).toBeVisible();
+            page.getByRole('tab', { name: 'Review', exact: true })
+        ).toHaveAttribute('data-state', 'active');
         await expect(page).toHaveURL(/view=analyze/);
 
         const analysisBoard = page.getByRole('group', {
@@ -221,6 +261,7 @@ test.describe('authenticated personal decision practice', () => {
             analysisBoard.getByText('Decision position')
         ).toBeVisible();
 
+        await page.getByRole('tab', { name: 'Moves', exact: true }).click();
         await page.locator('[data-analysis-move-uci="f1c4"]').click();
         await expect(analysisBoard).toHaveAttribute(
             'data-analysis-position-context',
@@ -298,6 +339,7 @@ test.describe('authenticated personal decision practice', () => {
                 name: 'Analyze the position',
             })
         ).toBeVisible();
+        await page.getByRole('tab', { name: 'Moves', exact: true }).click();
         await expect(
             page.locator('[data-analysis-move-uci="d2d4"]')
         ).toBeVisible();
@@ -322,6 +364,7 @@ test.describe('authenticated personal decision practice', () => {
                 name: 'Analyze the position',
             })
         ).toBeVisible();
+        await page.getByRole('tab', { name: 'Moves', exact: true }).click();
         await expect(
             page.locator('[data-analysis-move-uci="d2d4"]')
         ).toBeVisible();

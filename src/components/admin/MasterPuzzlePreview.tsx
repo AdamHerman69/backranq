@@ -1,18 +1,20 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import { ExternalLink, Search } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
+import { EmptyState, InlineStatus } from '@/components/ui/async-state';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { BoardSkeleton } from '@/components/ui/loading-patterns';
 import type { MasterCandidateSummary } from '@/lib/master/adminContracts';
 
 const Chessboard = dynamic(
     () => import('react-chessboard').then((module) => module.Chessboard),
     {
         ssr: false,
-        loading: () => (
-            <div className="aspect-square animate-pulse rounded-lg bg-muted" />
-        ),
+        loading: () => <BoardSkeleton label="Loading candidate position" />,
     }
 );
 
@@ -23,18 +25,18 @@ export function MasterPuzzlePreview({
 }) {
     if (!candidate) {
         return (
-            <Card className="border-dashed">
-                <CardContent className="flex min-h-64 items-center justify-center text-center text-sm text-muted-foreground">
-                    Choose a candidate to inspect the exact position and engine
-                    evidence.
-                </CardContent>
-            </Card>
+            <EmptyState
+                title="Choose a candidate"
+                description="Select a ranked position to inspect the exact board and engine evidence."
+                icon={<Search aria-hidden="true" />}
+                className="min-h-64 xl:sticky xl:top-24"
+            />
         );
     }
 
     return (
-        <Card>
-            <CardHeader className="space-y-3">
+        <Card variant="panel" className="overflow-hidden xl:sticky xl:top-24">
+            <CardHeader className="space-y-3 border-b border-border/70 bg-surface-subtle/50">
                 <div className="flex flex-wrap items-center gap-2">
                     <Badge variant={candidate.hardGatePassed ? 'secondary' : 'destructive'}>
                         {candidate.hardGatePassed ? 'Quality gates passed' : 'Blocked'}
@@ -47,7 +49,7 @@ export function MasterPuzzlePreview({
                 </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-                <div className="mx-auto max-w-md rounded-xl border bg-card p-2">
+                <div className="mx-auto max-w-md rounded-lg border border-border/80 bg-card p-2 shadow-raised">
                     <Chessboard
                         options={{
                             position: candidate.fen,
@@ -74,24 +76,28 @@ export function MasterPuzzlePreview({
                     {candidate.evidenceSummary}
                 </p>
                 {candidate.rejectionReasons.length > 0 ? (
-                    <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                    <InlineStatus tone="danger">
+                        <div>
                         <p className="font-medium">Rejection evidence</p>
                         <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
                             {candidate.rejectionReasons.map((reason) => (
                                 <li key={reason}>{reason}</li>
                             ))}
                         </ul>
-                    </div>
+                        </div>
+                    </InlineStatus>
                 ) : null}
                 {candidate.sourceUrl ? (
-                    <a
-                        href={candidate.sourceUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex text-sm font-medium text-primary underline-offset-4 hover:underline"
-                    >
-                        Open public source game
-                    </a>
+                    <Button asChild variant="outline" size="sm">
+                        <a
+                            href={candidate.sourceUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                        >
+                            <ExternalLink aria-hidden="true" />
+                            Open public source game
+                        </a>
+                    </Button>
                 ) : null}
             </CardContent>
         </Card>

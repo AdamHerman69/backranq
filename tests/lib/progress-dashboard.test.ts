@@ -28,11 +28,23 @@ describe('Progress dashboard rendering', () => {
         );
 
         expect(html).toContain('aria-label="Progress scope"');
+        expect(html).toContain('aria-label="Time window"');
+        expect(html).toContain('href="/progress?scope=28"');
         expect(html).toContain('Data coverage');
         expect(html).toContain('Connect a chess account');
         expect(html).toContain('href="/settings"');
         expect(html).toContain('No eligible Positions in this view');
         expect(html).toContain('No completed attempts yet');
+
+        const nextActionAt = html.indexOf('Next useful action');
+        const scopeAt = html.indexOf('aria-label="Progress scope"');
+        const glanceAt = html.indexOf('At a glance');
+        const practiceAt = html.indexOf('In Practice');
+
+        expect(nextActionAt).toBeGreaterThan(-1);
+        expect(scopeAt).toBeGreaterThan(nextActionAt);
+        expect(glanceAt).toBeGreaterThan(scopeAt);
+        expect(practiceAt).toBeGreaterThan(glanceAt);
     });
 
     it('renders first recorded outcomes before all-attempt diagnostics', () => {

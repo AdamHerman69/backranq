@@ -1,11 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { RefreshCw, ShieldCheck, Unplug } from 'lucide-react';
 
 import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
+import { InlineStatus } from '@/components/ui/async-state';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { LoadingButton } from '@/components/ui/loading-button';
 import { cn } from '@/lib/utils';
 
 export type ChessProvider = 'lichess' | 'chesscom';
@@ -15,6 +18,7 @@ type Props = {
     provider: ChessProvider;
     currentUsername?: string | null;
     onUpdate: (username: string) => Promise<void>;
+    onSync?: () => Promise<void>;
     disabled?: boolean;
 };
 
@@ -23,24 +27,26 @@ function labelFor(provider: ChessProvider) {
 }
 
 function statusBadgeClass(status: Status, isLinked: boolean) {
-    if (status === 'checking') return 'bg-muted text-muted-foreground';
-    if (status === 'valid') return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300';
-    if (status === 'invalid') return 'bg-red-500/15 text-red-700 dark:text-red-300';
-    if (status === 'error') return 'bg-amber-500/20 text-amber-700 dark:text-amber-300';
-    if (isLinked) return 'bg-violet-500/15 text-violet-700 dark:text-violet-300';
-    return 'bg-muted text-muted-foreground';
+    if (status === 'checking') return 'bg-info/10 text-info';
+    if (status === 'valid') return 'bg-success/10 text-success';
+    if (status === 'invalid') return 'bg-destructive/10 text-destructive';
+    if (status === 'error') return 'bg-warning/10 text-warning';
+    if (isLinked) return 'bg-success/10 text-success';
+    return 'bg-surface-inset text-muted-foreground';
 }
 
 export function ChessAccountLink({
     provider,
     currentUsername,
     onUpdate,
+    onSync,
     disabled = false,
 }: Props) {
     const [username, setUsername] = useState(currentUsername ?? '');
     const [status, setStatus] = useState<Status>('idle');
     const [message, setMessage] = useState<string>('');
     const [saving, setSaving] = useState(false);
+    const [syncing, setSyncing] = useState(false);
     const [unlinkOpen, setUnlinkOpen] = useState(false);
     const validationRef = useRef<{
         requestId: number;
@@ -73,6 +79,7 @@ export function ChessAccountLink({
         setStatus('idle');
         setMessage('');
         setSaving(false);
+        setSyncing(false);
         setUnlinkOpen(false);
     }, [currentUsername, disabled]);
 
@@ -217,6 +224,16 @@ export function ChessAccountLink({
         }
     }
 
+    async function sync() {
+        if (!onSync || disabled || saving || syncing || !currentUsername) return;
+        setSyncing(true);
+        try {
+            await onSync();
+        } finally {
+            setSyncing(false);
+        }
+    }
+
     const title = labelFor(provider);
     const statusText =
         status === 'checking'
@@ -232,24 +249,40 @@ export function ChessAccountLink({
                     : 'Not linked';
 
     return (
-        <div className="space-y-3">
+        <div className="space-y-3 rounded-lg border border-border/80 bg-card p-3 shadow-control sm:p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-sm font-medium">{title}</div>
+                <div className="flex items-center gap-2.5">
+                    <span className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-surface-inset font-mono text-xs font-semibold text-primary">
+                        {provider === 'lichess' ? 'Li' : 'C.'}
+                    </span>
+                    <div>
+                        <div className="text-sm font-semibold">{title}</div>
+                        <div className="text-xs text-muted-foreground">
+                            {currentUsername ? `@${currentUsername}` : 'Public profile'}
+                        </div>
+                    </div>
+                </div>
                 <Badge
                     className={cn(
-                        'border-transparent',
+                        'gap-1.5 border-transparent',
                         statusBadgeClass(status, !!currentUsername)
                     )}
                 >
+                    {currentUsername && status === 'idle' ? (
+                        <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+                    ) : null}
                     {statusText}
                 </Badge>
             </div>
 
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground">
+                    {title} username
+                </span>
                 <Input
                     value={username}
                     aria-label={`${title} username`}
-                    disabled={disabled || saving}
+                    disabled={disabled || saving || syncing}
                     onChange={(e) => {
                         invalidateValidation();
                         setUsername(e.target.value);
@@ -257,55 +290,82 @@ export function ChessAccountLink({
                         setMessage('');
                     }}
                     placeholder={`${title} username`}
-                    className="sm:max-w-sm"
                 />
-                <div className="flex flex-wrap gap-2">
+            </label>
+
+            <div className="flex flex-wrap gap-2">
+                <LoadingButton
+                    type="button"
+                    variant="outline"
+                    loading={status === 'checking'}
+                    loadingLabel="Checking…"
+                    onClick={validate}
+                    disabled={
+                        saving ||
+                        syncing ||
+                        disabled ||
+                        !normalizedUsername
+                    }
+                >
+                    Validate
+                </LoadingButton>
+                <LoadingButton
+                    type="button"
+                    loading={saving}
+                    loadingLabel={currentUsername ? 'Replacing…' : 'Linking…'}
+                    onClick={save}
+                    disabled={
+                        syncing ||
+                        disabled ||
+                        !normalizedUsername ||
+                        normalizedUsername === currentNormalized
+                    }
+                >
+                    {currentUsername ? 'Replace' : 'Link account'}
+                </LoadingButton>
+                {currentUsername && onSync ? (
+                    <LoadingButton
+                        type="button"
+                        variant="quiet"
+                        loading={syncing}
+                        loadingLabel="Syncing…"
+                        onClick={() => void sync()}
+                        disabled={disabled || saving}
+                    >
+                        <RefreshCw aria-hidden="true" />
+                        Sync now
+                    </LoadingButton>
+                ) : null}
+                {currentUsername ? (
                     <Button
                         type="button"
-                        variant="outline"
-                        onClick={validate}
-                        disabled={
-                            saving ||
-                            disabled ||
-                            status === 'checking' ||
-                            !normalizedUsername
-                        }
+                        variant="ghost"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => setUnlinkOpen(true)}
+                        disabled={disabled || saving || syncing}
                     >
-                        Validate
+                        <Unplug aria-hidden="true" />
+                        Disconnect
                     </Button>
-                    <Button
-                        type="button"
-                        onClick={save}
-                        disabled={
-                            saving ||
-                            disabled ||
-                            !normalizedUsername ||
-                            normalizedUsername === currentNormalized
-                        }
-                    >
-                        {currentUsername ? 'Replace' : 'Link account'}
-                    </Button>
-                    {currentUsername ? (
-                        <Button
-                            type="button"
-                            variant="ghost"
-                            onClick={() => setUnlinkOpen(true)}
-                            disabled={disabled || saving}
-                        >
-                            Disconnect
-                        </Button>
-                    ) : null}
-                </div>
+                ) : null}
             </div>
 
             {message ? (
-                <div
-                    className="text-sm text-muted-foreground"
-                    role="status"
-                    aria-live="polite"
+                <InlineStatus
+                    tone={
+                        status === 'invalid'
+                            ? 'danger'
+                            : status === 'error'
+                              ? 'warning'
+                              : status === 'valid'
+                                ? 'success'
+                                : 'neutral'
+                    }
+                    className="min-h-0 py-2 text-xs"
+                    live
                 >
                     {message}
-                </div>
+                </InlineStatus>
             ) : null}
 
             <ActionConfirmDialog

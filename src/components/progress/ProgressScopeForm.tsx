@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { SlidersHorizontal } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import type {
@@ -7,6 +8,28 @@ import type {
     ProgressScope,
 } from '@/lib/progress/contracts';
 import { breakdownLabel } from '@/components/progress/model';
+
+const scopeOptions = [
+    { value: 28, label: '28 days' },
+    { value: 90, label: '90 days' },
+    { value: 'all', label: 'All time' },
+] as const;
+
+function progressHref(
+    scope: ProgressScope,
+    filters: ProgressFilters
+) {
+    const query = new URLSearchParams();
+    if (scope !== 90) query.set('scope', String(scope));
+    filters.providers.forEach((provider) =>
+        query.append('provider', provider)
+    );
+    filters.timeClasses.forEach((timeClass) =>
+        query.append('timeClass', timeClass)
+    );
+    const suffix = query.toString();
+    return suffix ? `/progress?${suffix}` : '/progress';
+}
 
 export function ProgressScopeForm({
     scope,
@@ -42,55 +65,79 @@ export function ProgressScopeForm({
         <form
             action="/progress"
             method="get"
-            className="rounded-xl border bg-card p-4"
+            className="rounded-lg border bg-card p-3 shadow-control sm:p-4"
             aria-label="Progress scope"
         >
-            <div className="grid gap-4 sm:grid-cols-[minmax(0,14rem)_1fr] sm:items-end">
-                <label className="space-y-1.5 text-sm">
-                    <span className="font-medium">Time window</span>
-                    <select
-                        name="scope"
-                        defaultValue={String(scope)}
-                        className="flex h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                    >
-                        <option value="28">Last 28 days</option>
-                        <option value="90">Last 90 days</option>
-                        <option value="all">All retained data</option>
-                    </select>
-                </label>
-                <div className="text-sm text-muted-foreground">
-                    Games are included by when they were played. Practice
-                    outcomes use when an attempt finished.
+            {scope !== 90 ? (
+                <input type="hidden" name="scope" value={String(scope)} />
+            ) : null}
+
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div
+                    className="grid grid-cols-3 rounded-md bg-surface-subtle p-1"
+                    role="group"
+                    aria-label="Time window"
+                >
+                    {scopeOptions.map((option) => {
+                        const isCurrent = option.value === scope;
+                        return (
+                            <Button
+                                key={option.value}
+                                asChild
+                                type="button"
+                                size="sm"
+                                variant={isCurrent ? 'default' : 'ghost'}
+                                className="min-h-11 px-3 sm:min-h-10"
+                            >
+                                <Link
+                                    href={progressHref(
+                                        option.value,
+                                        filters
+                                    )}
+                                    aria-current={
+                                        isCurrent ? 'page' : undefined
+                                    }
+                                >
+                                    {option.label}
+                                </Link>
+                            </Button>
+                        );
+                    })}
                 </div>
+                <p
+                    className="text-xs leading-relaxed text-muted-foreground lg:max-w-xl lg:text-right"
+                    role="status"
+                    aria-live="polite"
+                >
+                    Current view: {scopeLabel}
+                    {filterCount > 0
+                        ? ` with ${filterCount} active ${
+                              filterCount === 1 ? 'filter' : 'filters'
+                          }`
+                        : ' across all sources and time controls'}
+                    . Games use played time; Practice uses completion time.
+                </p>
             </div>
 
-            <p
-                className="mt-3 text-xs text-muted-foreground"
-                role="status"
-                aria-live="polite"
-            >
-                Current view: {scopeLabel}
-                {filterCount > 0
-                    ? ` with ${filterCount} active ${
-                          filterCount === 1 ? 'filter' : 'filters'
-                      }`
-                    : ' across all available sources and time controls'}
-                .
-            </p>
-
             <details
-                className="mt-4 rounded-lg border px-3 py-2"
+                className="group mt-3 rounded-md border border-transparent open:border-border open:bg-surface-subtle"
                 open={hasFilters || undefined}
             >
-                <summary className="flex min-h-11 cursor-pointer select-none items-center text-sm font-medium">
-                    Source and time-control filters
-                    {hasFilters ? (
-                        <span className="ml-2 font-normal text-muted-foreground">
-                            · active
-                        </span>
-                    ) : null}
+                <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-md px-3 text-sm font-medium transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/55 [&::-webkit-details-marker]:hidden">
+                    <span className="flex items-center gap-2">
+                        <SlidersHorizontal
+                            className="h-4 w-4 text-muted-foreground"
+                            aria-hidden="true"
+                        />
+                        Source and time control
+                    </span>
+                    <span className="text-xs font-normal text-muted-foreground">
+                        {hasFilters
+                            ? `${filterCount} active`
+                            : 'Optional filters'}
+                    </span>
                 </summary>
-                <div className="mt-4 grid gap-5 sm:grid-cols-2">
+                <div className="grid gap-5 border-t p-3 sm:grid-cols-2 sm:p-4">
                     <fieldset>
                         <legend className="text-sm font-medium">Source</legend>
                         <p className="mt-1 text-xs text-muted-foreground">
@@ -106,7 +153,7 @@ export function ProgressScopeForm({
                             {providerOptions.map((option) => (
                                 <label
                                     key={option.key}
-                                    className="flex min-h-11 items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm"
+                                    className="flex min-h-11 items-center justify-between gap-3 rounded-md border bg-card px-3 py-2 text-sm transition-colors hover:border-primary/25"
                                 >
                                     <span>
                                         {breakdownLabel(
@@ -126,7 +173,7 @@ export function ProgressScopeForm({
                                             defaultChecked={filters.providers.includes(
                                                 option.key
                                             )}
-                                            className="h-4 w-4 accent-foreground"
+                                            className="h-4 w-4 accent-primary"
                                         />
                                     </span>
                                 </label>
@@ -151,7 +198,7 @@ export function ProgressScopeForm({
                             {timeClassOptions.map((option) => (
                                 <label
                                     key={option.key}
-                                    className="flex min-h-11 items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm"
+                                    className="flex min-h-11 items-center justify-between gap-3 rounded-md border bg-card px-3 py-2 text-sm transition-colors hover:border-primary/25"
                                 >
                                     <span>
                                         {breakdownLabel(
@@ -171,31 +218,31 @@ export function ProgressScopeForm({
                                             defaultChecked={filters.timeClasses.includes(
                                                 option.key
                                             )}
-                                            className="h-4 w-4 accent-foreground"
+                                            className="h-4 w-4 accent-primary"
                                         />
                                     </span>
                                 </label>
                             ))}
                         </div>
                     </fieldset>
+
+                    <div className="flex flex-wrap gap-2 sm:col-span-2">
+                        <Button type="submit" className="min-h-11">
+                            Apply filters
+                        </Button>
+                        {scope !== 90 || hasFilters ? (
+                            <Button
+                                asChild
+                                type="button"
+                                variant="outline"
+                                className="min-h-11"
+                            >
+                                <Link href="/progress">Reset view</Link>
+                            </Button>
+                        ) : null}
+                    </div>
                 </div>
             </details>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-                <Button type="submit" className="min-h-11">
-                    Apply view
-                </Button>
-                {scope !== 90 || hasFilters ? (
-                    <Button
-                        asChild
-                        type="button"
-                        variant="outline"
-                        className="min-h-11"
-                    >
-                        <Link href="/progress">Reset</Link>
-                    </Button>
-                ) : null}
-            </div>
         </form>
     );
 }
