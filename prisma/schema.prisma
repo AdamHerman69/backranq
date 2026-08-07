@@ -585,7 +585,7 @@ model PremiumInvitation {
   activeKey       String?     @unique
   tokenHash       String      @unique
   plan            BillingPlan @default(PRO)
-  invitedById     String      @db.Uuid
+  invitedById     String?     @db.Uuid
   acceptedById    String?     @db.Uuid
   expiresAt       DateTime
   acceptedAt      DateTime?
@@ -596,7 +596,7 @@ model PremiumInvitation {
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
-  invitedBy  User       @relation("PremiumInvitationInviter", fields: [invitedById], references: [id], onDelete: Restrict)
+  invitedBy  User?      @relation("PremiumInvitationInviter", fields: [invitedById], references: [id], onDelete: SetNull)
   acceptedBy User?      @relation("PremiumInvitationRecipient", fields: [acceptedById], references: [id], onDelete: SetNull)
   planGrant  PlanGrant?
 

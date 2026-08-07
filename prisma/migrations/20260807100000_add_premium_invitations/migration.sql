@@ -23,7 +23,7 @@ CREATE TABLE "PremiumInvitation" (
     "activeKey" TEXT,
     "tokenHash" TEXT NOT NULL,
     "plan" "BillingPlan" NOT NULL DEFAULT 'PRO',
-    "invitedById" UUID NOT NULL,
+    "invitedById" UUID,
     "acceptedById" UUID,
     "expiresAt" TIMESTAMP(3) NOT NULL,
     "acceptedAt" TIMESTAMP(3),
@@ -68,7 +68,7 @@ CREATE INDEX "PlanGrant_grantedById_idx" ON "PlanGrant"("grantedById");
 CREATE INDEX "BillingAccount_planSource_idx" ON "BillingAccount"("planSource");
 CREATE INDEX "BillingAccount_stripePlan_idx" ON "BillingAccount"("stripePlan");
 
-ALTER TABLE "PremiumInvitation" ADD CONSTRAINT "PremiumInvitation_invitedById_fkey" FOREIGN KEY ("invitedById") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PremiumInvitation" ADD CONSTRAINT "PremiumInvitation_invitedById_fkey" FOREIGN KEY ("invitedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "PremiumInvitation" ADD CONSTRAINT "PremiumInvitation_acceptedById_fkey" FOREIGN KEY ("acceptedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "PlanGrant" ADD CONSTRAINT "PlanGrant_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "PlanGrant" ADD CONSTRAINT "PlanGrant_invitationId_fkey" FOREIGN KEY ("invitationId") REFERENCES "PremiumInvitation"("id") ON DELETE SET NULL ON UPDATE CASCADE;
