@@ -2,6 +2,7 @@ import { Chess } from 'chess.js';
 
 import { publishLibraryChanged } from '@/lib/analysis/analysisCompletion';
 import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 import {
     COACH_OPPONENT_NAME,
     COACH_PLAYER_NAME,
@@ -110,7 +111,10 @@ export async function saveCompletedCoachGameAndAnalyze(args: {
     const payload = buildCompletedCoachGamePayload(args);
     const response = await fetch('/api/coach/games', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            [EXPECTED_OWNER_HEADER]: args.ownerId,
+        },
         body: JSON.stringify(payload),
     });
     const result = (await response.json().catch(() => null)) as unknown;

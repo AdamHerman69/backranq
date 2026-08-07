@@ -76,8 +76,16 @@ describe('game source foundation migration', () => {
         );
         expect(sql).toContain('"AnalyzedGame_frozen_perspective_check"');
         expect(sql).toContain('"AnalyzedGame_prevent_provenance_mutation"');
-        expect(sql).toContain('OLD."provider" = \'BACKRANQ_COACH\'');
+        expect(sql).toContain(
+            'OLD."provider" IN (\'MANUAL_PGN\', \'BACKRANQ_COACH\')'
+        );
         expect(sql).toContain('OLD."pgn" IS DISTINCT FROM NEW."pgn"');
+        expect(sql).toContain(
+            'OLD."sourcePgnHash" IS DISTINCT FROM NEW."sourcePgnHash"'
+        );
+        expect(sql).toContain(
+            "CONSTRAINT = 'AnalyzedGame_local_source_pgn_immutable'"
+        );
         expect(sql).toContain(
             'REVOKE EXECUTE ON FUNCTION public.prevent_analyzed_game_provenance_mutation() FROM PUBLIC, anon, authenticated;'
         );

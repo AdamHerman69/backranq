@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 
 import { readJson } from '../helpers/route';
 import {
@@ -30,6 +31,19 @@ const PGN = `[Event "Manual"]
 
 1. e4 e5 2. Nf3 Nc6 1-0`;
 
+function request(
+    body: unknown,
+    ownerId: string | null = 'user-1'
+) {
+    const headers = new Headers({ 'Content-Type': 'application/json' });
+    if (ownerId !== null) headers.set(EXPECTED_OWNER_HEADER, ownerId);
+    return new Request('http://localhost/api/games/import', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+    });
+}
+
 describe('POST /api/games/import', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -56,23 +70,41 @@ describe('POST /api/games/import', () => {
         setMockUserId(null);
         const route = await importRoute();
         const response = await route.POST(
-            new Request('http://localhost/api/games/import', {
-                method: 'POST',
-                body: JSON.stringify({ pgn: PGN, playerName: 'Ada' }),
-            })
+            request({ pgn: PGN, playerName: 'Ada' })
         );
         expect(response.status).toBe(401);
         expect(saveMock).not.toHaveBeenCalled();
     });
 
+    it.each([null, 'stale-user'])(
+        'rejects missing or stale render owner %s before parsing or persistence',
+        async (ownerId) => {
+            const route = await importRoute();
+            const headers = new Headers();
+            if (ownerId !== null) {
+                headers.set(EXPECTED_OWNER_HEADER, ownerId);
+            }
+            const response = await route.POST(
+                new Request('http://localhost/api/games/import', {
+                    method: 'POST',
+                    headers,
+                    body: 'not-json',
+                })
+            );
+
+            expect(response.status).toBe(409);
+            await expect(readJson(response)).resolves.toMatchObject({
+                code: 'OWNER_MISMATCH',
+            });
+            expect(prismaMock.$transaction).not.toHaveBeenCalled();
+            expect(saveMock).not.toHaveBeenCalled();
+        }
+    );
+
     it('stores manual provenance and separates created from duplicate ids', async () => {
         const route = await importRoute();
         const response = await route.POST(
-            new Request('http://localhost/api/games/import', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pgn: PGN, playerName: 'ada' }),
-            })
+            request({ pgn: PGN, playerName: 'ada' })
         );
 
         expect(response.status).toBe(200);
@@ -118,10 +150,7 @@ describe('POST /api/games/import', () => {
         });
         const route = await importRoute();
         const response = await route.POST(
-            new Request('http://localhost/api/games/import', {
-                method: 'POST',
-                body: JSON.stringify({ pgn: PGN, playerName: 'Ada' }),
-            })
+            request({ pgn: PGN, playerName: 'Ada' })
         );
         expect(response.status).toBe(409);
         expect(await readJson(response)).toMatchObject({
@@ -132,10 +161,7 @@ describe('POST /api/games/import', () => {
     it('rejects an ambiguous player before writing', async () => {
         const route = await importRoute();
         const response = await route.POST(
-            new Request('http://localhost/api/games/import', {
-                method: 'POST',
-                body: JSON.stringify({ pgn: PGN, playerName: 'Missing' }),
-            })
+            request({ pgn: PGN, playerName: 'Missing' })
         );
         expect(response.status).toBe(400);
         expect(saveMock).not.toHaveBeenCalled();

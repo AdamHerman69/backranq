@@ -1,5 +1,6 @@
 import { Chess } from 'chess.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 
 const publishLibraryChanged = vi.fn();
 const setOwner = vi.fn();
@@ -51,17 +52,15 @@ describe('completed Coach game client handoff', () => {
 
     it('starts honest browser analysis only when the server requests it', async () => {
         const client = await importClient();
-        vi.stubGlobal(
-            'fetch',
-            vi.fn(async () =>
-                Response.json({
-                    ownerId: 'user-1',
-                    gameId: 'db-game-1',
-                    created: true,
-                    needsAnalysis: true,
-                })
-            )
+        const providerFetch = vi.fn(async () =>
+            Response.json({
+                ownerId: 'user-1',
+                gameId: 'db-game-1',
+                created: true,
+                needsAnalysis: true,
+            })
         );
+        vi.stubGlobal('fetch', providerFetch);
 
         await client.saveCompletedCoachGameAndAnalyze({
             ownerId: 'user-1',
@@ -76,6 +75,15 @@ describe('completed Coach game client handoff', () => {
         expect(enqueueGameDbIds).toHaveBeenCalledWith('user-1', [
             'db-game-1',
         ]);
+        expect(providerFetch).toHaveBeenCalledWith(
+            '/api/coach/games',
+            expect.objectContaining({
+                headers: {
+                    'Content-Type': 'application/json',
+                    [EXPECTED_OWNER_HEADER]: 'user-1',
+                },
+            })
+        );
     });
 
     it('refuses a response for a different owner before touching queues', async () => {

@@ -8,17 +8,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ModalDialog } from '@/components/ui/ModalDialog';
-import { publishLibraryChanged } from '@/lib/analysis/analysisCompletion';
-import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
-
-type ImportResponse = {
-    created: number;
-    duplicates: number;
-    createdGameIds: string[];
-    duplicateGameIds: string[];
-    needsAnalysisGameIds: string[];
-    error?: string;
-};
+import { importManualPgnGamesAndAnalyze } from '@/lib/games/manualPgnImportClient';
 
 export function ManualPgnImportButton({ ownerId }: { ownerId: string }) {
     const router = useRouter();
@@ -46,25 +36,12 @@ export function ManualPgnImportButton({ ownerId }: { ownerId: string }) {
         if (!pgn.trim() || !playerName.trim()) return;
         setBusy(true);
         try {
-            const response = await fetch('/api/games/import', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pgn, playerName }),
+            const result = await importManualPgnGamesAndAnalyze({
+                ownerId,
+                pgn,
+                playerName,
+                analyze,
             });
-            const result = (await response.json().catch(() => ({}))) as
-                ImportResponse;
-            if (!response.ok) {
-                throw new Error(result.error ?? 'The PGN could not be imported.');
-            }
-
-            publishLibraryChanged(ownerId, { invalidateCompletion: true });
-            if (analyze && result.needsAnalysisGameIds.length > 0) {
-                backgroundAnalysis.setOwner(ownerId);
-                backgroundAnalysis.enqueueGameDbIds(
-                    ownerId,
-                    result.needsAnalysisGameIds
-                );
-            }
             const duplicateText = result.duplicates
                 ? ` ${result.duplicates} already in your library.`
                 : '';

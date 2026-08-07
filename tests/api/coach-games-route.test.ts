@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashSourcePgn } from '@/lib/chess/pgn';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 
 import { readJson } from '../helpers/route';
 import {
@@ -28,10 +29,15 @@ const COMPLETED_PGN = `[Event "Backranq Coach"]
 
 1. f3 e5 2. g4 Qh4# 0-1`;
 
-function request(overrides: Record<string, unknown> = {}) {
+function request(
+    overrides: Record<string, unknown> = {},
+    ownerId: string | null = 'user-1'
+) {
+    const headers = new Headers({ 'Content-Type': 'application/json' });
+    if (ownerId !== null) headers.set(EXPECTED_OWNER_HEADER, ownerId);
     return new Request('http://localhost/api/coach/games', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
             sessionId: 'session-1',
             pgn: COMPLETED_PGN,
@@ -71,6 +77,31 @@ describe('POST /api/coach/games', () => {
         expect(response.status).toBe(401);
         expect(saveMock).not.toHaveBeenCalled();
     });
+
+    it.each([null, 'stale-user'])(
+        'rejects missing or stale render owner %s before parsing or persistence',
+        async (ownerId) => {
+            const route = await importRoute();
+            const headers = new Headers();
+            if (ownerId !== null) {
+                headers.set(EXPECTED_OWNER_HEADER, ownerId);
+            }
+            const response = await route.POST(
+                new Request('http://localhost/api/coach/games', {
+                    method: 'POST',
+                    headers,
+                    body: 'not-json',
+                })
+            );
+
+            expect(response.status).toBe(409);
+            await expect(readJson(response)).resolves.toMatchObject({
+                code: 'OWNER_MISMATCH',
+            });
+            expect(prismaMock.$transaction).not.toHaveBeenCalled();
+            expect(saveMock).not.toHaveBeenCalled();
+        }
+    );
 
     it('atomically stores immutable Coach provenance and returns its DB id', async () => {
         const route = await importRoute();

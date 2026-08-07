@@ -76,15 +76,21 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, public
 AS $$
 BEGIN
+    IF OLD."provider" IN ('MANUAL_PGN', 'BACKRANQ_COACH')
+       AND (
+           OLD."pgn" IS DISTINCT FROM NEW."pgn" OR
+           OLD."sourcePgnHash" IS DISTINCT FROM NEW."sourcePgnHash"
+       ) THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '23514',
+            MESSAGE = 'AnalyzedGame local source PGN snapshot is immutable',
+            CONSTRAINT = 'AnalyzedGame_local_source_pgn_immutable';
+    END IF;
     IF OLD."provider" IS DISTINCT FROM NEW."provider"
        OR OLD."externalId" IS DISTINCT FROM NEW."externalId"
        OR OLD."sourceUsername" IS DISTINCT FROM NEW."sourceUsername"
        OR OLD."sourceAccountId" IS DISTINCT FROM NEW."sourceAccountId"
-       OR OLD."userSide" IS DISTINCT FROM NEW."userSide"
-       OR (
-           OLD."provider" = 'BACKRANQ_COACH' AND
-           OLD."pgn" IS DISTINCT FROM NEW."pgn"
-       ) THEN
+       OR OLD."userSide" IS DISTINCT FROM NEW."userSide" THEN
         RAISE EXCEPTION 'AnalyzedGame source provenance is immutable';
     END IF;
     RETURN NEW;

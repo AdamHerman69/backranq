@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import { parseExternalId } from '@/lib/api/games';
 import { boundedJsonBody, isRecord } from '@/lib/api/validation';
 import { auth } from '@/lib/auth';
+import { expectedOwnerId } from '@/lib/auth/ownerContract';
 import { hashSourcePgn } from '@/lib/chess/pgn';
 import {
     MAX_COACH_GAME_PGN_BYTES,
@@ -112,6 +113,15 @@ export async function POST(req: Request) {
     const userId = session?.user?.id;
     if (!userId) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (expectedOwnerId(req) !== userId) {
+        return NextResponse.json(
+            {
+                error: 'The signed-in account changed. Reload before saving this Coach game.',
+                code: 'OWNER_MISMATCH',
+            },
+            { status: 409 }
+        );
     }
 
     const requestBody = await boundedJsonBody(req, MAX_REQUEST_BYTES);
