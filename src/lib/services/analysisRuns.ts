@@ -8,7 +8,7 @@ import type {
 } from '@prisma/client';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainingMoments';
-import { gameAnalysisToJson } from '@/lib/api/games';
+import { gameAnalysisToJson, gameSourceToUi } from '@/lib/api/games';
 import {
     replaceTrainingMomentsInTransaction,
     type ReplaceTrainingMomentsResult,
@@ -471,8 +471,7 @@ export async function completeAnalysisRunWithGameAnalysisInTransaction(
         tx: args.tx,
         userId: run.userId,
         gameId: run.gameId,
-        sourceProvider:
-            sourceGame.provider === 'LICHESS' ? 'lichess' : 'chesscom',
+        sourceProvider: gameSourceToUi(sourceGame.provider),
         sourcePlayedAt: sourceGame.playedAt,
         sourcePgnHash: run.inputPgnHash,
         moments: args.trainingMoments,

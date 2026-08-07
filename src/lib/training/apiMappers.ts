@@ -14,6 +14,7 @@ import type {
     TrainingLessonKind,
     TrainingSourceKind,
 } from '@/lib/training/contracts';
+import { gameSourceToUi } from '@/lib/api/games';
 import type { GameSource } from '@prisma/client';
 
 export function toTrainingPromptDto(row: {
@@ -418,10 +419,7 @@ export function toTrainingReviewDto(args: {
         themes: args.moment.themes,
         source: {
             gameId: args.moment.gameId,
-            provider:
-                args.moment.game.provider === 'LICHESS'
-                    ? 'lichess'
-                    : 'chesscom',
+            provider: gameSourceToUi(args.moment.game.provider),
             playedAt: args.moment.game.playedAt.toISOString(),
             decisionPly: args.moment.decisionPly,
         },

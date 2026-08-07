@@ -96,6 +96,7 @@ import type {
     CoachSessionSnapshot,
 } from '@/lib/coach/types';
 import { cn } from '@/lib/utils';
+import { saveCompletedCoachGameAndAnalyze } from '@/lib/coach/completedGame';
 
 const PositionAnalysisWorkspace = dynamic(
     () =>
@@ -218,6 +219,12 @@ export function CoachGame({
     const [mistake, setMistake] = useState<CoachMistake | null>(null);
     const [mistakes, setMistakes] = useState<CoachMistake[]>([]);
     const [outcome, setOutcome] = useState<CoachGameOutcome | null>(null);
+    const [completedGameStatus, setCompletedGameStatus] = useState<
+        'idle' | 'saving' | 'analyzing' | 'saved' | 'error'
+    >('idle');
+    const [completedGameError, setCompletedGameError] = useState<string | null>(
+        null
+    );
     const [engineError, setEngineError] = useState<string | null>(null);
     const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
     const [pendingPromotion, setPendingPromotion] =
@@ -254,6 +261,7 @@ export function CoachGame({
     const userColorRef = useRef<'w' | 'b'>('w');
     const pendingDecisionRef = useRef<CoachPendingDecision | null>(null);
     const lastSnapshotRef = useRef<CoachSessionSnapshot | null>(null);
+    const completedAtRef = useRef<string | null>(null);
     const {
         client: engineClient,
         status: engineWarmup,
@@ -413,7 +421,7 @@ export function CoachGame({
     ]);
 
     useEffect(() => {
-        const resumablePhase: CoachResumablePhase | null =
+        const persistedPhase: CoachResumablePhase | 'gameover' | null =
             phase === 'analysis'
                 ? 'mistake'
                 : phase === 'preparing' ||
@@ -423,20 +431,20 @@ export function CoachGame({
                     phase === 'bot' ||
                     phase === 'mistake'
                   ? phase
+                  : phase === 'gameover'
+                    ? 'gameover'
                   : null;
-        if (!resumablePhase) {
-            if (phase === 'gameover') {
-                lastSnapshotRef.current = null;
-                void clearCoachSession(ownerIdRef.current);
-            }
-            return;
-        }
-        const snapshot: CoachSessionSnapshot = {
-            version: 3,
+        if (!persistedPhase) return;
+        const completedAt =
+            persistedPhase === 'gameover'
+                ? (completedAtRef.current ?? new Date().toISOString())
+                : null;
+        if (completedAt) completedAtRef.current = completedAt;
+        const snapshotBase = {
+            version: 4 as const,
             sessionKey: sessionKeyRef.current,
             ownerId: ownerIdRef.current,
             savedAt: Date.now(),
-            phase: resumablePhase,
             userColor: userColorRef.current,
             opponentModel: activeOpponentModelRef.current,
             opponentId: activeOpponentRef.current,
@@ -454,6 +462,14 @@ export function CoachGame({
             mistakes,
             flipped,
         };
+        const snapshot: CoachSessionSnapshot =
+            persistedPhase === 'gameover'
+                ? {
+                      ...snapshotBase,
+                      phase: 'gameover',
+                      completedAt: completedAt!,
+                  }
+                : { ...snapshotBase, phase: persistedPhase };
         lastSnapshotRef.current = snapshot;
         const generation = generationRef.current;
         const timeout = window.setTimeout(() => {
@@ -558,6 +574,7 @@ export function CoachGame({
             userColorRef.current
         );
         if (!nextOutcome) return false;
+        completedAtRef.current ??= new Date().toISOString();
         setOutcome(nextOutcome);
         setBaseline(null);
         setPhase('gameover');
@@ -576,7 +593,7 @@ export function CoachGame({
                 });
                 if (generationRef.current !== generation) return;
                 const checkpoint: CoachSessionSnapshot = {
-                    version: 3,
+                    version: 4,
                     sessionKey: sessionKeyRef.current,
                     ownerId: ownerIdRef.current,
                     savedAt: Date.now(),
@@ -890,6 +907,9 @@ export function CoachGame({
         setMistake(null);
         setMistakes([]);
         setOutcome(null);
+        completedAtRef.current = null;
+        setCompletedGameStatus('idle');
+        setCompletedGameError(null);
         setEngineError(null);
         setSelectedSquare(null);
         setPendingPromotion(null);
@@ -1090,7 +1110,7 @@ export function CoachGame({
                 beforeAnalysis,
             };
             const checkpoint: CoachSessionSnapshot = {
-                version: 3,
+                version: 4,
                 sessionKey: sessionKeyRef.current,
                 ownerId: ownerIdRef.current,
                 savedAt: Date.now(),
@@ -1230,6 +1250,7 @@ export function CoachGame({
             const maiaReady =
                 maiaReadyOverride ?? maiaStatus.phase === 'ready';
             if (
+                snapshot.phase !== 'gameover' &&
                 isMaiaOpponentModel(snapshot.opponentModel) &&
                 !maiaReady
             ) {
@@ -1296,13 +1317,26 @@ export function CoachGame({
             setBaseline(snapshot.baseline);
             setMistake(snapshot.mistake);
             setMistakes(snapshot.mistakes);
-            setOutcome(null);
+            setOutcome(
+                snapshot.phase === 'gameover'
+                    ? getCoachGameOutcome(restored, snapshot.userColor)
+                    : null
+            );
             setSelectedSquare(null);
             setPendingPromotion(null);
             setKeyboardMove('');
             setKeyboardMoveError(null);
             setFlipped(snapshot.flipped);
             setResumableSession(null);
+
+            if (snapshot.phase === 'gameover') {
+                completedAtRef.current = snapshot.completedAt;
+                setCompletedGameStatus('idle');
+                setCompletedGameError(null);
+                terminateEngine('idle');
+                setPhase('gameover');
+                return;
+            }
 
             try {
                 const expectedOpponentRevision =
@@ -1476,6 +1510,9 @@ export function CoachGame({
         setKeyboardMove('');
         setKeyboardMoveError(null);
         setOutcome(null);
+        completedAtRef.current = null;
+        setCompletedGameStatus('idle');
+        setCompletedGameError(null);
         pendingDecisionRef.current = null;
         lastSnapshotRef.current = null;
         void clearCoachSession(ownerIdRef.current);
@@ -1483,6 +1520,45 @@ export function CoachGame({
         setPhase('setup');
         setRestartDialogOpen(false);
     }, [cancelSearch, phase, setPhase, terminateEngine]);
+
+    const saveAndAnalyzeCompletedGame = useCallback(async () => {
+        if (
+            !ownerId ||
+            phase !== 'gameover' ||
+            completedGameStatus === 'saving' ||
+            completedGameStatus === 'analyzing' ||
+            completedGameStatus === 'saved'
+        ) {
+            return;
+        }
+        const completedAt =
+            completedAtRef.current ?? new Date().toISOString();
+        completedAtRef.current = completedAt;
+        setCompletedGameStatus('saving');
+        setCompletedGameError(null);
+        try {
+            const saved = await saveCompletedCoachGameAndAnalyze({
+                ownerId,
+                game: gameRef.current,
+                sessionId: sessionKeyRef.current,
+                userSide: userColorRef.current,
+                completedAt,
+            });
+            lastSnapshotRef.current = null;
+            setResumableSession(null);
+            await clearCoachSession(ownerIdRef.current);
+            setCompletedGameStatus(
+                saved.needsAnalysis ? 'analyzing' : 'saved'
+            );
+        } catch (error) {
+            setCompletedGameStatus('error');
+            setCompletedGameError(
+                error instanceof Error
+                    ? error.message
+                    : 'The completed game could not be saved.'
+            );
+        }
+    }, [completedGameStatus, ownerId, phase]);
 
     const legalTargets = useMemo(() => {
         if (!canMove || !selectedSquare) return new Set<Square>();
@@ -1859,16 +1935,85 @@ export function CoachGame({
                                         ? 'No coach intervention was needed in this game.'
                                         : `${mistakes.length} ${mistakes.length === 1 ? 'decision was' : 'decisions were'} caught for review.`}
                                 </p>
+                                {ownerId ? (
+                                    <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+                                        <Button
+                                            type="button"
+                                            disabled={
+                                                completedGameStatus === 'saving' ||
+                                                completedGameStatus === 'analyzing' ||
+                                                completedGameStatus === 'saved'
+                                            }
+                                            onClick={() =>
+                                                void saveAndAnalyzeCompletedGame()
+                                            }
+                                        >
+                                            {completedGameStatus === 'saving' ? (
+                                                <Loader2
+                                                    className="mr-2 h-4 w-4 animate-spin"
+                                                    aria-hidden="true"
+                                                />
+                                            ) : completedGameStatus === 'analyzing' ||
+                                              completedGameStatus === 'saved' ? (
+                                                <CheckCircle2
+                                                    className="mr-2 h-4 w-4"
+                                                    aria-hidden="true"
+                                                />
+                                            ) : (
+                                                <Brain
+                                                    className="mr-2 h-4 w-4"
+                                                    aria-hidden="true"
+                                                />
+                                            )}
+                                            {completedGameStatus === 'saving'
+                                                ? 'Saving game…'
+                                                : completedGameStatus === 'analyzing'
+                                                  ? 'Saved · browser analysis started'
+                                                  : completedGameStatus === 'saved'
+                                                    ? 'Already saved'
+                                                    : completedGameStatus === 'error'
+                                                      ? 'Retry save & analyze'
+                                                      : 'Save & analyze for Practice'}
+                                        </Button>
+                                        <p className="text-xs text-muted-foreground">
+                                            The completed game stays saved on this
+                                            device until the server accepts it or you
+                                            explicitly discard it.
+                                        </p>
+                                        {completedGameError ? (
+                                            <p
+                                                className="text-sm text-destructive"
+                                                role="alert"
+                                            >
+                                                {completedGameError}
+                                            </p>
+                                        ) : completedGameStatus === 'analyzing' ? (
+                                            <p
+                                                className="text-sm text-emerald-700 dark:text-emerald-400"
+                                                role="status"
+                                            >
+                                                Browser analysis has started. Keep this
+                                                tab open until it finishes.
+                                            </p>
+                                        ) : null}
+                                    </div>
+                                ) : null}
                                 <div className="flex flex-wrap gap-2">
                                     <Button type="button" onClick={startGame}>
-                                        Rematch
+                                        {completedGameStatus === 'analyzing' ||
+                                        completedGameStatus === 'saved'
+                                            ? 'Rematch'
+                                            : 'Discard & rematch'}
                                     </Button>
                                     <Button
                                         type="button"
                                         variant="outline"
                                         onClick={returnToSetup}
                                     >
-                                        Change setup
+                                        {completedGameStatus === 'analyzing' ||
+                                        completedGameStatus === 'saved'
+                                            ? 'Change setup'
+                                            : 'Discard & change setup'}
                                     </Button>
                                 </div>
                             </CardContent>

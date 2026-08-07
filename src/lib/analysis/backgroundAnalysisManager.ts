@@ -103,7 +103,7 @@ function isApiAnalyzedGame(x: unknown): x is ApiAnalyzedGame {
     );
 }
 
-function normalizeApiDbGameToNormalized(
+export function normalizeApiDbGameToNormalized(
     dbGame: ApiAnalyzedGame
 ): NormalizedGame {
     // `/api/games/[id]` returns JSON-serialized prisma rows, so dates are strings.

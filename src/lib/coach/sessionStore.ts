@@ -10,7 +10,6 @@ import { normalizeCoachThresholdCp } from '@/lib/coach/verification';
 import {
     COACH_OPPONENT_MODEL_IDS,
     OPPONENT_PROFILE_IDS,
-    STOCKFISH_OPPONENT_REVISION,
     isMaiaOpponentModel,
     normalizeMaiaOpponentElo,
     normalizeMaiaTacticalGuardCp,
@@ -24,8 +23,8 @@ import type { CoachMistake } from '@/lib/coach/types';
 const DATABASE_NAME = 'backranq-coach';
 const DATABASE_VERSION = 1;
 const STORE_NAME = 'coach-sessions';
-const ACTIVE_SESSION_KEY = 'active';
-const SNAPSHOT_VERSION = 3;
+const ACTIVE_SESSION_PREFIX = 'active';
+const SNAPSHOT_VERSION = 4;
 const MAX_SESSION_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const EXACT_UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
 const ownerOperationQueues = new Map<string, Promise<void>>();
@@ -132,7 +131,7 @@ async function runOwnerOperation<T>(
 }
 
 function activeSessionKey(ownerId: string): string {
-    return `${ACTIVE_SESSION_KEY}:${encodeURIComponent(ownerId)}`;
+    return `${ACTIVE_SESSION_PREFIX}:${encodeURIComponent(ownerId)}`;
 }
 
 function persistenceBlockKey(ownerId: string): string {
@@ -224,6 +223,12 @@ function isResumablePhase(value: unknown): value is CoachResumablePhase {
         value === 'bot' ||
         value === 'mistake'
     );
+}
+
+function isPersistedPhase(
+    value: unknown
+): value is CoachSessionSnapshot['phase'] {
+    return value === 'gameover' || isResumablePhase(value);
 }
 
 function replayMoves(
@@ -358,13 +363,8 @@ export function sanitizeCoachSessionSnapshot(
         return null;
     }
     const candidate = value as Partial<CoachSessionSnapshot>;
-    const candidateVersion = (value as { version?: unknown }).version;
-    const isLegacyStockfishSnapshot = candidateVersion === 1;
-    const isPreviousSnapshot = candidateVersion === 2;
     if (
-        (!isLegacyStockfishSnapshot &&
-            !isPreviousSnapshot &&
-            candidateVersion !== SNAPSHOT_VERSION) ||
+        candidate.version !== SNAPSHOT_VERSION ||
         typeof candidate.sessionKey !== 'string' ||
         !candidate.sessionKey ||
         typeof candidate.ownerId !== 'string' ||
@@ -374,7 +374,7 @@ export function sanitizeCoachSessionSnapshot(
         !Number.isFinite(candidate.savedAt) ||
         now - candidate.savedAt > MAX_SESSION_AGE_MS ||
         candidate.savedAt > now + 60_000 ||
-        !isResumablePhase(candidate.phase) ||
+        !isPersistedPhase(candidate.phase) ||
         (candidate.userColor !== 'w' && candidate.userColor !== 'b') ||
         !OPPONENT_PROFILE_IDS.includes(
             candidate.opponentId as (typeof OPPONENT_PROFILE_IDS)[number]
@@ -385,17 +385,11 @@ export function sanitizeCoachSessionSnapshot(
     if (expectedOwnerId && candidate.ownerId !== expectedOwnerId) {
         return null;
     }
-    const opponentModel = isLegacyStockfishSnapshot
-        ? 'stockfish'
-        : isPreviousSnapshot &&
-            (candidate.opponentModel === 'stockfish' ||
-                candidate.opponentModel === 'maia3')
-          ? candidate.opponentModel
-          : COACH_OPPONENT_MODEL_IDS.includes(
-                candidate.opponentModel as (typeof COACH_OPPONENT_MODEL_IDS)[number]
-            )
-          ? candidate.opponentModel!
-          : null;
+    const opponentModel = COACH_OPPONENT_MODEL_IDS.includes(
+        candidate.opponentModel as (typeof COACH_OPPONENT_MODEL_IDS)[number]
+    )
+        ? candidate.opponentModel!
+        : null;
     if (!opponentModel) return null;
     const opponentElo =
         isMaiaOpponentModel(opponentModel)
@@ -407,9 +401,8 @@ export function sanitizeCoachSessionSnapshot(
                   candidate.tacticalGuardCp
               )
             : null;
-    const opponentEngineRevision = isLegacyStockfishSnapshot
-        ? STOCKFISH_OPPONENT_REVISION
-        : typeof candidate.opponentEngineRevision === 'string' &&
+    const opponentEngineRevision =
+        typeof candidate.opponentEngineRevision === 'string' &&
             candidate.opponentEngineRevision.trim() &&
             candidate.opponentEngineRevision.length <= 128
           ? candidate.opponentEngineRevision.trim()
@@ -417,6 +410,26 @@ export function sanitizeCoachSessionSnapshot(
     if (!opponentEngineRevision) return null;
     const replayed = replayMoves(candidate.moves, candidate.userColor);
     if (!replayed || replayed.chess.fen() !== candidate.gameFen) return null;
+    const completedAt =
+        candidate.phase === 'gameover' &&
+        typeof (candidate as { completedAt?: unknown }).completedAt ===
+            'string'
+            ? new Date(
+                  (candidate as { completedAt: string }).completedAt
+              )
+            : null;
+    if (
+        candidate.phase === 'gameover' &&
+        (!replayed.chess.isGameOver() ||
+            !completedAt ||
+            Number.isNaN(completedAt.getTime()) ||
+            completedAt.getTime() > now + 60_000)
+    ) {
+        return null;
+    }
+    if (candidate.phase !== 'gameover' && replayed.chess.isGameOver()) {
+        return null;
+    }
     const currentTurn = replayed.chess.turn();
     const pendingDecision =
         candidate.pendingDecision &&
@@ -478,8 +491,8 @@ export function sanitizeCoachSessionSnapshot(
         return null;
     }
 
-    return {
-        version: SNAPSHOT_VERSION,
+    const base = {
+        version: SNAPSHOT_VERSION as 4,
         sessionKey: candidate.sessionKey,
         ownerId: candidate.ownerId,
         savedAt: candidate.savedAt,
@@ -500,6 +513,16 @@ export function sanitizeCoachSessionSnapshot(
         mistakes,
         flipped: candidate.flipped === true,
     };
+    return candidate.phase === 'gameover'
+        ? {
+              ...base,
+              phase: 'gameover',
+              completedAt: completedAt!.toISOString(),
+          }
+        : {
+              ...base,
+              phase: candidate.phase,
+          };
 }
 
 export async function loadCoachSession(
@@ -510,16 +533,11 @@ export async function loadCoachSession(
     try {
         const transaction = database.transaction(STORE_NAME, 'readonly');
         const store = transaction.objectStore(STORE_NAME);
-        const [scopedRecord, legacyRecord, persistenceBlock] =
+        const [scopedRecord, persistenceBlock] =
             await Promise.all([
             requestResult(
                 store.get(
                     activeSessionKey(expectedOwnerId)
-                ) as IDBRequest<StoredCoachSession>
-            ),
-            requestResult(
-                store.get(
-                    ACTIVE_SESSION_KEY
                 ) as IDBRequest<StoredCoachSession>
             ),
             requestResult(
@@ -534,28 +552,7 @@ export async function loadCoachSession(
             Date.now(),
             expectedOwnerId
         );
-        const legacySnapshot = sanitizeCoachSessionSnapshot(
-            legacyRecord?.snapshot,
-            Date.now(),
-            expectedOwnerId
-        );
-        const snapshot = scopedSnapshot ?? legacySnapshot;
-        if (legacySnapshot) {
-            const migration = database.transaction(
-                STORE_NAME,
-                'readwrite'
-            );
-            const migrationStore = migration.objectStore(STORE_NAME);
-            if (!scopedSnapshot) {
-                migrationStore.put({
-                    key: activeSessionKey(expectedOwnerId),
-                    snapshot: legacySnapshot,
-                } satisfies StoredCoachSession);
-            }
-            migrationStore.delete(ACTIVE_SESSION_KEY);
-            await transactionComplete(migration);
-        }
-        return snapshot;
+        return scopedSnapshot;
     } catch {
         return null;
     } finally {
@@ -618,15 +615,7 @@ export async function clearCoachSessionForSignOut(
                 'readwrite'
             );
             const store = transaction.objectStore(STORE_NAME);
-            const legacyRecord = await requestResult(
-                store.get(
-                    ACTIVE_SESSION_KEY
-                ) as IDBRequest<StoredCoachSession>
-            );
             store.delete(activeSessionKey(ownerId));
-            if (legacyRecord?.snapshot?.ownerId === ownerId) {
-                store.delete(ACTIVE_SESSION_KEY);
-            }
             store.put({
                 key: persistenceBlockKey(ownerId),
                 blockedAt: Date.now(),
@@ -647,24 +636,12 @@ export async function clearCoachSession(
         const database = await openDatabase();
         if (!database) return;
         try {
-            const readTransaction = database.transaction(
-                STORE_NAME,
-                'readonly'
-            );
-            const legacyRecord = await requestResult(
-                readTransaction.objectStore(STORE_NAME).get(
-                    ACTIVE_SESSION_KEY
-                ) as IDBRequest<StoredCoachSession>
-            );
             const transaction = database.transaction(
                 STORE_NAME,
                 'readwrite'
             );
             const store = transaction.objectStore(STORE_NAME);
             store.delete(activeSessionKey(ownerId));
-            if (legacyRecord?.snapshot?.ownerId === ownerId) {
-                store.delete(ACTIVE_SESSION_KEY);
-            }
             await transactionComplete(transaction);
         } catch {
             // Local recovery is best-effort and must never block the game.

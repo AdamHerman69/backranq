@@ -74,12 +74,11 @@ export type CoachResumablePhase =
     | 'bot'
     | 'mistake';
 
-export type CoachSessionSnapshot = {
-    version: 3;
+type CoachSessionSnapshotBase = {
+    version: 4;
     sessionKey: string;
     ownerId: string;
     savedAt: number;
-    phase: CoachResumablePhase;
     userColor: 'w' | 'b';
     opponentModel: CoachOpponentModelId;
     opponentId: OpponentProfileId;
@@ -96,3 +95,16 @@ export type CoachSessionSnapshot = {
     mistakes: CoachMistake[];
     flipped: boolean;
 };
+
+export type CoachActiveSessionSnapshot = CoachSessionSnapshotBase & {
+    phase: CoachResumablePhase;
+};
+
+export type CoachCompletedSessionSnapshot = CoachSessionSnapshotBase & {
+    phase: 'gameover';
+    completedAt: string;
+};
+
+export type CoachSessionSnapshot =
+    | CoachActiveSessionSnapshot
+    | CoachCompletedSessionSnapshot;

@@ -245,4 +245,35 @@ describe('game import provenance and PGN invalidation', () => {
             })
         );
     });
+
+    it('does not rewrite a completed Coach snapshot for the same session identity', async () => {
+        prismaMock.analyzedGame.findUnique.mockResolvedValue({
+            id: 'db-coach-1',
+            pgn: originalPgn,
+            sourcePgnHash: hashSourcePgn(originalPgn),
+            sourceUsername: 'Ada',
+            sourceAccountId: null,
+            userSide: 'WHITE',
+        });
+        const coachGame: NormalizedGame = {
+            ...game(correctedPgn),
+            id: 'backranq_coach:session-hash',
+            provider: 'backranq_coach',
+            provenance: {
+                username: 'Ada',
+                userSide: 'white',
+            },
+        };
+        const { saveNormalizedGamesForUser } = await importGameImport();
+
+        const result = await saveNormalizedGamesForUser({
+            userId: 'user-1',
+            games: [coachGame],
+        });
+
+        expect(result.errors).toMatchObject([
+            { code: 'SOURCE_SNAPSHOT_CONFLICT' },
+        ]);
+        expect(prismaMock.analyzedGame.updateMany).not.toHaveBeenCalled();
+    });
 });

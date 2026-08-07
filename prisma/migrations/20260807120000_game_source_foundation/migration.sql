@@ -79,7 +79,11 @@ BEGIN
        OR OLD."externalId" IS DISTINCT FROM NEW."externalId"
        OR OLD."sourceUsername" IS DISTINCT FROM NEW."sourceUsername"
        OR OLD."sourceAccountId" IS DISTINCT FROM NEW."sourceAccountId"
-       OR OLD."userSide" IS DISTINCT FROM NEW."userSide" THEN
+       OR OLD."userSide" IS DISTINCT FROM NEW."userSide"
+       OR (
+           OLD."provider" = 'BACKRANQ_COACH' AND
+           OLD."pgn" IS DISTINCT FROM NEW."pgn"
+       ) THEN
         RAISE EXCEPTION 'AnalyzedGame source provenance is immutable';
     END IF;
     RETURN NEW;
@@ -91,6 +95,7 @@ BEFORE UPDATE ON "AnalyzedGame"
 FOR EACH ROW EXECUTE FUNCTION public.prevent_analyzed_game_provenance_mutation();
 
 ALTER TABLE public."ChessAccountConnection" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public."ChessAccountConnection" FORCE ROW LEVEL SECURITY;
 REVOKE ALL PRIVILEGES ON TABLE public."ChessAccountConnection" FROM anon, authenticated;
 REVOKE EXECUTE ON FUNCTION public.prevent_analyzed_game_provenance_mutation() FROM PUBLIC, anon, authenticated;
 

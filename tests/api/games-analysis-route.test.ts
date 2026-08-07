@@ -223,6 +223,12 @@ async function importRoute(): Promise<AnalysisRouteModule> {
     vi.resetModules();
     mockAuthModule();
     mockPrismaModule();
+    vi.doMock('@/lib/notifications/service', () => ({
+        recordPracticeReadyInTransaction: vi.fn().mockResolvedValue(null),
+    }));
+    vi.doMock('@/lib/notifications/delivery', () => ({
+        dispatchPendingNotificationDeliveries: vi.fn().mockResolvedValue({}),
+    }));
 
     return import('@/app/api/games/[id]/analysis/route');
 }
@@ -815,6 +821,111 @@ describe('PUT /api/games/[id]/analysis', () => {
         expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
         expect(prismaMock.trainingMoment.upsert).not.toHaveBeenCalled();
     });
+
+    it.each([
+        ['MANUAL_PGN', 'manual_pgn'],
+        ['BACKRANQ_COACH', 'backranq_coach'],
+    ] as const)(
+        'persists a nonempty Practice moment for %s through the production route',
+        async (dbProvider, uiProvider) => {
+            const route = await importRoute();
+            const sourceGame = {
+                ...ownedGame,
+                provider: dbProvider,
+                externalId: `${uiProvider}-source-1`,
+            };
+            const analysis = {
+                ...validAnalysis,
+                gameId: `${uiProvider}:${sourceGame.externalId}`,
+            };
+            const moment = {
+                ...validTrainingMoment,
+                sourceProvider: uiProvider,
+            };
+            const runningRun = {
+                id: 'run-source-1',
+                userId: 'user-1',
+                gameId: 'game-1',
+                status: 'RUNNING',
+                configHash: defaultConfigHash,
+                inputPgnHash: sourcePgnHash,
+                startedAt: new Date('2026-07-04T12:29:00.000Z'),
+            };
+            const tx = {
+                analysisRun: {
+                    create: vi.fn().mockResolvedValue(runningRun),
+                    findFirst: vi.fn().mockResolvedValue(runningRun),
+                    updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+                    findUniqueOrThrow: vi.fn().mockResolvedValue({
+                        ...runningRun,
+                        status: 'SUCCEEDED',
+                        executionMode: 'LOCAL_BROWSER',
+                        analysisQuality: 'STANDARD',
+                        creditCost: 0,
+                    }),
+                },
+                analyzedGame: {
+                    findFirst: vi.fn().mockResolvedValue(sourceGame),
+                    updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+                    findUniqueOrThrow: vi.fn().mockResolvedValue({
+                        id: 'game-1',
+                        analyzedAt: new Date('2026-07-04T12:30:00.000Z'),
+                        currentAnalysisRunId: 'run-source-1',
+                    }),
+                },
+                trainingMoment: {
+                    findUnique: vi.fn().mockResolvedValue(null),
+                    upsert: vi.fn().mockResolvedValue({ id: 'moment-1' }),
+                    update: vi.fn().mockResolvedValue({ id: 'moment-1' }),
+                    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+                },
+                solutionRevision: {
+                    findFirst: vi.fn().mockResolvedValue(null),
+                    create: vi.fn().mockResolvedValue({
+                        id: 'revision-1',
+                        momentId: 'moment-1',
+                        solutionHash: validTrainingMoment.solution.solutionHash,
+                    }),
+                },
+                solutionMoveAssessment: {
+                    createMany: vi.fn().mockResolvedValue({ count: 1 }),
+                },
+                trainingMomentObservation: {
+                    findUnique: vi.fn().mockResolvedValue(null),
+                    create: vi.fn().mockResolvedValue({ id: 'observation-1' }),
+                },
+            };
+            prismaMock.analyzedGame.findFirst.mockResolvedValue(sourceGame);
+            (prismaMock as PrismaMockWithTransaction).$transaction = vi.fn(
+                async (callback) => callback(tx)
+            );
+
+            const response = await route.PUT(
+                createPutRequest({
+                    analysis,
+                    trainingMoments: [moment],
+                    extractionManifest: validManifest,
+                }),
+                routeParams()
+            );
+
+            expect(response.status).toBe(200);
+            await expect(readJson(response)).resolves.toMatchObject({
+                ok: true,
+                trainingMoments: { upserted: 1 },
+            });
+            expect(tx.trainingMoment.upsert).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    create: expect.objectContaining({
+                        sourceKinds: ['MY_MISTAKE'],
+                        lessonKinds: ['AVOID_MISTAKE'],
+                    }),
+                })
+            );
+            expect(tx.solutionRevision.create).toHaveBeenCalled();
+            expect(tx.trainingMomentObservation.create).toHaveBeenCalled();
+        }
+    );
 
     it('rolls back run creation with completion failure in one transaction', async () => {
         const route = await importRoute();

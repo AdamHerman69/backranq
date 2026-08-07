@@ -182,6 +182,7 @@ export function CoachSetup({
         engineWarmup === 'ready' && selectedOpponentReady;
     const resumableOpponentReady =
         !resumableSession ||
+        resumableSession.phase === 'gameover' ||
         !isMaiaOpponentModel(resumableSession.opponentModel) ||
         maiaPhase === 'ready';
     const modelSizeMiB = (
@@ -216,7 +217,9 @@ export function CoachSetup({
                     <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                             <div className="font-medium">
-                                Continue your saved game
+                                {resumableSession.phase === 'gameover'
+                                    ? 'Completed game waiting to be saved'
+                                    : 'Continue your saved game'}
                             </div>
                             <p className="mt-1 text-sm text-muted-foreground">
                                 {resumableSession.moves.length} moves ·{' '}
@@ -245,7 +248,9 @@ export function CoachSetup({
                                 onClick={() => onResume(resumableSession)}
                             >
                                 {resumableOpponentReady
-                                    ? 'Continue game'
+                                    ? resumableSession.phase === 'gameover'
+                                        ? 'Review completed game'
+                                        : 'Continue game'
                                     : maiaInstallChecking
                                       ? 'Checking saved Maia…'
                                       : 'Preparing Maia to continue…'}

@@ -23,6 +23,7 @@ export type SaveNormalizedGamesResult = {
 
 export type GameImportErrorCode =
     | 'PROVENANCE_CONFLICT'
+    | 'SOURCE_SNAPSHOT_CONFLICT'
     | 'CONCURRENT_MODIFICATION'
     | 'SAVE_FAILED';
 
@@ -35,8 +36,20 @@ export class GameProvenanceConflictError extends Error {
     }
 }
 
+export class GameSourceSnapshotConflictError extends Error {
+    readonly code = 'SOURCE_SNAPSHOT_CONFLICT' as const;
+
+    constructor() {
+        super('Existing game has a different immutable source snapshot');
+        this.name = 'GameSourceSnapshotConflictError';
+    }
+}
+
 function gameImportErrorCode(error: unknown): GameImportErrorCode {
     if (error instanceof GameProvenanceConflictError) {
+        return error.code;
+    }
+    if (error instanceof GameSourceSnapshotConflictError) {
         return error.code;
     }
     if (
@@ -103,6 +116,9 @@ async function saveNormalizedGame(args: {
         existing.userSide !== data.userSide
     ) {
         throw new GameProvenanceConflictError();
+    }
+    if (provider === 'BACKRANQ_COACH' && pgnChanged) {
+        throw new GameSourceSnapshotConflictError();
     }
     const updated = await args.client.analyzedGame.updateMany({
         where: {
