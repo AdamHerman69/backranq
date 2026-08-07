@@ -1,6 +1,3 @@
-ALTER TYPE "CreditLedgerEntryType" ADD VALUE 'ALLOWANCE_GRANTED';
-ALTER TYPE "CreditLedgerEntryType" ADD VALUE 'ALLOWANCE_EXPIRED';
-
 CREATE TYPE "CreditLedgerEntryScope" AS ENUM ('ALLOWANCE', 'RESERVATION');
 
 ALTER TABLE "BillingAccount"
@@ -53,7 +50,10 @@ INSERT INTO "BillingAccount" (
     "autoAnalysisDailyGameLimit", "stopWhenCreditsBelow",
     "createdAt", "updatedAt"
 )
-SELECT DISTINCT entitled."userId", 'FREE', 'FREE', 'FREE',
+SELECT DISTINCT entitled."userId",
+    'FREE'::"BillingPlan",
+    'FREE'::"BillingPlanSource",
+    'FREE'::"BillingPlan",
     100, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '1 month',
     100, 50, 10, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM (
