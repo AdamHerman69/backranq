@@ -13,6 +13,7 @@ export const ADMIN_CAPABILITIES = [
     'MASTER_APPROVE',
     'MASTER_PUBLISH',
     'USER_VIEW',
+    'PREMIUM_MANAGE',
     'OPS_VIEW',
     'OPS_MUTATE',
 ] as const;

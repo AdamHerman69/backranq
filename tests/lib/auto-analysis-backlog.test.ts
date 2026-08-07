@@ -38,6 +38,8 @@ function account(serverCreditsBalance: number) {
         id: 'billing-1',
         userId: 'user-1',
         plan: 'FREE' as const,
+        planSource: 'FREE' as const,
+        stripePlan: 'FREE' as const,
         stripeCustomerId: null,
         stripeSubscriptionId: null,
         stripeSubscriptionStatus: null,

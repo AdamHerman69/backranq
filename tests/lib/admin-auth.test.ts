@@ -65,6 +65,8 @@ describe('admin capability guard', () => {
         expect(roleHasCapability('EDITOR', 'MASTER_RUN')).toBe(true);
         expect(roleHasCapability('EDITOR', 'MASTER_PUBLISH')).toBe(false);
         expect(roleHasCapability('EDITOR', 'USER_VIEW')).toBe(false);
+        expect(roleHasCapability('EDITOR', 'PREMIUM_MANAGE')).toBe(false);
         expect(roleHasCapability('ADMIN', 'MASTER_PUBLISH')).toBe(true);
+        expect(roleHasCapability('ADMIN', 'PREMIUM_MANAGE')).toBe(true);
     });
 });

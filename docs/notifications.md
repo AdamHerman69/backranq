@@ -80,6 +80,13 @@ file. Never commit API keys or signing secrets.
 Templates use the unified React Email 6 `react-email` package rather than the
 deprecated `@react-email/components` package.
 
+Premium invitations are transactional emails initiated from `/admin`. The
+database stores only a hash of the 14-day token. A link does not grant access by
+itself: after sign-in, the recipient must explicitly accept it from the same
+normalized email address. Resending rotates the token and invalidates the old
+link. These emails use SMTP2GO directly and are not governed by optional
+notification preferences or unsubscribe state.
+
 Email and push deliveries remain `PENDING` when their provider configuration is
 absent. This makes local development safe and allows delivery after production
 configuration is completed.

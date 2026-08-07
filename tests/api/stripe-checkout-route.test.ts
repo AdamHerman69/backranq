@@ -5,11 +5,13 @@ import { mockAuthModule, setMockUserId } from '../helpers/route-mocks';
 type CheckoutRouteModule = typeof import('@/app/api/stripe/checkout/route');
 
 const createStripeCheckoutSessionMock = vi.fn();
+class ComplimentaryCheckoutNotAllowedError extends Error {}
 
 async function importRoute(): Promise<CheckoutRouteModule> {
     vi.resetModules();
     mockAuthModule();
     vi.doMock('@/lib/services/stripeBilling', () => ({
+        ComplimentaryCheckoutNotAllowedError,
         createStripeCheckoutSession: createStripeCheckoutSessionMock,
     }));
     return import('@/app/api/stripe/checkout/route');
@@ -81,6 +83,22 @@ describe('POST /api/stripe/checkout', () => {
         expect(response.status).toBe(503);
         await expect(readJson(response)).resolves.toEqual({
             error: 'STRIPE_SECRET_KEY is not configured',
+        });
+    });
+
+    it('rejects checkout while complimentary Premium is active', async () => {
+        createStripeCheckoutSessionMock.mockRejectedValue(
+            new ComplimentaryCheckoutNotAllowedError(
+                'Paid checkout is unavailable while complimentary Premium is active'
+            )
+        );
+        const route = await importRoute();
+
+        const response = await route.POST(post({ plan: 'PLUS' }));
+
+        expect(response.status).toBe(409);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Paid checkout is unavailable while complimentary Premium is active',
         });
     });
 });

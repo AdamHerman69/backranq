@@ -15,15 +15,23 @@ import {
     type CreditLedgerSummary,
 } from '@/lib/services/creditLedger';
 import { nextMonthlyRenewAt } from '@/lib/billing/periods';
+import { BILLING_PLAN_ENTITLEMENTS } from '@/lib/billing/plans';
+import { resolveEffectiveBillingEntitlement } from '@/lib/billing/entitlements';
 
 export const SERVER_ANALYSIS_BILLING_POLICY_V2 =
     'server-analysis-quality-price-v2';
 
-export const DEFAULT_SERVER_CREDITS_BALANCE = 100;
-export const DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT = 100;
-export const DEFAULT_AUTO_ANALYSIS_MONTHLY_GAME_LIMIT = 50;
-export const DEFAULT_AUTO_ANALYSIS_DAILY_GAME_LIMIT = 10;
-export const DEFAULT_STOP_WHEN_CREDITS_BELOW = 0;
+const FREE_ENTITLEMENTS = BILLING_PLAN_ENTITLEMENTS.FREE;
+export const DEFAULT_SERVER_CREDITS_BALANCE =
+    FREE_ENTITLEMENTS.monthlyServerCreditsLimit;
+export const DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT =
+    FREE_ENTITLEMENTS.monthlyServerCreditsLimit;
+export const DEFAULT_AUTO_ANALYSIS_MONTHLY_GAME_LIMIT =
+    FREE_ENTITLEMENTS.autoAnalysisMonthlyGameLimit;
+export const DEFAULT_AUTO_ANALYSIS_DAILY_GAME_LIMIT =
+    FREE_ENTITLEMENTS.autoAnalysisDailyGameLimit;
+export const DEFAULT_STOP_WHEN_CREDITS_BELOW =
+    FREE_ENTITLEMENTS.stopWhenCreditsBelow;
 const AUTO_ANALYSIS_LEDGER_REASONS = ['auto-sync', 'auto-analysis'];
 
 export type BillingTransactionClient = Pick<
@@ -32,6 +40,8 @@ export type BillingTransactionClient = Pick<
     | 'creditLedgerEntry'
     | 'analysisRun'
     | 'user'
+    | 'adminMembership'
+    | 'planGrant'
     | 'notificationPreference'
     | 'notification'
     | 'notificationDelivery'
@@ -392,10 +402,16 @@ async function writeReservedCreditReturnInTransaction(
     return createLedgerResult(tx, updated, type, writeArgs);
 }
 
-async function getOrCreateDefaultBillingAccountInTransaction(args: {
+export type StripeAllowancePeriod = {
+    start: Date;
+    end: Date;
+};
+
+export async function reconcileBillingAccountInTransaction(args: {
     tx: BillingTransactionClient;
     userId: string;
     now: Date;
+    stripeAllowancePeriod?: StripeAllowancePeriod;
 }) {
     const account = await args.tx.billingAccount.upsert({
         where: { userId: args.userId },
@@ -403,6 +419,8 @@ async function getOrCreateDefaultBillingAccountInTransaction(args: {
         create: {
             userId: args.userId,
             plan: 'FREE',
+            planSource: 'FREE',
+            stripePlan: 'FREE',
             serverCreditsBalance: DEFAULT_SERVER_CREDITS_BALANCE,
             monthlyServerCreditsUsed: 0,
             serverCreditsPeriodStart: args.now,
@@ -416,20 +434,86 @@ async function getOrCreateDefaultBillingAccountInTransaction(args: {
         },
     });
 
-    if (account.serverCreditsRenewAt > args.now) return account;
+    const effective = await resolveEffectiveBillingEntitlement({
+        tx: args.tx,
+        userId: args.userId,
+        account,
+        now: args.now,
+    });
+    const entitlements = BILLING_PLAN_ENTITLEMENTS[effective.plan];
+    const planChanged = account.plan !== effective.plan;
+    const sourceChanged =
+        (account.planSource ?? 'FREE') !== effective.source;
+    const stripePeriodReset =
+        effective.source === 'STRIPE' && !!args.stripeAllowancePeriod;
+    const localPeriodReset =
+        effective.source !== 'STRIPE' &&
+        account.serverCreditsRenewAt <= args.now;
+    const resetPeriod = stripePeriodReset || localPeriodReset;
+
+    let serverCreditsBalance = account.serverCreditsBalance;
+    let monthlyServerCreditsUsed = account.monthlyServerCreditsUsed;
+    let serverCreditsPeriodStart = account.serverCreditsPeriodStart;
+    let serverCreditsRenewAt = account.serverCreditsRenewAt;
+
+    if (resetPeriod) {
+        serverCreditsBalance = entitlements.monthlyServerCreditsLimit;
+        monthlyServerCreditsUsed = 0;
+        serverCreditsPeriodStart =
+            args.stripeAllowancePeriod?.start ?? args.now;
+        serverCreditsRenewAt =
+            args.stripeAllowancePeriod?.end ?? nextMonthlyRenewAt(args.now);
+    } else if (planChanged) {
+        const remainingUnderTarget = Math.max(
+            0,
+            entitlements.monthlyServerCreditsLimit -
+                account.monthlyServerCreditsUsed
+        );
+        const allowanceIncrease = Math.max(
+            0,
+            entitlements.monthlyServerCreditsLimit -
+                account.monthlyServerCreditsLimit
+        );
+        serverCreditsBalance = Math.min(
+            remainingUnderTarget,
+            account.serverCreditsBalance + allowanceIncrease
+        );
+    }
+
+    const data = {
+        plan: effective.plan,
+        planSource: effective.source,
+        monthlyServerCreditsLimit: entitlements.monthlyServerCreditsLimit,
+        autoAnalysisMonthlyGameLimit:
+            entitlements.autoAnalysisMonthlyGameLimit,
+        autoAnalysisDailyGameLimit:
+            entitlements.autoAnalysisDailyGameLimit,
+        stopWhenCreditsBelow: entitlements.stopWhenCreditsBelow,
+        serverCreditsBalance,
+        monthlyServerCreditsUsed,
+        serverCreditsPeriodStart,
+        serverCreditsRenewAt,
+    };
+    if (
+        !planChanged &&
+        !sourceChanged &&
+        !resetPeriod
+    ) {
+        return account;
+    }
 
     return args.tx.billingAccount.update({
         where: { userId: args.userId },
-        data: {
-            serverCreditsBalance: Math.max(
-                account.serverCreditsBalance,
-                account.monthlyServerCreditsLimit
-            ),
-            monthlyServerCreditsUsed: 0,
-            serverCreditsPeriodStart: args.now,
-            serverCreditsRenewAt: nextMonthlyRenewAt(args.now),
-        },
+        data,
     });
+}
+
+async function getOrCreateDefaultBillingAccountInTransaction(args: {
+    tx: BillingTransactionClient;
+    userId: string;
+    now: Date;
+}) {
+    return reconcileBillingAccountInTransaction(args);
 }
 
 async function createLedgerResult(

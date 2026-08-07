@@ -48,6 +48,13 @@ curl -H "Authorization: Bearer $BACKRANQ_ADMIN_API_SECRET" \
 
 The snapshot includes queue counts, stuck counts, oldest queued/running ages, recent errors, and credit ledger totals.
 
+Premium administration is available at `/admin/premium` to active database-backed
+administrators with the `PREMIUM_MANAGE` capability. Active administrators receive
+Pro automatically. From the portal they can send a 14-day, single-use invitation
+for permanent complimentary Pro access. The recipient must sign in with the invited
+email before accepting. Invitation email uses the existing `SMTP2GO_API_KEY`,
+`BACKRANQ_EMAIL_FROM`, and `BACKRANQ_APP_URL` settings.
+
 Deployment readiness endpoint:
 
 ```bash

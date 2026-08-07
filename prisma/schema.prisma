@@ -307,6 +307,17 @@ enum BillingPlan {
   PRO
 }
 
+enum BillingPlanSource {
+  FREE
+  STRIPE
+  ADMIN
+  COMPLIMENTARY
+}
+
+enum PlanGrantSource {
+  ADMIN_INVITATION
+}
+
 enum NotificationType {
   PRACTICE_READY
   NEW_GAMES_SYNCED
@@ -370,6 +381,10 @@ model User {
   analysisRuns                AnalysisRun[]
   creditLedgerEntries         CreditLedgerEntry[]
   billingAccount              BillingAccount?
+  planGrants                  PlanGrant[]                  @relation("PlanGrantRecipient")
+  grantedPlanGrants           PlanGrant[]                  @relation("PlanGrantGranter")
+  premiumInvitationsSent      PremiumInvitation[]          @relation("PremiumInvitationInviter")
+  premiumInvitationsAccepted  PremiumInvitation[]          @relation("PremiumInvitationRecipient")
   notifications               Notification[]
   notificationPreference      NotificationPreference?
   notificationDeliveries      NotificationDelivery[]
@@ -508,33 +523,87 @@ model PushSubscription {
 }
 
 model BillingAccount {
-  id                           String      @id @default(uuid()) @db.Uuid
-  userId                       String      @unique @db.Uuid
-  plan                         BillingPlan @default(FREE)
-  stripeCustomerId             String?     @unique
-  stripeSubscriptionId         String?     @unique
+  id                           String            @id @default(uuid()) @db.Uuid
+  userId                       String            @unique @db.Uuid
+  plan                         BillingPlan       @default(FREE)
+  planSource                   BillingPlanSource @default(FREE)
+  stripePlan                   BillingPlan       @default(FREE)
+  stripeCustomerId             String?           @unique
+  stripeSubscriptionId         String?           @unique
   stripeSubscriptionStatus     String?
   stripePriceId                String?
   stripeCurrentPeriodEnd       DateTime?
   stripeLastEventCreatedAt     DateTime?
   stripeLastEventId            String?
-  serverCreditsBalance         Int         @default(100)
-  monthlyServerCreditsUsed     Int         @default(0)
-  serverCreditsPeriodStart     DateTime    @default(now())
-  serverCreditsRenewAt         DateTime    @default(dbgenerated("(now() + '1 mon'::interval)"))
-  monthlyServerCreditsLimit    Int         @default(100)
-  autoAnalysisMonthlyGameLimit Int         @default(50)
-  autoAnalysisDailyGameLimit   Int         @default(10)
-  stopWhenCreditsBelow         Int         @default(0)
-  createdAt                    DateTime    @default(now())
-  updatedAt                    DateTime    @updatedAt
+  serverCreditsBalance         Int               @default(100)
+  monthlyServerCreditsUsed     Int               @default(0)
+  serverCreditsPeriodStart     DateTime          @default(now())
+  serverCreditsRenewAt         DateTime          @default(dbgenerated("(now() + '1 mon'::interval)"))
+  monthlyServerCreditsLimit    Int               @default(100)
+  autoAnalysisMonthlyGameLimit Int               @default(50)
+  autoAnalysisDailyGameLimit   Int               @default(10)
+  stopWhenCreditsBelow         Int               @default(0)
+  createdAt                    DateTime          @default(now())
+  updatedAt                    DateTime          @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([plan])
+  @@index([planSource])
+  @@index([stripePlan])
   @@index([stripePriceId])
   @@index([stripeSubscriptionStatus])
   @@index([serverCreditsRenewAt])
+}
+
+model PlanGrant {
+  id           String          @id @default(uuid()) @db.Uuid
+  userId       String          @db.Uuid
+  plan         BillingPlan
+  source       PlanGrantSource @default(ADMIN_INVITATION)
+  invitationId String?         @unique @db.Uuid
+  grantedById  String?         @db.Uuid
+  startsAt     DateTime        @default(now())
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+  note         String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  user       User               @relation("PlanGrantRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy  User?              @relation("PlanGrantGranter", fields: [grantedById], references: [id], onDelete: SetNull)
+  invitation PremiumInvitation? @relation(fields: [invitationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, revokedAt, startsAt, expiresAt])
+  @@index([grantedById])
+}
+
+model PremiumInvitation {
+  id              String      @id @default(uuid()) @db.Uuid
+  email           String
+  emailNormalized String
+  activeKey       String?     @unique
+  tokenHash       String      @unique
+  plan            BillingPlan @default(PRO)
+  invitedById     String      @db.Uuid
+  acceptedById    String?     @db.Uuid
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+  revokedAt       DateTime?
+  emailSentAt     DateTime?
+  providerEmailId String?
+  lastEmailError  String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  invitedBy  User       @relation("PremiumInvitationInviter", fields: [invitedById], references: [id], onDelete: Restrict)
+  acceptedBy User?      @relation("PremiumInvitationRecipient", fields: [acceptedById], references: [id], onDelete: SetNull)
+  planGrant  PlanGrant?
+
+  @@index([emailNormalized, createdAt])
+  @@index([expiresAt])
+  @@index([invitedById])
+  @@index([acceptedById])
 }
 
 model StripeWebhookEvent {

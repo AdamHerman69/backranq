@@ -5,6 +5,7 @@ type StripeBillingModule = typeof import('@/lib/services/stripeBilling');
 
 const subscriptionsRetrieveMock = vi.fn();
 const scheduleAutoAnalysisWakeupMock = vi.fn();
+let billingAccountState: ReturnType<typeof storedBillingAccount> | null = null;
 
 async function importStripeBilling(): Promise<StripeBillingModule> {
     vi.resetModules();
@@ -30,11 +31,45 @@ describe('stripe billing price mapping', () => {
         vi.unstubAllEnvs();
         vi.stubEnv('STRIPE_PRICE_PLUS_MONTHLY', 'price_plus');
         vi.stubEnv('STRIPE_PRICE_PRO_MONTHLY', 'price_pro');
+        billingAccountState = null;
         prismaMock.$transaction.mockImplementation(
             async (callback: unknown) =>
                 (callback as (tx: typeof prismaMock) => Promise<unknown>)(
                     prismaMock
                 )
+        );
+        prismaMock.user.findUnique.mockResolvedValue({ email: null });
+        prismaMock.planGrant.findMany.mockResolvedValue([]);
+        prismaMock.billingAccount.findUnique.mockImplementation(async () =>
+            billingAccountState
+        );
+        prismaMock.billingAccount.findFirst.mockImplementation(async () =>
+            billingAccountState
+        );
+        prismaMock.billingAccount.upsert.mockImplementation(
+            async (rawArgs: unknown) => {
+                const args = rawArgs as {
+                    create: Record<string, unknown>;
+                    update: Record<string, unknown>;
+                };
+                billingAccountState = billingAccountState
+                    ? ({
+                          ...billingAccountState,
+                          ...args.update,
+                      } as ReturnType<typeof storedBillingAccount>)
+                    : storedBillingAccount(args.create);
+                return billingAccountState;
+            }
+        );
+        prismaMock.billingAccount.update.mockImplementation(
+            async (rawArgs: unknown) => {
+                const args = rawArgs as { data: Record<string, unknown> };
+                billingAccountState = storedBillingAccount({
+                    ...billingAccountState,
+                    ...args.data,
+                });
+                return billingAccountState;
+            }
         );
     });
 
@@ -62,35 +97,22 @@ describe('stripe billing price mapping', () => {
 
     it('applies active subscriptions as paid entitlements', async () => {
         const billing = await importStripeBilling();
-        prismaMock.billingAccount.findFirst.mockResolvedValue(null);
-        prismaMock.billingAccount.findUnique.mockResolvedValue({
-            userId: 'user-1',
-            plan: 'FREE',
-            serverCreditsBalance: 100,
-            stripePriceId: null,
-            stripeSubscriptionStatus: null,
-        });
-        prismaMock.billingAccount.upsert.mockResolvedValue({});
+        billingAccountState = storedBillingAccount();
 
         await billing.applyStripeSubscription(subscription({ status: 'active' }));
 
-        expect(prismaMock.billingAccount.upsert).toHaveBeenCalledWith({
-            where: { userId: 'user-1' },
-            update: expect.objectContaining({
-                plan: 'PLUS',
-                stripeCustomerId: 'cus_1',
-                stripeSubscriptionId: 'sub_1',
-                stripeSubscriptionStatus: 'active',
-                stripePriceId: 'price_plus',
-                monthlyServerCreditsLimit: 1000,
-                autoAnalysisMonthlyGameLimit: 500,
-                autoAnalysisDailyGameLimit: 50,
-                serverCreditsBalance: 1000,
-            }),
-            create: expect.objectContaining({
-                userId: 'user-1',
-                plan: 'PLUS',
-            }),
+        expect(billingAccountState).toMatchObject({
+            plan: 'PLUS',
+            planSource: 'STRIPE',
+            stripePlan: 'PLUS',
+            stripeCustomerId: 'cus_1',
+            stripeSubscriptionId: 'sub_1',
+            stripeSubscriptionStatus: 'active',
+            stripePriceId: 'price_plus',
+            monthlyServerCreditsLimit: 1000,
+            autoAnalysisMonthlyGameLimit: 500,
+            autoAnalysisDailyGameLimit: 50,
+            serverCreditsBalance: 1000,
         });
         expect(scheduleAutoAnalysisWakeupMock).toHaveBeenCalledWith(
             'user-1',
@@ -100,12 +122,10 @@ describe('stripe billing price mapping', () => {
 
     it('tops up and wakes the backlog when Stripe advances the billing period', async () => {
         const billing = await importStripeBilling();
-        prismaMock.billingAccount.findFirst.mockResolvedValue({
-            userId: 'user-1',
-        });
-        prismaMock.billingAccount.findUnique.mockResolvedValue({
-            userId: 'user-1',
+        billingAccountState = storedBillingAccount({
             plan: 'PLUS',
+            planSource: 'STRIPE',
+            stripePlan: 'PLUS',
             serverCreditsBalance: 0,
             serverCreditsRenewAt: new Date('2020-01-01T00:00:00Z'),
             monthlyServerCreditsLimit: 1000,
@@ -115,24 +135,17 @@ describe('stripe billing price mapping', () => {
             stripeSubscriptionStatus: 'active',
             stripeCurrentPeriodEnd: new Date('2026-12-15T08:00:00Z'),
         });
-        prismaMock.billingAccount.upsert.mockResolvedValue({});
 
         await billing.applyStripeSubscription(
             subscription({ status: 'active' })
         );
 
-        expect(prismaMock.billingAccount.upsert).toHaveBeenCalledWith(
-            expect.objectContaining({
-                update: expect.objectContaining({
-                    serverCreditsBalance: 1000,
-                    monthlyServerCreditsUsed: 0,
-                    serverCreditsPeriodStart: new Date(
-                        '2026-12-15T08:00:00.000Z'
-                    ),
-                    serverCreditsRenewAt: expect.any(Date),
-                }),
-            })
-        );
+        expect(billingAccountState).toMatchObject({
+            serverCreditsBalance: 1000,
+            monthlyServerCreditsUsed: 0,
+            serverCreditsPeriodStart: new Date('2026-12-15T08:00:00.000Z'),
+            serverCreditsRenewAt: new Date('2027-01-15T08:00:00.000Z'),
+        });
         expect(scheduleAutoAnalysisWakeupMock).toHaveBeenCalledWith(
             'user-1',
             'billing'
@@ -141,12 +154,10 @@ describe('stripe billing price mapping', () => {
 
     it('changes plans by granting only the entitlement delta without resetting usage', async () => {
         const billing = await importStripeBilling();
-        prismaMock.billingAccount.findFirst.mockResolvedValue({
-            userId: 'user-1',
-        });
-        prismaMock.billingAccount.findUnique.mockResolvedValue({
-            userId: 'user-1',
+        billingAccountState = storedBillingAccount({
             plan: 'PLUS',
+            planSource: 'STRIPE',
+            stripePlan: 'PLUS',
             serverCreditsBalance: 400,
             monthlyServerCreditsUsed: 600,
             serverCreditsRenewAt: new Date('2027-01-15T08:00:00Z'),
@@ -157,35 +168,27 @@ describe('stripe billing price mapping', () => {
             stripeSubscriptionStatus: 'active',
             stripeCurrentPeriodEnd: new Date('2027-01-15T08:00:00Z'),
         });
-        prismaMock.billingAccount.upsert.mockResolvedValue({});
 
         await billing.applyStripeSubscription(
             subscription({ status: 'active', priceId: 'price_pro' })
         );
 
-        const upsertArgs = prismaMock.billingAccount.upsert.mock
-            .calls[0]?.[0] as
-            | { update: Record<string, unknown> }
-            | undefined;
-        const update = upsertArgs?.update ?? {};
-        expect(update).toMatchObject({
+        expect(billingAccountState).toMatchObject({
             plan: 'PRO',
             monthlyServerCreditsLimit: 5_000,
             serverCreditsBalance: 4_400,
+            monthlyServerCreditsUsed: 600,
+            serverCreditsRenewAt: new Date('2027-01-15T08:00:00Z'),
         });
-        expect(update).not.toHaveProperty('monthlyServerCreditsUsed');
-        expect(update).not.toHaveProperty('serverCreditsRenewAt');
     });
 
     it('does not move the stored period backward or reset usage for a stale webhook', async () => {
         const billing = await importStripeBilling();
         const storedPeriodEnd = new Date('2027-02-15T08:00:00Z');
-        prismaMock.billingAccount.findFirst.mockResolvedValue({
-            userId: 'user-1',
-        });
-        prismaMock.billingAccount.findUnique.mockResolvedValue({
-            userId: 'user-1',
+        billingAccountState = storedBillingAccount({
             plan: 'PLUS',
+            planSource: 'STRIPE',
+            stripePlan: 'PLUS',
             serverCreditsBalance: 400,
             monthlyServerCreditsUsed: 600,
             serverCreditsRenewAt: storedPeriodEnd,
@@ -196,7 +199,6 @@ describe('stripe billing price mapping', () => {
             stripeSubscriptionStatus: 'active',
             stripeCurrentPeriodEnd: storedPeriodEnd,
         });
-        prismaMock.billingAccount.upsert.mockResolvedValue({});
 
         await billing.applyStripeSubscription(
             subscription({
@@ -205,25 +207,20 @@ describe('stripe billing price mapping', () => {
             })
         );
 
-        const upsertArgs = prismaMock.billingAccount.upsert.mock
-            .calls[0]?.[0] as
-            | { update: Record<string, unknown> }
-            | undefined;
-        const update = upsertArgs?.update ?? {};
-        expect(update.stripeCurrentPeriodEnd).toEqual(storedPeriodEnd);
-        expect(update).not.toHaveProperty('monthlyServerCreditsUsed');
-        expect(update).not.toHaveProperty('serverCreditsBalance');
-        expect(update).not.toHaveProperty('serverCreditsRenewAt');
+        expect(billingAccountState).toMatchObject({
+            stripeCurrentPeriodEnd: storedPeriodEnd,
+            monthlyServerCreditsUsed: 600,
+            serverCreditsBalance: 400,
+            serverCreditsRenewAt: storedPeriodEnd,
+        });
     });
 
     it('ignores an older subscription event without overwriting the current plan', async () => {
         const billing = await importStripeBilling();
-        prismaMock.billingAccount.findFirst.mockResolvedValue({
-            userId: 'user-1',
-        });
-        prismaMock.billingAccount.findUnique.mockResolvedValue({
-            userId: 'user-1',
+        billingAccountState = storedBillingAccount({
             plan: 'PRO',
+            planSource: 'STRIPE',
+            stripePlan: 'PRO',
             serverCreditsBalance: 4_000,
             monthlyServerCreditsUsed: 1_000,
             serverCreditsRenewAt: new Date('2027-02-15T08:00:00Z'),
@@ -254,38 +251,33 @@ describe('stripe billing price mapping', () => {
 
     it('maps non-paid subscription statuses back to free entitlements', async () => {
         const billing = await importStripeBilling();
-        prismaMock.billingAccount.findFirst.mockResolvedValue({ userId: 'user-1' });
-        prismaMock.billingAccount.findUnique.mockResolvedValue({
-            userId: 'user-1',
+        billingAccountState = storedBillingAccount({
             plan: 'PLUS',
+            planSource: 'STRIPE',
+            stripePlan: 'PLUS',
             serverCreditsBalance: 1000,
             stripePriceId: 'price_plus',
             stripeSubscriptionStatus: 'active',
         });
-        prismaMock.billingAccount.upsert.mockResolvedValue({});
 
         await billing.applyStripeSubscription(subscription({ status: 'past_due' }));
 
-        expect(prismaMock.billingAccount.upsert).toHaveBeenCalledWith(
-            expect.objectContaining({
-                update: expect.objectContaining({
-                    plan: 'FREE',
-                    monthlyServerCreditsLimit: 100,
-                    autoAnalysisMonthlyGameLimit: 50,
-                    autoAnalysisDailyGameLimit: 10,
-                    stripeSubscriptionStatus: 'past_due',
-                }),
-            })
-        );
+        expect(billingAccountState).toMatchObject({
+            plan: 'FREE',
+            planSource: 'FREE',
+            stripePlan: 'FREE',
+            monthlyServerCreditsLimit: 100,
+            autoAnalysisMonthlyGameLimit: 50,
+            autoAnalysisDailyGameLimit: 10,
+            stripeSubscriptionStatus: 'past_due',
+        });
     });
 
     it('retrieves checkout subscriptions and applies them with checkout identifiers', async () => {
         const billing = await importStripeBilling();
         const sub = subscription({ status: 'active' });
         subscriptionsRetrieveMock.mockResolvedValue(sub);
-        prismaMock.billingAccount.findFirst.mockResolvedValue(null);
-        prismaMock.billingAccount.findUnique.mockResolvedValue(null);
-        prismaMock.billingAccount.upsert.mockResolvedValue({});
+        billingAccountState = null;
 
         await billing.applyStripeCheckoutSession({
             mode: 'subscription',
@@ -303,28 +295,40 @@ describe('stripe billing price mapping', () => {
 
     it('downgrades deleted subscriptions to free entitlements', async () => {
         const billing = await importStripeBilling();
-        prismaMock.billingAccount.updateMany.mockResolvedValue({ count: 1 });
+        billingAccountState = storedBillingAccount({
+            plan: 'PLUS',
+            planSource: 'STRIPE',
+            stripePlan: 'PLUS',
+            stripeSubscriptionId: 'sub_1',
+            stripeSubscriptionStatus: 'active',
+            monthlyServerCreditsLimit: 1_000,
+        });
 
         await billing.markStripeSubscriptionDeleted(
             subscription({ status: 'canceled' })
         );
 
-        expect(prismaMock.billingAccount.updateMany).toHaveBeenCalledWith({
-            where: {
-                stripeSubscriptionId: 'sub_1',
-            },
-            data: expect.objectContaining({
-                plan: 'FREE',
-                stripeSubscriptionStatus: 'canceled',
-                monthlyServerCreditsLimit: 100,
-            }),
+        expect(billingAccountState).toMatchObject({
+            plan: 'FREE',
+            planSource: 'FREE',
+            stripePlan: 'FREE',
+            stripeSubscriptionStatus: 'canceled',
+            monthlyServerCreditsLimit: 100,
         });
     });
 
     it('cannot downgrade a replacement subscription through an old deletion event', async () => {
         const billing = await importStripeBilling();
-        prismaMock.billingAccount.updateMany.mockResolvedValue({ count: 0 });
         const eventCreatedAt = new Date('2027-01-20T08:00:00Z');
+        billingAccountState = storedBillingAccount({
+            plan: 'PRO',
+            planSource: 'STRIPE',
+            stripePlan: 'PRO',
+            stripeSubscriptionId: 'sub_replacement',
+            stripeSubscriptionStatus: 'active',
+            stripeLastEventCreatedAt: new Date('2027-01-21T08:00:00Z'),
+            stripeLastEventId: 'evt_replacement',
+        });
 
         await billing.markStripeSubscriptionDeleted(
             subscription({ status: 'canceled' }),
@@ -334,23 +338,11 @@ describe('stripe billing price mapping', () => {
             }
         );
 
-        expect(prismaMock.billingAccount.updateMany).toHaveBeenCalledWith({
-            where: {
-                stripeSubscriptionId: 'sub_1',
-                OR: [
-                    { stripeLastEventCreatedAt: null },
-                    {
-                        stripeLastEventCreatedAt: {
-                            lte: eventCreatedAt,
-                        },
-                    },
-                ],
-            },
-            data: expect.objectContaining({
-                plan: 'FREE',
-                stripeLastEventId: 'evt_delete_old',
-                stripeLastEventCreatedAt: eventCreatedAt,
-            }),
+        expect(prismaMock.billingAccount.update).not.toHaveBeenCalled();
+        expect(billingAccountState).toMatchObject({
+            plan: 'PRO',
+            stripePlan: 'PRO',
+            stripeSubscriptionId: 'sub_replacement',
         });
     });
 });
@@ -377,4 +369,32 @@ function subscription(args: {
             ],
         },
     } as never;
+}
+
+function storedBillingAccount(overrides: Record<string, unknown> = {}) {
+    return {
+        id: 'billing-1',
+        userId: 'user-1',
+        plan: 'FREE' as const,
+        planSource: 'FREE' as const,
+        stripePlan: 'FREE' as const,
+        stripeCustomerId: null,
+        stripeSubscriptionId: null,
+        stripeSubscriptionStatus: null,
+        stripePriceId: null,
+        stripeCurrentPeriodEnd: null,
+        stripeLastEventCreatedAt: null,
+        stripeLastEventId: null,
+        serverCreditsBalance: 100,
+        monthlyServerCreditsUsed: 0,
+        serverCreditsPeriodStart: new Date('2026-08-01T00:00:00Z'),
+        serverCreditsRenewAt: new Date('2027-08-01T00:00:00Z'),
+        monthlyServerCreditsLimit: 100,
+        autoAnalysisMonthlyGameLimit: 50,
+        autoAnalysisDailyGameLimit: 10,
+        stopWhenCreditsBelow: 0,
+        createdAt: new Date('2026-08-01T00:00:00Z'),
+        updatedAt: new Date('2026-08-01T00:00:00Z'),
+        ...overrides,
+    };
 }
