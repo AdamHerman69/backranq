@@ -12,6 +12,7 @@ import {
     CardTitle,
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 
 export type BillingSettings = {
     presentation: BillingPresentation;
@@ -31,8 +32,10 @@ type CheckoutResponse = {
 
 export function BillingSettingsCard({
     billing,
+    ownerId,
 }: {
     billing: BillingSettings;
+    ownerId: string;
 }) {
     const [loading, setLoading] = React.useState<string | null>(null);
 
@@ -42,7 +45,10 @@ export function BillingSettingsCard({
         try {
             const res = await fetch('/api/stripe/checkout', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    [EXPECTED_OWNER_HEADER]: ownerId,
+                },
                 body: JSON.stringify({ plan }),
             });
             const json = (await res.json().catch(() => ({}))) as CheckoutResponse;
@@ -63,7 +69,10 @@ export function BillingSettingsCard({
         setLoading('portal');
         const id = toast.loading('Opening billing portal...');
         try {
-            const res = await fetch('/api/stripe/portal', { method: 'POST' });
+            const res = await fetch('/api/stripe/portal', {
+                method: 'POST',
+                headers: { [EXPECTED_OWNER_HEADER]: ownerId },
+            });
             const json = (await res.json().catch(() => ({}))) as CheckoutResponse;
             if (!res.ok || !json.url) {
                 throw new Error(json.error ?? 'Billing portal failed');

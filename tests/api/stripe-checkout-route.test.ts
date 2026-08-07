@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 import { createJsonRequest, readJson } from '../helpers/route';
 import { mockAuthModule, setMockUserId } from '../helpers/route-mocks';
 
@@ -21,9 +22,12 @@ async function importRoute(): Promise<CheckoutRouteModule> {
     return import('@/app/api/stripe/checkout/route');
 }
 
-function post(body: unknown) {
+function post(body: unknown, ownerId: string | null = 'user-1') {
+    const headers = new Headers();
+    if (ownerId !== null) headers.set(EXPECTED_OWNER_HEADER, ownerId);
     return createJsonRequest('http://localhost/api/stripe/checkout', body, {
         method: 'POST',
+        headers,
     });
 }
 
@@ -55,6 +59,46 @@ describe('POST /api/stripe/checkout', () => {
         expect(response.status).toBe(400);
         await expect(readJson(response)).resolves.toEqual({
             error: 'Invalid plan',
+            code: 'INVALID_CHECKOUT_REQUEST',
+        });
+        expect(createStripeCheckoutSessionMock).not.toHaveBeenCalled();
+    });
+
+    it.each([null, 'stale-user'])(
+        'rejects missing or stale render owner %s before parsing or Stripe calls',
+        async (ownerId) => {
+            const route = await importRoute();
+            const headers = new Headers();
+            if (ownerId !== null) {
+                headers.set(EXPECTED_OWNER_HEADER, ownerId);
+            }
+
+            const response = await route.POST(
+                new Request('http://localhost/api/stripe/checkout', {
+                    method: 'POST',
+                    headers,
+                    body: 'not-json',
+                })
+            );
+
+            expect(response.status).toBe(409);
+            await expect(readJson(response)).resolves.toMatchObject({
+                code: 'OWNER_MISMATCH',
+            });
+            expect(createStripeCheckoutSessionMock).not.toHaveBeenCalled();
+        }
+    );
+
+    it('rejects unexpected checkout fields', async () => {
+        const route = await importRoute();
+
+        const response = await route.POST(
+            post({ plan: 'PLUS', userId: 'another-user' })
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toMatchObject({
+            code: 'INVALID_CHECKOUT_REQUEST',
         });
         expect(createStripeCheckoutSessionMock).not.toHaveBeenCalled();
     });

@@ -9,6 +9,8 @@ const subscriptionsRetrieveMock = vi.fn();
 const applyStripeCheckoutSessionMock = vi.fn();
 const applyStripeSubscriptionMock = vi.fn();
 const markStripeSubscriptionDeletedMock = vi.fn();
+const recordBillingNotificationMock = vi.fn();
+const dispatchPendingNotificationDeliveriesMock = vi.fn();
 
 async function importRoute(): Promise<WebhookRouteModule> {
     vi.resetModules();
@@ -23,6 +25,13 @@ async function importRoute(): Promise<WebhookRouteModule> {
         applyStripeCheckoutSession: applyStripeCheckoutSessionMock,
         applyStripeSubscription: applyStripeSubscriptionMock,
         markStripeSubscriptionDeleted: markStripeSubscriptionDeletedMock,
+    }));
+    vi.doMock('@/lib/notifications/service', () => ({
+        recordBillingNotification: recordBillingNotificationMock,
+    }));
+    vi.doMock('@/lib/notifications/delivery', () => ({
+        dispatchPendingNotificationDeliveries:
+            dispatchPendingNotificationDeliveriesMock,
     }));
     return import('@/app/api/stripe/webhook/route');
 }
@@ -49,6 +58,9 @@ describe('POST /api/stripe/webhook', () => {
         });
         prismaMock.stripeWebhookEvent.updateMany.mockResolvedValue({
             count: 1,
+        });
+        dispatchPendingNotificationDeliveriesMock.mockResolvedValue({
+            claimed: 0,
         });
     });
 
@@ -140,6 +152,77 @@ describe('POST /api/stripe/webhook', () => {
                 eventCreatedAt: new Date(1_800_000_000_000),
             }
         );
+    });
+
+    it('notifies only when the current payment failure was applied', async () => {
+        const subscription = { id: 'sub_1', status: 'past_due' };
+        constructEventMock.mockReturnValue({
+            id: 'evt_payment_failed',
+            created: 1_800_000_000,
+            type: 'invoice.payment_failed',
+            data: { object: { subscription: 'sub_1' } },
+        });
+        subscriptionsRetrieveMock.mockResolvedValue(subscription);
+        applyStripeSubscriptionMock.mockResolvedValue({
+            applied: true,
+            userId: 'user-1',
+            subscriptionStatus: 'past_due',
+        });
+        const route = await importRoute();
+
+        const response = await route.POST(webhookRequest());
+
+        expect(response.status).toBe(200);
+        expect(recordBillingNotificationMock).toHaveBeenCalledWith({
+            userId: 'user-1',
+            eventId: 'evt_payment_failed',
+            type: 'BILLING_ACTION_REQUIRED',
+            title: 'Your Backranq payment failed',
+            body: 'Your paid subscription needs attention. Open billing settings to review it.',
+        });
+        expect(
+            dispatchPendingNotificationDeliveriesMock
+        ).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+        {
+            name: 'stale failure event',
+            result: {
+                applied: false,
+                userId: 'user-1',
+                subscriptionStatus: 'past_due',
+            },
+        },
+        {
+            name: 'already recovered subscription',
+            result: {
+                applied: true,
+                userId: 'user-1',
+                subscriptionStatus: 'active',
+            },
+        },
+    ])('does not notify for a $name', async ({ result }) => {
+        constructEventMock.mockReturnValue({
+            id: 'evt_old_payment_failed',
+            created: 1_700_000_000,
+            type: 'invoice.payment_failed',
+            data: { object: { subscription: 'sub_1' } },
+        });
+        subscriptionsRetrieveMock.mockResolvedValue({
+            id: 'sub_1',
+            status: result.subscriptionStatus,
+        });
+        applyStripeSubscriptionMock.mockResolvedValue(result);
+        const route = await importRoute();
+
+        const response = await route.POST(webhookRequest());
+
+        expect(response.status).toBe(200);
+        expect(recordBillingNotificationMock).not.toHaveBeenCalled();
+        expect(
+            dispatchPendingNotificationDeliveriesMock
+        ).not.toHaveBeenCalled();
     });
 
     it('marks handler failures as failed webhook events', async () => {

@@ -12,6 +12,7 @@ import type {
     ProgressScope,
     ProgressSnapshot,
 } from '@/lib/progress/contracts';
+import { getEffectiveBillingAccount } from '@/lib/services/billingAccounts';
 
 type ProgressReadClient = Pick<
     Prisma.TransactionClient,
@@ -48,11 +49,6 @@ export class ProgressDatasetTooLargeError extends Error {
 
 const userSelect = {
     chessAccountConnections: { select: { provider: true } },
-    billingAccount: {
-        select: {
-            serverCreditsBalance: true,
-        },
-    },
 } satisfies Prisma.UserSelect;
 
 const gameSelect = {
@@ -151,7 +147,8 @@ const attemptSelect = {
 
 async function readProgressSnapshot(
     db: ProgressReadClient,
-    args: GetProgressSnapshotArgs
+    args: GetProgressSnapshotArgs,
+    serverCreditsBalance: number | null
 ): Promise<ProgressSnapshot> {
     if (
         !args.userId ||
@@ -237,8 +234,7 @@ async function readProgressSnapshot(
                 (connection) => connection.provider === 'CHESSCOM'
             ),
         },
-        serverCreditsBalance:
-            userRow.billingAccount?.serverCreditsBalance ?? null,
+        serverCreditsBalance,
     };
     const games: ProgressGameRecord[] = gameRows.map(
         ({ analysisJobs, ...game }) => ({
@@ -266,10 +262,15 @@ async function readProgressSnapshot(
  * Direct server/RSC entry point. The API route delegates to this same reader;
  * internal pages should call it directly rather than making an HTTP round trip.
  */
-export function getProgressSnapshot(
+export async function getProgressSnapshot(
     args: GetProgressSnapshotArgs
 ): Promise<ProgressSnapshot> {
-    return readProgressSnapshot(prisma, args);
+    const billingAccount = await getEffectiveBillingAccount(args.userId);
+    return readProgressSnapshot(
+        prisma,
+        args,
+        billingAccount.serverCreditsBalance
+    );
 }
 
 export const progressReadTestUtils = {

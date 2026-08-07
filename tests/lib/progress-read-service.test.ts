@@ -30,7 +30,8 @@ describe('Progress read service query shape', () => {
                 scope: 90,
                 asOf,
                 filters: { providers: [], timeClasses: [] },
-            }
+            },
+            7
         );
 
         expect(positionFindMany).toHaveBeenCalledWith(
@@ -167,7 +168,8 @@ describe('Progress read service query shape', () => {
                         providers: [],
                         timeClasses: [],
                     },
-                }
+                },
+                null
             );
 
         expect(result.inventory.eligiblePositions).toBe(0);
@@ -214,7 +216,8 @@ describe('Progress read service query shape', () => {
                         providers: [],
                         timeClasses: [],
                     },
-                }
+                },
+                null
             )
         ).rejects.toEqual(
             new ProgressDatasetTooLargeError('games')

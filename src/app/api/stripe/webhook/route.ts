@@ -10,6 +10,7 @@ import {
 } from '@/lib/services/stripeBilling';
 import { recordBillingNotification } from '@/lib/notifications/service';
 import { dispatchPendingNotificationDeliveries } from '@/lib/notifications/delivery';
+import { stripeSubscriptionRequiresAction } from '@/lib/billing/stripeContract';
 
 export const runtime = 'nodejs';
 const STRIPE_WEBHOOK_PROCESSING_LEASE_MS = 5 * 60 * 1_000;
@@ -218,33 +219,31 @@ async function handleStripeEvent(event: Stripe.Event) {
             return;
         case 'invoice.payment_failed': {
             const invoice = event.data.object as Stripe.Invoice;
-            await syncSubscriptionFromInvoice(invoice, eventFence);
-            const customerId =
-                typeof invoice.customer === 'string'
-                    ? invoice.customer
-                    : invoice.customer?.id;
-            if (customerId) {
-                const account = await prisma.billingAccount.findUnique({
-                    where: { stripeCustomerId: customerId },
-                    select: { userId: true },
+            const applied = await syncSubscriptionFromInvoice(
+                invoice,
+                eventFence
+            );
+            if (
+                applied?.applied &&
+                stripeSubscriptionRequiresAction(
+                    applied.subscriptionStatus
+                )
+            ) {
+                await recordBillingNotification({
+                    userId: applied.userId,
+                    eventId: event.id,
+                    type: 'BILLING_ACTION_REQUIRED',
+                    title: 'Your Backranq payment failed',
+                    body: 'Your paid subscription needs attention. Open billing settings to review it.',
                 });
-                if (account) {
-                    await recordBillingNotification({
-                        userId: account.userId,
-                        eventId: event.id,
-                        type: 'BILLING_ACTION_REQUIRED',
-                        title: 'Your Backranq payment failed',
-                        body: 'Update your payment method to keep paid features active.',
-                    });
-                    await dispatchPendingNotificationDeliveries().catch(
-                        (notificationError) => {
-                            console.error(
-                                '[notifications] delivery wakeup failed',
-                                notificationError
-                            );
-                        }
-                    );
-                }
+                await dispatchPendingNotificationDeliveries().catch(
+                    (notificationError) => {
+                        console.error(
+                            '[notifications] delivery wakeup failed',
+                            notificationError
+                        );
+                    }
+                );
             }
             return;
         }
@@ -263,13 +262,13 @@ async function syncSubscriptionFromInvoice(
     const subscriptionId =
         (invoice as unknown as { subscription?: string | { id: string } | null })
             .subscription ?? null;
-    if (!subscriptionId) return;
+    if (!subscriptionId) return null;
     const id =
         typeof subscriptionId === 'string' ? subscriptionId : subscriptionId.id;
     const subscription = await getStripeClient().subscriptions.retrieve(id, {
         expand: ['items.data.price'],
     });
-    await applyStripeSubscription(subscription, eventFence);
+    return applyStripeSubscription(subscription, eventFence);
 }
 
 function isUniqueConstraintError(error: unknown) {

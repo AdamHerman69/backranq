@@ -88,6 +88,7 @@ export default async function SettingsPage() {
 
             <section id="billing" className="scroll-mt-24">
                 <BillingSettingsCard
+                    ownerId={initialUser.id}
                     billing={{
                         presentation: billingPresentation,
                         serverCreditsBalance:

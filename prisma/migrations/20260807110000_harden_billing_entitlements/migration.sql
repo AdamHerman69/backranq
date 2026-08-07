@@ -23,13 +23,14 @@ ON "CreditLedgerEntry"("userId", "scope", "createdAt");
 CREATE INDEX "CreditLedgerEntry_userId_scope_billingPeriodStart_type_idx"
 ON "CreditLedgerEntry"("userId", "scope", "billingPeriodStart", "type");
 
--- Monthly Stripe prices are the only paid prices in this schema. Existing
--- rows did not retain the period start, so recover the matching calendar-month
--- anchor once; every later webhook persists Stripe's exact timestamp.
+-- The previous runtime stored Stripe's exact period start in the server-credit
+-- anchor. Preserve that timestamp instead of trying to reconstruct it with
+-- calendar arithmetic (which is incorrect for trials and month-end clipping).
 UPDATE "BillingAccount"
-SET "stripeCurrentPeriodStart" = "stripeCurrentPeriodEnd" - INTERVAL '1 month'
+SET "stripeCurrentPeriodStart" = "serverCreditsPeriodStart"
 WHERE "stripeSubscriptionStatus" IN ('active', 'trialing')
   AND "stripeCurrentPeriodEnd" IS NOT NULL
+  AND "serverCreditsPeriodStart" < "stripeCurrentPeriodEnd"
   AND "stripeCurrentPeriodStart" IS NULL;
 
 UPDATE "BillingAccount"
@@ -38,6 +39,26 @@ SET "serverCreditsPeriodStart" = "stripeCurrentPeriodStart",
 WHERE "stripeSubscriptionStatus" IN ('active', 'trialing')
   AND "stripeCurrentPeriodStart" IS NOT NULL
   AND "stripeCurrentPeriodEnd" IS NOT NULL;
+
+-- Existing reservation events belong to the allowance period in which they
+-- were created. Normalize them before reconciling balances so outstanding
+-- reservations are included in the same invariant as the runtime service.
+UPDATE "CreditLedgerEntry" cle
+SET "billingPeriodStart" = CASE
+    WHEN cle."createdAt" >= ba."serverCreditsPeriodStart"
+        THEN ba."serverCreditsPeriodStart"
+    ELSE date_trunc('month', cle."createdAt")
+END
+FROM "BillingAccount" ba
+WHERE cle."userId" = ba."userId"
+  AND cle."scope" = 'RESERVATION';
+
+UPDATE "CreditLedgerEntry"
+SET "billingPeriodStart" = date_trunc('month', "createdAt")
+WHERE "billingPeriodStart" IS NULL;
+
+ALTER TABLE "CreditLedgerEntry"
+ALTER COLUMN "billingPeriodStart" SET NOT NULL;
 
 -- Materialize billing rows for every entitlement holder. This makes an active
 -- administrator or complimentary grant effective before the first settings or
@@ -98,12 +119,38 @@ WITH candidates AS (
         CASE e.plan WHEN 'PRO' THEN 5000 WHEN 'PLUS' THEN 500 ELSE 50 END AS monthly_games,
         CASE e.plan WHEN 'PRO' THEN 250 WHEN 'PLUS' THEN 50 ELSE 10 END AS daily_games
     FROM effective e
+), outstanding AS (
+    SELECT ba."userId",
+        LEAST(
+            5000,
+            GREATEST(
+                0,
+                COALESCE(SUM(
+                    CASE cle."type"
+                        WHEN 'RESERVED' THEN cle."credits"
+                        WHEN 'CONSUMED' THEN -cle."credits"
+                        WHEN 'RELEASED' THEN -cle."credits"
+                        WHEN 'EXPIRED' THEN -cle."credits"
+                        ELSE 0
+                    END
+                ), 0)
+            )
+        )::INTEGER AS credits
+    FROM "BillingAccount" ba
+    LEFT JOIN "CreditLedgerEntry" cle
+      ON cle."userId" = ba."userId"
+     AND cle."scope" = 'RESERVATION'
+     AND cle."billingPeriodStart" = ba."serverCreditsPeriodStart"
+    GROUP BY ba."userId"
 )
 UPDATE "BillingAccount" ba
 SET "plan" = t.plan,
     "planSource" = t.source,
     "serverCreditsBalance" = LEAST(
-        GREATEST(0, t.credit_limit - ba."monthlyServerCreditsUsed"),
+        GREATEST(
+            0,
+            t.credit_limit - ba."monthlyServerCreditsUsed" - o.credits
+        ),
         ba."serverCreditsBalance" + GREATEST(0, t.credit_limit - ba."monthlyServerCreditsLimit")
     ),
     "monthlyServerCreditsLimit" = t.credit_limit,
@@ -112,26 +159,8 @@ SET "plan" = t.plan,
     "stopWhenCreditsBelow" = 0,
     "updatedAt" = CURRENT_TIMESTAMP
 FROM targets t
+JOIN outstanding o ON o."userId" = t."userId"
 WHERE ba."userId" = t."userId";
-
--- Existing reservation events belong to the allowance period in which they
--- were created. Pre-user state can be normalized without a compatibility path.
-UPDATE "CreditLedgerEntry" cle
-SET "billingPeriodStart" = CASE
-    WHEN cle."createdAt" >= ba."serverCreditsPeriodStart"
-        THEN ba."serverCreditsPeriodStart"
-    ELSE date_trunc('month', cle."createdAt")
-END
-FROM "BillingAccount" ba
-WHERE cle."userId" = ba."userId"
-  AND cle."scope" = 'RESERVATION';
-
-UPDATE "CreditLedgerEntry"
-SET "billingPeriodStart" = date_trunc('month', "createdAt")
-WHERE "billingPeriodStart" IS NULL;
-
-ALTER TABLE "CreditLedgerEntry"
-ALTER COLUMN "billingPeriodStart" SET NOT NULL;
 
 ALTER TABLE "CreditLedgerEntry"
 ADD CONSTRAINT "CreditLedgerEntry_scope_type_check" CHECK (

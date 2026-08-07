@@ -247,6 +247,11 @@ export async function applyStripeSubscription(
     if (billingUpdate.capacityIncreased) {
         scheduleAutoAnalysisWakeup(userId, 'billing');
     }
+    return {
+        ...billingUpdate,
+        userId,
+        subscriptionStatus: subscription.status,
+    };
 }
 
 export async function markStripeSubscriptionDeleted(

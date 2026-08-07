@@ -92,6 +92,6 @@ function renderBilling(overrides: Partial<BillingSettings> = {}) {
     };
 
     return renderToStaticMarkup(
-        createElement(BillingSettingsCard, { billing })
+        createElement(BillingSettingsCard, { billing, ownerId: 'user-1' })
     );
 }

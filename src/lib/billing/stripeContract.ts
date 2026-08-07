@@ -20,3 +20,13 @@ export function stripeSubscriptionProvidesAccess(
 ): boolean {
     return status !== null && STRIPE_ACCESS_STATUSES.has(status);
 }
+
+/** A live contract that currently provides no Stripe-backed access needs action. */
+export function stripeSubscriptionRequiresAction(
+    status: string | null
+): boolean {
+    return (
+        hasLiveStripeContract(status) &&
+        !stripeSubscriptionProvidesAccess(status)
+    );
+}

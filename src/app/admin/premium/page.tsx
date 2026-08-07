@@ -173,6 +173,12 @@ export default async function PremiumAdminPage() {
                                                                 invitationId:
                                                                     invitation.id,
                                                             }}
+                                                            confirmMessage={
+                                                                invitation.deliveryStatus ===
+                                                                'SENT'
+                                                                    ? `Send a new invitation link to ${invitation.email}? The previously delivered link will stop working.`
+                                                                    : undefined
+                                                            }
                                                             size="sm"
                                                             variant="outline"
                                                             disabled={!emailConfigured}
