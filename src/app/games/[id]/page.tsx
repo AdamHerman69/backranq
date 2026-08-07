@@ -35,8 +35,10 @@ export default async function GameDetailPage({
                 currentSolutionRevision: {
                     is: {
                         trainable: true,
-                        verificationStatus: {
-                            in: ['VERIFIED', 'AMBIGUOUS'],
+                        verificationStatus: 'VERIFIED',
+                        acceptanceFrontier: {
+                            path: ['status'],
+                            equals: 'STABLE',
                         },
                     },
                 },

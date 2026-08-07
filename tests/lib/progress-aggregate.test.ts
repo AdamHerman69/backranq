@@ -134,6 +134,7 @@ function position(
             solutionHash: 'solution-one',
             configHash: 'config-1',
             verificationStatus: 'VERIFIED',
+            acceptanceFrontier: { status: 'STABLE' },
             trainable: true,
         },
         observations: [
@@ -198,6 +199,26 @@ describe('aggregateProgressSnapshot', () => {
             analyzed: 0,
             stale: 1,
         });
+        expect(result.coverage.eligiblePositions).toBe(0);
+        expect(result.inventory.eligiblePositions).toBe(0);
+    });
+
+    it('excludes verified revisions whose acceptance frontier is not stable', () => {
+        const result = snapshot({
+            positions: [
+                position('position-open-frontier', [], {
+                    currentSolutionRevision: {
+                        id: 'revision-current',
+                        solutionHash: 'solution-one',
+                        configHash: 'config-1',
+                        verificationStatus: 'VERIFIED',
+                        acceptanceFrontier: { status: 'OPEN' },
+                        trainable: true,
+                    },
+                }),
+            ],
+        });
+
         expect(result.coverage.eligiblePositions).toBe(0);
         expect(result.inventory.eligiblePositions).toBe(0);
     });
@@ -552,6 +573,7 @@ describe('aggregateProgressSnapshot', () => {
                         solutionHash: 'solution-new',
                         configHash: 'config-new',
                         verificationStatus: 'VERIFIED',
+                        acceptanceFrontier: { status: 'STABLE' },
                         trainable: true,
                     },
                     observations: [

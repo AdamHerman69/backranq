@@ -97,6 +97,7 @@ function dependencies() {
                 currentSolutionRevision: {
                     trainable: true,
                     verificationStatus: 'VERIFIED',
+                    acceptanceFrontier: { status: 'STABLE' },
                     solutionHash: 'solution-hash-1',
                     configHash: 'config-hash-1',
                 },
@@ -235,6 +236,28 @@ describe('client-graded training attempt recording', () => {
                 grade: null,
             }),
         });
+    });
+
+    it('rejects a verified revision whose acceptance frontier is not stable', async () => {
+        const { db, tx } = dependencies();
+        const moment = await db.trainingMoment.findFirst();
+        db.trainingMoment.findFirst.mockResolvedValue({
+            ...moment,
+            currentSolutionRevision: {
+                ...moment.currentSolutionRevision,
+                acceptanceFrontier: { status: 'OPEN' },
+            },
+        });
+
+        await expect(
+            recordTrainingAttempt({
+                userId: 'user-1',
+                momentId,
+                request: gradedRequest(),
+                dependencies: { db: db as never },
+            })
+        ).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+        expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
     });
 
     it('validates the complete local continuation line before writing', async () => {

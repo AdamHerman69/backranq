@@ -34,6 +34,7 @@ const attemptMomentSelect = {
         select: {
             trainable: true,
             verificationStatus: true,
+            acceptanceFrontier: true,
             solutionHash: true,
             configHash: true,
         },
@@ -419,9 +420,8 @@ export async function recordTrainingAttempt(args: {
     }
     if (
         !revision.trainable ||
-        !['VERIFIED', 'AMBIGUOUS'].includes(
-            revision.verificationStatus
-        )
+        revision.verificationStatus !== 'VERIFIED' ||
+        !hasStableAcceptanceFrontier(revision.acceptanceFrontier)
     ) {
         throw new TrainingAttemptError(
             'Training moment is not currently trainable',
@@ -564,4 +564,14 @@ export async function recordTrainingAttempt(args: {
         assertIdempotentRecord(winner, args);
         return { attemptId: winner.id, status: 'RECORDED' };
     }
+}
+
+function hasStableAcceptanceFrontier(value: unknown) {
+    return (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        'status' in value &&
+        value.status === 'STABLE'
+    );
 }

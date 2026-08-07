@@ -28,6 +28,9 @@ describe('bounded practice feed queries', () => {
                 `solution."verificationStatus" = 'VERIFIED'::"VerificationStatus"`
             );
             expect(text).toContain(
+                `solution."acceptanceFrontier"->>'status' = 'STABLE'`
+            );
+            expect(text).toContain(
                 `raw."solutionHash" = solution."solutionHash"`
             );
             if (text.includes('state."lapses" = 0')) return [];
@@ -102,6 +105,9 @@ describe('bounded practice feed queries', () => {
                 text.indexOf('LEFT JOIN LATERAL')
             );
             expect(text).toContain('NOT EXISTS');
+            expect(text).toContain(
+                `solution."acceptanceFrontier"->>'status' = 'STABLE'`
+            );
             expect(text).toContain(
                 `state."solutionHash" = solution."solutionHash"`
             );

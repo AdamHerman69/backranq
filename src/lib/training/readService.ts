@@ -402,6 +402,10 @@ export async function listPracticeFeed(args: {
                 is: {
                     trainable: true,
                     verificationStatus: 'VERIFIED',
+                    acceptanceFrontier: {
+                        path: ['status'],
+                        equals: 'STABLE',
+                    },
                 },
             },
         },
@@ -457,6 +461,10 @@ export async function getTrainingMomentPrompt(args: {
                 is: {
                     trainable: true,
                     verificationStatus: 'VERIFIED',
+                    acceptanceFrontier: {
+                        path: ['status'],
+                        equals: 'STABLE',
+                    },
                 },
             },
         },

@@ -109,6 +109,7 @@ export type ProgressPositionRecord = {
             | 'AMBIGUOUS'
             | 'UNSTABLE'
             | 'INVALID';
+        acceptanceFrontier: unknown;
         trainable: boolean;
     } | null;
     observations: Array<{
@@ -245,8 +246,8 @@ function positionIsEligible(
         !revision ||
         revision.id !== position.currentSolutionRevisionId ||
         !revision.trainable ||
-        (revision.verificationStatus !== 'VERIFIED' &&
-            revision.verificationStatus !== 'AMBIGUOUS')
+        revision.verificationStatus !== 'VERIFIED' ||
+        !hasStableAcceptanceFrontier(revision.acceptanceFrontier)
     ) {
         return false;
     }
@@ -255,6 +256,16 @@ function positionIsEligible(
             observation.analysisRunId === run.id &&
             observation.solutionRevisionId === revision.id &&
             observation.observedSolutionHash === revision.solutionHash
+    );
+}
+
+function hasStableAcceptanceFrontier(value: unknown) {
+    return (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        'status' in value &&
+        value.status === 'STABLE'
     );
 }
 

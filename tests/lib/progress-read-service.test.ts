@@ -44,8 +44,10 @@ describe('Progress read service query shape', () => {
                     currentSolutionRevision: {
                         is: {
                             trainable: true,
-                            verificationStatus: {
-                                in: ['VERIFIED', 'AMBIGUOUS'],
+                            verificationStatus: 'VERIFIED',
+                            acceptanceFrontier: {
+                                path: ['status'],
+                                equals: 'STABLE',
                             },
                         },
                     },

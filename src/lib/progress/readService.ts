@@ -95,6 +95,7 @@ const positionSelect = {
             solutionHash: true,
             configHash: true,
             verificationStatus: true,
+            acceptanceFrontier: true,
             trainable: true,
         },
     },
@@ -182,8 +183,10 @@ async function readProgressSnapshot(
                     currentSolutionRevision: {
                         is: {
                             trainable: true,
-                            verificationStatus: {
-                                in: ['VERIFIED', 'AMBIGUOUS'],
+                            verificationStatus: 'VERIFIED',
+                            acceptanceFrontier: {
+                                path: ['status'],
+                                equals: 'STABLE',
                             },
                         },
                     },
