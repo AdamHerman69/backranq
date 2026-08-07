@@ -150,7 +150,7 @@ function coverageNotices(snapshot: ProgressSnapshot) {
         snapshot.filters.providers.length === 0
     ) {
         notices.push(
-            'This view combines Lichess and Chess.com. Use Provider filters before comparing one source.'
+            'This view combines multiple game sources. Use Source filters before comparing one source.'
         );
     }
     if (states.stale > 0) {
@@ -1017,7 +1017,7 @@ function Breakdowns({ snapshot }: { snapshot: ProgressSnapshot }) {
                     disclosure="Winning-chance impact is primary. Centipawn fallback is labeled separately when winning chance was unavailable."
                 />
                 <BreakdownCard
-                    title="Provider"
+                    title="Game source"
                     kind="provider"
                     rows={snapshot.breakdowns.provider}
                 />

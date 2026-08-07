@@ -32,6 +32,10 @@ const ownedGame = {
     externalId: 'source-game-1',
     playedAt: new Date('2026-07-04T12:00:00.000Z'),
     pgn: '[Event "Test"]\n\n1. e4 *',
+    sourceUsername: 'Ada',
+    userSide: 'WHITE',
+    whiteName: 'Ada',
+    blackName: 'Grace',
 };
 const sourcePgnHash = hashSourcePgn(ownedGame.pgn);
 const standardAnalysisDefaults = {
@@ -615,6 +619,84 @@ describe('PUT /api/games/[id]/analysis', () => {
         ).not.toHaveBeenCalled();
         expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
         expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects an analysis receipt for the opposite frozen perspective', async () => {
+        const route = await importRoute();
+        prismaMock.analyzedGame.findFirst.mockResolvedValue(ownedGame);
+
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: {
+                    ...validAnalysis,
+                    trainingExtraction: {
+                        ...validAnalysis.trainingExtraction,
+                        trainingSide: 'BLACK',
+                    },
+                },
+                trainingMoments: [],
+                extractionManifest: validManifest,
+            }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Analysis perspective does not match stored game',
+        });
+        expect(
+            (prismaMock as PrismaMockWithTransaction).$transaction
+        ).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the stored perspective no longer matches the players', async () => {
+        const route = await importRoute();
+        prismaMock.analyzedGame.findFirst.mockResolvedValue({
+            ...ownedGame,
+            sourceUsername: 'Mallory',
+        });
+
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: validAnalysis,
+                trainingMoments: [],
+                extractionManifest: validManifest,
+            }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(409);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Stored game perspective is invalid',
+        });
+        expect(
+            (prismaMock as PrismaMockWithTransaction).$transaction
+        ).not.toHaveBeenCalled();
+    });
+
+    it('fails closed on an UNKNOWN stored side even if legacy data reaches runtime', async () => {
+        const route = await importRoute();
+        prismaMock.analyzedGame.findFirst.mockResolvedValue({
+            ...ownedGame,
+            userSide: 'UNKNOWN',
+        });
+
+        const response = await route.PUT(
+            createPutRequest({
+                analysis: validAnalysis,
+                trainingMoments: [],
+                extractionManifest: validManifest,
+            }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(409);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Stored game perspective is invalid',
+        });
+        expect(
+            (prismaMock as PrismaMockWithTransaction).$transaction
+        ).not.toHaveBeenCalled();
     });
 
     it('rejects move analysis that does not match the stored PGN', async () => {

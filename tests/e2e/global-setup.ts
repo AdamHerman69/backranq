@@ -438,7 +438,7 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                 providerAccountId: 'backranq-e2e-lichess',
                 username: E2E_USER.username,
                 usernameNormalized: E2E_USER.username.toLowerCase(),
-                verification: 'PUBLIC_PROFILE',
+                origin: 'PUBLIC_PROFILE',
             },
             {
                 userId: E2E_USER.id,
@@ -446,7 +446,7 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                 providerAccountId: 'backranq-e2e-chesscom',
                 username: E2E_USER.username,
                 usernameNormalized: E2E_USER.username.toLowerCase(),
-                verification: 'PUBLIC_PROFILE',
+                origin: 'PUBLIC_PROFILE',
             },
         ],
     });

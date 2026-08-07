@@ -1,6 +1,6 @@
 CREATE TYPE "GameSource" AS ENUM ('LICHESS', 'CHESSCOM', 'MANUAL_PGN', 'BACKRANQ_COACH');
 CREATE TYPE "SyncProvider" AS ENUM ('LICHESS', 'CHESSCOM');
-CREATE TYPE "AccountConnectionVerification" AS ENUM ('OAUTH', 'PUBLIC_PROFILE');
+CREATE TYPE "ConnectionOrigin" AS ENUM ('OAUTH_ACCOUNT', 'PUBLIC_PROFILE');
 
 -- Game evidence and synchronization are intentionally separate domains.
 ALTER TABLE "AnalyzedGame"
@@ -30,7 +30,7 @@ CREATE TABLE "ChessAccountConnection" (
     "providerAccountId" TEXT,
     "username" TEXT NOT NULL,
     "usernameNormalized" TEXT NOT NULL,
-    "verification" "AccountConnectionVerification" NOT NULL,
+    "origin" "ConnectionOrigin" NOT NULL,
     "verifiedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -39,13 +39,14 @@ CREATE TABLE "ChessAccountConnection" (
         char_length(btrim("username")) BETWEEN 1 AND 64 AND
         char_length("usernameNormalized") BETWEEN 1 AND 64 AND
         "usernameNormalized" = lower(btrim("username"))
+    ),
+    CONSTRAINT "ChessAccountConnection_origin_shape" CHECK (
+        "origin" <> 'OAUTH_ACCOUNT' OR "providerAccountId" IS NOT NULL
     )
 );
 
 CREATE UNIQUE INDEX "ChessAccountConnection_userId_provider_key"
     ON "ChessAccountConnection"("userId", "provider");
-CREATE UNIQUE INDEX "ChessAccountConnection_provider_providerAccountId_key"
-    ON "ChessAccountConnection"("provider", "providerAccountId");
 CREATE INDEX "ChessAccountConnection_provider_usernameNormalized_idx"
     ON "ChessAccountConnection"("provider", "usernameNormalized");
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { hashSourcePgn } from '@/lib/chess/pgn';
 
 import { readJson } from '../helpers/route';
 import {
@@ -130,6 +131,39 @@ describe('POST /api/coach/games', () => {
         expect(firstId).toMatch(/^backranq_coach:[a-f0-9]{64}$/);
         expect(secondId).toBe(firstId);
         expect(changed.status).toBe(409);
+    });
+
+    it('never treats an opposite-side concurrent duplicate as the same save', async () => {
+        saveMock.mockResolvedValue({
+            saved: 0,
+            created: 0,
+            updated: 0,
+            ids: {},
+            newGameDbIds: [],
+            errors: [
+                {
+                    index: 0,
+                    code: 'CONCURRENT_MODIFICATION',
+                    error: 'retry',
+                },
+            ],
+        });
+        prismaMock.analyzedGame.findUnique.mockResolvedValue({
+            id: 'db-game-1',
+            sourcePgnHash: hashSourcePgn(COMPLETED_PGN),
+            sourceUsername: 'Backranq Coach',
+            userSide: 'BLACK',
+        });
+        const route = await importRoute();
+
+        const response = await route.POST(request());
+
+        expect(response.status).toBe(409);
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'The saved game has a different player perspective.',
+            code: 'PROVENANCE_CONFLICT',
+        });
+        expect(saveMock).toHaveBeenCalledTimes(3);
     });
 
     it('rejects incomplete games and unknown fields before writing', async () => {

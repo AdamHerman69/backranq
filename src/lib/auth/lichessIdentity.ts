@@ -21,6 +21,13 @@ type LichessIdentityDependencies = {
     startFirstSync: (userId: string) => Promise<unknown>;
 };
 
+const MAX_LICHESS_IDENTITY_WRITE_ATTEMPTS = 3;
+
+function prismaErrorCode(error: unknown): string | null {
+    if (!error || typeof error !== 'object' || !('code' in error)) return null;
+    return typeof error.code === 'string' ? error.code : null;
+}
+
 const dependencies: LichessIdentityDependencies = {
     persistConnection: (identity) =>
         prisma.$transaction(
@@ -47,13 +54,13 @@ const dependencies: LichessIdentityDependencies = {
                         providerAccountId: identity.providerAccountId,
                         username: identity.username,
                         usernameNormalized: identity.usernameNormalized,
-                        verification: 'OAUTH',
+                        origin: 'OAUTH_ACCOUNT',
                     },
                     update: {
                         providerAccountId: identity.providerAccountId,
                         username: identity.username,
                         usernameNormalized: identity.usernameNormalized,
-                        verification: 'OAUTH',
+                        origin: 'OAUTH_ACCOUNT',
                         verifiedAt: new Date(),
                     },
                 });
@@ -124,12 +131,30 @@ export async function syncVerifiedLichessIdentity(
         throw new Error('Verified Lichess sign-in profile is incomplete');
     }
 
-    await deps.persistConnection({
+    const identity = {
         userId,
         providerAccountId,
         username,
         usernameNormalized: username.toLocaleLowerCase('en-US'),
-    });
+    };
+    for (
+        let attempt = 1;
+        attempt <= MAX_LICHESS_IDENTITY_WRITE_ATTEMPTS;
+        attempt += 1
+    ) {
+        try {
+            await deps.persistConnection(identity);
+            break;
+        } catch (error) {
+            if (
+                attempt < MAX_LICHESS_IDENTITY_WRITE_ATTEMPTS &&
+                prismaErrorCode(error) === 'P2034'
+            ) {
+                continue;
+            }
+            throw error;
+        }
+    }
     await deps.startFirstSync(userId).catch((error) => {
         console.error(
             '[auth] verified Lichess first-sync dispatch failed',

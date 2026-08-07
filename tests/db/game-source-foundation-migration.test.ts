@@ -6,6 +6,7 @@ const migrationPath = join(
     process.cwd(),
     'prisma/migrations/20260807120000_game_source_foundation/migration.sql'
 );
+const schemaPath = join(process.cwd(), 'prisma/schema.prisma');
 
 describe('game source foundation migration', () => {
     it('separates import sources from provider synchronization exhaustively', async () => {
@@ -41,8 +42,12 @@ describe('game source foundation migration', () => {
         expect(sql).toContain(
             '"ChessAccountConnection_userId_provider_key"'
         );
-        expect(sql).toContain(
+        expect(sql).not.toContain(
             '"ChessAccountConnection_provider_providerAccountId_key"'
+        );
+        expect(sql).toContain('"ChessAccountConnection_origin_shape"');
+        expect(sql).toContain(
+            '"origin" <> \'OAUTH_ACCOUNT\' OR "providerAccountId" IS NOT NULL'
         );
         expect(sql).toContain(
             'ALTER TABLE public."ChessAccountConnection" ENABLE ROW LEVEL SECURITY;'
@@ -58,10 +63,17 @@ describe('game source foundation migration', () => {
 
     it('fails closed on incomplete or mutable game provenance', async () => {
         const sql = await readFile(migrationPath, 'utf8');
+        const schema = await readFile(schemaPath, 'utf8');
 
         expect(sql).toContain('DELETE FROM "AnalyzedGame"');
         expect(sql).toContain('"userSide" = \'UNKNOWN\'');
         expect(sql).toContain('ALTER COLUMN "sourceUsername" SET NOT NULL');
+        expect(schema).toMatch(
+            /model AnalyzedGame \{[\s\S]*?userSide\s+GameUserSide\s*\n/
+        );
+        expect(schema).not.toMatch(
+            /model AnalyzedGame \{[\s\S]*?userSide\s+GameUserSide\s+@default\(UNKNOWN\)/
+        );
         expect(sql).toContain('"AnalyzedGame_frozen_perspective_check"');
         expect(sql).toContain('"AnalyzedGame_prevent_provenance_mutation"');
         expect(sql).toContain('OLD."provider" = \'BACKRANQ_COACH\'');

@@ -82,4 +82,28 @@ describe('GET /api/games', () => {
             },
         });
     });
+
+    it('filters manual and Coach sources and rejects unknown source aliases', async () => {
+        const route = await importRoute();
+        prismaMock.analyzedGame.count.mockResolvedValue(0);
+        prismaMock.analyzedGame.findMany.mockResolvedValue([]);
+
+        const manual = await route.GET(
+            createGetRequest('?provider=manual_pgn')
+        );
+        const coach = await route.GET(
+            createGetRequest('?provider=backranq_coach')
+        );
+        const unknown = await route.GET(
+            createGetRequest('?provider=manual')
+        );
+
+        expect(manual.status).toBe(200);
+        expect(coach.status).toBe(200);
+        expect(unknown.status).toBe(400);
+        expect(prismaMock.analyzedGame.count.mock.calls).toEqual([
+            [{ where: { userId: 'user-1', provider: 'MANUAL_PGN' } }],
+            [{ where: { userId: 'user-1', provider: 'BACKRANQ_COACH' } }],
+        ]);
+    });
 });

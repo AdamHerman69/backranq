@@ -74,7 +74,7 @@ export function ProgressScopeForm({
                     ? ` with ${filterCount} active ${
                           filterCount === 1 ? 'filter' : 'filters'
                       }`
-                    : ' across all available providers and time controls'}
+                    : ' across all available sources and time controls'}
                 .
             </p>
 
@@ -83,7 +83,7 @@ export function ProgressScopeForm({
                 open={hasFilters || undefined}
             >
                 <summary className="flex min-h-11 cursor-pointer select-none items-center text-sm font-medium">
-                    Provider and time-control filters
+                    Source and time-control filters
                     {hasFilters ? (
                         <span className="ml-2 font-normal text-muted-foreground">
                             · active
@@ -92,14 +92,14 @@ export function ProgressScopeForm({
                 </summary>
                 <div className="mt-4 grid gap-5 sm:grid-cols-2">
                     <fieldset>
-                        <legend className="text-sm font-medium">Provider</legend>
+                        <legend className="text-sm font-medium">Source</legend>
                         <p className="mt-1 text-xs text-muted-foreground">
-                            Leave all unchecked to include every provider.
+                            Leave all unchecked to include every source.
                         </p>
                         <div className="mt-2 space-y-2">
                             {providerOptions.length === 0 ? (
                                 <p className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
-                                    No providers have source games in this time
+                                    No sources have games in this time
                                     window.
                                 </p>
                             ) : null}

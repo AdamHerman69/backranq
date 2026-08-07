@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { gameSourceToDb } from '@/lib/api/games';
+import { syncProviderToDb } from '@/lib/api/games';
 import { isRecord, stringArrayValue } from '@/lib/api/validation';
 
 export const runtime = 'nodejs';
@@ -45,7 +45,7 @@ export async function POST(req: Request) {
     const rows = await prisma.analyzedGame.findMany({
         where: {
             userId,
-            provider: gameSourceToDb(provider),
+            provider: syncProviderToDb(provider),
             externalId: { in: externalIds },
         },
         select: { externalId: true },

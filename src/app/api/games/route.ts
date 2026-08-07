@@ -7,6 +7,7 @@ import {
     isStrictIsoInstant,
 } from '@/lib/api/validation';
 import { Prisma } from '@prisma/client';
+import { isGameSource } from '@/lib/types/game';
 
 export const runtime = 'nodejs';
 
@@ -70,7 +71,13 @@ export async function GET(req: Request) {
             { status: 400 }
         );
     }
-    if (provider === 'lichess' || provider === 'chesscom') {
+    if (provider) {
+        if (!isGameSource(provider)) {
+            return NextResponse.json(
+                { error: 'Invalid source filter' },
+                { status: 400 }
+            );
+        }
         where.provider = gameSourceToDb(provider);
     }
     if (
@@ -119,6 +126,9 @@ export async function GET(req: Request) {
             select: {
                 id: true,
                 provider: true,
+                sourceUsername: true,
+                sourceAccountId: true,
+                userSide: true,
                 externalId: true,
                 url: true,
                 playedAt: true,

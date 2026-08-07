@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import { parseExternalId } from '@/lib/api/games';
 import { boundedJsonBody, isRecord } from '@/lib/api/validation';
 import { auth } from '@/lib/auth';
+import { hashSourcePgn } from '@/lib/chess/pgn';
 import {
     MAX_COACH_GAME_PGN_BYTES,
     MAX_COACH_SESSION_ID_LENGTH,
@@ -20,6 +21,13 @@ export const runtime = 'nodejs';
 const MAX_REQUEST_BYTES = MAX_COACH_GAME_PGN_BYTES + 16 * 1024;
 const MAX_SERIALIZABLE_ATTEMPTS = 3;
 const ALLOWED_KEYS = new Set(['sessionId', 'pgn', 'userSide', 'completedAt']);
+
+class RetryableCoachSaveError extends Error {
+    constructor() {
+        super('The Coach game changed concurrently');
+        this.name = 'RetryableCoachSaveError';
+    }
+}
 
 function parseBody(value: unknown):
     | {
@@ -93,8 +101,9 @@ function parseBody(value: unknown):
 
 function isRetryable(error: unknown) {
     return (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        (error.code === 'P2002' || error.code === 'P2034')
+        error instanceof RetryableCoachSaveError ||
+        (error instanceof Prisma.PrismaClientKnownRequestError &&
+            (error.code === 'P2002' || error.code === 'P2034'))
     );
 }
 
@@ -152,16 +161,22 @@ export async function POST(req: Request) {
                         });
                         const failure = result.errors[0];
                         if (failure?.code === 'CONCURRENT_MODIFICATION') {
-                            throw new Prisma.PrismaClientKnownRequestError(
-                                'Concurrent Coach save',
-                                { code: 'P2034', clientVersion: 'route' }
-                            );
+                            throw new RetryableCoachSaveError();
                         }
                         if (failure) {
+                            if (
+                                failure.code !== 'PROVENANCE_CONFLICT' &&
+                                failure.code !== 'SOURCE_SNAPSHOT_CONFLICT'
+                            ) {
+                                throw new Error('Coach persistence failed');
+                            }
                             return {
                                 ok: false as const,
                                 code: failure.code,
-                                error: failure.error,
+                                error:
+                                    failure.code === 'PROVENANCE_CONFLICT'
+                                        ? 'The saved game has a different player perspective.'
+                                        : 'This Coach session was already saved with different moves.',
                             };
                         }
                         const gameId = result.ids[game.id];
@@ -207,9 +222,38 @@ export async function POST(req: Request) {
                         externalId,
                     },
                 },
-                select: { id: true, sourcePgnHash: true },
+                select: {
+                    id: true,
+                    sourcePgnHash: true,
+                    sourceUsername: true,
+                    userSide: true,
+                },
             });
             if (existing) {
+                const expectedUserSide =
+                    game.provenance?.userSide === 'white' ? 'WHITE' : 'BLACK';
+                if (
+                    existing.userSide !== expectedUserSide ||
+                    existing.sourceUsername.toLocaleLowerCase('en-US') !==
+                        game.provenance?.username.toLocaleLowerCase('en-US')
+                ) {
+                    return NextResponse.json(
+                        {
+                            error: 'The saved game has a different player perspective.',
+                            code: 'PROVENANCE_CONFLICT',
+                        },
+                        { status: 409 }
+                    );
+                }
+                if (existing.sourcePgnHash !== hashSourcePgn(game.pgn)) {
+                    return NextResponse.json(
+                        {
+                            error: 'This Coach session was already saved with different moves.',
+                            code: 'SOURCE_SNAPSHOT_CONFLICT',
+                        },
+                        { status: 409 }
+                    );
+                }
                 return NextResponse.json({
                     ownerId: userId,
                     gameId: existing.id,

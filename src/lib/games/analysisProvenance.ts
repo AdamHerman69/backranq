@@ -6,6 +6,13 @@ export type ResolvedGameAnalysisProvenance = {
     userColor: 'w' | 'b';
 };
 
+export type FrozenStoredGamePerspective = {
+    sourceUsername: string;
+    userSide: 'WHITE' | 'BLACK' | 'UNKNOWN';
+    whiteName: string;
+    blackName: string;
+};
+
 function normalizedUsername(value: string | undefined | null) {
     return (value ?? '').trim().toLocaleLowerCase('en-US');
 }
@@ -31,5 +38,31 @@ export function resolveGameAnalysisProvenance(
         sourceUsername,
         userSide,
         userColor: userSide === 'white' ? 'w' : 'b',
+    };
+}
+
+/** Revalidates the database snapshot before accepting analysis evidence. */
+export function resolveStoredGameAnalysisProvenance(
+    game: FrozenStoredGamePerspective
+): ResolvedGameAnalysisProvenance | null {
+    const sourceUsername = game.sourceUsername.trim();
+    if (
+        !sourceUsername ||
+        (game.userSide !== 'WHITE' && game.userSide !== 'BLACK')
+    ) {
+        return null;
+    }
+    const recordedPlayer =
+        game.userSide === 'WHITE' ? game.whiteName : game.blackName;
+    if (
+        normalizedUsername(recordedPlayer) !==
+        normalizedUsername(sourceUsername)
+    ) {
+        return null;
+    }
+    return {
+        sourceUsername,
+        userSide: game.userSide === 'WHITE' ? 'white' : 'black',
+        userColor: game.userSide === 'WHITE' ? 'w' : 'b',
     };
 }

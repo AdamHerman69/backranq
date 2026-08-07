@@ -22,8 +22,8 @@ enum SyncProvider {
   CHESSCOM
 }
 
-enum AccountConnectionVerification {
-  OAUTH
+enum ConnectionOrigin {
+  OAUTH_ACCOUNT
   PUBLIC_PROFILE
 }
 
@@ -433,7 +433,7 @@ model ChessAccountConnection {
   providerAccountId  String?
   username           String
   usernameNormalized String
-  verification       AccountConnectionVerification
+  origin             ConnectionOrigin
   verifiedAt         DateTime                      @default(now())
   createdAt          DateTime                      @default(now())
   updatedAt          DateTime                      @updatedAt
@@ -441,7 +441,6 @@ model ChessAccountConnection {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, provider])
-  @@unique([provider, providerAccountId])
   @@index([provider, usernameNormalized])
 }
 
@@ -695,7 +694,7 @@ model AnalyzedGame {
   sourcePgnHash               String
   sourceUsername              String
   sourceAccountId             String?
-  userSide                    GameUserSide @default(UNKNOWN)
+  userSide                    GameUserSide
   playedAt                    DateTime
   timeClass                   TimeClass
   timeControlRaw              String?
