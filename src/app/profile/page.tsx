@@ -58,7 +58,7 @@ export default async function ProfilePage() {
                 subtitle="Your Backranq identity, connected chess profiles, and session controls."
             />
 
-            <Card variant="floating" className="overflow-hidden">
+            <Card variant="floating" className="overflow-hidden border-foreground bg-foreground text-background">
                 <CardContent className="p-5 sm:p-6">
                     <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
                         <div className="flex min-w-0 items-center gap-4">
@@ -71,18 +71,18 @@ export default async function ProfilePage() {
                                 </AvatarFallback>
                             </Avatar>
                             <div className="min-w-0">
-                                <h2 className="truncate text-xl font-semibold tracking-[-0.03em]">
+                                <h2 className="truncate font-display text-2xl font-semibold tracking-[-0.03em]">
                                     {displayName}
                                 </h2>
-                                <p className="mt-0.5 truncate text-sm text-muted-foreground">
+                                <p className="mt-0.5 truncate text-sm text-background/60">
                                     {user?.email ?? 'No email attached'}
                                 </p>
                                 <Badge
                                     variant="outline"
                                     className={
                                         connectionCount > 0
-                                            ? 'mt-2 border-success/20 bg-success/10 text-success'
-                                            : 'mt-2 bg-card text-muted-foreground'
+                                            ? 'mt-2 border-accent/30 bg-accent/10 text-accent'
+                                            : 'mt-2 border-background/20 bg-background/5 text-background/60'
                                     }
                                 >
                                     {connectionCount > 0 ? (
@@ -95,13 +95,13 @@ export default async function ProfilePage() {
                             </div>
                         </div>
                         <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0">
-                            <Button asChild>
+                            <Button asChild className="border-accent bg-accent text-accent-foreground hover:bg-accent/90">
                                 <Link href="/settings">
                                     <Settings2 aria-hidden="true" />
                                     Settings
                                 </Link>
                             </Button>
-                            <Button asChild variant="outline">
+                            <Button asChild variant="outline" className="border-background/25 bg-background/5 text-background hover:bg-background/10 hover:text-background">
                                 <Link href="/games">
                                     <Gamepad2 aria-hidden="true" />
                                     Your games
@@ -112,8 +112,8 @@ export default async function ProfilePage() {
                 </CardContent>
             </Card>
 
-            <Card variant="panel" className="overflow-hidden">
-                <CardHeader className="border-b border-border/70 bg-surface-subtle/50">
+            <Card variant="plain" className="overflow-hidden rounded-none border-y border-foreground/10">
+                <CardHeader className="border-b border-foreground/10 px-0">
                     <CardTitle className="text-base">Chess sources</CardTitle>
                     <CardDescription>
                         These public profiles feed your game library and training queue.
@@ -133,8 +133,8 @@ export default async function ProfilePage() {
                 </CardContent>
             </Card>
 
-            <Card variant="subtle">
-                <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+            <Card variant="plain" className="rounded-none border-t border-foreground/10">
+                <CardContent className="flex flex-col gap-3 px-0 py-4 sm:flex-row sm:items-center sm:justify-between sm:py-5">
                     <div>
                         <p className="text-sm font-medium">Session on this device</p>
                         <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">

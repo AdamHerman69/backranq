@@ -72,7 +72,7 @@ export function GameHeader({ game }: { game: GameHeaderData }) {
 
     return (
         <section
-            className="overflow-hidden rounded-[1.4rem] border bg-card/80 shadow-[0_18px_60px_-50px_rgba(15,23,42,0.55)]"
+            className="overflow-hidden rounded-lg border border-foreground/10 bg-card/70 shadow-card"
             aria-label="Game summary"
         >
             <div className="flex items-center justify-between gap-2 border-b bg-muted/35 px-3 py-2 text-xs text-muted-foreground sm:px-5 sm:py-2.5">
@@ -120,7 +120,7 @@ export function GameHeader({ game }: { game: GameHeaderData }) {
                 </div>
             </div>
 
-            <div className="grid gap-0.5 p-2 sm:gap-2 sm:p-4">
+            <div className="grid gap-0.5 p-2 sm:grid-cols-2 sm:gap-0 sm:divide-x sm:p-2">
                 <PlayerRow
                     color="white"
                     name={game.whiteName}
@@ -160,7 +160,7 @@ function PlayerRow({
     isYou: boolean;
 }) {
     return (
-        <div className="flex min-w-0 items-center gap-2 rounded-xl px-2 py-1.5 transition-colors hover:bg-muted/45 sm:gap-3 sm:py-2">
+        <div className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/45 sm:gap-3 sm:px-4 sm:py-2">
             <span
                 className={
                     color === 'white'

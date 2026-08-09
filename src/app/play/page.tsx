@@ -11,10 +11,11 @@ export default async function PlayPage() {
     }
 
     return (
-        <div className="space-y-4">
+        <div className="space-y-3 sm:space-y-5">
             <PageHeader
                 title="Play with a coach"
                 subtitle="Play a full game and pause only when a decision is worth understanding."
+                subtitleClassName="hidden sm:block"
             />
             <CoachOnlineShell ownerId={session.user.id} />
         </div>

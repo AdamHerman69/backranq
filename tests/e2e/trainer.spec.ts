@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { clickMove, dragMove, waitForBoard } from './support/board';
+import { clickMove, dragMove, square, waitForBoard } from './support/board';
 import { resetE2eTrainingAttempts } from './support/database';
 import {
     E2E_TRAINING_MOMENTS,
@@ -17,6 +17,30 @@ test.describe('authenticated personal decision practice', () => {
 
         expect(response?.status()).toBe(404);
         expect(new URL(page.url()).pathname).toBe('/training');
+    });
+
+    test('always shows legal destinations after selecting a piece', async ({
+        page,
+    }) => {
+        await page.goto(practicePath(E2E_TRAINING_MOMENTS.wrongMove));
+        await waitForBoard(page);
+
+        const board = page.locator('[data-board-stage]');
+        await square(page, 'g1').click();
+
+        await expect(board).toHaveAttribute(
+            'data-board-selected-square',
+            'g1'
+        );
+        await expect(
+            board.locator('[data-legal-move-target="f3"]')
+        ).toBeVisible();
+        await expect(
+            board.locator('[data-legal-move-target="h3"]')
+        ).toBeVisible();
+        await expect(
+            board.locator('[data-legal-move-target="e2"]')
+        ).toBeVisible();
     });
 
     test('keeps every training prompt neutral and discloses context only after grading', async ({

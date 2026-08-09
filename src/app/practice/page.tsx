@@ -52,10 +52,11 @@ export default async function PracticePage({
     }
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-3 sm:space-y-6">
             <PageHeader
                 title="Practice"
                 subtitle="Play the best move you can find, then review the position."
+                subtitleClassName="hidden sm:block"
             />
             <TrainingTrainer
                 initialMomentId={momentId}

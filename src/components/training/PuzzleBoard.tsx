@@ -15,6 +15,7 @@ import type {
     BoardPresentationState,
     MoveQualityTone,
 } from '@/lib/training/boardPresentation';
+import { useReliableBoardTouch } from '@/lib/hooks/useReliableBoardTouch';
 import type { SubmittedBoardMove } from '@/lib/training/boardInput';
 import { cn } from '@/lib/utils';
 
@@ -109,18 +110,26 @@ export function PuzzleBoard({
             ? pendingPromotion
             : null;
 
-    const legalTargets = useMemo(() => {
-        if (!selectedSquare || !canMove) return new Set<Square>();
+    const { legalTargets, captureTargets } = useMemo(() => {
+        const targets = new Set<Square>();
+        const captures = new Set<Square>();
+        if (!selectedSquare || !canMove) {
+            return { legalTargets: targets, captureTargets: captures };
+        }
         try {
             const chess = new Chess(positionFen);
-            return new Set(
-                chess
-                    .moves({ square: selectedSquare, verbose: true })
-                    .map((move) => move.to as Square)
-            );
+            for (const move of chess.moves({
+                square: selectedSquare,
+                verbose: true,
+            })) {
+                const target = move.to as Square;
+                targets.add(target);
+                if (move.captured) captures.add(target);
+            }
         } catch {
-            return new Set<Square>();
+            // An invalid position should leave the board usable without hints.
         }
+        return { legalTargets: targets, captureTargets: captures };
     }, [canMove, positionFen, selectedSquare]);
 
     const squareStyles = useMemo(() => {
@@ -141,20 +150,14 @@ export function PuzzleBoard({
         if (selectedSquare) {
             styles[selectedSquare] = {
                 ...styles[selectedSquare],
-                backgroundColor: 'rgba(59, 130, 246, 0.32)',
-            };
-        }
-        for (const square of legalTargets) {
-            styles[square] = {
-                ...styles[square],
-                background:
-                    'radial-gradient(circle, rgba(59,130,246,0.52) 0 18%, transparent 20%)',
+                backgroundColor: 'hsl(var(--board-selected) / 0.72)',
+                boxShadow:
+                    'inset 0 0 0 3px hsl(var(--foreground) / 0.3)',
             };
         }
         return styles;
     }, [
         externalSquareStyles,
-        legalTargets,
         presentation,
         selectedSquare,
     ]);
@@ -214,10 +217,35 @@ export function PuzzleBoard({
         [canMove, positionFen, submitLegalMove]
     );
 
+    const handleSquareTap = useCallback(
+        (target: Square) => {
+            if (!canMove) return;
+            if (selectedSquare && legalTargets.has(target)) {
+                playOrPromote(selectedSquare, target);
+                return;
+            }
+            try {
+                const chess = new Chess(positionFen);
+                setSelection(
+                    chess.get(target)?.color === chess.turn()
+                        ? { fen: positionFen, square: target }
+                        : null
+                );
+            } catch {
+                setSelection(null);
+            }
+        },
+        [canMove, legalTargets, playOrPromote, positionFen, selectedSquare]
+    );
+    const reliableBoardTouch = useReliableBoardTouch({
+        enabled: canMove,
+        onTap: handleSquareTap,
+    });
+
     return (
         <>
             <div
-                className="relative max-w-full overflow-hidden rounded-xl border bg-card p-1 shadow-sm sm:p-2"
+                className="relative max-w-full overflow-hidden rounded-[0.7rem] border border-foreground/15 bg-foreground p-1 shadow-raised sm:p-1.5"
                 role="group"
                 aria-label={ariaLabel}
                 data-board-stage={presentation?.stage ?? 'READY'}
@@ -225,24 +253,59 @@ export function PuzzleBoard({
                 data-board-last-move={lastMoveAttribute}
                 data-board-marker={presentation?.marker?.grade}
                 data-board-marker-square={presentation?.marker?.square}
+                data-board-selected-square={selectedSquare ?? undefined}
             >
-                <div className="relative aspect-square w-full touch-manipulation">
+                <div
+                    className="relative aspect-square w-full touch-none"
+                    {...reliableBoardTouch}
+                >
                     <Chessboard
                         options={{
                             position: positionFen,
+                            lightSquareStyle: {
+                                backgroundColor: 'hsl(var(--board-light))',
+                            },
+                            darkSquareStyle: {
+                                backgroundColor: 'hsl(var(--board-dark))',
+                            },
                             boardOrientation:
                                 (sideToMove === 'w') !== flipped
                                     ? 'white'
                                     : 'black',
                             allowDragging: canMove,
+                            dragActivationDistance: 12,
                             allowDrawingArrows: false,
                             arrows,
                             showAnimations: !reducedMotion,
                             animationDurationInMs: reducedMotion ? 0 : 180,
                             squareStyles,
                             squareRenderer: ({ square, children }) => (
-                                <div className="relative h-full w-full">
+                                <div
+                                    className="relative h-full w-full"
+                                    style={squareStyles[square]}
+                                >
                                     {children}
+                                    {legalTargets.has(square as Square) ? (
+                                        <span
+                                            className={cn(
+                                                'pointer-events-none absolute z-10 block motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-75 motion-safe:duration-150',
+                                                captureTargets.has(
+                                                    square as Square
+                                                )
+                                                    ? 'inset-[7%] rounded-full border-[clamp(3px,0.55vw,5px)] border-foreground/45 shadow-[inset_0_0_0_1px_hsl(var(--background)/0.28)]'
+                                                    : 'left-1/2 top-1/2 h-[23%] w-[23%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground/45 shadow-[0_0_0_1px_hsl(var(--background)/0.22),0_2px_8px_hsl(var(--foreground)/0.18)]'
+                                            )}
+                                            aria-hidden="true"
+                                            data-legal-move-target={square}
+                                            data-legal-move-kind={
+                                                captureTargets.has(
+                                                    square as Square
+                                                )
+                                                    ? 'capture'
+                                                    : 'move'
+                                            }
+                                        />
+                                    ) : null}
                                     {presentation?.marker?.square === square ? (
                                         <span
                                             className={cn(
@@ -276,28 +339,7 @@ export function PuzzleBoard({
                                 }
                             },
                             onSquareClick: ({ square }) => {
-                                if (!square || !canMove) return;
-                                const target = square as Square;
-                                if (
-                                    selectedSquare &&
-                                    legalTargets.has(target)
-                                ) {
-                                    playOrPromote(selectedSquare, target);
-                                    return;
-                                }
-                                try {
-                                    const chess = new Chess(positionFen);
-                                    setSelection(
-                                        chess.get(target)?.color === chess.turn()
-                                            ? {
-                                                  fen: positionFen,
-                                                  square: target,
-                                              }
-                                            : null
-                                    );
-                                } catch {
-                                    setSelection(null);
-                                }
+                                if (square) handleSquareTap(square as Square);
                             },
                             onPieceDrop: canMove
                                 ? ({ sourceSquare, targetSquare }) =>

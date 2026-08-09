@@ -67,6 +67,24 @@ type SyncFeedback = {
     message: string;
 };
 
+function friendlySyncError(message?: string | null) {
+    const normalized = message?.toLowerCase() ?? '';
+    if (normalized.includes('404') || normalized.includes('not found')) {
+        return 'A linked profile could not be reached. Check its username in Settings.';
+    }
+    if (normalized.includes('429') || normalized.includes('rate')) {
+        return 'The chess provider is busy. Your library is safe; try again shortly.';
+    }
+    if (
+        normalized.includes('network') ||
+        normalized.includes('fetch') ||
+        normalized.includes('unavailable')
+    ) {
+        return 'The chess provider is temporarily unavailable. Your existing games are unchanged.';
+    }
+    return 'The latest update did not finish. Your existing games are unchanged.';
+}
+
 type ExtendedSyncStatus = SyncStatus & {
     inventory?: {
         totalImported: number;
@@ -329,9 +347,9 @@ export function SyncGamesWidget({
                     ownerId: run.ownerId,
                     action: 'error',
                     message:
-                        error instanceof Error
-                        ? `Sync was accepted, but its latest status could not be confirmed: ${error.message}`
-                        : 'Sync was accepted, but its latest status could not be confirmed.',
+                        friendlySyncError(
+                            error instanceof Error ? error.message : null
+                        ),
                 });
             } finally {
                 if (completionControllerRef.current === controller) {
@@ -523,7 +541,9 @@ export function SyncGamesWidget({
                 ownerId: run.ownerId,
                 action: 'error',
                 message:
-                    error instanceof Error ? error.message : 'Sync failed.',
+                        friendlySyncError(
+                            error instanceof Error ? error.message : null
+                        ),
             });
         }
     }
@@ -653,7 +673,7 @@ export function SyncGamesWidget({
                             </div>
                             {providerError ? (
                                 <p className="mt-1 break-words text-xs text-destructive">
-                                    One source needs attention: {providerError}
+                                    {friendlySyncError(providerError)}
                                 </p>
                             ) : null}
                         </div>

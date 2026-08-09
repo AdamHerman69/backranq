@@ -271,7 +271,7 @@ export default async function GamesPage({
                 actions={<ManualPgnImportButton ownerId={userId} />}
             />
 
-            <div className="rounded-2xl border bg-card/65 p-3 sm:px-4">
+            <div className="border-y border-foreground/10 py-4">
                 <SyncGamesWidget context="games" enableAnalyze variant="banner" />
             </div>
 

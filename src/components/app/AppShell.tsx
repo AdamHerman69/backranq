@@ -59,7 +59,7 @@ const containerClassByMode = {
   app: "app-container",
   workspace: "workspace-container",
   reading: "reading-container",
-  admin: "mx-auto w-full max-w-[1536px] px-3 sm:px-5 lg:px-8",
+  admin: "workspace-container max-w-[1536px]",
 } as const;
 
 export function AppShell({
@@ -70,7 +70,6 @@ export function AppShell({
   disableBackgroundAnalysisBar?: boolean;
 }) {
   const pathname = usePathname();
-  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
 
   if (isPublicRoute(pathname) || !isKnownAppRoute(pathname)) {
     return <>{children}</>;
@@ -87,11 +86,11 @@ export function AppShell({
     >
       <header className="sticky top-0 z-40 w-full border-b border-border/80 bg-background/[0.88] shadow-control backdrop-blur-xl supports-[backdrop-filter]:bg-background/75">
         <div className="app-container flex h-12 items-center justify-between gap-2 sm:h-14">
-          <AppNav onMobileMenuOpenChange={setMobileMenuOpen} />
+          <AppNav />
         </div>
       </header>
 
-      <MobileBottomNav pathname={pathname} hidden={mobileMenuOpen} />
+      <MobileBottomNav pathname={pathname} />
 
       {disableBackgroundAnalysisBar || isAdmin ? null : (
         <div className="relative z-30">
@@ -102,8 +101,8 @@ export function AppShell({
       <main
         className={cn(
           containerClassByMode[mode],
-          "animate-soft-enter py-4 pb-[calc(5.25rem+env(safe-area-inset-bottom))] sm:py-6 lg:pb-8",
-          mode === "workspace" && "sm:py-5 lg:py-6"
+          "animate-soft-enter py-4 pb-[calc(5.25rem+env(safe-area-inset-bottom))] sm:py-6 lg:pb-10",
+          mode === "workspace" && "py-3 sm:py-5 lg:py-6"
         )}
       >
         {children}

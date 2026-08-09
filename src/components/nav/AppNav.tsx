@@ -6,7 +6,6 @@ import {
   Library,
   LineChart,
   LogOut,
-  Menu,
   Settings,
   Swords,
   Target,
@@ -15,7 +14,6 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
-import { useState } from "react";
 import { toast } from "sonner";
 
 import { NotificationBell } from "@/components/notifications/NotificationBell";
@@ -29,14 +27,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
 import { signOutAndClearCoachSession } from "@/lib/coach/signOut";
 import { cn } from "@/lib/utils";
 
@@ -101,52 +91,15 @@ function itemIsActive(item: NavItem, pathname: string) {
   return item.active ? item.active(pathname) : pathname === item.href;
 }
 
-function NavLinkButton({
-  item,
-  pathname,
-  onNavigate,
-}: {
-  item: NavItem;
-  pathname: string;
-  onNavigate?: () => void;
-}) {
-  const active = itemIsActive(item, pathname);
-  const Icon = item.icon;
-  return (
-    <Button
-      asChild
-      variant={active ? "quiet" : "ghost"}
-      className={cn(
-        "min-h-11 w-full justify-start",
-        !active && "text-muted-foreground"
-      )}
-    >
-      <Link
-        href={item.href}
-        aria-current={active ? "page" : undefined}
-        onClick={onNavigate}
-      >
-        <Icon aria-hidden="true" />
-        {item.label}
-      </Link>
-    </Button>
-  );
-}
-
 export function MobileBottomNav({
   pathname,
-  hidden = false,
 }: {
   pathname: string;
-  hidden?: boolean;
 }) {
   return (
     <nav
       aria-label="Main tabs"
-      className={cn(
-        "fixed inset-x-0 bottom-0 z-40 border-t border-border/80 bg-background/[0.92] px-1.5 pb-[env(safe-area-inset-bottom)] shadow-[0_-12px_32px_-24px_hsl(var(--foreground)/0.35)] backdrop-blur-xl lg:hidden",
-        hidden && "hidden"
-      )}
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-foreground/10 bg-background/[0.94] px-2 pb-[env(safe-area-inset-bottom)] shadow-[0_-16px_40px_-32px_hsl(var(--foreground)/0.45)] backdrop-blur-xl lg:hidden"
     >
       <div className="mx-auto grid h-16 max-w-xl grid-cols-5">
         {primaryNavItems.map((item) => {
@@ -158,21 +111,21 @@ export function MobileBottomNav({
               href={item.href}
               aria-current={active ? "page" : undefined}
               className={cn(
-                "group relative flex min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[10px] font-medium transition-[color,transform] duration-fast ease-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset motion-safe:active:scale-[0.96]",
+                "group relative flex min-w-0 flex-col items-center justify-center gap-0.5 px-1 text-[10px] font-medium transition-[color,transform] duration-fast ease-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset motion-safe:active:scale-[0.96]",
                 active ? "text-primary" : "text-muted-foreground"
               )}
             >
               <span
                 className={cn(
-                  "absolute inset-x-2 top-1.5 h-8 rounded-full bg-primary/[0.09] transition-[opacity,transform] duration-base ease-emphasized",
-                  active ? "scale-100 opacity-100" : "scale-75 opacity-0"
+                  "absolute left-1/2 top-0 h-0.5 w-8 -translate-x-1/2 bg-primary transition-[opacity,transform] duration-base ease-emphasized",
+                  active ? "scale-x-100 opacity-100" : "scale-x-0 opacity-0"
                 )}
                 aria-hidden="true"
               />
               <Icon
                 className={cn(
-                  "relative h-5 w-5 transition-transform duration-fast",
-                  active && "motion-safe:-translate-y-0.5"
+                  "relative h-[1.15rem] w-[1.15rem] transition-transform duration-fast",
+                  active && "motion-safe:-translate-y-px"
                 )}
                 strokeWidth={active ? 2.25 : 1.8}
                 aria-hidden="true"
@@ -186,14 +139,9 @@ export function MobileBottomNav({
   );
 }
 
-export function AppNav({
-  onMobileMenuOpenChange,
-}: {
-  onMobileMenuOpenChange?: (open: boolean) => void;
-}) {
+export function AppNav() {
   const pathname = usePathname();
   const { data } = useSession();
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const authed = !!data?.user?.id;
   const user = data?.user;
   const label = user?.name ?? user?.email ?? "User";
@@ -209,79 +157,14 @@ export function AppNav({
   return (
     <>
       <div className="flex min-w-0 items-center gap-1.5 sm:gap-3">
-        <Sheet
-          open={mobileMenuOpen}
-          onOpenChange={(open) => {
-            setMobileMenuOpen(open);
-            onMobileMenuOpenChange?.(open);
-          }}
-        >
-          <SheetTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="lg:hidden"
-              aria-label="Open menu"
-            >
-              <Menu aria-hidden="true" />
-            </Button>
-          </SheetTrigger>
-          <SheetContent side="left" className="p-0">
-            <div className="p-5 sm:p-6">
-              <SheetHeader>
-                <SheetTitle className="flex items-center gap-2.5">
-                  <span
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-foreground text-xs font-bold text-background shadow-control"
-                    aria-hidden="true"
-                  >
-                    B
-                  </span>
-                  Backranq
-                </SheetTitle>
-                <SheetDescription>
-                  Practice the decisions from your own games.
-                </SheetDescription>
-              </SheetHeader>
-
-              <nav aria-label="Primary" className="mt-6 flex flex-col gap-1">
-                {appNavItems.map((item) => (
-                  <NavLinkButton
-                    key={item.href}
-                    item={item}
-                    pathname={pathname}
-                    onNavigate={() => setMobileMenuOpen(false)}
-                  />
-                ))}
-              </nav>
-
-              <div className="mt-6 border-t pt-5">
-                {authed ? (
-                  <Button
-                    variant="outline"
-                    className="min-h-11 w-full justify-start"
-                    onClick={() => void signOutFromDevice()}
-                  >
-                    <LogOut aria-hidden="true" />
-                    Sign out
-                  </Button>
-                ) : (
-                  <Button asChild className="min-h-11 w-full justify-start">
-                    <Link href="/login">Sign in</Link>
-                  </Button>
-                )}
-              </div>
-            </div>
-          </SheetContent>
-        </Sheet>
-
         <Button
           asChild
           variant="ghost"
-          className="group h-11 gap-2 px-1.5 text-base font-semibold tracking-[-0.02em] sm:h-10 sm:px-2"
+          className="group h-11 gap-2 px-0.5 text-base font-semibold tracking-[-0.03em] sm:h-10 sm:px-1"
         >
           <Link href="/home" aria-label="Backranq home">
             <span
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-foreground text-[11px] font-bold text-background shadow-control transition-transform duration-fast motion-safe:group-hover:-rotate-2"
+              className="relative inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-sm bg-foreground text-[10px] font-bold text-background shadow-control transition-transform duration-fast after:absolute after:-right-1 after:-top-1 after:h-2.5 after:w-2.5 after:rounded-full after:bg-accent motion-safe:group-hover:-rotate-2"
               aria-hidden="true"
             >
               B
@@ -297,11 +180,13 @@ export function AppNav({
               <Button
                 key={item.href}
                 asChild
-                variant={active ? "quiet" : "ghost"}
+                variant="ghost"
                 size="sm"
                 className={cn(
-                  "relative px-3 text-sm",
-                  !active && "text-muted-foreground"
+                  "relative rounded-none px-3 text-sm after:absolute after:inset-x-3 after:-bottom-[7px] after:h-0.5 after:origin-center after:bg-primary after:transition-transform",
+                  active
+                    ? "text-foreground after:scale-x-100"
+                    : "text-muted-foreground after:scale-x-0 hover:text-foreground"
                 )}
               >
                 <Link href={item.href} aria-current={active ? "page" : undefined}>

@@ -8,15 +8,15 @@ const cardVariants = cva(
   {
     variants: {
       variant: {
-        default: "border bg-card shadow-card",
-        panel: "border bg-card shadow-none",
+        default: "border border-border/80 bg-card shadow-card",
+        panel: "border border-border/75 bg-card/75 shadow-none",
         subtle: "border border-transparent bg-surface-subtle shadow-none",
         inset: "border border-border/70 bg-surface-inset shadow-inner",
         plain: "border-transparent bg-transparent shadow-none",
-        floating: "border bg-surface-raised shadow-floating",
+        floating: "border border-border/70 bg-surface-raised shadow-floating",
         interactive:
-          "border bg-card shadow-control motion-safe:hover:-translate-y-0.5 motion-safe:hover:border-primary/25 motion-safe:hover:shadow-raised",
-        board: "border border-border/80 bg-card shadow-raised",
+          "border border-border/80 bg-card shadow-control motion-safe:hover:-translate-y-px motion-safe:hover:border-primary/35 motion-safe:hover:shadow-raised",
+        board: "border border-foreground/10 bg-card shadow-raised",
       },
     },
     defaultVariants: {
@@ -46,7 +46,7 @@ const CardHeader = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex flex-col space-y-1.5 p-5", className)}
+    className={cn("flex flex-col space-y-1.5 p-5 sm:p-6", className)}
     {...props}
   />
 ));
@@ -80,7 +80,7 @@ const CardContent = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("p-5 pt-0", className)} {...props} />
+  <div ref={ref} className={cn("p-5 pt-0 sm:p-6 sm:pt-0", className)} {...props} />
 ));
 CardContent.displayName = "CardContent";
 
@@ -90,7 +90,7 @@ const CardFooter = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex items-center p-5 pt-0", className)}
+    className={cn("flex items-center p-5 pt-0 sm:p-6 sm:pt-0", className)}
     {...props}
   />
 ));

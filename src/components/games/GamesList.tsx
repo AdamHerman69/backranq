@@ -48,7 +48,7 @@ export function GamesList({
             <div className="text-sm text-muted-foreground">
                 Showing page {page} of {totalPages} • {total} total
             </div>
-            <div className="space-y-2">
+            <div className="border-t border-foreground/10">
                 {games.map((g) => (
                     <GameCard
                         key={g.id}

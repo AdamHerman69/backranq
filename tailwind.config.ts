@@ -23,6 +23,7 @@ const config: Config = {
         extend: {
             fontFamily: {
                 sans: ['var(--font-geist-sans)', 'system-ui', 'sans-serif'],
+                display: ['var(--font-newsreader)', 'Georgia', 'serif'],
                 mono: ['var(--font-geist-mono)', 'ui-monospace', 'monospace'],
             },
             colors: {

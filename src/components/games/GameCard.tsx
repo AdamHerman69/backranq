@@ -120,13 +120,13 @@ export function GameCard({
         : [];
 
     return (
-        <Card className="group overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/25 hover:shadow-[0_20px_65px_-55px_rgba(15,23,42,0.72)]">
-            <CardContent className="p-4 sm:p-5">
+        <Card variant="plain" className="group overflow-hidden rounded-none border-b border-foreground/10 transition-colors duration-200 hover:bg-card/55">
+            <CardContent className="px-0 py-4 sm:px-2 sm:py-5">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex min-w-0 items-start gap-3">
                         <div
                             className={cn(
-                                'mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-xs font-bold',
+                                'mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold',
                                 outcomeBadgeClass(badge)
                             )}
                             aria-label={outcomeLabel(badge)}

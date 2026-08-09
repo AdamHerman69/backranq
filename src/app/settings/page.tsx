@@ -96,7 +96,7 @@ export default async function SettingsPage() {
     ].filter((item): item is string => Boolean(item));
 
     return (
-        <div className="space-y-8 sm:space-y-10">
+        <div className="space-y-7 sm:space-y-10">
             <PageHeader
                 eyebrow="Account"
                 title="Settings"
@@ -113,14 +113,14 @@ export default async function SettingsPage() {
 
             <nav
                 aria-label="Settings sections"
-                className="-mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0"
+                className="w-full pb-1"
             >
-                <div className="flex min-w-max gap-2 sm:min-w-0 sm:flex-wrap">
+                <div className="grid grid-cols-3 border-b border-foreground/10 sm:flex sm:flex-wrap">
                     {SETTINGS_LINKS.map(({ href, label, icon: Icon }) => (
                         <Link
                             key={href}
                             href={href}
-                            className="group inline-flex min-h-11 items-center gap-2 rounded-full border bg-card/75 px-3.5 text-sm font-medium text-muted-foreground shadow-control backdrop-blur-sm transition-[color,border-color,background-color,transform] duration-fast ease-standard hover:-translate-y-px hover:border-primary/25 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-2 sm:min-h-10"
+                            className="group inline-flex min-h-11 min-w-0 items-center justify-center gap-1.5 border-b-2 border-transparent px-2 text-[0.72rem] font-medium text-muted-foreground transition-[color,border-color,background-color] duration-fast ease-standard hover:border-primary hover:bg-primary/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset sm:min-h-10 sm:justify-start sm:gap-2 sm:px-3.5 sm:text-sm"
                         >
                             <Icon className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
                             {label}
@@ -230,7 +230,7 @@ function SettingsSection({
     return (
         <section
             id={id}
-            className="scroll-mt-24 border-t border-border/70 pt-6 sm:pt-8"
+            className="scroll-mt-24 border-t border-foreground/10 pt-6 sm:pt-8"
             aria-labelledby={`settings-section-${index}`}
         >
             <div className="grid gap-4 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-8 xl:grid-cols-[14rem_minmax(0,1fr)]">
@@ -241,7 +241,7 @@ function SettingsSection({
                         </span>
                         <h2
                             id={`settings-section-${index}`}
-                            className="text-base font-semibold tracking-[-0.02em] text-foreground lg:mt-2 lg:text-lg"
+                            className="font-display text-xl font-semibold tracking-[-0.02em] text-foreground lg:mt-2 lg:text-2xl"
                         >
                             {title}
                         </h2>

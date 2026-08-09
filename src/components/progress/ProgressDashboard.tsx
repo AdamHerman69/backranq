@@ -123,7 +123,7 @@ function EvidenceSection({
     return (
         <details
             open={defaultOpen || undefined}
-            className="group overflow-hidden rounded-lg border bg-card shadow-control"
+            className="group overflow-hidden border-y border-foreground/10 bg-card/35"
         >
             <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 transition-colors hover:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/55 sm:px-5 [&::-webkit-details-marker]:hidden">
                 <h2
@@ -144,7 +144,7 @@ function EvidenceSection({
                     />
                 </h2>
             </summary>
-            <div className="border-t bg-background/40 p-3 sm:p-5">
+            <div className="border-t border-foreground/10 bg-background/30 p-3 sm:p-5">
                 {children}
             </div>
         </details>
@@ -328,24 +328,24 @@ function NextAction({ snapshot }: { snapshot: ProgressSnapshot }) {
     const action = deriveProgressNextAction(snapshot);
     const analyticsContext = progressAnalyticsContext(snapshot);
     return (
-        <Card className="relative overflow-hidden border-primary/25 bg-gradient-to-br from-primary/[0.10] via-card to-card shadow-raised">
+        <Card className="relative overflow-hidden border-foreground bg-foreground text-background shadow-raised">
             <div
-                className="pointer-events-none absolute -right-16 -top-24 h-56 w-56 rounded-full bg-primary/10 blur-3xl"
+                className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-accent"
                 aria-hidden="true"
             />
             <CardContent className="relative flex flex-col gap-4 py-5 sm:flex-row sm:items-center sm:justify-between sm:py-6">
                 <div className="flex max-w-2xl gap-3">
-                    <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-control">
+                    <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-sm bg-accent text-accent-foreground shadow-control">
                         <Compass className="h-4 w-4" aria-hidden="true" />
                     </span>
                     <div>
-                        <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.16em] text-primary">
+                        <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.18em] text-accent">
                             Next useful action
                         </p>
-                        <h2 className="mt-1 text-lg font-semibold tracking-[-0.015em]">
+                        <h2 className="mt-1 font-display text-2xl font-semibold leading-tight tracking-[-0.015em]">
                             {action.title}
                         </h2>
-                        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                        <p className="mt-1 text-sm leading-relaxed text-background/60">
                             {action.description}
                         </p>
                     </div>
@@ -353,7 +353,7 @@ function NextAction({ snapshot }: { snapshot: ProgressSnapshot }) {
                 <Button
                     asChild
                     size="lg"
-                    className="min-h-12 w-full shrink-0 sm:w-auto"
+                    className="min-h-12 w-full shrink-0 border-accent bg-accent text-accent-foreground hover:bg-accent/90 sm:w-auto"
                 >
                     <TrackedProgressLink
                         href={action.href}
@@ -411,7 +411,7 @@ function ProgressKpiStrip({ snapshot }: { snapshot: ProgressSnapshot }) {
                     Selected view
                 </span>
             </div>
-            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border shadow-control lg:grid-cols-4">
+            <dl className="grid grid-cols-2 gap-px overflow-hidden border-y border-foreground/15 bg-border lg:grid-cols-4">
                 {items.map((item) => (
                     <div
                         key={item.label}

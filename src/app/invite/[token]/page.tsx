@@ -53,10 +53,10 @@ export default async function PremiumInvitationPage({
                     </Link>
                 </Button>
 
-                <Card className="overflow-hidden border-border/70 shadow-2xl shadow-black/[0.07]">
-                    <div className="h-1.5 bg-gradient-to-r from-emerald-400 via-foreground to-emerald-400" aria-hidden="true" />
+                <Card className="overflow-hidden rounded-sm border-border/70 shadow-raised">
+                    <div className="h-1.5 bg-accent" aria-hidden="true" />
                     <CardHeader className="pb-4 sm:p-8 sm:pb-5">
-                        <div className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-foreground text-background shadow-sm">
+                        <div className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-sm bg-foreground text-background shadow-sm">
                             {invitation?.acceptedAt ? (
                                 <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
                             ) : unavailable ? (
@@ -65,7 +65,7 @@ export default async function PremiumInvitationPage({
                                 <Gift className="h-5 w-5" aria-hidden="true" />
                             )}
                         </div>
-                        <h1 className="text-2xl font-semibold tracking-[-0.025em]">
+                        <h1 className="font-display text-3xl font-semibold leading-tight tracking-[-0.025em]">
                             {accepted
                                 ? acceptedForCurrentUser
                                     ? 'Your Backranq Pro invitation is active'

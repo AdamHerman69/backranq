@@ -172,7 +172,7 @@ export function GamesIndexClient({
 
     return (
         <div className="space-y-6">
-            <div className="rounded-2xl border bg-card/65 p-3 sm:p-4">
+            <div className="border-y border-foreground/10 py-3 sm:py-4">
                 <GamesSelectionToolbar
                     selectedCount={selectedCount}
                     busy={busy}

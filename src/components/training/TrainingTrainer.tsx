@@ -451,7 +451,7 @@ export function TrainingTrainer({
                     }
                 }}
                 aria-label="Practice mode"
-                className="space-y-4"
+                className="space-y-3 sm:space-y-4"
             >
                 <TabsList className="grid w-full grid-cols-2 sm:max-w-sm">
                     <TabsTrigger value="solve">Solve</TabsTrigger>
@@ -467,8 +467,8 @@ export function TrainingTrainer({
                     value="solve"
                     className="mt-0 flex flex-col gap-4"
                 >
-                    <div className="order-1 flex flex-wrap items-start justify-between gap-3 lg:order-2">
-                        <div>
+                    <div className="order-1 flex items-start justify-between gap-2 lg:order-2 lg:gap-3">
+                        <div className="min-w-0 flex-1">
                             <h2
                                 ref={promptHeadingRef}
                                 tabIndex={-1}
@@ -483,7 +483,7 @@ export function TrainingTrainer({
                                 Choose the move you would play in a real game.
                             </p>
                         </div>
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex shrink-0 flex-wrap items-center gap-2">
                             {!training.online ? (
                                 <Badge variant="outline">
                                     <WifiOff className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
@@ -498,13 +498,14 @@ export function TrainingTrainer({
                             ) : null}
                             <Button
                                 type="button"
-                                size="sm"
+                                size="icon"
                                 variant="outline"
+                                className="sm:w-auto sm:px-3"
                                 onClick={() => setFlipped((value) => !value)}
                                 aria-label="Flip board"
                             >
-                                <FlipHorizontal2 className="mr-2 h-4 w-4" aria-hidden="true" />
-                                Flip
+                                <FlipHorizontal2 aria-hidden="true" />
+                                <span className="hidden sm:inline">Flip</span>
                             </Button>
                         </div>
                     </div>
@@ -513,8 +514,8 @@ export function TrainingTrainer({
                         className={cn(
                             'order-2 grid gap-4 lg:order-3',
                             compact
-                                ? 'xl:grid-cols-[minmax(0,560px)_minmax(260px,1fr)]'
-                                : 'lg:grid-cols-[minmax(0,560px)_minmax(280px,1fr)]'
+                                ? 'xl:grid-cols-[minmax(0,620px)_minmax(280px,1fr)]'
+                                : 'lg:grid-cols-[minmax(0,620px)_minmax(300px,1fr)]'
                         )}
                     >
                         <div className="min-w-0">
@@ -543,7 +544,10 @@ export function TrainingTrainer({
                                 aria-label={`${training.grade ? `${gradeLabel(training.grade)}. ` : ''}${feedback.message}`}
                             />
 
-                            <div className="sticky bottom-[calc(var(--app-bottom-nav-height)+env(safe-area-inset-bottom)+0.5rem)] z-30 mt-3 flex flex-wrap items-center gap-2 rounded-2xl border bg-background/90 p-2 shadow-lg backdrop-blur md:hidden">
+                            <div
+                                className="sticky bottom-[calc(var(--app-bottom-nav-height)+env(safe-area-inset-bottom)+0.5rem)] z-30 mt-3 flex flex-wrap items-center gap-2 border-y border-foreground/15 bg-background/92 p-2 shadow-raised backdrop-blur md:hidden"
+                                data-training-mobile-actions
+                            >
                                 {training.canReveal ? (
                                     <Button
                                         type="button"
@@ -639,13 +643,13 @@ export function TrainingTrainer({
                         </div>
 
                         <div className="space-y-4">
-                            <Card>
-                                <CardHeader className="pb-3">
+                            <Card variant="plain" className="rounded-none border-t border-foreground/15">
+                                <CardHeader className="px-0 pb-3">
                                     <CardTitle className="text-base">
                                         Your decision
                                     </CardTitle>
                                 </CardHeader>
-                                <CardContent className="space-y-3">
+                                <CardContent className="space-y-3 px-0">
                                     <p className="text-sm text-muted-foreground">
                                         Every legal move is graded on this device against
                                         the position and your original game.
@@ -747,7 +751,7 @@ export function TrainingTrainer({
 
                                     {training.canMove ? (
                                         <details className="rounded-lg border px-3 py-2 text-sm">
-                                            <summary className="cursor-pointer select-none font-medium">
+                                            <summary className="flex min-h-11 cursor-pointer select-none items-center font-medium">
                                                 Enter a move with the keyboard
                                             </summary>
                                             <div className="mt-3 flex flex-col gap-2 sm:flex-row">

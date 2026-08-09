@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { E2E_USER } from './support/fixtures';
+import { square, waitForBoard } from './support/board';
 
 test('Home keeps available Practice when sync status is unavailable', async ({
     page,
@@ -188,6 +189,36 @@ test.describe('signed-out IA', () => {
         ).toHaveAttribute('href', '/login?callbackUrl=%2Fhome');
         await expect(page.getByRole('link', { name: 'Open app' })).toHaveCount(0);
         await expect(page.getByText(/Welcome back/)).toHaveCount(0);
+    });
+
+    test('landing animates the played move before revealing its quality on the board', async ({
+        page,
+    }) => {
+        await page.goto('/');
+        await waitForBoard(page);
+        const board = page.locator('[data-board-stage]').first();
+        const decisionFen = await board.getAttribute('data-board-fen');
+
+        await square(page, 'f7').click();
+        await expect(board).toHaveAttribute(
+            'data-board-selected-square',
+            'f7'
+        );
+        await expect(
+            board.locator('[data-legal-move-target="f8"]')
+        ).toBeVisible();
+
+        await square(page, 'f8').click();
+
+        await expect(board).toHaveAttribute('data-board-last-move', 'f7f8');
+        expect(await board.getAttribute('data-board-fen')).not.toBe(
+            decisionFen
+        );
+        await expect(board).not.toHaveAttribute('data-board-marker', /.+/);
+        await expect(board).toHaveAttribute('data-board-marker', 'BEST');
+        await expect(
+            board.getByRole('img', { name: 'Best move on f8' })
+        ).toBeVisible();
     });
 
     test('protected Home redirects to login with the Home callback', async ({

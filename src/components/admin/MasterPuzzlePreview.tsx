@@ -53,6 +53,12 @@ export function MasterPuzzlePreview({
                     <Chessboard
                         options={{
                             position: candidate.fen,
+                            lightSquareStyle: {
+                                backgroundColor: 'hsl(var(--board-light))',
+                            },
+                            darkSquareStyle: {
+                                backgroundColor: 'hsl(var(--board-dark))',
+                            },
                             boardOrientation:
                                 candidate.fen.split(' ')[1] === 'b' ? 'black' : 'white',
                             allowDragging: false,

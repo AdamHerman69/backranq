@@ -6,23 +6,23 @@
     :root {
         color-scheme: light;
 
-        /* Editorial chess studio: warm paper, graphite and verdigris. */
-        --background: 42 33% 97%;
-        --foreground: 222 18% 12%;
+        /* Backranq studio: parchment, ink, moss and one electric cue. */
+        --background: 44 26% 96%;
+        --foreground: 150 12% 10%;
 
-        --card: 40 40% 99%;
-        --card-foreground: 222 18% 12%;
-        --popover: 40 40% 99%;
-        --popover-foreground: 222 18% 12%;
+        --card: 45 33% 98%;
+        --card-foreground: 150 12% 10%;
+        --popover: 45 33% 99%;
+        --popover-foreground: 150 12% 10%;
 
-        --primary: 164 64% 27%;
+        --primary: 158 58% 24%;
         --primary-foreground: 0 0% 100%;
-        --secondary: 42 18% 93%;
-        --secondary-foreground: 222 16% 18%;
-        --muted: 42 18% 93%;
-        --muted-foreground: 220 9% 42%;
-        --accent: 160 24% 91%;
-        --accent-foreground: 164 64% 22%;
+        --secondary: 42 14% 91%;
+        --secondary-foreground: 150 10% 16%;
+        --muted: 42 14% 91%;
+        --muted-foreground: 150 5% 42%;
+        --accent: 82 64% 77%;
+        --accent-foreground: 150 24% 13%;
 
         --destructive: 7 68% 48%;
         --destructive-foreground: 0 0% 100%;
@@ -33,13 +33,13 @@
         --info: 216 72% 51%;
         --info-foreground: 0 0% 100%;
 
-        --border: 40 12% 86%;
-        --input: 40 12% 82%;
-        --ring: 164 56% 38%;
+        --border: 42 12% 82%;
+        --input: 42 10% 76%;
+        --ring: 158 52% 33%;
 
-        --surface-subtle: 42 24% 95%;
-        --surface-raised: 40 40% 99%;
-        --surface-inset: 42 18% 92%;
+        --surface-subtle: 43 20% 93%;
+        --surface-raised: 45 38% 99%;
+        --surface-inset: 42 13% 89%;
 
         --move-best: 173 76% 35%;
         --move-strong: 151 55% 39%;
@@ -48,19 +48,19 @@
         --move-repeated: 8 72% 52%;
         --move-different: 36 88% 50%;
 
-        --board-light: 43 31% 84%;
-        --board-dark: 161 20% 46%;
-        --board-selected: 207 76% 53%;
-        --board-last-move: 48 91% 57%;
+        --board-light: 41 34% 83%;
+        --board-dark: 151 20% 48%;
+        --board-selected: 79 78% 64%;
+        --board-last-move: 79 64% 70%;
         --analysis-line-1: 216 82% 58%;
         --analysis-line-2: 160 64% 43%;
         --analysis-line-3: 38 91% 54%;
         --analysis-line-4: 275 68% 61%;
         --analysis-line-5: 345 76% 59%;
 
-        --radius-control: 0.625rem;
-        --radius-panel: 1rem;
-        --radius-feature: 1.5rem;
+        --radius-control: 0.5rem;
+        --radius-panel: 0.75rem;
+        --radius-feature: 1.125rem;
         --radius: var(--radius-control);
 
         --duration-instant: 90ms;
@@ -72,6 +72,7 @@
 
         --app-header-height: 3rem;
         --app-bottom-nav-height: 4rem;
+        --page-gutter: 1rem;
     }
 
     .dark {
@@ -126,6 +127,10 @@
     body {
         @apply min-h-dvh bg-background font-sans text-foreground antialiased;
         font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+        background-image:
+            radial-gradient(circle at 84% -8%, hsl(var(--primary) / 0.055), transparent 29rem),
+            linear-gradient(hsl(var(--foreground) / 0.018) 1px, transparent 1px);
+        background-size: auto, 100% 4rem;
     }
 
     ::selection {
@@ -149,15 +154,30 @@
 
 @layer components {
     .app-container {
-        @apply mx-auto w-full max-w-7xl px-3 sm:px-5 lg:px-8;
+        @apply mx-auto w-full max-w-7xl;
+        padding-inline: var(--page-gutter);
     }
 
     .workspace-container {
-        @apply mx-auto w-full max-w-[1600px] px-3 sm:px-5 lg:px-8;
+        @apply mx-auto w-full max-w-[1520px];
+        padding-inline: var(--page-gutter);
     }
 
     .reading-container {
-        @apply mx-auto w-full max-w-5xl px-3 sm:px-5 lg:px-8;
+        @apply mx-auto w-full max-w-6xl;
+        padding-inline: var(--page-gutter);
+    }
+
+    .editorial-label {
+        @apply text-[0.65rem] font-semibold uppercase leading-none tracking-[0.22em] text-primary;
+    }
+
+    .display-title {
+        @apply font-display font-medium leading-[0.94] tracking-[-0.035em];
+    }
+
+    .section-rule {
+        @apply border-t border-border/80 pt-5 sm:pt-7;
     }
 
     .interactive-surface {
@@ -167,6 +187,23 @@
             border-color var(--duration-fast) var(--ease-standard),
             box-shadow var(--duration-base) var(--ease-standard),
             transform var(--duration-fast) var(--ease-standard);
+    }
+}
+
+@media (min-width: 640px) {
+    :root {
+        --page-gutter: 1.5rem;
+    }
+}
+
+@media (min-width: 1024px) {
+    :root {
+        --page-gutter: 2.5rem;
+    }
+
+    .game-review-stage-width {
+        width: min(100%, max(32rem, calc(100dvh - 25.75rem)));
+        max-width: 45rem;
     }
 }
 

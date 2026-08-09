@@ -637,7 +637,7 @@ export function GameViewer({
         >
             <div className="min-w-0 lg:sticky lg:top-20">
                 <div
-                    className="relative mx-auto w-full min-w-0 max-w-[720px] overflow-hidden rounded-[1.25rem] border bg-card p-1.5 shadow-[0_28px_90px_-60px_rgba(15,23,42,0.72)] sm:p-2"
+                    className="game-review-stage-width relative mx-auto w-full min-w-0 max-w-[720px] overflow-hidden rounded-lg border bg-card p-1.5 shadow-raised sm:p-2"
                     data-game-review-board
                 >
                     <span className="sr-only" aria-live="polite" aria-atomic="true">
@@ -645,17 +645,28 @@ export function GameViewer({
                             ? `${getClassificationLabel(activeAnalyzedMove.classification)} move: ${activeAnalyzedMove.san}`
                             : 'Start position'}
                     </span>
-                    <div className="min-w-0 max-w-full overflow-hidden rounded-[0.9rem]">
+                    <div className="min-w-0 max-w-full overflow-hidden rounded-md">
                         <Chessboard
                             options={{
                                 position: fen,
+                                lightSquareStyle: {
+                                    backgroundColor:
+                                        'hsl(var(--board-light))',
+                                },
+                                darkSquareStyle: {
+                                    backgroundColor:
+                                        'hsl(var(--board-dark))',
+                                },
                                 boardOrientation: userBoardOrientation ?? 'white',
                                 allowDragging: false,
                                 allowDrawingArrows: false,
                                 arrows: showPvArrows ? analysisArrows : [],
                                 squareStyles,
                                 squareRenderer: ({ square, children }) => (
-                                    <div className="relative h-full w-full">
+                                    <div
+                                        className="relative h-full w-full"
+                                        style={squareStyles[square]}
+                                    >
                                         {children}
                                         {activeAnalyzedMove &&
                                         lastMove?.to === square ? (
@@ -687,7 +698,7 @@ export function GameViewer({
                     </div>
                 </div>
 
-                <div className="mx-auto mt-2 flex w-full max-w-[720px] items-center justify-between gap-2 rounded-2xl border bg-card/90 p-2 shadow-[0_16px_50px_-45px_rgba(15,23,42,0.55)] backdrop-blur">
+                <div className="game-review-stage-width mx-auto mt-2 flex w-full max-w-[720px] items-center justify-between gap-2 rounded-lg border bg-card/90 p-2 shadow-control backdrop-blur">
                     <div className="flex items-center gap-1">
                         <Button
                             variant="ghost"
@@ -776,7 +787,7 @@ export function GameViewer({
                     setActivePanel(next);
                     setAnalysisEnabled(next === 'engine');
                 }}
-                className="min-w-0 overflow-hidden rounded-[1.25rem] border bg-card/80 shadow-[0_22px_70px_-58px_rgba(15,23,42,0.68)]"
+                className="min-w-0 overflow-hidden rounded-lg border bg-card/80 shadow-card"
             >
                 <div className="border-b p-2">
                     <TabsList className="grid w-full grid-cols-3">
@@ -788,7 +799,7 @@ export function GameViewer({
 
                 <TabsContent value="review" className="m-0 space-y-4 p-4 sm:p-5">
                     {clampedPly === 0 ? (
-                        <div className="rounded-2xl bg-muted/45 p-5">
+                        <div className="border-y border-foreground/10 bg-muted/45 p-5">
                             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                                 Start position
                             </p>

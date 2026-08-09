@@ -68,6 +68,9 @@ export default function GameDetailClient({
     return (
         <div className="mx-auto max-w-[1480px] space-y-4 sm:space-y-6">
             <div className="flex items-center justify-between gap-3">
+                <h1 className="font-display text-2xl font-semibold tracking-[-0.025em] sm:text-3xl">
+                    Game review
+                </h1>
                 <Button asChild variant="outline" size="sm">
                     <Link href="/games">← Back to Games</Link>
                 </Button>

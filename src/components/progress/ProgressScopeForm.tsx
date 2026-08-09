@@ -65,7 +65,7 @@ export function ProgressScopeForm({
         <form
             action="/progress"
             method="get"
-            className="rounded-lg border bg-card p-3 shadow-control sm:p-4"
+            className="border-y border-foreground/10 bg-card/35 py-3 sm:py-4"
             aria-label="Progress scope"
         >
             {scope !== 90 ? (

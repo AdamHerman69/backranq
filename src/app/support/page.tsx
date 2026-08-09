@@ -52,15 +52,19 @@ export default function SupportPage() {
                 {topics.map((topic) => {
                     const Icon = topic.icon;
                     return (
-                        <Link key={topic.title} href={topic.href} className="no-underline">
-                            <Card className="group h-full border-border/70 shadow-none transition-all duration-300 hover:-translate-y-1 hover:shadow-lg">
-                                <CardContent className="p-5">
-                                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-muted text-foreground">
+                        <Link
+                            key={topic.title}
+                            href={topic.href}
+                            className="!no-underline [&_*]:!no-underline"
+                        >
+                            <Card className="group h-full rounded-none border-x-0 border-b border-t-2 border-t-foreground bg-transparent shadow-none transition-colors duration-300 hover:bg-muted/45">
+                                <CardContent className="px-0 py-5 sm:px-4">
+                                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-sm bg-foreground text-background">
                                         <Icon className="h-4 w-4" aria-hidden="true" />
                                     </span>
-                                    <h2 className="mt-4 text-base">{topic.title}</h2>
+                                    <h2 className="mt-4 font-display text-xl">{topic.title}</h2>
                                     <p className="mt-2 text-sm leading-6">{topic.body}</p>
-                                    <ArrowRight className="mt-4 h-4 w-4 text-foreground transition-transform group-hover:translate-x-1" aria-hidden="true" />
+                                    <ArrowRight className="mt-4 h-4 w-4 text-foreground transition-transform group-hover:translate-x-1.5" aria-hidden="true" />
                                 </CardContent>
                             </Card>
                         </Link>
@@ -118,17 +122,17 @@ export default function SupportPage() {
                 </Button>
             </section>
 
-            <section className="rounded-2xl border border-border/70 bg-muted/35 p-5 sm:p-7" aria-labelledby="contact-support-title">
+            <section className="border-y border-border bg-foreground p-5 text-background sm:p-7" aria-labelledby="contact-support-title">
                 <div className="flex gap-4">
-                    <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-foreground text-background">
+                    <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-sm bg-accent text-accent-foreground">
                         <Mail className="h-5 w-5" aria-hidden="true" />
                     </span>
                     <div>
                         <h2 id="contact-support-title">Still stuck?</h2>
-                        <p className="mt-2">
+                        <p className="mt-2 text-background/70 [&_a]:text-background">
                             Email <a href="mailto:support@backranq.com">support@backranq.com</a>. Include the affected page, your chess provider, approximate time and a screenshot if possible. Never send a password or payment-card number.
                         </p>
-                        <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+                        <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm text-background/65">
                             <span className="inline-flex items-center gap-2"><CircleHelp className="h-4 w-4" aria-hidden="true" /> Account and product help</span>
                             <span className="inline-flex items-center gap-2"><WifiOff className="h-4 w-4" aria-hidden="true" /> Offline troubleshooting</span>
                         </div>
@@ -141,8 +145,8 @@ export default function SupportPage() {
 
 function Faq({ question, children }: { question: string; children: ReactNode }) {
     return (
-        <details className="group rounded-xl border border-border/70 bg-card px-4 py-3">
-            <summary className="cursor-pointer list-none font-medium text-foreground marker:hidden">
+        <details className="group border-b border-border bg-transparent px-0 py-3">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center font-medium text-foreground marker:hidden">
                 <span className="flex items-center justify-between gap-4">
                     {question}
                     <span className="text-lg font-normal text-muted-foreground transition-transform group-open:rotate-45" aria-hidden="true">+</span>

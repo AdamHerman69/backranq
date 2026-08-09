@@ -209,7 +209,7 @@ export function CoachSetup({
 
     return (
         <section
-            className="mx-auto max-w-5xl space-y-4"
+            className="mx-auto max-w-6xl space-y-4"
             aria-label="Coach game setup"
         >
             {sessionLoaded && resumableSession ? (
@@ -267,12 +267,12 @@ export function CoachSetup({
                 </Card>
             ) : null}
 
-            <Card className="overflow-hidden">
-                <CardHeader className="border-b bg-muted/20 pb-4">
+            <Card className="overflow-hidden border-x-0 sm:border-x">
+                <CardHeader className="border-b bg-muted/20 p-3 sm:p-6 sm:pb-4">
                     <div className="flex items-start justify-between gap-3">
-                        <div>
+                        <div className="min-w-0">
                             <CardTitle>Set up your game</CardTitle>
-                            <CardDescription className="mt-2">
+                            <CardDescription className="mt-2 hidden sm:block">
                                 Pick a side, opponent and level. You can start
                                 as soon as the local coach is ready.
                             </CardDescription>
@@ -311,9 +311,9 @@ export function CoachSetup({
                         </Badge>
                     </div>
                 </CardHeader>
-                <CardContent className="space-y-5 p-4 sm:p-6">
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                        <label className="space-y-2 text-sm">
+                <CardContent className="space-y-4 p-3 sm:space-y-5 sm:p-6">
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
+                        <label className="min-w-0 space-y-1.5 text-sm sm:space-y-2">
                             <span className="font-medium">Your color</span>
                             <Select
                                 value={colorChoice}
@@ -340,7 +340,7 @@ export function CoachSetup({
                             </Select>
                         </label>
 
-                        <label className="space-y-2 text-sm">
+                        <label className="min-w-0 space-y-1.5 text-sm sm:space-y-2">
                             <span className="font-medium">
                                 Opponent
                             </span>
@@ -369,7 +369,7 @@ export function CoachSetup({
                             </Select>
                         </label>
 
-                        <label className="space-y-2 text-sm">
+                        <label className="min-w-0 space-y-1.5 text-sm sm:space-y-2">
                             {opponentModel === 'stockfish' ? (
                                 <>
                                     <span className="font-medium">
@@ -439,7 +439,7 @@ export function CoachSetup({
                             )}
                         </label>
 
-                        <label className="space-y-2 text-sm">
+                        <label className="min-w-0 space-y-1.5 text-sm sm:space-y-2">
                             <span className="font-medium">
                                 Coach sensitivity
                             </span>
@@ -473,7 +473,7 @@ export function CoachSetup({
                         </label>
 
                         {tacticalGuardSelected ? (
-                            <label className="space-y-2 text-sm sm:col-span-2 lg:col-span-4">
+                            <label className="col-span-2 space-y-2 text-sm lg:col-span-4">
                                 <span className="font-medium">
                                     Tactical safety guard
                                 </span>
@@ -510,7 +510,7 @@ export function CoachSetup({
                     </div>
 
                     <div
-                        className="flex flex-col gap-3 rounded-2xl border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between"
+                        className="flex flex-col gap-3 border-y border-foreground/15 bg-foreground p-3 text-background sm:flex-row sm:items-center sm:justify-between sm:p-4"
                         data-coach-setup-primary
                     >
                         <div className="min-w-0 text-sm">
@@ -519,7 +519,7 @@ export function CoachSetup({
                                     ? `${tacticalGuardSelected ? 'Maia + tactical guard' : 'Maia 3'} · ${maiaElo} Elo`
                                     : `${selectedOpponent.label} Stockfish`}
                             </div>
-                            <p className="mt-0.5 text-xs text-muted-foreground">
+                            <p className="mt-0.5 text-xs text-background/65">
                                 Coach pauses at ≥ {normalizedThresholdCp} cp loss
                                 {tacticalGuardSelected
                                     ? ` · guard at ${normalizedTacticalGuardCp} cp`
@@ -529,7 +529,7 @@ export function CoachSetup({
                         <Button
                             type="button"
                             size="lg"
-                            className="min-h-12 w-full shrink-0 sm:w-auto sm:min-w-52"
+                            className="min-h-11 w-full shrink-0 border-accent bg-accent text-accent-foreground hover:bg-accent/90 sm:min-h-12 sm:w-auto sm:min-w-52"
                             disabled={!startReady}
                             onClick={onStart}
                         >

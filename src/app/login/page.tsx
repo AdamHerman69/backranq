@@ -27,21 +27,21 @@ export default async function LoginPage({
                 className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(circle_at_top_left,_hsl(var(--muted))_0,_transparent_42%),radial-gradient(circle_at_bottom_right,_hsl(var(--muted))_0,_transparent_38%)] opacity-80"
                 aria-hidden="true"
             />
-            <div className="mx-auto grid w-full max-w-4xl overflow-hidden rounded-[1.75rem] border border-border/70 bg-background/90 shadow-2xl shadow-black/[0.08] backdrop-blur lg:grid-cols-[0.9fr_1.1fr]">
+            <div className="mx-auto grid w-full max-w-4xl overflow-hidden rounded-sm border border-foreground/15 bg-background/90 shadow-raised backdrop-blur lg:grid-cols-[0.9fr_1.1fr]">
                 <section className="hidden flex-col justify-between bg-foreground p-10 text-background lg:flex">
                     <Link
                         href="/"
                         className="inline-flex w-fit items-center gap-2 font-semibold"
                         aria-label="Back to Backranq"
                     >
-                        <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-background text-xs font-bold text-foreground">
+                        <span className="inline-flex h-8 w-8 items-center justify-center rounded-sm bg-background text-xs font-bold text-foreground">
                             B
                         </span>
                         Backranq
                     </Link>
                     <div className="py-16">
                         <Sparkles className="h-6 w-6" aria-hidden="true" />
-                        <h2 className="mt-5 text-3xl font-semibold tracking-[-0.035em]">
+                        <h2 className="mt-5 font-display text-4xl font-semibold leading-[1.03] tracking-[-0.035em]">
                             Turn your own games into better decisions.
                         </h2>
                         <p className="mt-4 max-w-sm text-sm leading-6 text-background/70">
@@ -64,14 +64,14 @@ export default async function LoginPage({
                     </Link>
                     <div className="mt-8 lg:mt-0">
                         <div className="mb-8 flex items-center gap-2 font-semibold lg:hidden">
-                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-foreground text-xs font-bold text-background">
+                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-sm bg-foreground text-xs font-bold text-background">
                                 B
                             </span>
                             Backranq
                         </div>
                         <Card className="border-0 bg-transparent shadow-none">
                             <CardHeader className="px-0 pt-0">
-                                <h1 id="sign-in-title" className="text-3xl font-semibold tracking-[-0.03em]">
+                                <h1 id="sign-in-title" className="font-display text-4xl font-semibold tracking-[-0.03em]">
                                     Welcome back
                                 </h1>
                                 <CardDescription className="max-w-sm leading-6">

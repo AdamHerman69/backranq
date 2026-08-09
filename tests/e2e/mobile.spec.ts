@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { waitForBoard } from './support/board';
+import { square, waitForBoard } from './support/board';
 import {
     E2E_GAMES,
     E2E_TRAINING_MOMENTS,
@@ -73,6 +73,19 @@ test('mobile coach setup stays readable and reachable without overflow', async (
     await expect(
         page.getByRole('button', { name: 'Start coach game' })
     ).toBeVisible();
+    const startButton = page.getByRole('button', {
+        name: 'Start coach game',
+    });
+    const nav = page.getByRole('navigation', { name: 'Main tabs' });
+    const [startBox, navBox] = await Promise.all([
+        startButton.boundingBox(),
+        nav.boundingBox(),
+    ]);
+    expect(startBox).not.toBeNull();
+    expect(navBox).not.toBeNull();
+    expect(startBox!.y + startBox!.height).toBeLessThanOrEqual(
+        navBox!.y + 1
+    );
     expect(
         await page.evaluate(
             () =>
@@ -162,6 +175,57 @@ test('mobile trainer keeps one reachable navigation surface without overflow', a
     await expect(
         primaryNav.getByRole('link', { name: 'Train', exact: true })
     ).toHaveCount(0);
+});
+
+test('mobile trainer treats normal finger jitter as a tap, not an abandoned drag', async ({
+    page,
+}) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(practicePath(E2E_TRAINING_MOMENTS.wrongMove));
+    await waitForBoard(page);
+
+    const source = square(page, 'g1');
+    const sourceBox = await source.boundingBox();
+    expect(sourceBox).not.toBeNull();
+
+    const x = sourceBox!.x + sourceBox!.width / 2;
+    const y = sourceBox!.y + sourceBox!.height / 2;
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ x, y, radiusX: 1, radiusY: 1, force: 1 }],
+    });
+    await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [
+            { x: x + 2, y: y + 1, radiusX: 1, radiusY: 1, force: 1 },
+        ],
+    });
+    await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchEnd',
+        touchPoints: [],
+    });
+
+    const board = page.locator('[data-board-stage]');
+    const mobileActions = page.locator('[data-training-mobile-actions]');
+    const [boardBox, actionsBox] = await Promise.all([
+        board.boundingBox(),
+        mobileActions.boundingBox(),
+    ]);
+    expect(boardBox).not.toBeNull();
+    expect(actionsBox).not.toBeNull();
+    expect(boardBox!.y + boardBox!.height).toBeLessThanOrEqual(
+        actionsBox!.y + 1
+    );
+    await expect(board).toHaveAttribute('data-board-selected-square', 'g1');
+    await expect(
+        board.locator('[data-legal-move-target="f3"]')
+    ).toBeVisible();
+    await square(page, 'f3').tap();
+    await expect(board).toHaveAttribute(
+        'data-board-last-move',
+        'g1f3'
+    );
 });
 
 test('mobile game sync and history import stay inside the viewport', async ({

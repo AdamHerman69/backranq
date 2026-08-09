@@ -28,6 +28,7 @@ import { CoachSetup } from '@/components/coach/CoachSetup';
 import { useCoachEngine } from '@/components/coach/useCoachEngine';
 import { useMaiaOpponent } from '@/components/coach/useMaiaOpponent';
 import type { PositionAnalysisSeed } from '@/components/training/TrainingAnalysisWorkspace';
+import { useReliableBoardTouch } from '@/lib/hooks/useReliableBoardTouch';
 import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -1601,17 +1602,40 @@ export function CoachGame({
         }
         if (selectedSquare) {
             styles[selectedSquare] = {
-                backgroundColor: 'rgba(59,130,246,0.32)',
+                backgroundColor: 'hsl(var(--board-selected) / 0.72)',
+                boxShadow:
+                    'inset 0 0 0 3px hsl(var(--foreground) / 0.3)',
             };
         }
         for (const square of legalTargets) {
             styles[square] = {
                 background:
-                    'radial-gradient(circle, rgba(59,130,246,0.52) 0 18%, transparent 20%)',
+                    'radial-gradient(circle, hsl(var(--foreground) / 0.38) 0 16%, transparent 18%)',
             };
         }
         return styles;
     }, [lastMove, legalTargets, phase, selectedSquare]);
+
+    const handleCoachSquareTap = useCallback(
+        (target: Square) => {
+            if (!canMove) return;
+            if (selectedSquare && legalTargets.has(target)) {
+                playOrChoosePromotion(selectedSquare, target);
+                return;
+            }
+            const piece = gameRef.current.get(target);
+            setSelectedSquare((current) =>
+                piece?.color === userColor && current !== target
+                    ? target
+                    : null
+            );
+        },
+        [canMove, legalTargets, playOrChoosePromotion, selectedSquare, userColor]
+    );
+    const reliableCoachTouch = useReliableBoardTouch({
+        enabled: canMove,
+        onTap: handleCoachSquareTap,
+    });
 
     const rows = useMemo(() => moveRows(moves), [moves]);
     const normalizedThresholdCp =
@@ -1821,6 +1845,9 @@ export function CoachGame({
                         data-coach-marker-square={
                             coachMarkerSquare ?? undefined
                         }
+                        data-coach-selected-square={
+                            selectedSquare ?? undefined
+                        }
                         aria-busy={
                             phase === 'starting' ||
                             phase === 'preparing' ||
@@ -1830,15 +1857,27 @@ export function CoachGame({
                             phase === 'bot'
                         }
                     >
-                        <div className="relative aspect-square w-full touch-manipulation">
+                        <div
+                            className="relative aspect-square w-full touch-none"
+                            {...reliableCoachTouch}
+                        >
                             <Chessboard
                                 options={{
                                     position: gameFen,
+                                    lightSquareStyle: {
+                                        backgroundColor:
+                                            'hsl(var(--board-light))',
+                                    },
+                                    darkSquareStyle: {
+                                        backgroundColor:
+                                            'hsl(var(--board-dark))',
+                                    },
                                     boardOrientation:
                                         (userColor === 'w') !== flipped
                                             ? 'white'
                                             : 'black',
                                     allowDragging: canMove,
+                                    dragActivationDistance: 12,
                                     allowDrawingArrows: false,
                                     showAnimations: !reducedMotion,
                                     animationDurationInMs: reducedMotion
@@ -1846,7 +1885,10 @@ export function CoachGame({
                                         : 180,
                                     squareStyles,
                                     squareRenderer: ({ square, children }) => (
-                                        <div className="relative h-full w-full">
+                                        <div
+                                            className="relative h-full w-full"
+                                            style={squareStyles[square]}
+                                        >
                                             {children}
                                             {coachMarkerSquare === square ? (
                                                 <span
@@ -1869,26 +1911,11 @@ export function CoachGame({
                                         );
                                     },
                                     onSquareClick: ({ square }) => {
-                                        if (!square || !canMove) return;
-                                        const target = square as Square;
-                                        if (
-                                            selectedSquare &&
-                                            legalTargets.has(target)
-                                        ) {
-                                            playOrChoosePromotion(
-                                                selectedSquare,
-                                                target
+                                        if (square) {
+                                            handleCoachSquareTap(
+                                                square as Square
                                             );
-                                            return;
                                         }
-                                        const piece =
-                                            gameRef.current.get(target);
-                                        setSelectedSquare((current) =>
-                                            piece?.color === userColor &&
-                                            current !== target
-                                                ? target
-                                                : null
-                                        );
                                     },
                                     onPieceDrop: ({
                                         sourceSquare,

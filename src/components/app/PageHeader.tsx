@@ -9,6 +9,7 @@ export function PageHeader({
   actions,
   variant = "default",
   className,
+  subtitleClassName,
 }: {
   title: React.ReactNode;
   subtitle?: React.ReactNode;
@@ -16,6 +17,7 @@ export function PageHeader({
   actions?: React.ReactNode;
   variant?: "default" | "workspace" | "compact";
   className?: string;
+  subtitleClassName?: string;
 }) {
   return (
     <div
@@ -34,16 +36,21 @@ export function PageHeader({
         ) : null}
         <h1
           className={cn(
-            "text-balance font-semibold tracking-[-0.035em] text-foreground",
+            "text-balance font-display font-semibold tracking-[-0.035em] text-foreground",
             variant === "compact"
               ? "text-xl sm:text-2xl"
-              : "text-[1.65rem] leading-[1.08] sm:text-3xl"
+              : "text-[1.85rem] leading-[1.02] sm:text-4xl"
           )}
         >
           {title}
         </h1>
         {subtitle ? (
-          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+          <p
+            className={cn(
+              "mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground",
+              subtitleClassName
+            )}
+          >
             {subtitle}
           </p>
         ) : null}

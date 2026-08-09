@@ -331,13 +331,13 @@ export function HomeDashboard() {
     }
 
     return (
-        <div className="mx-auto max-w-6xl space-y-5 sm:space-y-7">
+        <div className="mx-auto max-w-7xl space-y-5 sm:space-y-7">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div className="space-y-1">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                    <p className="editorial-label">
                         Your chess, distilled
                     </p>
-                    <h1 className="text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">
+                    <h1 className="font-display text-4xl font-semibold leading-none tracking-[-0.035em] sm:text-5xl">
                         Welcome back{session?.user?.name ? `, ${session.user.name.split(' ')[0]}` : ''}
                     </h1>
                     <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground sm:text-base">
@@ -369,7 +369,7 @@ export function HomeDashboard() {
             </div>
 
             {productState === 'no-games' ? (
-                <div className="rounded-lg border px-4 py-3">
+                <div className="border-y border-foreground/10 py-4">
                     <SyncGamesWidget
                         context="home"
                         enableAnalyze
@@ -404,7 +404,7 @@ export function HomeDashboard() {
 
             {productState !== 'no-games' &&
             productState !== 'no-linked-account' ? (
-                <div className="rounded-lg border px-4 py-3">
+                <div className="border-y border-foreground/10 py-4">
                     <SyncGamesWidget
                         context="home"
                         enableAnalyze
@@ -639,33 +639,33 @@ function NextActionCard({
 }) {
     return (
         <Card
-            variant="board"
-            className="group relative isolate overflow-hidden border-primary/15 bg-[radial-gradient(circle_at_top_right,hsl(var(--primary)/0.13),transparent_42%),linear-gradient(135deg,hsl(var(--card)),hsl(var(--surface-subtle)))]"
+            variant="plain"
+            className="group relative isolate overflow-hidden border-foreground bg-foreground text-background shadow-raised"
         >
             <div
-                className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full border border-primary/10"
+                className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-accent"
                 aria-hidden="true"
             />
-            <CardContent className="relative flex min-h-[220px] flex-col justify-between gap-8 p-5 sm:min-h-[248px] sm:p-8 lg:flex-row lg:items-end">
+            <CardContent className="relative flex min-h-[168px] flex-col justify-between gap-6 p-5 sm:min-h-[176px] sm:p-7 lg:flex-row lg:items-center">
                 <div className="flex max-w-2xl items-start gap-4">
-                    <div className="mt-0.5 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-primary/15 bg-primary/10 text-primary shadow-control [&_svg]:h-5 [&_svg]:w-5">
+                    <div className="mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-sm bg-accent text-accent-foreground shadow-control [&_svg]:h-5 [&_svg]:w-5">
                         {icon}
                     </div>
                     <div>
-                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                        <p className="editorial-label text-accent">
                             Your next move
                         </p>
-                        <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] sm:text-3xl">
+                        <h2 className="mt-2 font-display text-3xl font-semibold leading-none tracking-[-0.03em] sm:text-4xl">
                             {title}
                         </h2>
-                        <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground sm:text-base">
+                        <p className="mt-3 max-w-xl text-sm leading-relaxed text-background/65 sm:text-base">
                             {description}
                         </p>
                     </div>
                 </div>
                 <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row">
                     {actionLabel && href ? (
-                        <Button asChild size="lg" className="w-full sm:w-auto">
+                        <Button asChild size="lg" className="w-full border-accent bg-accent text-accent-foreground hover:bg-accent/90 sm:w-auto">
                             <Link href={href}>
                                 {actionLabel}
                                 <ArrowRight aria-hidden="true" />
@@ -677,7 +677,7 @@ function NextActionCard({
                             asChild
                             variant="outline"
                             size="lg"
-                            className="w-full sm:w-auto"
+                            className="w-full border-background/25 bg-background/5 text-background hover:bg-background/10 hover:text-background sm:w-auto"
                         >
                             <Link href={secondaryAction.href}>
                                 {secondaryAction.label}
@@ -716,7 +716,7 @@ function HomeSummary({
     return (
         <section
             aria-label="Your library at a glance"
-            className="grid grid-cols-3 gap-px overflow-hidden rounded-lg border bg-border"
+            className="grid grid-cols-3 gap-px overflow-hidden border-y border-foreground/15 bg-border"
         >
             {items.map((item) => (
                 <Link

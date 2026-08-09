@@ -5,22 +5,22 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-fast ease-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/[0.55] focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  "interactive-surface inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/[0.55] focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-45 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default:
-          "bg-primary text-primary-foreground shadow-control motion-safe:hover:-translate-y-px motion-safe:hover:shadow-raised motion-safe:active:translate-y-0 motion-safe:active:scale-[0.985]",
+          "border border-primary bg-primary text-primary-foreground shadow-control motion-safe:hover:-translate-y-px motion-safe:hover:bg-primary/[0.92] motion-safe:hover:shadow-raised motion-safe:active:translate-y-0 motion-safe:active:scale-[0.985]",
         destructive:
           "bg-destructive text-destructive-foreground shadow-control motion-safe:hover:-translate-y-px motion-safe:hover:bg-destructive/[0.92] motion-safe:hover:shadow-raised motion-safe:active:translate-y-0 motion-safe:active:scale-[0.985]",
         success:
           "bg-success text-success-foreground shadow-control motion-safe:hover:-translate-y-px motion-safe:hover:bg-success/[0.92] motion-safe:hover:shadow-raised motion-safe:active:translate-y-0 motion-safe:active:scale-[0.985]",
         outline:
-          "border border-input bg-card/80 text-foreground shadow-control backdrop-blur-sm motion-safe:hover:-translate-y-px motion-safe:hover:border-primary/25 motion-safe:hover:bg-accent motion-safe:hover:text-accent-foreground motion-safe:hover:shadow-card motion-safe:active:translate-y-0 motion-safe:active:scale-[0.985]",
+          "border border-input bg-card/55 text-foreground shadow-control backdrop-blur-sm motion-safe:hover:-translate-y-px motion-safe:hover:border-foreground/30 motion-safe:hover:bg-card motion-safe:hover:shadow-card motion-safe:active:translate-y-0 motion-safe:active:scale-[0.985]",
         secondary:
           "bg-secondary text-secondary-foreground motion-safe:hover:-translate-y-px motion-safe:hover:bg-secondary/[0.78] motion-safe:active:translate-y-0 motion-safe:active:scale-[0.985]",
         quiet:
-          "bg-primary/[0.09] text-primary motion-safe:hover:bg-primary/[0.14] motion-safe:active:scale-[0.985]",
+          "bg-primary/[0.08] text-primary motion-safe:hover:bg-primary/[0.14] motion-safe:active:scale-[0.985]",
         ghost:
           "text-foreground motion-safe:hover:bg-accent motion-safe:hover:text-accent-foreground motion-safe:active:scale-[0.985]",
         board:

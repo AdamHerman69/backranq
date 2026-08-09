@@ -368,21 +368,21 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
     }, [emit, state]);
 
     return (
-        <section className="relative overflow-hidden border-b">
+        <section className="relative overflow-hidden border-b border-foreground/10">
             <div
-                className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-zinc-200/75 via-transparent to-transparent dark:from-zinc-800/50"
+                className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_12%_4%,hsl(var(--accent)/0.2),transparent_28rem)]"
                 aria-hidden="true"
             />
-            <div className="mx-auto grid max-w-7xl gap-x-14 gap-y-4 px-2 pb-7 pt-4 sm:gap-y-6 sm:px-6 sm:py-12 lg:grid-cols-[minmax(320px,0.78fr)_minmax(0,1.22fr)] lg:grid-rows-[auto_1fr] lg:items-start lg:py-16">
-                <div className="px-1 lg:col-start-1 lg:row-start-1 lg:px-0">
-                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+            <div className="app-container grid gap-x-16 gap-y-5 pb-10 pt-7 sm:gap-y-7 sm:py-14 lg:grid-cols-[minmax(320px,0.72fr)_minmax(0,1.28fr)] lg:grid-rows-[auto_1fr] lg:items-start lg:py-20">
+                <div className="lg:col-start-1 lg:row-start-1">
+                    <p className="editorial-label">
                         Personal chess practice
                     </p>
-                    <h1 className="mt-3 text-balance text-3xl font-bold tracking-[-0.035em] sm:text-5xl lg:mt-4 lg:text-6xl">
+                    <h1 className="display-title mt-3 text-balance text-[2.65rem] sm:text-6xl lg:mt-5 lg:text-[4.8rem]">
                         Stop solving random puzzles. Practice your decisions.
                     </h1>
-                    <p className="mt-2 text-pretty text-sm leading-5 text-muted-foreground sm:hidden">
-                        Try the board now. Add a public username below to make the next position yours.
+                    <p className="mt-3 max-w-md text-pretty text-sm leading-5 text-muted-foreground sm:hidden">
+                        Make a move now. Then turn one of your public games into the next position.
                     </p>
                     <p className="mt-5 hidden max-w-xl text-pretty text-lg leading-8 text-muted-foreground sm:block">
                         Enter a public Chess.com or Lichess username. Backranq finds a
@@ -391,7 +391,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                     </p>
                 </div>
 
-                <div className="min-w-0 rounded-[1.4rem] border border-border/70 bg-background/90 p-1 shadow-2xl shadow-black/[0.07] backdrop-blur sm:p-5 lg:col-start-2 lg:row-span-2 lg:row-start-1">
+                <div className="min-w-0 border-y border-foreground/15 bg-card/40 py-3 sm:rounded-xl sm:border sm:p-5 sm:shadow-raised lg:col-start-2 lg:row-span-2 lg:row-start-1">
                     <PublicPuzzlePlayer
                         key={state.activePuzzle.id}
                         puzzle={state.activePuzzle}
@@ -438,7 +438,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                     />
                 </div>
 
-                <div className="px-1 lg:col-start-1 lg:row-start-2 lg:px-0">
+                <div className="lg:col-start-1 lg:row-start-2">
                     <form className="space-y-3" onSubmit={submitIdentity}>
                         <div className="grid gap-2 sm:grid-cols-[150px_minmax(0,1fr)]">
                             <label className="sr-only" htmlFor="landing-provider">
@@ -502,7 +502,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                         </p>
                     </form>
 
-                    <div className="mt-4 min-h-[122px]" aria-label="Personal position status">
+                    <div className="mt-4" aria-label="Personal position status">
                         {statusSlot}
                     </div>
 

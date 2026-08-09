@@ -126,26 +126,26 @@ export function PublicPuzzlePlayer({
 
     return (
         <section aria-label="Interactive chess puzzle" className="space-y-3 sm:space-y-4">
-            <div className="flex flex-wrap items-start justify-between gap-2 sm:gap-3">
-                <div className="min-w-0">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            <div className="flex items-start justify-between gap-2 sm:gap-3">
+                <div className="min-w-0 flex-1">
+                    <p className="editorial-label">
                         {puzzle.context.kind === 'PERSONAL'
                             ? 'Your game'
                             : puzzle.context.kind === 'MASTER'
                               ? 'This week’s master position'
                               : 'Instant warm-up'}
                     </p>
-                    <h2 className="mt-1 text-balance text-xl font-semibold tracking-tight">
+                    <h2 className="mt-1.5 text-balance text-lg font-semibold tracking-[-0.025em] sm:text-xl">
                         {puzzle.context.headline}
                     </h2>
                     {puzzle.context.teaser ? (
-                        <p className="mt-1 text-sm text-muted-foreground">
+                        <p className="mt-1 line-clamp-1 text-sm text-muted-foreground sm:line-clamp-none">
                             {puzzle.context.teaser}
                         </p>
                     ) : null}
                     {puzzle.context.kind === 'MASTER' &&
                     puzzle.context.attributionLabel ? (
-                        <p className="mt-2 text-xs text-muted-foreground">
+                        <p className="mt-2 hidden text-xs text-muted-foreground sm:block">
                             {puzzle.context.attributionLabel} · public game · no
                             affiliation or endorsement implied
                         </p>
@@ -153,13 +153,14 @@ export function PublicPuzzlePlayer({
                 </div>
                 <Button
                     type="button"
-                    size="sm"
+                    size="icon"
                     variant="outline"
+                    className="shrink-0 sm:w-auto sm:px-3"
                     onClick={() => setFlipped((value) => !value)}
                     aria-label="Flip board"
                 >
                     <FlipHorizontal2 aria-hidden="true" />
-                    Flip
+                    <span className="hidden sm:inline">Flip</span>
                 </Button>
             </div>
 
@@ -173,8 +174,7 @@ export function PublicPuzzlePlayer({
                 <div
                     className={cn(
                         'min-w-0',
-                        compactLayout &&
-                            'mx-auto w-full max-w-[348px] sm:max-w-none'
+                        compactLayout && 'mx-auto w-full sm:max-w-none'
                     )}
                 >
                     <PuzzleBoard
@@ -246,7 +246,7 @@ export function PublicPuzzlePlayer({
                             </p>
                             {session.canMove ? (
                                 <details className="rounded-lg border px-3 py-2 text-sm">
-                                    <summary className="cursor-pointer select-none font-medium">
+                                    <summary className="flex min-h-11 cursor-pointer select-none items-center font-medium">
                                         Enter a move with the keyboard
                                     </summary>
                                     <div className="mt-3 flex flex-col gap-2 sm:flex-row">

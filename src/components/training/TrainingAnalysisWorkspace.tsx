@@ -57,6 +57,7 @@ import {
 import type { StockfishClient } from '@/lib/analysis/stockfishClient';
 import { moveToUci, parseUci, uciLineToSan } from '@/lib/chess/utils';
 import { useStockfishLiveMultiPvAnalysis } from '@/lib/hooks/useStockfishLiveMultiPvAnalysis';
+import { useReliableBoardTouch } from '@/lib/hooks/useReliableBoardTouch';
 import {
     loadTrainingAnalysisDraft,
     saveTrainingAnalysisDraft,
@@ -490,13 +491,15 @@ export function TrainingAnalysisWorkspace({
         }
         if (selectedSquare) {
             styles[selectedSquare] = {
-                backgroundColor: 'rgba(59,130,246,0.32)',
+                backgroundColor: 'hsl(var(--board-selected) / 0.72)',
+                boxShadow:
+                    'inset 0 0 0 3px hsl(var(--foreground) / 0.3)',
             };
         }
         for (const square of legalTargets) {
             styles[square] = {
                 background:
-                    'radial-gradient(circle, rgba(59,130,246,0.52) 0 18%, transparent 20%)',
+                    'radial-gradient(circle, hsl(var(--foreground) / 0.38) 0 16%, transparent 18%)',
             };
         }
         return styles;
@@ -714,6 +717,33 @@ export function TrainingAnalysisWorkspace({
         [active, cursorFen, draftReady]
     );
 
+    const handleAnalysisSquareTap = useCallback(
+        (target: Square) => {
+            if (!active || !draftReady) return;
+            if (selectedSquare && legalTargets.has(target)) {
+                playOrChoosePromotion(selectedSquare, target);
+                return;
+            }
+            if (selectedSquare === target) {
+                setSelectedSquare(null);
+                return;
+            }
+            selectSquare(target);
+        },
+        [
+            active,
+            draftReady,
+            legalTargets,
+            playOrChoosePromotion,
+            selectSquare,
+            selectedSquare,
+        ]
+    );
+    const reliableAnalysisTouch = useReliableBoardTouch({
+        enabled: active && draftReady,
+        onTap: handleAnalysisSquareTap,
+    });
+
     const evaluationText = formatEngineScoreForWhite(
         selectedLine?.score ?? null,
         engineFen
@@ -805,12 +835,16 @@ export function TrainingAnalysisWorkspace({
             <div className="grid gap-4 lg:grid-cols-[minmax(0,560px)_minmax(300px,1fr)]">
                 <div className="min-w-0">
                     <div
-                        className="rounded-xl border p-1 shadow-sm transition-colors duration-200 motion-reduce:transition-none sm:p-2"
+                        className="touch-none rounded-xl border p-1 shadow-sm transition-colors duration-200 motion-reduce:transition-none sm:p-2"
                         role="group"
                         aria-label="Interactive analysis board"
                         aria-busy={!draftReady}
                         data-analysis-position-context={positionContext}
+                        data-analysis-selected-square={
+                            selectedSquare ?? undefined
+                        }
                         style={trainingAnalysisFrameStyle(positionContext)}
+                        {...reliableAnalysisTouch}
                     >
                         <AnalysisPositionContextBar
                             context={positionContext}
@@ -824,11 +858,20 @@ export function TrainingAnalysisWorkspace({
                         <Chessboard
                             options={{
                                 position: cursorFen,
+                                lightSquareStyle: {
+                                    backgroundColor:
+                                        'hsl(var(--board-light))',
+                                },
+                                darkSquareStyle: {
+                                    backgroundColor:
+                                        'hsl(var(--board-dark))',
+                                },
                                 boardOrientation:
                                     (resolvedSeed.sideToMove === 'w') !== flipped
                                         ? 'white'
                                         : 'black',
                                 allowDragging: active && draftReady,
+                                dragActivationDistance: 12,
                                 allowDrawingArrows: false,
                                 arrows:
                                     activePanel === 'engine' ? arrows : [],
@@ -847,28 +890,12 @@ export function TrainingAnalysisWorkspace({
                                         return false;
                                     }
                                 },
-                                onSquareClick: ({ piece, square }) => {
-                                    if (!square || !draftReady) return;
-                                    const target = square as Square;
-                                    if (
-                                        selectedSquare &&
-                                        legalTargets.has(target)
-                                    ) {
-                                        playOrChoosePromotion(
-                                            selectedSquare,
-                                            target
+                                onSquareClick: ({ square }) => {
+                                    if (square) {
+                                        handleAnalysisSquareTap(
+                                            square as Square
                                         );
-                                        return;
                                     }
-                                    if (selectedSquare === target) {
-                                        setSelectedSquare(null);
-                                        return;
-                                    }
-                                    if (!piece) {
-                                        setSelectedSquare(null);
-                                        return;
-                                    }
-                                    selectSquare(target);
                                 },
                                 onPieceDrop: ({
                                     sourceSquare,

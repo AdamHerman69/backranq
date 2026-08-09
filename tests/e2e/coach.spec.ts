@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { COACH_OFFLINE_ACCESS_STORAGE_KEY } from '@/lib/coach/offlineAccess';
 import { COACH_OFFLINE_OWNER_STORAGE_KEY } from '@/lib/coach/offlineOwner';
 
-import { clickMove } from './support/board';
+import { clickMove, square } from './support/board';
 
 async function installDeterministicCoachEngine(page: Page) {
     await page.addInitScript(() => {
@@ -342,6 +342,72 @@ test.describe('offline coach game', () => {
             .click();
         await expect(page.locator('[data-coach-phase="player"]')).toBeVisible();
     }
+
+    test('mobile coach board treats ordinary finger jitter as an intentional tap', async ({
+        page,
+    }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await startCoach(page);
+
+        const sourceBox = await square(page, 'g1').boundingBox();
+        expect(sourceBox).not.toBeNull();
+        const x = sourceBox!.x + sourceBox!.width / 2;
+        const y = sourceBox!.y + sourceBox!.height / 2;
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send('Input.dispatchTouchEvent', {
+            type: 'touchStart',
+            touchPoints: [
+                { x, y, radiusX: 1, radiusY: 1, force: 1 },
+            ],
+        });
+        await cdp.send('Input.dispatchTouchEvent', {
+            type: 'touchMove',
+            touchPoints: [
+                {
+                    x: x + 2,
+                    y: y + 1,
+                    radiusX: 1,
+                    radiusY: 1,
+                    force: 1,
+                },
+            ],
+        });
+        await cdp.send('Input.dispatchTouchEvent', {
+            type: 'touchEnd',
+            touchPoints: [],
+        });
+
+        const board = page.getByRole('group', {
+            name: 'Coach game board',
+        });
+        await expect(board).toHaveAttribute(
+            'data-coach-selected-square',
+            'g1'
+        );
+        const targetBox = await square(page, 'f3').boundingBox();
+        expect(targetBox).not.toBeNull();
+        const targetX = targetBox!.x + targetBox!.width / 2;
+        const targetY = targetBox!.y + targetBox!.height / 2;
+        await cdp.send('Input.dispatchTouchEvent', {
+            type: 'touchStart',
+            touchPoints: [
+                {
+                    x: targetX,
+                    y: targetY,
+                    radiusX: 1,
+                    radiusY: 1,
+                    force: 1,
+                },
+            ],
+        });
+        await cdp.send('Input.dispatchTouchEvent', {
+            type: 'touchEnd',
+            touchPoints: [],
+        });
+        await expect(page.locator('[data-coach-move-ply="0"]')).toHaveText(
+            'Nf3'
+        );
+    });
 
     test('pauses before the bot replies and reuses the Practice analysis workspace', async ({
         page,
