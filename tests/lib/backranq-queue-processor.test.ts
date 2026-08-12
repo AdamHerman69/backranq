@@ -16,6 +16,8 @@ const processNotificationDeliveryMock = vi.fn();
 const runNotificationMaintenanceMock = vi.fn();
 const processPracticeDueNotificationPageMock = vi.fn();
 const processPracticeDueSweepPageMock = vi.fn();
+const flushAnalysisOutboxMock = vi.fn();
+const processAnalysisBatchPageMock = vi.fn();
 
 class StaleAnalysisDeliveryError extends Error {}
 
@@ -34,6 +36,12 @@ async function importProcessor() {
     }));
     vi.doMock('@/lib/queues/backranq', () => ({
         publishBackranqQueueMessage: publishMock,
+    }));
+    vi.doMock('@/lib/services/analysisOutbox', () => ({
+        flushAnalysisOutbox: flushAnalysisOutboxMock,
+    }));
+    vi.doMock('@/lib/services/analysisBatches', () => ({
+        processAnalysisBatchPage: processAnalysisBatchPageMock,
     }));
     vi.doMock('@/lib/services/autoAnalysisBacklog', () => ({
         dispatchAutoAnalysisPolicySweep:
@@ -89,6 +97,14 @@ describe('Backranq analysis queue processor', () => {
             published: [],
         });
         dispatchPendingNotificationDeliveriesMock.mockResolvedValue([]);
+        flushAnalysisOutboxMock.mockResolvedValue({
+            claimed: 0,
+            published: 0,
+            pending: 0,
+            failed: 0,
+            ambiguous: 0,
+            items: [],
+        });
     });
 
     it('self-drains a 25-job single-user batch one completion at a time', async () => {
@@ -138,6 +154,36 @@ describe('Backranq analysis queue processor', () => {
         expect(seenDeliveryTokens.size).toBe(25);
     });
 
+    it('plans a durable batch page before staging job dispatch', async () => {
+        const processor = await importProcessor();
+        processAnalysisBatchPageMock.mockResolvedValue({
+            batchId: 'batch-1',
+            claimed: 2,
+            queued: 2,
+            attached: 0,
+            skipped: 0,
+            failed: 0,
+            remaining: 0,
+            continuationOutboxId: null,
+        });
+        dispatchQueuedAnalysisJobsMock.mockResolvedValue({
+            claimedJobIds: ['job-1'],
+        });
+
+        const result = await processor.processBackranqQueueMessage({
+            type: 'analysis-batch',
+            batchId: 'batch-1',
+        });
+
+        expect(processAnalysisBatchPageMock).toHaveBeenCalledWith('batch-1');
+        expect(dispatchQueuedAnalysisJobsMock).toHaveBeenCalledOnce();
+        expect(flushAnalysisOutboxMock).toHaveBeenCalledOnce();
+        expect(result).toMatchObject({
+            batch: { batchId: 'batch-1', queued: 2 },
+            dispatch: { claimedJobIds: ['job-1'] },
+        });
+    });
+
     it('routes Weekly Master work through the durable pipeline worker', async () => {
         const processor = await importProcessor();
         processWeeklyMasterRunMock.mockResolvedValue({
@@ -184,7 +230,7 @@ describe('Backranq analysis queue processor', () => {
         });
     });
 
-    it('schedules a delayed durable wakeup for a retry', async () => {
+    it('leaves a retry in durable DB state for maintenance and flushes ready work', async () => {
         const processor = await importProcessor();
         const retryAt = new Date(Date.now() + 120_000);
         analyzeGameJobMock.mockResolvedValue({
@@ -205,13 +251,7 @@ describe('Backranq analysis queue processor', () => {
             dispatchToken: 'delivery-1',
         });
 
-        expect(publishMock).toHaveBeenCalledWith(
-            expect.objectContaining({ type: 'dispatch-analysis' }),
-            expect.objectContaining({
-                idempotencyKey: `analysis-dispatch:retry:job-1:${retryAt.toISOString()}`,
-                delaySeconds: expect.any(Number),
-            })
-        );
+        expect(flushAnalysisOutboxMock).toHaveBeenCalledOnce();
     });
 
     it('checks for an idempotent auto-analysis continuation after each delivery', async () => {
@@ -248,7 +288,7 @@ describe('Backranq analysis queue processor', () => {
         });
     });
 
-    it('schedules a durable wakeup at lease expiry after a hard-crash redelivery', async () => {
+    it('leaves a stale hard-crash delivery for autonomous lease recovery', async () => {
         const processor = await importProcessor();
         const lockedUntil = new Date(Date.now() + 300_000);
         analyzeGameJobMock.mockRejectedValue(
@@ -273,16 +313,10 @@ describe('Backranq analysis queue processor', () => {
                 retryAt: lockedUntil,
             },
         });
-        expect(publishMock).toHaveBeenCalledWith(
-            expect.objectContaining({ type: 'dispatch-analysis' }),
-            expect.objectContaining({
-                idempotencyKey: `analysis-dispatch:retry:job-1:${lockedUntil.toISOString()}`,
-                delaySeconds: expect.any(Number),
-            })
-        );
+        expect(flushAnalysisOutboxMock).toHaveBeenCalledOnce();
     });
 
-    it('chains a recovered lease wakeup through its scheduled retry backoff', async () => {
+    it('stages and flushes recovered work on a legacy dispatch wakeup', async () => {
         const processor = await importProcessor();
         const retryAt = new Date(Date.now() + 60_000);
         dispatchQueuedAnalysisJobsMock.mockResolvedValue({
@@ -299,13 +333,7 @@ describe('Backranq analysis queue processor', () => {
             requestedAt: new Date().toISOString(),
         });
 
-        expect(publishMock).toHaveBeenCalledWith(
-            expect.objectContaining({ type: 'dispatch-analysis' }),
-            expect.objectContaining({
-                idempotencyKey: `analysis-dispatch:retry:job-1:${retryAt.toISOString()}`,
-                delaySeconds: expect.any(Number),
-            })
-        );
+        expect(flushAnalysisOutboxMock).toHaveBeenCalledOnce();
     });
 
     it('processes a durable per-user auto-analysis reconciliation wakeup', async () => {

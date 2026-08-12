@@ -12,6 +12,10 @@
     {
       "path": "/api/cron/weekly-master",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/analysis-maintenance",
+      "schedule": "* * * * *"
     }
   ],
   "functions": {

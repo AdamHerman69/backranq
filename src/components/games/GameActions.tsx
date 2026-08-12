@@ -29,8 +29,11 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import type { ManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
-import { registerServerAnalysisEnqueue } from '@/lib/games/serverAnalysisTracking';
-import type { EnqueueServerAnalysisJobsResult } from '@/lib/services/gameSync';
+import {
+    acceptedServerAnalysisCount,
+    queueServerAnalysisBatch,
+    useHasConfirmingServerAnalysisRequest,
+} from '@/lib/analysis/serverAnalysisCoordinator';
 import {
     analysisDefaultsToExtractOptions,
     defaultPreferences,
@@ -64,6 +67,8 @@ export function GameActions({
     const [deleteReviewOpen, setDeleteReviewOpen] = useState(false);
     const engineRef = useRef<StockfishClient | null>(null);
     const actionLabel = hasAnalysis ? 'Re-analyze' : 'Analyze';
+    const hasConfirmingServerRequest =
+        useHasConfirmingServerAnalysisRequest(ownerId);
 
     const canAnalyze = useMemo(
         () => resolveGameAnalysisProvenance(normalizedGame) !== null,
@@ -198,32 +203,23 @@ export function GameActions({
             force ? 'Queueing server re-analysis…' : 'Queueing server analysis…'
         );
         try {
-            const res = await fetch('/api/analysis/jobs', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ gameIds: [dbGameId], force }),
+            const result = await queueServerAnalysisBatch({
+                ownerId,
+                gameIds: [dbGameId],
+                force,
             });
-            const json = (await res.json().catch(() => ({}))) as
-                Partial<EnqueueServerAnalysisJobsResult> & {
-                error?: string;
-            };
-            if (!res.ok) throw new Error(json.error ?? 'Failed to queue analysis');
-
-            if ((json.queued ?? 0) > 0) {
-                registerServerAnalysisEnqueue({
-                    ownerId,
-                    result: {
-                        queued: json.queued ?? 0,
-                        skipped: json.skipped ?? 0,
-                        jobs: json.jobs,
-                        errors: json.errors,
-                    },
-                });
+            if (result.state === 'confirming') {
+                toast.message(
+                    'The server is still confirming this request. Backranq will keep checking it in the background.',
+                    { id }
+                );
+                setServerReviewOpen(false);
+            } else if (acceptedServerAnalysisCount(result.batch) > 0) {
                 toast.success('Server analysis queued', { id });
                 setServerReviewOpen(false);
-            } else if ((json.errors?.length ?? 0) > 0) {
-                toast.warning(json.errors?.[0]?.error ?? 'Server analysis was not queued', { id });
-            } else if ((json.skipped ?? 0) > 0) {
+            } else if (result.batch.failed > 0) {
+                toast.warning('Server analysis could not be queued', { id });
+            } else if (result.batch.skipped > 0) {
                 toast.message('Server analysis was already queued or complete', { id });
                 setServerReviewOpen(false);
             } else {
@@ -327,7 +323,10 @@ export function GameActions({
                         <DropdownMenuContent align="end" className="w-60">
                             <DropdownMenuLabel>Game actions</DropdownMenuLabel>
                             <DropdownMenuItem
-                                disabled={busy}
+                                disabled={
+                                    busy ||
+                                    (hasAnalysis && hasConfirmingServerRequest)
+                                }
                                 onSelect={() => setBrowserReviewOpen(true)}
                             >
                                 <BrainCircuit className="mr-2" aria-hidden="true" />
@@ -435,7 +434,10 @@ export function GameActions({
                 confirmLabel={`Queue server ${hasAnalysis ? 're-analysis' : 'analysis'}`}
                 onConfirm={queueServerAnalysis}
                 busy={busy}
-                confirmDisabled={serverAnalysisCapacity.reservableGames < 1}
+                allowCloseWhileBusy
+                confirmDisabled={
+                    !canAnalyze || (hasAnalysis && hasConfirmingServerRequest)
+                }
             >
                 <dl className="grid gap-3 rounded-md border bg-muted/30 p-4 text-sm sm:grid-cols-2">
                     <div>

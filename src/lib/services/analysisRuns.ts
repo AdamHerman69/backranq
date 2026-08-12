@@ -176,6 +176,9 @@ export async function completeAnalysisRunWithoutGameWrite(args: {
         if (run.count !== 1) {
             throw new Error('Analysis run is not current or running');
         }
+        await tx.analysisRunCheckpoint.deleteMany({
+            where: { runId: args.runId },
+        });
         return { completedAt };
     });
 }

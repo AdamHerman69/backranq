@@ -118,6 +118,34 @@ describe('analysis worker batch runner', () => {
         expect(result.claimMisses).toEqual(['job-3']);
     });
 
+    it('reports a persisted checkpoint continuation as a successful handoff', async () => {
+        claimNextAnalysisJobsMock.mockResolvedValue({
+            claimedJobs: [{ id: 'job-1', lockedAt, dispatchedCount: 1 }],
+            claimedJobIds: ['job-1'],
+            claimMisses: [],
+        });
+        analyzeGameJobMock.mockReset();
+        analyzeGameJobMock.mockResolvedValue({
+            jobId: 'job-1',
+            gameId: 'game-1',
+            status: 'CONTINUATION_SCHEDULED',
+            trainingMoments: 0,
+            retryAt: new Date(),
+        });
+        const worker = await importWorker();
+
+        const result = await worker.runAnalysisWorkerBatch();
+
+        expect(result.processed).toEqual([
+            {
+                jobId: 'job-1',
+                ok: true,
+                gameId: 'game-1',
+                trainingMoments: 0,
+            },
+        ]);
+    });
+
     it('releases unprocessed claimed jobs when fail-fast is requested', async () => {
         claimNextAnalysisJobsMock.mockReset();
         analyzeGameJobMock.mockReset();

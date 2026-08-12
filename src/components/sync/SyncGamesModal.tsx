@@ -8,7 +8,6 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import type { NormalizedGame, TimeClass } from '@/lib/types/game';
 import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
 import {
-    enqueueServerAnalysisJobs,
     fetchHistoricalGames,
     getSyncStatus,
     saveHistoricalGamesToLibrary,
@@ -23,13 +22,13 @@ import { parseExternalId } from '@/lib/api/games';
 import { MultiSelect, type MultiSelectOption } from '@/components/ui/multi-select';
 import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import {
-    createServerAnalysisBatch,
     clearLastAnalysisCompletion,
-    mergeServerAnalysisBatches,
     publishLibraryChanged,
-    readServerAnalysisBatch,
-    writeServerAnalysisBatch,
 } from '@/lib/analysis/analysisCompletion';
+import {
+    acceptedServerAnalysisCount,
+    queueServerAnalysisBatch,
+} from '@/lib/analysis/serverAnalysisCoordinator';
 import {
     advanceOwnerEpoch,
     captureOwnerRun,
@@ -249,7 +248,10 @@ export function SyncGamesModal({
     const operationCanCancel =
         operationPhase === 'fetching' ||
         operationPhase === 'preparing-save';
-    const closeProtected = busy && !operationCanCancel;
+    // Fetch/preflight can be cancelled. Import and queue submission are
+    // irreversible, but continue safely through the shared coordinator after
+    // this window is dismissed.
+    const closeProtected = false;
 
     function close() {
         if (closeProtected) return;
@@ -480,40 +482,28 @@ export function SyncGamesModal({
                 if (dbIds.length > 0 && queueServerAnalysisAfter) {
                     try {
                         if (!runIsCurrent(run)) return;
-                        const queued = await enqueueServerAnalysisJobs({ gameIds: dbIds });
+                        const queued = await queueServerAnalysisBatch({
+                            ownerId: run.ownerId,
+                            gameIds: dbIds,
+                        });
                         if (!runIsCurrent(run)) return;
-                        summary.serverQueued = queued.queued;
-                        summary.serverSkipped =
-                            queued.skipped + (queued.errors?.length ?? 0);
-                        if (queued.queued > 0) {
-                            const incomingBatch = createServerAnalysisBatch({
-                                    ownerId: run.ownerId,
-                                    queued: queued.queued,
-                                    jobIds: (queued.jobs ?? [])
-                                        .filter(
-                                            (job) =>
-                                                job.acceptedInBatch === true
-                                        )
-                                        .map((job) => job.id),
-                                    failedAtStart:
-                                        currentStatus?.analysisJobs?.failed ?? 0,
-                                    trainingMomentsAtStart: null,
-                                    pendingAtStart: null,
-                                });
-                            const batch = mergeServerAnalysisBatches(
-                                readServerAnalysisBatch(run.ownerId),
-                                incomingBatch
-                            );
-                            if (!runIsCurrent(run)) return;
-                            writeServerAnalysisBatch(run.ownerId, batch);
-                        }
-                        if (summary.serverSkipped > 0) {
-                            toast.warning(
-                                `Queued ${queued.queued} games; ${summary.serverSkipped} could not be queued.`
+                        if (queued.state === 'confirming') {
+                            toast.message(
+                                'Games were imported. The server is still confirming analysis and Backranq will keep checking in the background.'
                             );
                         } else {
+                            summary.serverQueued =
+                                acceptedServerAnalysisCount(queued.batch);
+                            summary.serverSkipped =
+                                queued.batch.skipped + queued.batch.failed;
+                        }
+                        if (queued.state === 'confirmed' && summary.serverSkipped > 0) {
+                            toast.warning(
+                                `Accepted ${summary.serverQueued} games; ${summary.serverSkipped} could not be queued.`
+                            );
+                        } else if (queued.state === 'confirmed') {
                             toast.message(
-                                `Queued ${queued.queued} game${queued.queued === 1 ? '' : 's'} for server analysis.`
+                                `Accepted ${summary.serverQueued} game${summary.serverQueued === 1 ? '' : 's'} for server analysis.`
                             );
                         }
                     } catch (error) {
@@ -637,48 +627,9 @@ export function SyncGamesModal({
             return;
         }
         setServerReviewOpen(false);
-        setBusy(true);
-        const controller = beginAbortableOperation('preparing-save');
-        try {
-            const latestStatus = await getSyncStatus({
-                signal: controller.signal,
-            });
-            if (!runIsCurrent(run)) return;
-            if (latestStatus.ownerId !== run.ownerId) {
-                throw new Error(
-                    'The server returned credit capacity for a different account.'
-                );
-            }
-            setStatus(latestStatus);
-            setStatusOwnerId(run.ownerId);
-            const capacity = latestStatus.billing;
-            if (!capacity || selectedCount > capacity.reservableGames) {
-                toast.error(
-                    capacity?.limitingReason ??
-                        'Server credit capacity could not be verified.'
-                );
-                return;
-            }
-            finishAbortableOperation(controller);
-            await saveStep(run);
-            if (!runIsCurrent(run)) return;
-        } catch (error) {
-            if (
-                controller.signal.aborted ||
-                (error instanceof Error && error.name === 'AbortError')
-            ) {
-                return;
-            }
-            if (!runIsCurrent(run)) return;
-            toast.error(
-                error instanceof Error
-                    ? error.message
-                    : 'Could not verify server credit capacity'
-            );
-        } finally {
-            finishAbortableOperation(controller);
-            if (runIsCurrent(run)) setBusy(false);
-        }
+        // The batch planner owns the authoritative capacity decision. The
+        // status shown in the review is only an informational snapshot.
+        await saveStep(run);
     }
 
     function retryFailedProviders() {
@@ -1408,10 +1359,8 @@ export function SyncGamesModal({
             confirmLabel={`Import and queue ${selectedCount}`}
             onConfirm={confirmServerImport}
             busy={busy}
-            confirmDisabled={
-                !currentStatus?.billing ||
-                selectedCount > currentStatus.billing.reservableGames
-            }
+            allowCloseWhileBusy
+            confirmDisabled={selectedCount < 1}
         >
             <div
                 style={{

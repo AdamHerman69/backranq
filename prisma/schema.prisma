@@ -219,6 +219,38 @@ enum AnalysisQuality {
   THOROUGH
 }
 
+enum AnalysisBatchStatus {
+  PENDING
+  PLANNING
+  QUEUED
+  PARTIAL
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AnalysisBatchItemStatus {
+  PENDING
+  PLANNING
+  QUEUED
+  ATTACHED
+  SKIPPED
+  FAILED
+  CANCELLED
+}
+
+enum AnalysisOutboxKind {
+  ANALYSIS_BATCH_PLAN
+  ANALYSIS_JOB
+}
+
+enum AnalysisOutboxStatus {
+  PENDING
+  LEASED
+  PUBLISHED
+  FAILED
+}
+
 enum AdminRole {
   EDITOR
   ADMIN
@@ -427,6 +459,7 @@ model User {
   syncJobs                    SyncJob[]
   analysisJobs                AnalysisJob[]
   analysisRuns                AnalysisRun[]
+  analysisBatches             AnalysisBatch[]
   creditLedgerEntries         CreditLedgerEntry[]
   billingAccount              BillingAccount?
   planGrants                  PlanGrant[]                  @relation("PlanGrantRecipient")
@@ -787,6 +820,7 @@ model AnalyzedGame {
   trainingMoments     TrainingMoment[]
   analysisJobs        AnalysisJob[]
   analysisRuns        AnalysisRun[]       @relation("GameAnalysisRuns")
+  analysisBatchItems  AnalysisBatchItem[]
   currentAnalysisRun  AnalysisRun?        @relation("CurrentAnalysisRun", fields: [currentAnalysisRunId], references: [id], onDelete: SetNull)
   creditLedgerEntries CreditLedgerEntry[]
 
@@ -894,6 +928,8 @@ model AnalysisJob {
   game                AnalyzedGame        @relation(fields: [gameId, userId], references: [id, userId], onDelete: Cascade)
   analysisRun         AnalysisRun         @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
   creditLedgerEntries CreditLedgerEntry[]
+  batchItems          AnalysisBatchItem[]
+  outboxEntries       AnalysisOutbox[]
 
   @@unique([gameId])
   @@index([userId, status])
@@ -948,6 +984,8 @@ model AnalysisRun {
   trainingMomentObservations TrainingMomentObservation[]
   analysisJobs               AnalysisJob[]
   creditLedgerEntries        CreditLedgerEntry[]
+  batchItems                 AnalysisBatchItem[]
+  checkpoint                 AnalysisRunCheckpoint?
 
   @@unique([id, gameId, userId])
   @@index([userId, status])
@@ -955,6 +993,116 @@ model AnalysisRun {
   @@index([executionMode, status])
   @@index([configHash])
   @@index([inputPgnHash])
+}
+
+model AnalysisBatch {
+  id              String              @id @default(uuid()) @db.Uuid
+  userId          String              @db.Uuid
+  requestId       String              @db.Uuid
+  status          AnalysisBatchStatus @default(PENDING)
+  payloadHash     String
+  force           Boolean             @default(false)
+  queuedReason    String
+  configSnapshot  Json
+  configHash      String
+  analysisQuality AnalysisQuality
+  creditCost      Int
+  totalItems      Int
+  pendingItems    Int
+  queuedItems     Int                 @default(0)
+  attachedItems   Int                 @default(0)
+  skippedItems    Int                 @default(0)
+  failedItems     Int                 @default(0)
+  cancelledItems  Int                 @default(0)
+  completedAt     DateTime?
+  lastError       String?             @db.Text
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  user   User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items  AnalysisBatchItem[]
+  outbox AnalysisOutbox[]
+
+  @@unique([userId, requestId])
+  @@unique([id, userId])
+  @@index([userId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model AnalysisBatchItem {
+  id            String                  @id @default(uuid()) @db.Uuid
+  batchId       String                  @db.Uuid
+  userId        String                  @db.Uuid
+  gameId        String                  @db.Uuid
+  analysisJobId String?                 @db.Uuid
+  analysisRunId String?                 @db.Uuid
+  status        AnalysisBatchItemStatus @default(PENDING)
+  planningToken String?                 @db.Uuid
+  planningUntil DateTime?
+  lastError     String?                 @db.Text
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  batch       AnalysisBatch @relation(fields: [batchId, userId], references: [id, userId], onDelete: Cascade)
+  game        AnalyzedGame  @relation(fields: [gameId, userId], references: [id, userId], onDelete: Cascade)
+  analysisJob AnalysisJob?   @relation(fields: [analysisJobId], references: [id], onDelete: SetNull)
+  analysisRun AnalysisRun?   @relation(fields: [analysisRunId], references: [id], onDelete: SetNull)
+
+  @@unique([batchId, gameId])
+  @@index([batchId, status, createdAt])
+  @@index([planningUntil])
+  @@index([analysisJobId])
+  @@index([analysisRunId])
+  @@index([gameId, userId])
+}
+
+model AnalysisOutbox {
+  id             String               @id @default(uuid()) @db.Uuid
+  batchId        String?              @db.Uuid
+  analysisJobId  String?              @db.Uuid
+  kind           AnalysisOutboxKind
+  status         AnalysisOutboxStatus @default(PENDING)
+  idempotencyKey String               @unique
+  payload        Json
+  availableAt    DateTime             @default(now())
+  attempts       Int                  @default(0)
+  leaseToken     String?              @db.Uuid
+  lockedUntil    DateTime?
+  messageId      String?
+  lastError      String?              @db.Text
+  publishedAt    DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  batch       AnalysisBatch? @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  analysisJob AnalysisJob?   @relation(fields: [analysisJobId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt])
+  @@index([lockedUntil])
+  @@index([batchId])
+  @@index([analysisJobId])
+}
+
+model AnalysisRunCheckpoint {
+  runId     String   @id @db.Uuid
+  stage     String   @default("EXTRACTING")
+  cursor    Json     @default(dbgenerated("'{}'::jsonb"))
+  state     Json     @default(dbgenerated("'{}'::jsonb"))
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  run AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+}
+
+model AnalysisMaintenanceLease {
+  key         String   @id
+  leaseToken  String   @db.Uuid
+  lockedUntil DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([lockedUntil])
 }
 
 model CreditLedgerEntry {

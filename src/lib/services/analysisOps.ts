@@ -92,7 +92,7 @@ export async function reconcileAnalysisCreditSettlements(args: {
     limit?: number;
 } = {}): Promise<AnalysisCreditReconciliationResult> {
     const limit = Math.max(1, Math.min(500, Math.trunc(args.limit ?? 100)));
-    const jobs = await prisma.analysisJob.findMany({
+    const runs = await prisma.analysisRun.findMany({
         where: {
             status: { in: ['SUCCEEDED', 'FAILED', 'CANCELLED'] },
             OR: [
@@ -102,19 +102,15 @@ export async function reconcileAnalysisCreditSettlements(args: {
                     },
                 },
                 {
-                    analysisRun: {
-                        is: {
-                            creditLedgerEntries: {
-                                some: { type: 'RESERVED' },
-                                none: {
-                                    type: {
-                                        in: [
-                                            'CONSUMED',
-                                            'RELEASED',
-                                            'EXPIRED',
-                                        ],
-                                    },
-                                },
+                    creditLedgerEntries: {
+                        some: { type: 'RESERVED' },
+                        none: {
+                            type: {
+                                in: [
+                                    'CONSUMED',
+                                    'RELEASED',
+                                    'EXPIRED',
+                                ],
                             },
                         },
                     },
@@ -127,36 +123,40 @@ export async function reconcileAnalysisCreditSettlements(args: {
             id: true,
             userId: true,
             gameId: true,
-            analysisRunId: true,
             status: true,
-            analysisRun: { select: { creditCost: true } },
+            creditCost: true,
             lastError: true,
+            creditLedgerEntries: {
+                where: { type: 'RESERVED' },
+                orderBy: { createdAt: 'asc' },
+                take: 1,
+                select: { analysisJobId: true },
+            },
         },
     });
 
     const result: AnalysisCreditReconciliationResult = {
-        scanned: jobs.length,
+        scanned: runs.length,
         consumed: 0,
         released: 0,
         errors: [],
     };
 
-    for (const job of jobs) {
+    for (const run of runs) {
+        const analysisJobId = run.creditLedgerEntries[0]?.analysisJobId;
         const action =
-            job.lastError?.startsWith('CREDIT_SETTLEMENT_PENDING:release:')
+            run.lastError?.startsWith('CREDIT_SETTLEMENT_PENDING:release:')
                 ? 'release'
-                : job.status === 'SUCCEEDED'
+                : run.status === 'SUCCEEDED'
                   ? 'consume'
                   : 'release';
         const ref = {
-            userId: job.userId,
-            gameId: job.gameId,
-            analysisJobId: job.id,
-            analysisRunId: job.analysisRunId,
-            credits: job.analysisRun.creditCost,
-            idempotencyKey: job.analysisRunId
-                ? `analysis-run:${job.analysisRunId}:${action}`
-                : `analysis-job:${job.id}:${action}`,
+            userId: run.userId,
+            gameId: run.gameId,
+            analysisJobId,
+            analysisRunId: run.id,
+            credits: run.creditCost,
+            idempotencyKey: `analysis-run:${run.id}:${action}`,
             reason: 'analysis-credit-reconciliation',
         };
         try {
@@ -164,51 +164,57 @@ export async function reconcileAnalysisCreditSettlements(args: {
                 await consumeServerAnalysisCredits(ref);
                 result.consumed += 1;
             } else {
-                if (!job.analysisRunId) {
-                    throw new Error('Analysis run is required for credit release');
-                }
                 await releaseServerAnalysisCreditsAndMarkRunReleased({
                     ...ref,
-                    analysisRunId: job.analysisRunId,
+                    analysisRunId: run.id,
                 });
                 result.released += 1;
             }
             await prisma.$transaction(async (tx) => {
                 await tx.analysisJob.updateMany({
                     where: {
-                        id: job.id,
-                        status: job.status,
+                        analysisRunId: run.id,
                         lastError: {
                             startsWith: 'CREDIT_SETTLEMENT_PENDING:',
                         },
                     },
                     data: { lastError: null },
                 });
-                if (job.analysisRunId && action === 'consume') {
-                    await tx.analysisRun.updateMany({
-                        where: {
-                            id: job.analysisRunId,
-                            status: job.status,
-                            lastError: {
-                                startsWith: 'CREDIT_SETTLEMENT_PENDING:',
-                            },
+                await tx.analysisRun.updateMany({
+                    where: {
+                        id: run.id,
+                        status: run.status,
+                    },
+                    data: {
+                        consumedCredits: action === 'consume' ? ref.credits : 0,
+                    },
+                });
+                await tx.analysisRun.updateMany({
+                    where: {
+                        id: run.id,
+                        status: run.status,
+                        lastError: {
+                            startsWith: 'CREDIT_SETTLEMENT_PENDING:',
                         },
-                        data: {
-                            consumedCredits: ref.credits,
-                            lastError: null,
-                        },
-                    });
-                }
+                    },
+                    data: {
+                        lastError: null,
+                    },
+                });
             });
         } catch (error) {
             const message =
                 error instanceof Error ? error.message : String(error);
-            result.errors.push({ jobId: job.id, action, error: message });
+            result.errors.push({
+                jobId: analysisJobId ?? `run:${run.id}`,
+                action,
+                error: message,
+            });
             console.error(
                 JSON.stringify({
                     event: 'analysis_credit_reconciliation_failed',
-                    jobId: job.id,
-                    analysisRunId: job.analysisRunId,
+                    jobId: analysisJobId ?? null,
+                    analysisRunId: run.id,
                     action,
                     error: message,
                 })

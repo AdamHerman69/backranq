@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+    ClientRequestTimeoutError,
     fetchHistoricalGames,
+    getSyncStatus,
     saveHistoricalGamesToLibrary,
     unresolvedHistoryPageGameCount,
 } from '@/lib/services/gameSync';
@@ -206,5 +208,29 @@ describe('historical game sync client', () => {
             })
         ).rejects.toThrow('temporary failure');
         expect(fetch).toHaveBeenCalledTimes(2);
+    });
+});
+
+describe('bounded status requests', () => {
+    it('releases callers when sync status hangs', async () => {
+        vi.useFakeTimers();
+        vi.stubGlobal(
+            'fetch',
+            vi.fn((_input, init) =>
+                new Promise<Response>((_resolve, reject) => {
+                    init?.signal?.addEventListener('abort', () =>
+                        reject(new DOMException('Aborted', 'AbortError'))
+                    );
+                })
+            )
+        );
+
+        const status = getSyncStatus({ timeoutMs: 5 });
+        const rejection = expect(status).rejects.toBeInstanceOf(
+            ClientRequestTimeoutError
+        );
+        await vi.advanceTimersByTimeAsync(5);
+        await rejection;
+        vi.useRealTimers();
     });
 });

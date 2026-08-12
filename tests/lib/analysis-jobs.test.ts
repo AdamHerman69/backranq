@@ -314,6 +314,77 @@ describe('analysis job enqueue service', () => {
         expect(prismaMock.analysisJob.update).not.toHaveBeenCalled();
     });
 
+    it('does not attach a batch to an active run with different config', async () => {
+        const service = await importJobs();
+        prismaMock.analysisJob.findUnique.mockResolvedValue({
+            id: 'job-1',
+            userId: 'user-1',
+            gameId: 'game-1',
+            analysisRunId: 'run-1',
+            status: 'RUNNING',
+            analysisRun: { configHash: 'different-hash' },
+        });
+
+        await expect(
+            service.enqueueAnalysisJob({
+                userId: 'user-1',
+                gameId: 'game-1',
+                config: service.serverAnalysisConfigFromPreferences({})
+                    .config,
+                batchItem: {
+                    id: 'item-1',
+                    batchId: 'batch-1',
+                    planningToken:
+                        '11111111-1111-4111-8111-111111111111',
+                },
+            })
+        ).rejects.toThrow(/different server analysis configuration/i);
+        expect(prismaMock.analysisBatchItem.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('links a planned batch item in the same transaction as reservation', async () => {
+        const service = await importJobs();
+        const config = service.serverAnalysisConfigFromPreferences({}).config;
+        prismaMock.analysisJob.findUnique.mockResolvedValue(null);
+        prismaMock.analysisJob.create.mockResolvedValue({
+            id: 'job-1',
+            userId: 'user-1',
+            gameId: 'game-1',
+            analysisRunId: 'run-1',
+            status: 'QUEUED',
+            queuedReason: 'manual',
+        });
+        prismaMock.analysisBatchItem.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.creditLedgerEntry.findMany.mockResolvedValue([]);
+
+        const result = await service.enqueueAnalysisJob({
+            userId: 'user-1',
+            gameId: 'game-1',
+            config,
+            batchItem: {
+                id: 'item-1',
+                batchId: 'batch-1',
+                planningToken: '11111111-1111-4111-8111-111111111111',
+            },
+        });
+
+        expect(result.batchItemStatus).toBe('QUEUED');
+        expect(prismaMock.analysisBatchItem.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'item-1',
+                batchId: 'batch-1',
+                status: 'PLANNING',
+                planningToken: '11111111-1111-4111-8111-111111111111',
+            },
+            data: expect.objectContaining({
+                status: 'QUEUED',
+                analysisJobId: 'job-1',
+                analysisRunId: 'run-1',
+                planningToken: null,
+            }),
+        });
+    });
+
     it('cancels dispatched queued auto jobs and releases each run generation once', async () => {
         const service = await importJobs();
         const leasedAt = new Date('2026-07-20T10:00:00Z');
@@ -538,6 +609,89 @@ describe('analysis job state transitions', () => {
                 status: 'SUCCEEDED',
                 lockedAt: null,
                 lockedUntil: null,
+            }),
+        });
+    });
+
+    it('persists a checkpoint and yields without consuming a retry attempt', async () => {
+        const service = await importJobs();
+        const lockedAt = new Date('2026-07-05T12:00:00Z');
+        const queued = {
+            id: 'job-1',
+            status: 'QUEUED',
+            attempts: 0,
+            scheduledFor: new Date(),
+        };
+        prismaMock.analysisRunCheckpoint.findUnique.mockResolvedValue(null);
+        prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.analysisRun.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.analysisRunCheckpoint.create.mockResolvedValue({
+            runId: 'run-1',
+            stage: 'EXTRACTING',
+            cursor: {},
+            state: {},
+            version: 1,
+        });
+        prismaMock.analysisJob.findUnique.mockResolvedValue(queued);
+
+        const result = await service.yieldAnalysisJobWithCheckpoint({
+            jobId: 'job-1',
+            analysisRunId: 'run-1',
+            fence: { lockedAt, dispatchedCount: 1 },
+            expectedVersion: 0,
+            checkpoint: {
+                version: 1,
+                gameId: 'game-1',
+                sourceGameId: 'game-1',
+                sourcePgnHash: 'pgn-hash',
+                configHash: 'config-hash',
+                nextPly: 12,
+                expectedPlies: 60,
+                moments: [],
+                gameAnalysis: [],
+                whiteMoveAccuracies: [],
+                blackMoveAccuracies: [],
+                extractionErrors: [],
+                decisionReceipts: [],
+                lookaheadOwnedUserDecisionPlies: [],
+            },
+        });
+
+        expect(result).toBe(queued);
+        expect(prismaMock.analysisJob.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'job-1',
+                status: 'RUNNING',
+                lockedAt,
+                dispatchedCount: 1,
+                attempts: { gte: 1 },
+            },
+            data: expect.objectContaining({
+                status: 'QUEUED',
+                attempts: { decrement: 1 },
+                lockedAt: null,
+                lockedUntil: null,
+                lastError: null,
+            }),
+        });
+        expect(prismaMock.analysisRunCheckpoint.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                runId: 'run-1',
+                stage: 'EXTRACTING',
+                cursor: { nextPly: 12, expectedPlies: 60 },
+                version: 1,
+            }),
+        });
+        expect(prismaMock.analysisRun.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'run-1',
+                analysisJobs: { some: { id: 'job-1' } },
+                status: 'RUNNING',
+            },
+            data: expect.objectContaining({
+                status: 'QUEUED',
+                completedAt: null,
+                lastError: null,
             }),
         });
     });

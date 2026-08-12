@@ -47,6 +47,7 @@ import {
     releaseServerAnalysisCreditsInTransaction,
     SERVER_ANALYSIS_BILLING_POLICY_V2,
 } from '@/lib/services/billingAccounts';
+import type { TrainingMomentExtractionCheckpoint } from '@/lib/analysis/extractTrainingMoments';
 
 export const SERVER_ANALYSIS_EXECUTION_MODE =
     'SERVER_QUEUE' satisfies AnalysisExecutionMode;
@@ -91,6 +92,15 @@ export class AnalysisJobOwnershipError extends Error {
     }
 }
 
+export class AnalysisJobConfigurationConflictError extends Error {
+    constructor() {
+        super(
+            'A different server analysis configuration is already active for this game'
+        );
+        this.name = 'AnalysisJobConfigurationConflictError';
+    }
+}
+
 export type ServerAnalysisConfig = {
     snapshot: Prisma.InputJsonObject;
     hash: string;
@@ -117,6 +127,13 @@ export type EnqueueAnalysisJobResult = {
     job: AnalysisJob;
     created: boolean;
     queued: boolean;
+    batchItemStatus?: 'QUEUED' | 'ATTACHED' | 'SKIPPED';
+};
+
+type EnqueueAnalysisBatchItem = {
+    id: string;
+    batchId: string;
+    planningToken: string;
 };
 
 export type EnqueueAnalysisJobsForGamesResult = {
@@ -133,6 +150,7 @@ export async function enqueueAnalysisJob(args: {
     weight?: number;
     force?: boolean;
     config?: ServerAnalysisConfig;
+    batchItem?: EnqueueAnalysisBatchItem;
 }): Promise<EnqueueAnalysisJobResult> {
     const config =
         args.config ?? serverAnalysisConfigFromPreferences(undefined).config;
@@ -176,10 +194,14 @@ async function enqueueAnalysisJobOnce(args: {
     weight?: number;
     force?: boolean;
     config: ServerAnalysisConfig;
+    batchItem?: EnqueueAnalysisBatchItem;
 }): Promise<EnqueueAnalysisJobResult> {
     return prisma.$transaction(async (tx) => {
         const existing = await tx.analysisJob.findUnique({
             where: { gameId: args.gameId },
+            include: {
+                analysisRun: { select: { configHash: true } },
+            },
         });
 
         if (existing) {
@@ -187,10 +209,35 @@ async function enqueueAnalysisJobOnce(args: {
                 throw new AnalysisJobOwnershipError(args.gameId);
             }
             if (existing.status === 'SUCCEEDED' && !args.force) {
-                return { job: existing, created: false, queued: false };
+                await linkAnalysisBatchItem(tx, args.batchItem, {
+                    job: existing,
+                    status: 'SKIPPED',
+                });
+                return {
+                    job: existing,
+                    created: false,
+                    queued: false,
+                    ...(args.batchItem
+                        ? { batchItemStatus: 'SKIPPED' as const }
+                        : {}),
+                };
             }
             if (existing.status === 'QUEUED' || existing.status === 'RUNNING') {
-                return { job: existing, created: false, queued: false };
+                if (existing.analysisRun.configHash !== args.config.hash) {
+                    throw new AnalysisJobConfigurationConflictError();
+                }
+                await linkAnalysisBatchItem(tx, args.batchItem, {
+                    job: existing,
+                    status: 'ATTACHED',
+                });
+                return {
+                    job: existing,
+                    created: false,
+                    queued: false,
+                    ...(args.batchItem
+                        ? { batchItemStatus: 'ATTACHED' as const }
+                        : {}),
+                };
             }
             const run = await createAnalysisRunProvenanceInTransaction({
                 tx,
@@ -221,7 +268,18 @@ async function enqueueAnalysisJobOnce(args: {
                 job,
                 run,
             });
-            return { job, created: false, queued: true };
+            await linkAnalysisBatchItem(tx, args.batchItem, {
+                job,
+                status: 'QUEUED',
+            });
+            return {
+                job,
+                created: false,
+                queued: true,
+                ...(args.batchItem
+                    ? { batchItemStatus: 'QUEUED' as const }
+                    : {}),
+            };
         }
 
         const run = await createAnalysisRunProvenanceInTransaction({
@@ -251,8 +309,49 @@ async function enqueueAnalysisJobOnce(args: {
             job,
             run,
         });
-        return { job, created: true, queued: true };
+        await linkAnalysisBatchItem(tx, args.batchItem, {
+            job,
+            status: 'QUEUED',
+        });
+        return {
+            job,
+            created: true,
+            queued: true,
+            ...(args.batchItem
+                ? { batchItemStatus: 'QUEUED' as const }
+                : {}),
+        };
     }, serializableTransactionOptions());
+}
+
+async function linkAnalysisBatchItem(
+    tx: Prisma.TransactionClient,
+    item: EnqueueAnalysisBatchItem | undefined,
+    args: {
+        job: Pick<AnalysisJob, 'id' | 'analysisRunId'>;
+        status: 'QUEUED' | 'ATTACHED' | 'SKIPPED';
+    }
+) {
+    if (!item) return;
+    const linked = await tx.analysisBatchItem.updateMany({
+        where: {
+            id: item.id,
+            batchId: item.batchId,
+            status: 'PLANNING',
+            planningToken: item.planningToken,
+        },
+        data: {
+            status: args.status,
+            analysisJobId: args.job.id,
+            analysisRunId: args.job.analysisRunId,
+            planningToken: null,
+            planningUntil: null,
+            lastError: null,
+        },
+    });
+    if (linked.count !== 1) {
+        throw new Error('Analysis batch item planning lease was lost');
+    }
 }
 
 export async function enqueueAnalysisJobsForGames(args: {
@@ -456,6 +555,96 @@ export async function markAnalysisJobRetryable(
     });
     if (updated.count !== 1) return null;
     return prisma.analysisJob.findUnique({ where: { id: jobId } });
+}
+
+export async function yieldAnalysisJobWithCheckpoint(args: {
+    jobId: string;
+    analysisRunId: string;
+    fence: AnalysisDispatchFence;
+    expectedVersion: number;
+    checkpoint: TrainingMomentExtractionCheckpoint;
+}) {
+    const scheduledFor = new Date();
+    const state = JSON.parse(
+        JSON.stringify(args.checkpoint)
+    ) as Prisma.InputJsonValue;
+    const cursor = {
+        nextPly: args.checkpoint.nextPly,
+        expectedPlies: args.checkpoint.expectedPlies,
+    } satisfies Prisma.InputJsonObject;
+
+    const yielded = await prisma.$transaction(async (tx) => {
+        const existing = await tx.analysisRunCheckpoint.findUnique({
+            where: { runId: args.analysisRunId },
+            select: { version: true },
+        });
+        if ((existing?.version ?? 0) !== args.expectedVersion) return false;
+
+        const updated = await tx.analysisJob.updateMany({
+            where: {
+                ...runningFenceWhere(args.jobId, args.fence),
+                attempts: { gte: 1 },
+            },
+            data: {
+                status: 'QUEUED',
+                attempts: { decrement: 1 },
+                ...analysisJobClearedLeaseData(),
+                scheduledFor,
+                completedAt: null,
+                lastError: null,
+            },
+        });
+        if (updated.count !== 1) return false;
+
+        const runUpdated = await tx.analysisRun.updateMany({
+            where: {
+                id: args.analysisRunId,
+                analysisJobs: { some: { id: args.jobId } },
+                status: 'RUNNING',
+            },
+            data: {
+                status: 'QUEUED',
+                completedAt: null,
+                durationMs: null,
+                lastError: null,
+            },
+        });
+        if (runUpdated.count !== 1) {
+            throw new Error('Analysis run could not yield with its job');
+        }
+
+        if (existing) {
+            const checkpointUpdated =
+                await tx.analysisRunCheckpoint.updateMany({
+                    where: {
+                        runId: args.analysisRunId,
+                        version: args.expectedVersion,
+                    },
+                    data: {
+                        stage: 'EXTRACTING',
+                        cursor,
+                        state,
+                        version: { increment: 1 },
+                    },
+                });
+            if (checkpointUpdated.count !== 1) {
+                throw new Error('Analysis checkpoint generation changed');
+            }
+        } else {
+            await tx.analysisRunCheckpoint.create({
+                data: {
+                    runId: args.analysisRunId,
+                    stage: 'EXTRACTING',
+                    cursor,
+                    state,
+                    version: 1,
+                },
+            });
+        }
+        return true;
+    });
+    if (!yielded) return null;
+    return prisma.analysisJob.findUnique({ where: { id: args.jobId } });
 }
 
 export async function getAnalysisJobCounts(userId: string) {

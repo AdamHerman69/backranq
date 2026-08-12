@@ -1,5 +1,8 @@
 import type { GameAnalysis } from '@/lib/analysis/classification';
-import { extractTrainingMomentsFromGames } from '@/lib/analysis/extractTrainingMoments';
+import {
+    extractTrainingMomentsFromGames,
+    type TrainingMomentExtractionCheckpoint,
+} from '@/lib/analysis/extractTrainingMoments';
 import { dbGameToNormalized } from '@/lib/api/games';
 import { ServerStockfishClient } from '@/lib/analysis/serverStockfishClient';
 import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
@@ -10,6 +13,7 @@ import {
     serverAnalysisConfigFromSnapshot,
     transitionAnalysisRunForJob,
     StaleAnalysisDeliveryError,
+    yieldAnalysisJobWithCheckpoint,
 } from '@/lib/services/analysisJobs';
 import { parseAnalysisDispatchToken } from '@/lib/services/analysisDispatchFence';
 import {
@@ -27,12 +31,19 @@ import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 export type AnalyzeGameJobResult = {
     jobId: string;
     gameId: string;
-    status: 'SUCCEEDED' | 'RETRY_SCHEDULED' | 'FAILED';
+    status:
+        | 'SUCCEEDED'
+        | 'CONTINUATION_SCHEDULED'
+        | 'RETRY_SCHEDULED'
+        | 'FAILED';
     trainingMoments: number;
     error?: string;
     retryAt?: Date;
     settlementPending?: boolean;
 };
+
+/** Leave enough headroom for persistence, settlement and Queue acknowledgement. */
+export const SERVER_ANALYSIS_SLICE_BUDGET_MS = 180_000;
 
 export async function analyzeGameJob(
     jobId: string,
@@ -94,6 +105,15 @@ export async function analyzeGameJob(
         }
         engine = new ServerStockfishClient();
 
+        const persistedCheckpoint =
+            await prisma.analysisRunCheckpoint.findUnique({
+                where: { runId: run.id },
+                select: { version: true, state: true },
+            });
+        const checkpoint = persistedCheckpoint
+            ? parseExtractionCheckpoint(persistedCheckpoint.state)
+            : undefined;
+
         if (job.game.analyzedAt && running.queuedReason !== 'manual-reanalysis') {
             await completeAnalysisRunWithoutGameWrite({
                 runId: run.id,
@@ -147,6 +167,7 @@ export async function analyzeGameJob(
         if (!run.configHash) {
             throw new Error('Analysis run config hash is required');
         }
+        const sliceStartedAt = Date.now();
         const out = await extractTrainingMomentsFromGames({
             games: [normalized],
             selectedGameIds: new Set([normalized.id]),
@@ -157,7 +178,29 @@ export async function analyzeGameJob(
             },
             analysisConfigHash: run.configHash,
             options,
+            checkpoint,
+            shouldYield: () =>
+                Date.now() - sliceStartedAt >=
+                SERVER_ANALYSIS_SLICE_BUDGET_MS,
         });
+
+        if (out.checkpoint) {
+            const yielded = await yieldAnalysisJobWithCheckpoint({
+                jobId: job.id,
+                analysisRunId: run.id,
+                fence,
+                expectedVersion: persistedCheckpoint?.version ?? 0,
+                checkpoint: out.checkpoint,
+            });
+            if (!yielded) throw new StaleAnalysisDeliveryError(job.id);
+            return {
+                jobId: job.id,
+                gameId: job.gameId,
+                status: 'CONTINUATION_SCHEDULED',
+                trainingMoments: out.checkpoint.moments.length,
+                retryAt: yielded.scheduledFor ?? new Date(),
+            };
+        }
 
         const analysis = out.analysis?.get(normalized.id) as
             | GameAnalysis
@@ -187,6 +230,14 @@ export async function analyzeGameJob(
             },
         });
         completionCommitted = true;
+        await prisma.analysisRunCheckpoint
+            .deleteMany({ where: { runId: run.id } })
+            .catch((error) => {
+                console.error(
+                    '[server analysis] completed checkpoint cleanup failed',
+                    error
+                );
+            });
 
         try {
             await consumeAnalysisJobReservation({
@@ -257,6 +308,11 @@ export async function analyzeGameJob(
         }
 
         let settlementPending = false;
+        if (analysisRunId) {
+            await prisma.analysisRunCheckpoint
+                .deleteMany({ where: { runId: analysisRunId } })
+                .catch(() => undefined);
+        }
         if (running) {
             try {
                 await releaseAnalysisJobReservation({
@@ -301,6 +357,37 @@ export async function analyzeGameJob(
 async function rejectStaleAnalysisDelivery(jobId: string): Promise<never> {
     await recordStaleAnalysisDelivery();
     throw new StaleAnalysisDeliveryError(jobId);
+}
+
+function parseExtractionCheckpoint(
+    value: unknown
+): TrainingMomentExtractionCheckpoint {
+    if (!isRecord(value)) {
+        throw new Error('Analysis checkpoint is not an object');
+    }
+    if (
+        value.version !== 1 ||
+        typeof value.gameId !== 'string' ||
+        typeof value.sourceGameId !== 'string' ||
+        typeof value.sourcePgnHash !== 'string' ||
+        typeof value.configHash !== 'string' ||
+        typeof value.nextPly !== 'number' ||
+        typeof value.expectedPlies !== 'number' ||
+        !Array.isArray(value.moments) ||
+        !Array.isArray(value.gameAnalysis) ||
+        !Array.isArray(value.whiteMoveAccuracies) ||
+        !Array.isArray(value.blackMoveAccuracies) ||
+        !Array.isArray(value.extractionErrors) ||
+        !Array.isArray(value.decisionReceipts) ||
+        !Array.isArray(value.lookaheadOwnedUserDecisionPlies)
+    ) {
+        throw new Error('Analysis checkpoint has an invalid shape');
+    }
+    return value as unknown as TrainingMomentExtractionCheckpoint;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function consumeAnalysisJobReservation(args: {

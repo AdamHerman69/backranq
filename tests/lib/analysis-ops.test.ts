@@ -181,22 +181,24 @@ describe('analysis ops snapshot', () => {
 
     it('reconciles terminal jobs with outstanding reservations', async () => {
         const ops = await importOps();
-        prismaMock.analysisJob.findMany.mockResolvedValue([
+        prismaMock.analysisRun.findMany.mockResolvedValue([
             {
-                id: 'job-success',
+                id: 'run-1',
                 userId: 'user-1',
                 gameId: 'game-1',
-                analysisRunId: 'run-1',
                 status: 'SUCCEEDED',
-                analysisRun: { creditCost: 10 },
+                creditCost: 10,
+                lastError: null,
+                creditLedgerEntries: [{ analysisJobId: 'job-success' }],
             },
             {
-                id: 'job-failed',
+                id: 'run-2',
                 userId: 'user-1',
                 gameId: 'game-2',
-                analysisRunId: 'run-2',
                 status: 'FAILED',
-                analysisRun: { creditCost: 10 },
+                creditCost: 10,
+                lastError: null,
+                creditLedgerEntries: [{ analysisJobId: 'job-failed' }],
             },
         ]);
         consumeCreditsMock.mockResolvedValue({ created: true });
@@ -226,17 +228,19 @@ describe('analysis ops snapshot', () => {
         );
     });
 
-    it('scopes a failed reanalysis reservation to its current run instead of prior job consumption', async () => {
+    it('settles a prior run after its reusable job moved to a new generation', async () => {
         const ops = await importOps();
-        prismaMock.analysisJob.findMany.mockResolvedValue([
+        prismaMock.analysisRun.findMany.mockResolvedValue([
             {
-                id: 'recycled-job',
+                id: 'run-1',
                 userId: 'user-1',
                 gameId: 'game-1',
-                analysisRunId: 'run-2',
                 status: 'FAILED',
-                analysisRun: { creditCost: 10 },
+                creditCost: 10,
                 lastError: null,
+                creditLedgerEntries: [
+                    { analysisJobId: 'recycled-job' },
+                ],
             },
         ]);
         releaseCreditsMock.mockResolvedValue({ created: true });
@@ -251,24 +255,20 @@ describe('analysis ops snapshot', () => {
             released: 1,
             errors: [],
         });
-        expect(prismaMock.analysisJob.findMany).toHaveBeenCalledWith(
+        expect(prismaMock.analysisRun.findMany).toHaveBeenCalledWith(
             expect.objectContaining({
                 where: expect.objectContaining({
                     OR: expect.arrayContaining([
                         {
-                            analysisRun: {
-                                is: {
-                                    creditLedgerEntries: {
-                                        some: { type: 'RESERVED' },
-                                        none: {
-                                            type: {
-                                                in: [
-                                                    'CONSUMED',
-                                                    'RELEASED',
-                                                    'EXPIRED',
-                                                ],
-                                            },
-                                        },
+                            creditLedgerEntries: {
+                                some: { type: 'RESERVED' },
+                                none: {
+                                    type: {
+                                        in: [
+                                            'CONSUMED',
+                                            'RELEASED',
+                                            'EXPIRED',
+                                        ],
                                     },
                                 },
                             },
@@ -280,8 +280,8 @@ describe('analysis ops snapshot', () => {
         expect(releaseCreditsMock).toHaveBeenCalledWith(
             expect.objectContaining({
                 analysisJobId: 'recycled-job',
-                analysisRunId: 'run-2',
-                idempotencyKey: 'analysis-run:run-2:release',
+                analysisRunId: 'run-1',
+                idempotencyKey: 'analysis-run:run-1:release',
             })
         );
     });
