@@ -1045,10 +1045,11 @@ model AnalysisBatchItem {
 
   batch       AnalysisBatch @relation(fields: [batchId, userId], references: [id, userId], onDelete: Cascade)
   game        AnalyzedGame  @relation(fields: [gameId, userId], references: [id, userId], onDelete: Cascade)
-  analysisJob AnalysisJob?   @relation(fields: [analysisJobId], references: [id], onDelete: SetNull)
-  analysisRun AnalysisRun?   @relation(fields: [analysisRunId], references: [id], onDelete: SetNull)
+  analysisJob AnalysisJob?  @relation(fields: [analysisJobId], references: [id], onDelete: SetNull)
+  analysisRun AnalysisRun?  @relation(fields: [analysisRunId], references: [id], onDelete: SetNull)
 
   @@unique([batchId, gameId])
+  @@index([batchId, userId])
   @@index([batchId, status, createdAt])
   @@index([planningUntil])
   @@index([analysisJobId])
