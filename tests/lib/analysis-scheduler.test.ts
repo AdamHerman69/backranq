@@ -7,6 +7,8 @@ import {
 const publishMock = vi.fn();
 const releaseCreditsMock = vi.fn();
 const releaseCreditsInTransactionMock = vi.fn();
+const stageOutboxMock = vi.fn();
+const recordAnalysisFailedMock = vi.fn();
 
 type SchedulerModule = typeof import('@/lib/services/analysisScheduler');
 type AnalysisDispatchCandidate =
@@ -17,6 +19,12 @@ async function importScheduler(): Promise<SchedulerModule> {
     mockPrismaModule();
     vi.doMock('@/lib/queues/backranq', () => ({
         publishBackranqQueueMessage: publishMock,
+    }));
+    vi.doMock('@/lib/services/analysisOutbox', () => ({
+        stageAnalysisOutboxMessage: stageOutboxMock,
+    }));
+    vi.doMock('@/lib/notifications/service', () => ({
+        recordAnalysisFailed: recordAnalysisFailedMock,
     }));
     vi.doMock('@/lib/services/billingAccounts', () => ({
         releaseServerAnalysisCreditsAndMarkRunReleased: releaseCreditsMock,
@@ -60,6 +68,7 @@ function job(
 describe('analysis scheduler planner', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        recordAnalysisFailedMock.mockResolvedValue({ id: 'notification-1' });
     });
 
     it('orders each user queue by manual work, age, then priority', async () => {
@@ -225,6 +234,7 @@ describe('analysis scheduler dispatch', () => {
         prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 1 });
         prismaMock.analysisRun.updateMany.mockResolvedValue({ count: 1 });
         releaseCreditsMock.mockResolvedValue({ created: true });
+        recordAnalysisFailedMock.mockResolvedValue({ id: 'notification-1' });
 
         const result = await recoverExpiredAnalysisJobs({
             now,
@@ -260,6 +270,12 @@ describe('analysis scheduler dispatch', () => {
                 idempotencyKey: 'analysis-run:run-1:release',
             })
         );
+        expect(recordAnalysisFailedMock).toHaveBeenCalledWith({
+            userId: 'user-1',
+            jobId: 'job-1',
+            gameId: 'game-1',
+            error: 'Analysis job lease expired after maximum attempts',
+        });
     });
 
     it('persists a run-scoped settlement marker when exhausted-lease release fails', async () => {
@@ -380,24 +396,34 @@ describe('analysis scheduler dispatch', () => {
         );
     });
 
-    it('claims selected jobs and publishes compatible Vercel Queue messages', async () => {
+    it('atomically claims one job per user and stages fenced outbox messages', async () => {
         const { dispatchQueuedAnalysisJobs } = await importScheduler();
         const jobs = [
             job('u1-a', { userId: 'user-1', queuedReason: 'manual' }),
             job('u1-b', { userId: 'user-1', queuedReason: 'manual' }),
             job('u2-a', { userId: 'user-2', queuedReason: 'auto-sync' }),
         ];
-        prismaMock.analysisJob.findMany
-            .mockResolvedValueOnce([])
-            .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-2' }])
-            .mockResolvedValueOnce(jobs);
-        prismaMock.analysisJob.groupBy
-            .mockResolvedValueOnce([])
-            .mockResolvedValueOnce([]);
+        prismaMock.analysisJob.findMany.mockImplementation(
+            async (args: unknown) => {
+                const input = args as {
+                    where?: { status?: string; userId?: string };
+                    distinct?: string[];
+                };
+                if (input.where?.status === 'RUNNING') return [];
+                if (input.distinct) {
+                    return [{ userId: 'user-1' }, { userId: 'user-2' }];
+                }
+                if (input.where?.userId) {
+                    return jobs.filter(
+                        (item) => item.userId === input.where?.userId
+                    );
+                }
+                return [];
+            }
+        );
+        prismaMock.analysisJob.count.mockResolvedValue(0);
         prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 1 });
-        publishMock
-            .mockResolvedValueOnce({ queued: true, messageId: 'msg-1' })
-            .mockResolvedValueOnce({ queued: true, messageId: 'msg-2' });
+        stageOutboxMock.mockResolvedValue({ id: 'outbox-1' });
 
         const result = await dispatchQueuedAnalysisJobs({
             globalLimit: 10,
@@ -407,48 +433,40 @@ describe('analysis scheduler dispatch', () => {
 
         expect(result.claimedJobIds).toEqual(['u1-a', 'u2-a']);
         expect(prismaMock.analysisJob.updateMany).toHaveBeenCalledTimes(2);
-        expect(publishMock).toHaveBeenCalledWith(
-            {
-                type: 'analysis-job',
-                jobId: 'u1-a',
-                dispatchToken:
-                    'analysis-delivery-v1:u1-a:1:1767225600000',
-            },
-            {
-                idempotencyKey:
-                    'analysis:game-u1-a:u1-a:delivery:1',
-            }
+        expect(stageOutboxMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                kind: 'ANALYSIS_JOB',
+                analysisJobId: 'u1-a',
+                idempotencyKey: 'analysis:game-u1-a:u1-a:delivery:1',
+                message: {
+                    type: 'analysis-job',
+                    jobId: 'u1-a',
+                    dispatchToken:
+                        'analysis-delivery-v1:u1-a:1:1767225600000',
+                },
+            })
         );
-        expect(publishMock).toHaveBeenCalledWith(
-            {
-                type: 'analysis-job',
-                jobId: 'u2-a',
-                dispatchToken:
-                    'analysis-delivery-v1:u2-a:1:1767225600000',
-            },
-            {
-                idempotencyKey:
-                    'analysis:game-u2-a:u2-a:delivery:1',
-            }
+        expect(stageOutboxMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                kind: 'ANALYSIS_JOB',
+                analysisJobId: 'u2-a',
+                idempotencyKey: 'analysis:game-u2-a:u2-a:delivery:1',
+            })
         );
         expect(result.published).toEqual([
             {
                 jobId: 'u1-a',
                 queued: true,
-                messageId: 'msg-1',
+                messageId: null,
                 dispatchToken:
                     'analysis-delivery-v1:u1-a:1:1767225600000',
-                unavailableReason: undefined,
-                error: undefined,
             },
             {
                 jobId: 'u2-a',
                 queued: true,
-                messageId: 'msg-2',
+                messageId: null,
                 dispatchToken:
                     'analysis-delivery-v1:u2-a:1:1767225600000',
-                unavailableReason: undefined,
-                error: undefined,
             },
         ]);
     });
@@ -470,5 +488,83 @@ describe('analysis scheduler dispatch', () => {
                 dispatchedCount: 4,
             })
         ).toBe('analysis:game-1:job-1:delivery:4');
+    });
+
+    it('scans beyond the global claim limit to avoid starving ready users', async () => {
+        const { claimNextAnalysisJobs, dispatchQueuedAnalysisJobs } =
+            await importScheduler();
+        prismaMock.analysisJob.findMany.mockResolvedValue([]);
+
+        await dispatchQueuedAnalysisJobs({ globalLimit: 25, userScanLimit: 1000 });
+        expect(prismaMock.analysisJob.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                distinct: ['userId'],
+                take: 1000,
+            })
+        );
+
+        vi.clearAllMocks();
+        prismaMock.analysisJob.findMany.mockResolvedValue([]);
+        await claimNextAnalysisJobs({ globalLimit: 25, userScanLimit: 1000 });
+        expect(prismaMock.analysisJob.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                distinct: ['userId'],
+                take: 1000,
+            })
+        );
+    });
+
+    it('serializes same-user claims and lets only one dispatcher lease work', async () => {
+        const { dispatchQueuedAnalysisJobs } = await importScheduler();
+        const candidate = job('job-1', { userId: 'user-1' });
+        prismaMock.analysisJob.findMany.mockImplementation(
+            async (args: unknown) => {
+                const input = args as {
+                    distinct?: string[];
+                    where?: { status?: string };
+                };
+                if (input.where?.status === 'RUNNING') return [];
+                return input.distinct ? [{ userId: 'user-1' }] : [candidate];
+            }
+        );
+        let active = 0;
+        prismaMock.analysisJob.count.mockImplementation(async () => active);
+        prismaMock.analysisJob.updateMany.mockImplementation(async () => {
+            active += 1;
+            return { count: 1 };
+        });
+        stageOutboxMock.mockResolvedValue({ id: 'outbox-1' });
+        let previous = Promise.resolve();
+        prismaMock.$transaction.mockImplementation(async (callback: unknown) => {
+            const waitFor = previous;
+            let release!: () => void;
+            previous = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            await waitFor;
+            try {
+                return await (
+                    callback as (tx: typeof prismaMock) => Promise<unknown>
+                )(prismaMock);
+            } finally {
+                release();
+            }
+        });
+
+        const [first, second] = await Promise.all([
+            dispatchQueuedAnalysisJobs({
+                globalLimit: 1,
+                now: new Date('2026-01-01T00:00:00Z'),
+            }),
+            dispatchQueuedAnalysisJobs({
+                globalLimit: 1,
+                now: new Date('2026-01-01T00:00:00Z'),
+            }),
+        ]);
+
+        expect(first.claimedJobIds).toEqual(['job-1']);
+        expect(second.claimedJobIds).toEqual([]);
+        expect(prismaMock.$queryRaw).toHaveBeenCalledWith(expect.anything());
+        expect(stageOutboxMock).toHaveBeenCalledTimes(1);
     });
 });

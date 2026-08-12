@@ -149,10 +149,33 @@ export type TrainingMomentExtractionResult = {
     configSnapshot: Record<string, unknown>;
     configHash: string;
     /**
+     * Present only when a resumable single-game extraction deliberately yields
+     * between plies. The caller must persist the checkpoint before scheduling
+     * another worker slice.
+     */
+    checkpoint?: TrainingMomentExtractionCheckpoint;
+    /**
      * Move-by-move analysis for each game, keyed by game ID.
      * Only populated if options.returnAnalysis is true.
      */
     analysis?: Map<string, GameAnalysis>;
+};
+
+export type TrainingMomentExtractionCheckpoint = {
+    version: 1;
+    gameId: string;
+    sourceGameId: string;
+    sourcePgnHash: string;
+    configHash: string;
+    nextPly: number;
+    expectedPlies: number;
+    moments: TrainingMomentCandidate[];
+    gameAnalysis: AnalyzedMove[];
+    whiteMoveAccuracies: number[];
+    blackMoveAccuracies: number[];
+    extractionErrors: string[];
+    decisionReceipts: Array<[number, TrainingDecisionReceipt]>;
+    lookaheadOwnedUserDecisionPlies: number[];
 };
 
 export type ExtractionCompletionManifest = {
@@ -2568,6 +2591,13 @@ export async function extractTrainingMomentsFromGames(args: {
     options?: TrainingMomentExtractionOptions;
     /** Cancels browser/server engine work and prevents stale onboarding runs. */
     signal?: AbortSignal;
+    /** Previously persisted state for a resumable single-game server slice. */
+    checkpoint?: TrainingMomentExtractionCheckpoint;
+    /**
+     * Checked only between fully processed plies. Returning true yields a
+     * checkpoint without marking the extraction complete.
+     */
+    shouldYield?: () => boolean;
     /**
      * Landing-only fast path. Returns immediately after the first fully VERIFIED
      * candidate is built. Canonical full-game extraction leaves this disabled.
@@ -2592,7 +2622,9 @@ export async function extractTrainingMomentsFromGames(args: {
     const configHash =
         args.analysisConfigHash ??
         (await sha256Hex(stableCanonicalStringify(configSnapshot)));
-    const moments: TrainingMomentCandidate[] = [];
+    const moments: TrainingMomentCandidate[] = args.checkpoint
+        ? [...args.checkpoint.moments]
+        : [];
     const manifests: ExtractionCompletionManifest[] = [];
     const analysisMap = new Map<string, GameAnalysis>();
     const verificationCache = new Map<
@@ -2600,6 +2632,18 @@ export async function extractTrainingMomentsFromGames(args: {
         Promise<ContinuationVerificationResult>
     >();
     const selected = args.games.filter((g) => args.selectedGameIds.has(g.id));
+    if ((args.checkpoint || args.shouldYield) && selected.length !== 1) {
+        throw new Error(
+            'Resumable extraction requires exactly one selected game'
+        );
+    }
+    if (
+        args.checkpoint &&
+        (args.checkpoint.gameId !== selected[0]?.id ||
+            args.checkpoint.configHash !== configHash)
+    ) {
+        throw new Error('Analysis checkpoint does not match this extraction');
+    }
 
     for (let gi = 0; gi < selected.length; gi++) {
         if (args.signal?.aborted) throw new Error('Analysis aborted');
@@ -2610,6 +2654,14 @@ export async function extractTrainingMomentsFromGames(args: {
             game.id
         );
         const gameSourcePgnHash = await sourcePgnHash(game.pgn);
+        const resume = args.checkpoint;
+        if (
+            resume &&
+            (resume.sourceGameId !== canonicalSourceGameIdValue ||
+                resume.sourcePgnHash !== gameSourcePgnHash)
+        ) {
+            throw new Error('Analysis checkpoint source no longer matches');
+        }
 
         const chess = new Chess();
         try {
@@ -2654,19 +2706,77 @@ export async function extractTrainingMomentsFromGames(args: {
             replay = new Chess();
         }
 
+        const startPly = Math.max(
+            0,
+            Math.min(plyCount, Math.trunc(resume?.nextPly ?? 0))
+        );
+        for (let ply = 0; ply < startPly; ply++) {
+            const move = movesVerbose[ply];
+            if (!move) {
+                throw new Error('Analysis checkpoint replay is incomplete');
+            }
+            const played = replay.move({
+                from: move.from,
+                to: move.to,
+                promotion: move.promotion,
+            });
+            if (!played) {
+                throw new Error('Analysis checkpoint replay is invalid');
+            }
+        }
+
         // Initialize analysis for this game if requested
-        const gameAnalysis: AnalyzedMove[] = [];
-        const whiteMoveAccuracies: number[] = [];
-        const blackMoveAccuracies: number[] = [];
-        const extractionErrors: string[] = [];
+        const gameAnalysis: AnalyzedMove[] = resume
+            ? [...resume.gameAnalysis]
+            : [];
+        const whiteMoveAccuracies: number[] = resume
+            ? [...resume.whiteMoveAccuracies]
+            : [];
+        const blackMoveAccuracies: number[] = resume
+            ? [...resume.blackMoveAccuracies]
+            : [];
+        const extractionErrors: string[] = resume
+            ? [...resume.extractionErrors]
+            : [];
         const decisionReceipts = new Map<
             number,
             TrainingDecisionReceipt
-        >();
-        const lookaheadOwnedUserDecisionPlies = new Set<number>();
+        >(resume?.decisionReceipts ?? []);
+        const lookaheadOwnedUserDecisionPlies = new Set<number>(
+            resume?.lookaheadOwnedUserDecisionPlies ?? []
+        );
 
-        for (let ply = 0; ply < plyCount; ply++) {
+        for (let ply = startPly; ply < plyCount; ply++) {
             if (args.signal?.aborted) throw new Error('Analysis aborted');
+            if (ply > startPly && args.shouldYield?.()) {
+                return {
+                    moments,
+                    manifests: [],
+                    configSnapshot,
+                    configHash,
+                    checkpoint: {
+                        version: 1,
+                        gameId: game.id,
+                        sourceGameId: canonicalSourceGameIdValue,
+                        sourcePgnHash: gameSourcePgnHash,
+                        configHash,
+                        nextPly: ply,
+                        expectedPlies: plyCount,
+                        moments,
+                        gameAnalysis,
+                        whiteMoveAccuracies,
+                        blackMoveAccuracies,
+                        extractionErrors,
+                        decisionReceipts: Array.from(
+                            decisionReceipts.entries()
+                        ),
+                        lookaheadOwnedUserDecisionPlies: Array.from(
+                            lookaheadOwnedUserDecisionPlies
+                        ),
+                    },
+                    analysis: opts.returnAnalysis ? analysisMap : undefined,
+                };
+            }
             args.onProgress?.({
                 gameId: game.id,
                 gameIndex: gi,

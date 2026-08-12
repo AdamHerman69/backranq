@@ -45,7 +45,10 @@ export async function runAnalysisWorkerBatch(
             );
             processed.push({
                 jobId: job.id,
-                ok: result.status == null || result.status === 'SUCCEEDED',
+                ok:
+                    result.status == null ||
+                    result.status === 'SUCCEEDED' ||
+                    result.status === 'CONTINUATION_SCHEDULED',
                 gameId: result.gameId,
                 trainingMoments: result.trainingMoments,
                 ...(result.error ? { error: result.error } : {}),

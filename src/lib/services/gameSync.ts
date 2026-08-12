@@ -1,6 +1,6 @@
 import type { NormalizedGame, TimeClass } from '@/lib/types/game';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
-import type { AnalysisDefaults, GameAutomationRules } from '@/lib/preferences';
+import type { GameAutomationRules } from '@/lib/preferences';
 
 export type SyncProvider = 'lichess' | 'chesscom';
 
@@ -219,6 +219,8 @@ export type ServerAnalysisJob = {
     lastError?: string | null;
 };
 
+export const DEFAULT_CLIENT_REQUEST_TIMEOUT_MS = 10_000;
+
 const GAME_BULK_CHUNK_SIZE = 200;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -231,6 +233,74 @@ function errorMessageFromJson(json: unknown, fallback: string) {
         : fallback;
 }
 
+export class ClientRequestTimeoutError extends Error {
+    constructor(message = 'The server did not respond in time') {
+        super(message);
+        this.name = 'ClientRequestTimeoutError';
+    }
+}
+
+export async function fetchWithTimeout(
+    input: RequestInfo | URL,
+    init: RequestInit = {},
+    timeoutMs = DEFAULT_CLIENT_REQUEST_TIMEOUT_MS
+) {
+    const controller = new AbortController();
+    let timedOut = false;
+    const abortFromCaller = () => controller.abort(init.signal?.reason);
+    if (init.signal?.aborted) abortFromCaller();
+    else init.signal?.addEventListener('abort', abortFromCaller, { once: true });
+    const timeoutId = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, timeoutMs);
+    try {
+        return await fetch(input, { ...init, signal: controller.signal });
+    } catch (error) {
+        if (timedOut) throw new ClientRequestTimeoutError();
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+        init.signal?.removeEventListener('abort', abortFromCaller);
+    }
+}
+
+export async function fetchJsonWithTimeout(
+    input: RequestInfo | URL,
+    init: RequestInit = {},
+    timeoutMs = DEFAULT_CLIENT_REQUEST_TIMEOUT_MS
+): Promise<{ response: Response; json: unknown }> {
+    const controller = new AbortController();
+    let timedOut = false;
+    const abortFromCaller = () => controller.abort(init.signal?.reason);
+    if (init.signal?.aborted) abortFromCaller();
+    else init.signal?.addEventListener('abort', abortFromCaller, { once: true });
+    const timeoutId = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, timeoutMs);
+    try {
+        const response = await fetch(input, {
+            ...init,
+            signal: controller.signal,
+        });
+        const text = await response.text();
+        let json: unknown = {};
+        try {
+            json = text ? JSON.parse(text) : {};
+        } catch {
+            // Callers decide whether an empty/malformed body is acceptable.
+        }
+        return { response, json };
+    } catch (error) {
+        if (timedOut) throw new ClientRequestTimeoutError();
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+        init.signal?.removeEventListener('abort', abortFromCaller);
+    }
+}
+
 function chunkArray<T>(items: T[], size: number): T[][] {
     const chunks: T[][] = [];
     for (let i = 0; i < items.length; i += size) {
@@ -241,13 +311,17 @@ function chunkArray<T>(items: T[], size: number): T[][] {
 
 export async function getSyncStatus(options: {
     signal?: AbortSignal;
+    timeoutMs?: number;
 } = {}): Promise<SyncStatus> {
-    const res = await fetch('/api/sync/status', {
-        cache: 'no-store',
-        signal: options.signal,
-    });
-    const json = (await res.json().catch(() => ({}))) as unknown;
-    if (!res.ok)
+    const { response, json } = await fetchJsonWithTimeout(
+        '/api/sync/status',
+        {
+            cache: 'no-store',
+            signal: options.signal,
+        },
+        options.timeoutMs
+    );
+    if (!response.ok)
         throw new Error(errorMessageFromJson(json, 'Failed to load sync status'));
     return json as SyncStatus;
 }
@@ -429,23 +503,6 @@ export async function saveHistoricalGamesToLibrary(args: {
         }
     }
     return aggregate;
-}
-
-export async function enqueueServerAnalysisJobs(args: {
-    gameIds: string[];
-    force?: boolean;
-    analysisDefaults?: AnalysisDefaults;
-}): Promise<EnqueueServerAnalysisJobsResult> {
-    const res = await fetch('/api/analysis/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(args),
-    });
-    const json = (await res.json().catch(() => ({}))) as unknown;
-    if (!res.ok) {
-        throw new Error(errorMessageFromJson(json, 'Failed to queue analysis'));
-    }
-    return json as EnqueueServerAnalysisJobsResult;
 }
 
 export async function fetchServerAnalysisJobs(

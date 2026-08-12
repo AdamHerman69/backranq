@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { E2E_USER } from './support/fixtures';
+import { E2E_GAMES, E2E_USER } from './support/fixtures';
 
 test.describe('authenticated games library', () => {
     test('treats disabled automation as an ordinary unanalyzed state, not a credit error', async ({
@@ -427,5 +427,69 @@ test.describe('authenticated games library', () => {
             )
         ).toBeVisible();
         await deleteDialog.getByRole('button', { name: 'Cancel' }).click();
+    });
+
+    test('lets a background queue dialog close while the request is pending', async ({
+        page,
+    }) => {
+        let releaseQueue!: () => void;
+        let markQueueStarted!: () => void;
+        const queueStarted = new Promise<void>((resolve) => {
+            markQueueStarted = resolve;
+        });
+        const queueReleased = new Promise<void>((resolve) => {
+            releaseQueue = resolve;
+        });
+        await page.route('**/api/analysis/batches', async (route) => {
+            if (route.request().method() !== 'POST') {
+                await route.continue();
+                return;
+            }
+            const request = route.request().postDataJSON() as {
+                requestId: string;
+            };
+            markQueueStarted();
+            await queueReleased;
+            await route.fulfill({
+                status: 202,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    batch: {
+                        id: '00000000-0000-4000-a000-000000000001',
+                        requestId: request.requestId,
+                        status: 'QUEUED',
+                        counts: {
+                            total: 1,
+                            pending: 0,
+                            queued: 1,
+                            running: 0,
+                            succeeded: 0,
+                            failed: 0,
+                            jobFailed: 0,
+                            skipped: 0,
+                        },
+                    },
+                }),
+            });
+        });
+
+        await page.goto(`/games/${E2E_GAMES.standard}`);
+        await page.getByRole('button', { name: 'More game actions' }).click();
+        await page
+            .getByRole('menuitem', { name: 'Re-analyze in background' })
+            .click();
+        const dialog = page.getByRole('alertdialog', {
+            name: 'Re-analyze this game on the server?',
+        });
+        await dialog
+            .getByRole('button', { name: 'Queue server re-analysis' })
+            .click();
+        await queueStarted;
+
+        const closeButton = dialog.getByText('Close', { exact: true });
+        await expect(closeButton).toBeEnabled();
+        await closeButton.click();
+        await expect(dialog).toBeHidden();
+        releaseQueue();
     });
 });

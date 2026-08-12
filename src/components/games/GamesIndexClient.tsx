@@ -11,8 +11,11 @@ import { GamesSelectionDeleteDialog } from '@/components/games/GamesSelectionDel
 import { GamesSelectionReanalysisDialog } from '@/components/games/GamesSelectionReanalysisDialog';
 import { GamesSelectionToolbar } from '@/components/games/GamesSelectionToolbar';
 import type { ManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
-import { registerServerAnalysisEnqueue } from '@/lib/games/serverAnalysisTracking';
-import { enqueueServerAnalysisJobs } from '@/lib/services/gameSync';
+import {
+    acceptedServerAnalysisCount,
+    queueServerAnalysisBatch,
+    useHasConfirmingServerAnalysisRequest,
+} from '@/lib/analysis/serverAnalysisCoordinator';
 
 export function GamesIndexClient({
     ownerId,
@@ -40,6 +43,8 @@ export function GamesIndexClient({
     const [reviewAction, setReviewAction] = useState<
         'reanalyze' | 'delete' | null
     >(null);
+    const hasConfirmingServerRequest =
+        useHasConfirmingServerAnalysisRequest(ownerId);
 
     // Keep selection clamped to the current page's game ids.
     useEffect(() => {
@@ -91,33 +96,34 @@ export function GamesIndexClient({
         if (selectedIds.length === 0) return;
         setBusy(true);
         try {
-            const result = await enqueueServerAnalysisJobs({
+            const result = await queueServerAnalysisBatch({
+                ownerId,
                 gameIds: selectedIds,
                 force: true,
             });
-            if (result.queued > 0) {
-                registerServerAnalysisEnqueue({
-                    ownerId,
-                    result,
-                });
-            }
-            const failed = result.errors?.length ?? 0;
-            if (result.queued > 0 && failed > 0) {
-                toast.warning(
-                    `Queued ${result.queued}; ${failed} ${failed === 1 ? 'game was' : 'games were'} not queued.`
+            if (result.state === 'confirming') {
+                toast.message(
+                    'The server is still confirming this request. Backranq will keep checking it in the background.'
                 );
-            } else if (result.queued > 0) {
+                setReviewAction(null);
+                return;
+            }
+            const batch = result.batch;
+            const accepted = acceptedServerAnalysisCount(batch);
+            const failed = batch.failed;
+            if (accepted > 0 && failed > 0) {
+                toast.warning(
+                    `Accepted ${accepted}; ${failed} ${failed === 1 ? 'game was' : 'games were'} not queued.`
+                );
+            } else if (accepted > 0) {
                 toast.success(
-                    `Queued ${result.queued} game${result.queued === 1 ? '' : 's'} for server re-analysis.`
+                    `Accepted ${accepted} game${accepted === 1 ? '' : 's'} for server re-analysis.`
                 );
             } else if (failed > 0) {
-                toast.error(
-                    result.errors?.[0]?.error ??
-                        'The selected games could not be queued.'
-                );
+                toast.error('The selected games could not be queued.');
             } else {
                 toast.message(
-                    `${result.skipped} ${result.skipped === 1 ? 'game is' : 'games are'} already queued or running.`
+                    `${batch.skipped} ${batch.skipped === 1 ? 'game is' : 'games are'} already queued or complete.`
                 );
             }
             setReviewAction(null);
@@ -175,7 +181,7 @@ export function GamesIndexClient({
             <div className="border-y border-foreground/10 py-3 sm:py-4">
                 <GamesSelectionToolbar
                     selectedCount={selectedCount}
-                    busy={busy}
+                    busy={busy || hasConfirmingServerRequest}
                     hasGames={games.length > 0}
                     onSelectAll={selectAll}
                     onDeselectAll={deselectAll}
@@ -206,7 +212,7 @@ export function GamesIndexClient({
                         ? (id, v) => setSelected((s) => ({ ...s, [id]: v }))
                         : undefined
                 }
-                selectionDisabled={busy}
+                selectionDisabled={busy || hasConfirmingServerRequest}
             />
 
             <GamesSelectionReanalysisDialog
@@ -220,6 +226,7 @@ export function GamesIndexClient({
                 serverAnalysisCapacity={serverAnalysisCapacity}
                 onConfirm={reevaluateSelected}
                 busy={busy}
+                requestBlocked={hasConfirmingServerRequest}
             />
 
             <GamesSelectionDeleteDialog

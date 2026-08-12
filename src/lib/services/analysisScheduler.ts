@@ -1,14 +1,10 @@
-import type { AnalysisJob, Prisma } from '@prisma/client';
-import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
+import { Prisma, type AnalysisJob } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
     createAnalysisDispatchToken,
     type AnalysisDispatchFence,
 } from '@/lib/services/analysisDispatchFence';
-import {
-    releaseServerAnalysisCreditsAndMarkRunReleased,
-    releaseServerAnalysisCreditsInTransaction,
-} from '@/lib/services/billingAccounts';
+import { releaseServerAnalysisCreditsAndMarkRunReleased } from '@/lib/services/billingAccounts';
 import {
     DEFAULT_ANALYSIS_JOB_LEASE_MS,
     DEFAULT_ANALYSIS_RETRY_BACKOFF_BASE_MS,
@@ -17,6 +13,9 @@ import {
     getAnalysisRetryScheduledFor,
     getAnalysisJobLockedUntil,
 } from '@/lib/services/analysisJobLeases';
+import { stageAnalysisOutboxMessage } from '@/lib/services/analysisOutbox';
+import { recordAnalysisFailed } from '@/lib/notifications/service';
+export { cancelUnexecutableAnalysisJobs } from '@/lib/services/analysisQueueCancellation';
 
 export const DEFAULT_ANALYSIS_DISPATCH_GLOBAL_LIMIT = 25;
 export const DEFAULT_ANALYSIS_DISPATCH_PER_USER_LIMIT = 1;
@@ -107,87 +106,6 @@ export type DispatchQueuedAnalysisJobsOptions = ClaimNextAnalysisJobsOptions & {
 export type DispatchQueuedAnalysisJobsResult = ClaimNextAnalysisJobsResult & {
     published: AnalysisDispatchPublishResult[];
 };
-
-export async function cancelUnexecutableAnalysisJobs(args: {
-    userId: string;
-    jobIds: string[];
-    reason: string;
-}) {
-    const jobIds = Array.from(new Set(args.jobIds.filter(Boolean)));
-    let cancelled = 0;
-    for (const jobId of jobIds) {
-        const didCancel = await prisma.$transaction(async (tx) => {
-            const job = await tx.analysisJob.findFirst({
-                where: {
-                    id: jobId,
-                    userId: args.userId,
-                    status: 'QUEUED',
-                },
-                select: {
-                    id: true,
-                    gameId: true,
-                    analysisRunId: true,
-                    analysisRun: { select: { creditCost: true } },
-                },
-            });
-            if (!job) return false;
-
-            const now = new Date();
-            const updated = await tx.analysisJob.updateMany({
-                where: {
-                    id: job.id,
-                    userId: args.userId,
-                    status: 'QUEUED',
-                },
-                data: {
-                    status: 'CANCELLED',
-                    lockedAt: null,
-                    lockedUntil: null,
-                    scheduledFor: null,
-                    completedAt: now,
-                    lastError: args.reason.slice(0, 2_000),
-                },
-            });
-            if (updated.count !== 1) return false;
-
-            if (job.analysisRunId) {
-                await tx.analysisRun.updateMany({
-                    where: {
-                        id: job.analysisRunId,
-                        userId: args.userId,
-                        status: 'QUEUED',
-                    },
-                    data: {
-                        status: 'CANCELLED',
-                        completedAt: now,
-                        consumedCredits: 0,
-                        lastError: args.reason.slice(0, 2_000),
-                    },
-                });
-            }
-
-            await releaseServerAnalysisCreditsInTransaction({
-                tx,
-                userId: args.userId,
-                gameId: job.gameId,
-                analysisJobId: job.id,
-                analysisRunId: job.analysisRunId,
-                credits: job.analysisRun.creditCost,
-                idempotencyKey: job.analysisRunId
-                    ? `analysis-run:${job.analysisRunId}:queue-unavailable-release`
-                    : `analysis-job:${job.id}:queue-unavailable-release`,
-                reason: 'queue-unavailable',
-                metadata: {
-                    settlement: 'release',
-                    queueUnavailable: true,
-                } satisfies Prisma.InputJsonObject,
-            });
-            return true;
-        });
-        if (didCancel) cancelled += 1;
-    }
-    return { cancelled };
-}
 
 type MutableUserQueues = Map<string, AnalysisDispatchCandidate[]>;
 
@@ -323,114 +241,57 @@ export async function claimNextAnalysisJobs(
         options.userScanLimit,
         DEFAULT_ANALYSIS_DISPATCH_USER_SCAN_LIMIT
     );
-    const candidateLimit = normalizeLimit(
-        options.candidateLimit,
-        Math.max(DEFAULT_ANALYSIS_DISPATCH_SCAN_LIMIT, globalLimit * 100)
-    );
     const requestedUserIds = Array.from(
         new Set((options.userIds ?? []).filter(Boolean))
     );
-    const queuedWhere = {
-        status: 'QUEUED' as const,
-        OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
-        ...(requestedUserIds.length > 0
-            ? { userId: { in: requestedUserIds } }
-            : {}),
-    };
-
     const candidateUsers = await prisma.analysisJob.findMany({
-        where: queuedWhere,
+        where: {
+            status: 'QUEUED',
+            OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
+            AND: [
+                {
+                    OR: [
+                        { scheduledFor: null },
+                        { scheduledFor: { lte: now } },
+                    ],
+                },
+            ],
+            ...(requestedUserIds.length > 0
+                ? { userId: { in: requestedUserIds } }
+                : {}),
+        },
         distinct: ['userId'],
         orderBy: [{ createdAt: 'asc' }, { priority: 'desc' }],
         take: userScanLimit,
         select: { userId: true },
     });
-    const userIds = candidateUsers.map((user) => user.userId);
-
-    if (userIds.length === 0) {
-        const emptyPlan = planAnalysisDispatch({ jobs: [], options });
-        return {
-            ...emptyPlan,
-            claimedJobs: [],
-            claimedJobIds: [],
-            claimMisses: [],
-        };
-    }
-
-    const [jobs, runningRows, dispatchedRows] = await Promise.all([
-        prisma.analysisJob.findMany({
-            where: {
-                ...queuedWhere,
-                userId: { in: userIds },
-            },
-            orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-            take: candidateLimit,
-        }),
-        prisma.analysisJob.groupBy({
-            by: ['userId'],
-            where: {
-                userId: { in: userIds },
-                status: 'RUNNING',
-                lockedUntil: { gt: now },
-            },
-            _count: { _all: true },
-        }),
-        prisma.analysisJob.groupBy({
-            by: ['userId'],
-            where: {
-                userId: { in: userIds },
-                status: 'QUEUED',
-                lockedUntil: { gt: now },
-            },
-            _count: { _all: true },
-        }),
-    ]);
-
-    const plan = planAnalysisDispatch({
-        jobs,
-        options: {
-            ...options,
-            now,
-            runningByUser: countRowsToRecord(runningRows),
-            dispatchedByUser: countRowsToRecord(dispatchedRows),
-        },
-    });
-
     const claimedJobs: AnalysisDispatchCandidate[] = [];
     const claimMisses: string[] = [];
-    const lockedUntil = getAnalysisJobLockedUntil({
-        now,
-        leaseMs: options.leaseMs ?? DEFAULT_ANALYSIS_JOB_LEASE_MS,
-    });
-
-    for (const job of plan.selectedJobs) {
-        const result = await prisma.analysisJob.updateMany({
-            where: {
-                id: job.id,
-                status: 'QUEUED',
-                OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
-            },
-            data: {
-                lockedAt: now,
-                lockedUntil,
-                lastDispatchedAt: now,
-                dispatchedCount: { increment: 1 },
-            },
+    for (const candidate of candidateUsers) {
+        if (claimedJobs.length >= globalLimit) break;
+        const job = await claimOneAnalysisJobForUser({
+            userId: candidate.userId,
+            now,
+            leaseMs: options.leaseMs ?? DEFAULT_ANALYSIS_JOB_LEASE_MS,
+            stageOutbox: false,
         });
-        if (result.count === 1) {
-            claimedJobs.push({
-                ...job,
-                dispatchedCount: job.dispatchedCount + 1,
-                lockedAt: now,
-                lockedUntil,
-            });
-        } else {
-            claimMisses.push(job.id);
-        }
+        if (job) claimedJobs.push(job);
+        else claimMisses.push(candidate.userId);
     }
 
     return {
-        ...plan,
+        selectedJobs: claimedJobs,
+        selectedJobIds: claimedJobs.map((job) => job.id),
+        selectedByUser: Object.fromEntries(
+            claimedJobs.map((job) => [job.userId, 1])
+        ),
+        skipped: {
+            locked: 0,
+            scheduledForLater: 0,
+            retryBackoff: 0,
+            perUserLimit: claimMisses.length,
+            notQueued: 0,
+        },
         claimedJobs,
         claimedJobIds: claimedJobs.map((job) => job.id),
         claimMisses,
@@ -508,6 +369,9 @@ export async function recoverExpiredAnalysisJobs(args: {
                                 'Analysis job lease expired after maximum attempts',
                         },
                     });
+                    await tx.analysisRunCheckpoint.deleteMany({
+                        where: { runId: job.analysisRunId },
+                    });
                 }
                 return updated;
             });
@@ -548,7 +412,24 @@ export async function recoverExpiredAnalysisJobs(args: {
                             jobId: job.id,
                             analysisRunId: job.analysisRunId,
                             reason: 'analysis-max-attempts-exhausted',
-                            error: errorMessage(error),
+                            error: structuredError(error),
+                        })
+                    );
+                }
+                try {
+                    await recordAnalysisFailed({
+                        userId: job.userId,
+                        jobId: job.id,
+                        gameId: job.gameId,
+                        error: 'Analysis job lease expired after maximum attempts',
+                    });
+                } catch (notificationError) {
+                    console.error(
+                        JSON.stringify({
+                            event: 'analysis_failure_notification_failed',
+                            jobId: job.id,
+                            analysisRunId: job.analysisRunId,
+                            error: structuredError(notificationError),
                         })
                     );
                 }
@@ -631,10 +512,55 @@ async function recordAnalysisReleaseSettlementPending(args: {
 export async function dispatchQueuedAnalysisJobs(
     options: DispatchQueuedAnalysisJobsOptions = {}
 ): Promise<DispatchQueuedAnalysisJobsResult> {
-    const claim = await claimNextAnalysisJobs(options);
-    const published: AnalysisDispatchPublishResult[] = [];
+    const now = options.now ?? new Date();
+    await recoverExpiredAnalysisJobs({ now });
+    const globalLimit = normalizeLimit(
+        options.globalLimit,
+        DEFAULT_ANALYSIS_DISPATCH_GLOBAL_LIMIT
+    );
+    const userScanLimit = normalizeLimit(
+        options.userScanLimit,
+        DEFAULT_ANALYSIS_DISPATCH_USER_SCAN_LIMIT
+    );
+    const requestedUserIds = Array.from(
+        new Set((options.userIds ?? []).filter(Boolean))
+    );
+    const candidateUsers = await prisma.analysisJob.findMany({
+        where: {
+            status: 'QUEUED',
+            OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
+            AND: [
+                {
+                    OR: [
+                        { scheduledFor: null },
+                        { scheduledFor: { lte: now } },
+                    ],
+                },
+            ],
+            ...(requestedUserIds.length > 0
+                ? { userId: { in: requestedUserIds } }
+                : {}),
+        },
+        distinct: ['userId'],
+        orderBy: [{ createdAt: 'asc' }, { priority: 'desc' }],
+        take: userScanLimit,
+        select: { userId: true },
+    });
 
-    for (const job of claim.claimedJobs) {
+    const claimedJobs: AnalysisDispatchCandidate[] = [];
+    for (const { userId } of candidateUsers) {
+        if (claimedJobs.length >= globalLimit) break;
+        const claimed = await claimOneAnalysisJobForUser({
+            userId,
+            now,
+            leaseMs: options.leaseMs ?? DEFAULT_ANALYSIS_JOB_LEASE_MS,
+            stageOutbox: true,
+        });
+        if (claimed) claimedJobs.push(claimed);
+    }
+
+    const published: AnalysisDispatchPublishResult[] = [];
+    for (const job of claimedJobs) {
         if (!job.lockedAt) {
             throw new Error(`Claimed analysis job ${job.id} has no dispatch lock`);
         }
@@ -643,56 +569,125 @@ export async function dispatchQueuedAnalysisJobs(
             lockedAt: job.lockedAt,
             dispatchedCount: job.dispatchedCount,
         });
-        try {
-            const result = await publishBackranqQueueMessage(
-                {
-                    type: 'analysis-job',
-                    jobId: job.id,
-                    dispatchToken,
-                },
-                { idempotencyKey: analysisDispatchIdempotencyKey(job) }
-            );
-            published.push({
-                jobId: job.id,
-                queued: result.queued,
-                messageId: result.messageId,
-                dispatchToken,
-                unavailableReason: result.unavailableReason,
-                error: result.error,
-            });
-            if (!result.queued && options.releaseUnpublishedLocks !== false) {
-                await releaseAnalysisDispatchLocks(
-                    [job.id],
-                    `QUEUE_PUBLISH_PENDING:${result.unavailableReason ?? 'unavailable'}`
-                );
-                if (result.unavailableReason === 'disabled') {
-                    await cancelUnexecutableAnalysisJobs({
-                        userId: job.userId,
-                        jobIds: [job.id],
-                        reason: 'Server analysis queue is disabled',
-                    });
-                }
-            }
-        } catch (error) {
-            published.push({
-                jobId: job.id,
-                queued: false,
-                messageId: null,
-                dispatchToken,
-                unavailableReason: 'publish-failed',
-                error,
-            });
-            if (options.releaseUnpublishedLocks !== false) {
-                await releaseAnalysisDispatchLocks(
-                    [job.id],
-                    `QUEUE_PUBLISH_PENDING:${errorMessage(error)}`
-                );
-            }
-            if (options.throwOnPublishError !== false) throw error;
-        }
+        // The durable outbox was committed in the same transaction as the job
+        // lease. `queued` here means durably staged, not remotely published.
+        published.push({
+            jobId: job.id,
+            queued: true,
+            messageId: null,
+            dispatchToken,
+        });
     }
 
-    return { ...claim, published };
+    return {
+        selectedJobs: claimedJobs,
+        selectedJobIds: claimedJobs.map((job) => job.id),
+        selectedByUser: Object.fromEntries(
+            claimedJobs.map((job) => [job.userId, 1])
+        ),
+        skipped: {
+            locked: 0,
+            scheduledForLater: 0,
+            retryBackoff: 0,
+            perUserLimit: Math.max(0, candidateUsers.length - claimedJobs.length),
+            notQueued: 0,
+        },
+        claimedJobs,
+        claimedJobIds: claimedJobs.map((job) => job.id),
+        claimMisses: candidateUsers
+            .map((candidate) => candidate.userId)
+            .filter(
+                (userId) => !claimedJobs.some((job) => job.userId === userId)
+            ),
+        published,
+    };
+}
+
+async function claimOneAnalysisJobForUser(args: {
+    userId: string;
+    now: Date;
+    leaseMs: number;
+    stageOutbox: boolean;
+}) {
+    return prisma.$transaction(async (tx) => {
+        await tx.$queryRaw(
+            Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`analysis-dispatch:${args.userId}`}, 0))`
+        );
+
+        const active = await tx.analysisJob.count({
+            where: {
+                userId: args.userId,
+                lockedUntil: { gt: args.now },
+                OR: [{ status: 'RUNNING' }, { status: 'QUEUED' }],
+            },
+        });
+        if (active >= 1) return null;
+
+        const jobs = await tx.analysisJob.findMany({
+            where: {
+                userId: args.userId,
+                status: 'QUEUED',
+                OR: [{ lockedUntil: null }, { lockedUntil: { lte: args.now } }],
+                AND: [
+                    {
+                        OR: [
+                            { scheduledFor: null },
+                            { scheduledFor: { lte: args.now } },
+                        ],
+                    },
+                ],
+            },
+            orderBy: [{ createdAt: 'asc' }],
+            take: 100,
+        });
+        const job = jobs.sort(compareAnalysisDispatchCandidates)[0];
+        if (!job) return null;
+
+        const lockedUntil = getAnalysisJobLockedUntil({
+            now: args.now,
+            leaseMs: args.leaseMs,
+        });
+        const updated = await tx.analysisJob.updateMany({
+            where: {
+                id: job.id,
+                status: 'QUEUED',
+                OR: [{ lockedUntil: null }, { lockedUntil: { lte: args.now } }],
+            },
+            data: {
+                lockedAt: args.now,
+                lockedUntil,
+                lastDispatchedAt: args.now,
+                dispatchedCount: { increment: 1 },
+            },
+        });
+        if (updated.count !== 1) return null;
+
+        const claimed: AnalysisDispatchCandidate = {
+            ...job,
+            dispatchedCount: job.dispatchedCount + 1,
+            lockedAt: args.now,
+            lockedUntil,
+        };
+        const dispatchToken = createAnalysisDispatchToken({
+            jobId: claimed.id,
+            lockedAt: args.now,
+            dispatchedCount: claimed.dispatchedCount,
+        });
+        if (args.stageOutbox) {
+            await stageAnalysisOutboxMessage({
+                tx,
+                kind: 'ANALYSIS_JOB',
+                idempotencyKey: analysisDispatchIdempotencyKey(claimed),
+                analysisJobId: claimed.id,
+                message: {
+                    type: 'analysis-job',
+                    jobId: claimed.id,
+                    dispatchToken,
+                },
+            });
+        }
+        return claimed;
+    });
 }
 
 export async function releaseAnalysisDispatchLocks(
@@ -786,16 +781,30 @@ function normalizeCounts(counts: UserDispatchCounts | undefined) {
     return new Map(Object.entries(counts));
 }
 
-function countRowsToRecord(
-    rows: Array<{ userId: string; _count: { _all: number } }>
-) {
-    return Object.fromEntries(
-        rows.map((row) => [row.userId, row._count._all])
-    );
-}
-
 function errorMessage(error: unknown) {
     return error instanceof Error
         ? error.message.slice(0, 2_000)
         : String(error).slice(0, 2_000);
+}
+
+function structuredError(error: unknown) {
+    if (!(error instanceof Error)) {
+        return { message: String(error).slice(0, 2_000) };
+    }
+    return {
+        name: error.name.slice(0, 200),
+        message: error.message.slice(0, 2_000),
+        ...(error.stack ? { stack: error.stack.slice(0, 8_000) } : {}),
+        ...(error.cause != null
+            ? {
+                  cause:
+                      error.cause instanceof Error
+                          ? {
+                                name: error.cause.name.slice(0, 200),
+                                message: error.cause.message.slice(0, 2_000),
+                            }
+                          : String(error.cause).slice(0, 2_000),
+              }
+            : {}),
+    };
 }

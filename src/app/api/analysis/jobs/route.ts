@@ -4,56 +4,17 @@ import { prisma } from '@/lib/prisma';
 import {
     analysisJobCreditsMetadata,
     analysisJobStatusFilter,
-    enqueueAnalysisJobsForGames,
     getAnalysisJobDurationMs,
     getAnalysisRunSummaryForJob,
     SERVER_ANALYSIS_EXECUTION_MODE,
-    serverAnalysisConfigFromPreferences,
 } from '@/lib/services/analysisJobs';
-import {
-    cancelUnexecutableAnalysisJobs,
-    dispatchQueuedAnalysisJobs,
-} from '@/lib/services/analysisScheduler';
-import {
-    boundedJsonBody,
-    isRecord,
-} from '@/lib/api/validation';
-import { isAnalysisQuality } from '@/lib/analysis/quality';
-import type { AnalysisDefaults } from '@/lib/preferences';
-import {
-    TRAINING_COVERAGE_PRESETS,
-    TRAINING_GRADING_TOLERANCES,
-} from '@/lib/training/config';
 
 export const runtime = 'nodejs';
-const MAX_POST_BODY_BYTES = 32_768;
 const UUID_PATTERN =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function clampInt(value: number, min: number, max: number) {
     return Math.max(min, Math.min(max, Math.trunc(value)));
-}
-
-function parseAnalysisDefaults(value: unknown): AnalysisDefaults | null {
-    if (!isRecord(value)) return null;
-    if (
-        Object.keys(value).some(
-            (key) =>
-                key !== 'analysisQuality' &&
-                key !== 'trainingCoveragePreset' &&
-                key !== 'trainingGradingTolerance'
-        ) ||
-        !isAnalysisQuality(value.analysisQuality) ||
-        !TRAINING_COVERAGE_PRESETS.includes(
-            value.trainingCoveragePreset as (typeof TRAINING_COVERAGE_PRESETS)[number]
-        ) ||
-        !TRAINING_GRADING_TOLERANCES.includes(
-            value.trainingGradingTolerance as (typeof TRAINING_GRADING_TOLERANCES)[number]
-        )
-    ) {
-        return null;
-    }
-    return value as AnalysisDefaults;
 }
 
 type AnalysisJobApiRecord = {
@@ -150,160 +111,17 @@ export async function GET(req: Request) {
     });
 }
 
-export async function POST(req: Request) {
-    const session = await auth();
-    const userId = session?.user?.id;
-    if (!userId) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    const parsedBody = await boundedJsonBody(req, MAX_POST_BODY_BYTES);
-    if (!parsedBody.ok) {
-        return NextResponse.json(
-            { error: parsedBody.error },
-            { status: parsedBody.status ?? 400 }
-        );
-    }
-    const body = parsedBody.value;
-    if (!isRecord(body) || !Array.isArray(body.gameIds)) {
-        return NextResponse.json({ error: 'Invalid gameIds' }, { status: 400 });
-    }
-    const allowedKeys = new Set(['gameIds', 'force', 'analysisDefaults']);
-    if (
-        Object.keys(body).some((key) => !allowedKeys.has(key)) ||
-        ('force' in body && typeof body.force !== 'boolean')
-    ) {
-        return NextResponse.json(
-            { error: 'Invalid analysis request' },
-            { status: 400 }
-        );
-    }
-    if (body.gameIds.length === 0) {
-        return NextResponse.json({ error: 'No games provided' }, { status: 400 });
-    }
-    if (body.gameIds.length > 200) {
-        return NextResponse.json(
-            { error: 'gameIds exceeds limit of 200' },
-            { status: 413 }
-        );
-    }
-    if (
-        !body.gameIds.every(
-            (id) => typeof id === 'string' && UUID_PATTERN.test(id.trim())
-        )
-    ) {
-        return NextResponse.json({ error: 'Invalid gameIds' }, { status: 400 });
-    }
-    const gameIds = body.gameIds.map((id) => (id as string).trim());
-
-    const requestedIds = Array.from(new Set(gameIds));
-    const owned = await prisma.analyzedGame.findMany({
-        where: { userId, id: { in: requestedIds } },
-        select: { id: true },
-    });
-    const ownedIds = owned.map((game) => game.id);
-    if (ownedIds.length === 0) {
-        return NextResponse.json({ error: 'No matching games' }, { status: 404 });
-    }
-
-    const force = body.force === true;
-    const parsedAnalysisDefaults =
-        body.analysisDefaults === undefined
-            ? undefined
-            : parseAnalysisDefaults(body.analysisDefaults);
-    if (body.analysisDefaults !== undefined && !parsedAnalysisDefaults) {
-        return NextResponse.json(
-            { error: 'Invalid analysisDefaults' },
-            { status: 400 }
-        );
-    }
-    const analysisDefaults = parsedAnalysisDefaults ?? undefined;
-    const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { preferences: true },
-    });
-    const { config } = serverAnalysisConfigFromPreferences(
-        user?.preferences,
-        analysisDefaults
+/** Mutations use the idempotent /api/analysis/batches contract. */
+export async function POST(request: Request) {
+    void request;
+    return NextResponse.json(
+        {
+            error: 'Use POST /api/analysis/batches',
+            code: 'ANALYSIS_BATCH_REQUIRED',
+        },
+        {
+            status: 405,
+            headers: { Allow: 'GET' },
+        }
     );
-    const batch = await enqueueAnalysisJobsForGames({
-        userId,
-        gameIds: ownedIds,
-        queuedReason: force ? 'manual-reanalysis' : 'manual',
-        force,
-        config,
-    });
-
-    const dispatch = await dispatchQueuedAnalysisJobs({
-        globalLimit: 25,
-        perUserLimit: 1,
-    });
-    const acceptedJobIds = batch.results
-        .filter((result) => result.queued)
-        .map((result) => result.job.id);
-    const acceptedPublished = dispatch.published.filter(
-        (result) =>
-            result.queued && acceptedJobIds.includes(result.jobId)
-    );
-    const queueUnavailable = dispatch.published.find(
-        (result) =>
-            !result.queued &&
-            (result.unavailableReason === 'disabled' ||
-                result.unavailableReason === 'publish-failed')
-    );
-
-    if (
-        acceptedJobIds.length > 0 &&
-        acceptedPublished.length === 0 &&
-        queueUnavailable
-    ) {
-        const reason =
-            queueUnavailable.unavailableReason === 'disabled'
-                ? 'Server analysis queue is disabled'
-                : 'Server analysis queue could not accept work';
-        const cancellation = await cancelUnexecutableAnalysisJobs({
-            userId,
-            jobIds: acceptedJobIds,
-            reason,
-        });
-        return NextResponse.json(
-            {
-                error: `${reason}. No server credits were spent.`,
-                code: 'SERVER_ANALYSIS_UNAVAILABLE',
-                executionAvailable: false,
-                requested: requestedIds.length,
-                accepted: ownedIds.length,
-                queued: 0,
-                skipped:
-                    batch.results.filter((result) => !result.queued).length,
-                cancelled: cancellation.cancelled,
-                errors: batch.errors,
-            },
-            { status: 503 }
-        );
-    }
-
-    return NextResponse.json({
-        jobs: await Promise.all(
-            batch.results.map(async (result) => ({
-                ...(await analysisJobResponse(result.job)),
-                acceptedInBatch: result.queued,
-            }))
-        ),
-        requested: requestedIds.length,
-        accepted: ownedIds.length,
-        queued: batch.results.filter((result) => result.queued).length,
-        skipped: batch.results.filter((result) => !result.queued).length,
-        errors: [
-            ...requestedIds
-                .filter((id) => !ownedIds.includes(id))
-                .map((gameId) => ({
-                    gameId,
-                    error: 'Game is not available for this user',
-                })),
-            ...batch.errors,
-        ],
-        dispatch,
-        executionAvailable: true,
-    });
 }

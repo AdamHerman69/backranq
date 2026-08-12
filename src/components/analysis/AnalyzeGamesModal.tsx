@@ -7,10 +7,7 @@ import { EXPECTED_OWNER_HEADER } from "@/lib/auth/ownerContract";
 
 import { gameSourceToUi, timeClassToUi } from "@/lib/api/games";
 import { backgroundAnalysis } from "@/lib/analysis/backgroundAnalysisManager";
-import {
-  enqueueServerAnalysisJobs,
-  type SyncStatus,
-} from "@/lib/services/gameSync";
+import { getSyncStatus, type SyncStatus } from "@/lib/services/gameSync";
 import type { GameSource, TimeClass } from "@prisma/client";
 import {
   defaultPreferences,
@@ -22,12 +19,12 @@ import { AnalysisDefaultsFields } from "@/components/analysis/AnalysisDefaultsFi
 import { analysisCreditsPerGame } from "@/lib/analysis/quality";
 import {
   clearLastAnalysisCompletion,
-  createServerAnalysisBatch,
-  mergeServerAnalysisBatches,
-  readServerAnalysisBatch,
   publishLibraryChanged,
-  writeServerAnalysisBatch,
 } from "@/lib/analysis/analysisCompletion";
+import {
+  acceptedServerAnalysisCount,
+  queueServerAnalysisBatch,
+} from "@/lib/analysis/serverAnalysisCoordinator";
 
 type ApiGameRow = {
   id: string;
@@ -90,13 +87,9 @@ export function AnalyzeGamesModal({
       })
       .finally(() => setPrefsLoading(false));
 
-    fetch("/api/sync/status", { cache: "no-store" })
-      .then(async (r) => {
-        const json = (await r.json().catch(() => ({}))) as SyncStatus & {
-          error?: string;
-        };
-        if (!r.ok) throw new Error(json.error ?? "Failed to load server capacity");
-        setServerCapacity(json.billing ?? null);
+    getSyncStatus()
+      .then((status) => {
+        setServerCapacity(status.billing ?? null);
       })
       .catch(() => {
         // The enqueue API remains authoritative if capacity cannot be previewed.
@@ -127,10 +120,18 @@ export function AnalyzeGamesModal({
     ? Math.floor(serverCapacity.reservableCredits / creditsPerGame)
     : null;
 
+  React.useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, open]);
+
   if (!open) return null;
 
   function close() {
-    if (busy) return;
     onClose();
   }
 
@@ -187,12 +188,6 @@ export function AnalyzeGamesModal({
       return;
     }
     if (analysisMode === "server") {
-      if (serverQueueableGames !== null && ids.length > serverQueueableGames) {
-        toast.error(
-          `Current server capacity can analyze ${serverQueueableGames} game${serverQueueableGames === 1 ? "" : "s"} at this quality. Select fewer games or use free browser analysis.`
-        );
-        return;
-      }
       const totalCredits = ids.length * creditsPerGame;
       const ok = window.confirm(
         `Queue ${analysisDefaults.analysisQuality === "THOROUGH" ? "Thorough" : "Standard"} server analysis for ${ids.length} game${ids.length === 1 ? "" : "s"}? This will reserve ${totalCredits} server credits (${creditsPerGame} per game).`
@@ -210,29 +205,16 @@ export function AnalyzeGamesModal({
           `Browser analysis started for ${ids.length} game${ids.length === 1 ? "" : "s"}. Keep this tab open.`
         );
       } else {
-        const result = await enqueueServerAnalysisJobs({
+        const result = await queueServerAnalysisBatch({
+          ownerId,
           gameIds: ids,
           analysisDefaults,
         });
-        clearLastAnalysisCompletion(ownerId);
-        publishLibraryChanged(ownerId, { invalidateCompletion: true });
-        if (result.queued > 0) {
-          const incoming = createServerAnalysisBatch({
-            ownerId,
-            queued: result.queued,
-            jobIds: (result.jobs ?? [])
-              .filter((job) => job.acceptedInBatch === true)
-              .map((job) => job.id),
-            failedAtStart: 0,
-            trainingMomentsAtStart: null,
-            pendingAtStart: ids.length,
-          });
-          writeServerAnalysisBatch(
-            ownerId,
-            mergeServerAnalysisBatches(readServerAnalysisBatch(ownerId), incoming)
-          );
+        if (result.state === "confirming") {
+          toast.message("The server is still confirming this request. Backranq will keep checking it in the background.");
+        } else {
+          toastServerQueueResult(result.batch);
         }
-        toastServerQueueResult(result);
       }
       onClose();
     } catch (e) {
@@ -246,6 +228,7 @@ export function AnalyzeGamesModal({
     <div
       role="dialog"
       aria-modal="true"
+      aria-busy={busy}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       onMouseDown={close}
     >
@@ -260,7 +243,6 @@ export function AnalyzeGamesModal({
             type="button"
             onClick={close}
             className="h-11 rounded-md border px-3 text-sm font-medium sm:h-9"
-            disabled={busy}
           >
             Close
           </button>
@@ -268,6 +250,9 @@ export function AnalyzeGamesModal({
 
         <div className="mt-2 text-sm text-muted-foreground">
           Pick which games to analyze and choose whether this device or the server should do the work.
+        </div>
+        <div className="sr-only" role="status" aria-live="polite">
+          {busy ? "Request in progress. You may close this dialog while Backranq continues in the background." : ""}
         </div>
 
         <div className="mt-4 flex-1 overflow-auto">
@@ -335,10 +320,7 @@ export function AnalyzeGamesModal({
                   busy ||
                   loading ||
                   selectedIds.length === 0 ||
-                  !analysisMode ||
-                  (analysisMode === "server" &&
-                    serverQueueableGames !== null &&
-                    selectedIds.length > serverQueueableGames)
+                  !analysisMode
                 }
               >
                 {analysisMode === "browser"
@@ -455,26 +437,23 @@ export function AnalyzeGamesModal({
 }
 
 function toastServerQueueResult(result: {
+  requested: number;
+  planning: number;
   queued: number;
+  running: number;
   skipped: number;
-  requested?: number;
-  accepted?: number;
-  errors?: Array<{ error: string }>;
+  failed: number;
 }) {
+  const accepted = acceptedServerAnalysisCount(result);
   const parts = [
-    `Queued ${result.queued} game${result.queued === 1 ? "" : "s"}`,
+    `Accepted ${accepted} game${accepted === 1 ? "" : "s"}`,
   ];
   if (result.skipped > 0) {
     parts.push(`${result.skipped} already queued or complete`);
   }
-  const rejected =
-    result.requested != null && result.accepted != null
-      ? Math.max(0, result.requested - result.accepted)
-      : 0;
-  if (rejected > 0) parts.push(`${rejected} unavailable`);
-  if (result.errors?.length) parts.push(`${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`);
+  if (result.failed > 0) parts.push(`${result.failed} unavailable`);
 
   const message = `${parts.join(", ")} for server analysis.`;
-  if (result.errors?.length || rejected > 0) toast.warning(message);
+  if (result.failed > 0) toast.warning(message);
   else toast.message(message);
 }

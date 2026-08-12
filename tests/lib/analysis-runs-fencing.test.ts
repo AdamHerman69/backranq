@@ -70,6 +70,31 @@ describe('analysis completion fencing', () => {
         );
     });
 
+    it('atomically removes a continuation checkpoint on no-write completion', async () => {
+        const runs = await importRuns();
+        const lockedAt = new Date('2026-07-05T12:00:00Z');
+        prismaMock.analysisJob.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.analysisRun.findFirst.mockResolvedValue({
+            id: 'run-1',
+            startedAt: new Date('2026-07-05T11:59:00Z'),
+        });
+        prismaMock.analysisRun.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.analysisRunCheckpoint.deleteMany.mockResolvedValue({
+            count: 1,
+        });
+
+        await runs.completeAnalysisRunWithoutGameWrite({
+            runId: 'run-1',
+            analysisJobId: 'job-1',
+            fence: { lockedAt, dispatchedCount: 2 },
+            consumedCredits: 0,
+        });
+
+        expect(prismaMock.analysisRunCheckpoint.deleteMany).toHaveBeenCalledWith(
+            { where: { runId: 'run-1' } }
+        );
+    });
+
     it('rejects completion when the stored PGN changed after the run started', async () => {
         const runs = await importRuns();
         prismaMock.analysisRun.findFirst.mockResolvedValue({

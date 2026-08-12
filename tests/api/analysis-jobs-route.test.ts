@@ -155,6 +155,21 @@ describe('GET /api/analysis/jobs', () => {
 });
 
 describe('POST /api/analysis/jobs', () => {
+    it('requires the idempotent batch mutation contract', async () => {
+        const route = await importRoute();
+
+        const response = await route.POST(post({ gameIds: [GAME_ID] }));
+
+        expect(response.status).toBe(405);
+        expect(response.headers.get('Allow')).toBe('GET');
+        await expect(readJson(response)).resolves.toEqual({
+            error: 'Use POST /api/analysis/batches',
+            code: 'ANALYSIS_BATCH_REQUIRED',
+        });
+    });
+});
+
+describe.skip('legacy POST /api/analysis/jobs', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         setMockUserId('user-1');

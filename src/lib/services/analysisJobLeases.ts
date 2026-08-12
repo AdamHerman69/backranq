@@ -1,4 +1,6 @@
-export const DEFAULT_ANALYSIS_JOB_LEASE_MS = 10 * 60 * 1_000;
+// The worker yields by 180s and the platform hard-stops at 300s. This leaves
+// 90s for persistence/settlement while recovering hard kills within one sweep.
+export const DEFAULT_ANALYSIS_JOB_LEASE_MS = 270_000;
 export const DEFAULT_ANALYSIS_RETRY_MAX_ATTEMPTS = 5;
 export const DEFAULT_ANALYSIS_RETRY_BACKOFF_BASE_MS = 60_000;
 export const DEFAULT_ANALYSIS_RETRY_BACKOFF_MAX_MS = 30 * 60_000;

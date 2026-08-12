@@ -14,6 +14,10 @@ const unusedStockfishVariants = [
 const nextConfig: NextConfig = {
     /* config options here */
     reactCompiler: true,
+    // Keep the queue SDK out of Turbopack's combined worker chunk. When it is
+    // bundled beside Stockfish, the SDK's internal fetch call can be rewritten
+    // to a non-callable chunk binding, which breaks visibility changes/retries.
+    serverExternalPackages: ['@vercel/queue'],
     outputFileTracingIncludes: {
         '/api/queues/backranq-jobs': stockfishLiteRuntime,
         '/api/training/moments/*/attempts': stockfishLiteRuntime,

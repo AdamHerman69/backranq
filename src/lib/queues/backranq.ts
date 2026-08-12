@@ -26,6 +26,8 @@ export type BackranqQueueMessage =
           cursor?: string;
       }
     | { type: 'dispatch-analysis'; requestedAt: string }
+    | { type: 'analysis-maintenance'; requestedAt: string }
+    | { type: 'analysis-batch'; batchId: string }
     | { type: 'analysis-job'; jobId: string; dispatchToken: string }
     | { type: 'weekly-master-run'; runId: string }
     | {
@@ -94,18 +96,15 @@ export async function publishBackranqQueueMessage(
         });
         return { queued: true, messageId: result.messageId };
     } catch (error) {
-        if (process.env.NODE_ENV !== 'production') {
-            console.warn(
-                '[backranq queue] publish failed; work remains queued in the database:',
-                error
-            );
-            return {
-                queued: false,
-                messageId: null,
-                unavailableReason: 'publish-failed',
-                error,
-            };
-        }
-        throw error;
+        console.warn(
+            '[backranq queue] publish failed; durable work remains pending:',
+            error instanceof Error ? error.message : String(error)
+        );
+        return {
+            queued: false,
+            messageId: null,
+            unavailableReason: 'publish-failed',
+            error,
+        };
     }
 }

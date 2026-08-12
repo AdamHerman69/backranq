@@ -134,6 +134,68 @@ const baseOptions: TrainingMomentExtractionOptions = {
 };
 
 describe('canonical training-moment extraction v2', () => {
+    it('resumes a single-game extraction from a persisted ply checkpoint', async () => {
+        const source = game({
+            id: 'resumable-game',
+            pgn: '1. e4 e5 2. Nf3 Nc6 *',
+        });
+        const engine = new FixtureEngine(
+            ({ fen }) => {
+                const chess = new Chess(fen);
+                const move = chess.moves({ verbose: true })[0];
+                if (!move) {
+                    return result({ fen, bestMove: '', pv: [], cp: 0 });
+                }
+                const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+                return result({
+                    fen,
+                    bestMove: uci,
+                    pv: [uci],
+                    cp: 0,
+                });
+            },
+            ({ fen }) => multi(fen, [])
+        );
+        const args = {
+            games: [source],
+            selectedGameIds: new Set(['resumable-game']),
+            engine,
+            options: {
+                ...baseOptions,
+                returnAnalysis: true,
+            },
+        };
+
+        const firstSlice = await extractTrainingMomentsFromGames({
+            ...args,
+            shouldYield: () => true,
+        });
+        expect(firstSlice.checkpoint).toMatchObject({
+            version: 1,
+            gameId: 'resumable-game',
+            nextPly: 1,
+            expectedPlies: 4,
+        });
+
+        const resumed = await extractTrainingMomentsFromGames({
+            ...args,
+            checkpoint: JSON.parse(JSON.stringify(firstSlice.checkpoint)),
+        });
+        const uninterrupted = await extractTrainingMomentsFromGames(args);
+
+        expect(resumed.checkpoint).toBeUndefined();
+        expect(resumed.moments).toEqual(uninterrupted.moments);
+        expect(resumed.manifests).toEqual(uninterrupted.manifests);
+        expect(resumed.analysis?.get('resumable-game')?.moves).toEqual(
+            uninterrupted.analysis?.get('resumable-game')?.moves
+        );
+        expect(
+            resumed.analysis?.get('resumable-game')?.trainingExtraction
+        ).toEqual(
+            uninterrupted.analysis?.get('resumable-game')?.trainingExtraction
+        );
+    });
+
     it('escalates near-threshold confirmation and records a saved-decision receipt', async () => {
         const start = new Chess().fen();
         const requestedConfirmationNodes: number[] = [];

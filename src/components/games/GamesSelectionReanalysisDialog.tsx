@@ -16,6 +16,7 @@ type GamesSelectionReanalysisDialogProps = {
     serverAnalysisCapacity: ManualServerAnalysisCapacity;
     onConfirm: () => void | Promise<void>;
     busy: boolean;
+    requestBlocked?: boolean;
 };
 
 export function GamesSelectionReanalysisDialog({
@@ -27,6 +28,7 @@ export function GamesSelectionReanalysisDialog({
     serverAnalysisCapacity,
     onConfirm,
     busy,
+    requestBlocked = false,
 }: GamesSelectionReanalysisDialogProps) {
     return (
         <ActionConfirmDialog
@@ -34,10 +36,11 @@ export function GamesSelectionReanalysisDialog({
             onOpenChange={onOpenChange}
             title={`Re-analyze ${selectedCount} selected ${selectedCount === 1 ? 'game' : 'games'}?`}
             description={`Server re-analysis runs in the background and uses ${serverAnalysisCapacity.creditsPerGame} credits per accepted game.`}
-            confirmLabel={`Queue up to ${maximumQueueable} ${maximumQueueable === 1 ? 'game' : 'games'}`}
+            confirmLabel={`Queue ${selectedCount} ${selectedCount === 1 ? 'game' : 'games'}`}
             onConfirm={onConfirm}
             busy={busy}
-            confirmDisabled={maximumQueueable < 1}
+            allowCloseWhileBusy
+            confirmDisabled={selectedCount < 1 || requestBlocked}
         >
             <dl className="grid gap-3 rounded-md border bg-muted/30 p-4 text-sm sm:grid-cols-2">
                 <div>
@@ -158,15 +161,14 @@ export function GamesSelectionReanalysisDialog({
                 {selectedCount > serverAnalysisCapacity.reservableGames ? (
                     <div className="sm:col-span-2">
                         <dt className="font-medium text-amber-700 dark:text-amber-300">
-                            Partial queue expected
+                            Capacity snapshot
                         </dt>
                         <dd>
-                            Current manual capacity can reserve at most{' '}
+                            The latest capacity snapshot can reserve at most{' '}
                             {maximumQueueable}{' '}
                             {maximumQueueable === 1 ? 'game' : 'games'}. Remaining
-                            games will not be queued unless earlier selections are
-                            already queued or running and therefore skipped without
-                            a new reservation.
+                            games. The server planner will apply the authoritative
+                            limits when it receives this batch.
                         </dd>
                     </div>
                 ) : null}

@@ -15,31 +15,41 @@ import {
 } from "@/lib/analysis/backgroundAnalysisManager";
 import {
   clearLastAnalysisCompletion,
-  createServerAnalysisBatch,
-  deriveServerAnalysisCompletion,
-  deriveServerJobCompletion,
-  mergeServerAnalysisBatches,
-  publishAnalysisCompletion,
   publishLibraryChanged,
   readLastAnalysisCompletion,
-  readServerAnalysisBatch,
-  writeServerAnalysisBatch,
   analysisCompletionStorageKeys,
   ANALYSIS_COMPLETION_EVENT,
   LIBRARY_CHANGED_EVENT,
   type AnalysisCompletionSummary,
-  type ServerAnalysisBatch,
-  type ServerAnalysisObservation,
 } from "@/lib/analysis/analysisCompletion";
 import {
-  enqueueServerAnalysisJobs,
-  fetchServerAnalysisJobs,
+  fetchJsonWithTimeout,
   getSyncStatus,
   type SyncStatus,
 } from "@/lib/services/gameSync";
+import {
+  acceptedServerAnalysisCount,
+  queueServerAnalysisBatch,
+  readTrackedServerAnalysisRequests,
+  reconcileTrackedServerAnalysis,
+  serverAnalysisTrackingStorageKey,
+  SERVER_ANALYSIS_TRACKING_EVENT,
+  type TrackedServerAnalysisRequest,
+} from "@/lib/analysis/serverAnalysisCoordinator";
 import { shouldPollAnalysis } from "@/lib/analysis/analysisRefreshPolicy";
 
 const NEW_DISMISS_PREFIX = "backranq.analysisBar.dismiss.v2";
+const BACKGROUND_REFRESH_STEP_TIMEOUT_MS = 10_000;
+
+function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(
+      () => reject(new Error("Background refresh timed out")),
+      timeoutMs
+    );
+    promise.then(resolve, reject).finally(() => window.clearTimeout(timeout));
+  });
+}
 
 function dismissKey(ownerId: string) {
   return `${NEW_DISMISS_PREFIX}:${encodeURIComponent(ownerId)}`;
@@ -65,14 +75,15 @@ function writeDismissedCount(ownerId: string, n: number) {
 
 async function fetchTrainingMomentCount(): Promise<number | null> {
   try {
-    const response = await fetch("/api/training/feed?limit=50", {
-      cache: "no-store",
-    });
+    const { response, json } = await fetchJsonWithTimeout(
+      "/api/training/feed?limit=50",
+      { cache: "no-store" }
+    );
     if (!response.ok) return null;
-    const json = (await response.json().catch(() => ({}))) as {
+    const parsed = json as {
       items?: unknown[];
     };
-    return Array.isArray(json.items) ? json.items.length : null;
+    return Array.isArray(parsed.items) ? parsed.items.length : null;
   } catch {
     return null;
   }
@@ -103,11 +114,8 @@ export function BackgroundAnalysisBar() {
   const [serverQueueing, setServerQueueing] = React.useState(false);
   const [serverReviewOpen, setServerReviewOpen] = React.useState(false);
   const [serverReviewIds, setServerReviewIds] = React.useState<string[]>([]);
-  const [hasTrackedServerBatch, setHasTrackedServerBatch] = React.useState(false);
-  const previousServerObservation = React.useRef<ServerAnalysisObservation | null>(null);
-  const serverBatch = React.useRef<ServerAnalysisBatch | null>(null);
+  const [trackedServerRequests, setTrackedServerRequests] = React.useState<TrackedServerAnalysisRequest[]>([]);
   const toastedCompletionId = React.useRef<string | null>(null);
-  const completedBatchIds = React.useRef(new Set<string>());
   const refreshInFlight = React.useRef<Promise<void> | null>(null);
   const activeOwnerId = React.useRef<string | null>(ownerId);
 
@@ -136,11 +144,8 @@ export function BackgroundAnalysisBar() {
     setLastCompletion(ownerId ? readLastAnalysisCompletion(ownerId) : null);
     setDismissedForPending(ownerId ? readDismissedCount(ownerId) : 0);
     setSnap(backgroundAnalysis.snapshot());
-    serverBatch.current = ownerId ? readServerAnalysisBatch(ownerId) : null;
-    setHasTrackedServerBatch(!!serverBatch.current);
-    previousServerObservation.current = null;
+    setTrackedServerRequests(ownerId ? readTrackedServerAnalysisRequests(ownerId) : []);
     refreshInFlight.current = null;
-    completedBatchIds.current.clear();
     toastedCompletionId.current = null;
     if (!ownerId) return;
     return backgroundAnalysis.subscribe((next) => {
@@ -171,16 +176,15 @@ export function BackgroundAnalysisBar() {
     if (refreshInFlight.current) return refreshInFlight.current;
 
     const task = (async () => {
-      const storedBatch = readServerAnalysisBatch(ownerId);
-      let batch = mergeServerAnalysisBatches(serverBatch.current, storedBatch);
-      serverBatch.current = batch;
-      setHasTrackedServerBatch(!!batch);
-
-      const [pendingResult, statusResult, trainingMomentResult] =
+      const [, statusResult, trainingMomentResult] =
         await Promise.allSettled([
-          backgroundAnalysis.refreshPendingUnanalyzedCount(ownerId),
+          settleWithin(
+            backgroundAnalysis.refreshPendingUnanalyzedCount(ownerId),
+            BACKGROUND_REFRESH_STEP_TIMEOUT_MS
+          ),
           getSyncStatus(),
           fetchTrainingMomentCount(),
+          reconcileTrackedServerAnalysis(ownerId),
         ]);
       if (activeOwnerId.current !== ownerId) return;
 
@@ -190,68 +194,7 @@ export function BackgroundAnalysisBar() {
         trainingMomentResult.status === "fulfilled" ? trainingMomentResult.value : null;
       if (nextStatus) setSyncStatus(nextStatus);
       if (nextTrainingMomentCount != null) setTrainingMomentCount(nextTrainingMomentCount);
-      if (!nextStatus) return;
-
-      const observation: ServerAnalysisObservation = {
-        queued: nextStatus.analysisJobs?.queued ?? 0,
-        running: nextStatus.analysisJobs?.running ?? 0,
-        failed: nextStatus.analysisJobs?.failed ?? 0,
-        trainingMomentCount: nextTrainingMomentCount,
-        pendingCount:
-          pendingResult.status === "fulfilled" ? pendingResult.value : null,
-      };
-      const active = observation.queued + observation.running;
-      const shouldFetchJobs = (batch?.jobIds.length ?? 0) > 0 || active > 0;
-      const jobs = shouldFetchJobs
-        ? await fetchServerAnalysisJobs(
-            batch?.jobIds.length ? batch.jobIds : undefined
-          ).catch(() => [])
-        : [];
-      if (activeOwnerId.current !== ownerId) return;
-      batch = mergeServerAnalysisBatches(
-        batch,
-        readServerAnalysisBatch(ownerId)
-      );
-      serverBatch.current = batch;
-      if (!batch && active > 0) {
-        const activeJobs = jobs.filter(
-          (job) => job.status === "QUEUED" || job.status === "RUNNING"
-        );
-        batch = createServerAnalysisBatch({
-          ownerId,
-          queued: active,
-          jobIds:
-            activeJobs.length === active
-              ? activeJobs.map((job) => job.id)
-              : [],
-          failedAtStart: observation.failed,
-          trainingMomentsAtStart: observation.trainingMomentCount,
-          pendingAtStart: observation.pendingCount,
-        });
-        serverBatch.current = batch;
-        setHasTrackedServerBatch(true);
-        writeServerAnalysisBatch(ownerId, batch);
-      }
-
-      const completion =
-        batch?.jobIds.length
-          ? deriveServerJobCompletion(batch, jobs, observation)
-          : deriveServerAnalysisCompletion(
-              previousServerObservation.current,
-              observation,
-              batch
-            );
-      previousServerObservation.current = observation;
-      if (
-        completion &&
-        !completedBatchIds.current.has(completion.batchId ?? completion.id)
-      ) {
-        completedBatchIds.current.add(completion.batchId ?? completion.id);
-        serverBatch.current = null;
-        setHasTrackedServerBatch(false);
-        writeServerAnalysisBatch(ownerId, null);
-        publishAnalysisCompletion(completion);
-      }
+      setTrackedServerRequests(readTrackedServerAnalysisRequests(ownerId));
     })();
     const tracked = task.finally(() => {
       if (refreshInFlight.current === tracked) refreshInFlight.current = null;
@@ -269,24 +212,33 @@ export function BackgroundAnalysisBar() {
     if (!ownerId) return;
     const scopedOwnerId = ownerId;
     const keys = analysisCompletionStorageKeys(scopedOwnerId);
+    const trackingKey = serverAnalysisTrackingStorageKey(scopedOwnerId);
     function onStorage(event: StorageEvent) {
       if (event.key === keys.completion) {
         setLastCompletion(readLastAnalysisCompletion(scopedOwnerId));
         publishLibraryChanged(scopedOwnerId);
         router.refresh();
       }
-      if (event.key === keys.serverBatch) {
-        const stored = readServerAnalysisBatch(scopedOwnerId);
-        serverBatch.current = event.newValue
-          ? mergeServerAnalysisBatches(serverBatch.current, stored)
-          : null;
-        setHasTrackedServerBatch(!!serverBatch.current);
+      if (event.key === trackingKey) {
+        setTrackedServerRequests(readTrackedServerAnalysisRequests(scopedOwnerId));
         void refreshAll();
       }
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, [ownerId, refreshAll, router]);
+
+  React.useEffect(() => {
+    if (!ownerId) return;
+    const scopedOwnerId = ownerId;
+    function onTracking(event: Event) {
+      const detail = (event as CustomEvent<{ ownerId?: string }>).detail;
+      if (detail?.ownerId !== scopedOwnerId) return;
+      setTrackedServerRequests(readTrackedServerAnalysisRequests(scopedOwnerId));
+    }
+    window.addEventListener(SERVER_ANALYSIS_TRACKING_EVENT, onTracking);
+    return () => window.removeEventListener(SERVER_ANALYSIS_TRACKING_EVENT, onTracking);
+  }, [ownerId]);
 
   React.useEffect(() => {
     if (!ownerId) return;
@@ -304,12 +256,7 @@ export function BackgroundAnalysisBar() {
       ) {
         return;
       }
-      const stored = readServerAnalysisBatch(scopedOwnerId);
-      serverBatch.current = mergeServerAnalysisBatches(
-        serverBatch.current,
-        stored
-      );
-      setHasTrackedServerBatch(!!serverBatch.current);
+      setTrackedServerRequests(readTrackedServerAnalysisRequests(scopedOwnerId));
       if (detail.invalidateCompletion) setLastCompletion(null);
       void refreshAll();
     }
@@ -320,8 +267,12 @@ export function BackgroundAnalysisBar() {
 
   const currentSyncStatus =
     activeOwnerId.current === ownerId ? syncStatus : null;
-  const serverQueued = currentSyncStatus?.analysisJobs?.queued ?? 0;
-  const serverRunning = currentSyncStatus?.analysisJobs?.running ?? 0;
+  const trackedPlanning = trackedServerRequests.reduce((sum, request) => sum + request.planning, 0);
+  const trackedQueued = trackedServerRequests.reduce((sum, request) => sum + request.queued, 0);
+  const trackedRunning = trackedServerRequests.reduce((sum, request) => sum + request.running, 0);
+  const serverQueued = trackedPlanning + trackedQueued || currentSyncStatus?.analysisJobs?.queued || 0;
+  const serverRunning = trackedRunning || currentSyncStatus?.analysisJobs?.running || 0;
+  const hasTrackedServerBatch = trackedServerRequests.length > 0;
   const isRunning = snap.ownerId === ownerId && snap.state === "running";
 
   React.useEffect(() => {
@@ -393,15 +344,12 @@ export function BackgroundAnalysisBar() {
     if (browserStarting || serverQueueing) return;
     setServerQueueing(true);
     try {
-      const [response, latestStatus] = await Promise.all([
-        fetch("/api/games?hasAnalysis=false&page=1&limit=25", {
-          cache: "no-store",
-        }),
-        getSyncStatus(),
-      ]);
+      const { response, json: responseJson } = await fetchJsonWithTimeout(
+        "/api/games?hasAnalysis=false&page=1&limit=25",
+        { cache: "no-store" }
+      );
       if (activeOwnerId.current !== authenticatedOwnerId) return;
-      setSyncStatus(latestStatus);
-      const json = (await response.json().catch(() => ({}))) as {
+      const json = responseJson as {
         games?: { id: string }[];
         error?: string;
       };
@@ -424,48 +372,18 @@ export function BackgroundAnalysisBar() {
     if (serverReviewIds.length === 0) return;
     setServerQueueing(true);
     try {
-      const latestStatus = await getSyncStatus();
-      if (activeOwnerId.current !== authenticatedOwnerId) return;
-      setSyncStatus(latestStatus);
-      if (
-        latestStatus.billing &&
-        serverReviewIds.length > latestStatus.billing.reservableGames
-      ) {
-        toast.error(
-          latestStatus.billing.limitingReason ??
-            `Only ${latestStatus.billing.reservableGames} games can be reserved right now at ${latestStatus.billing.creditsPerGame} credits each.`
-        );
+      const result = await queueServerAnalysisBatch({
+        ownerId: authenticatedOwnerId,
+        gameIds: serverReviewIds,
+      });
+      if (result.state === "confirming") {
+        toast.message("The server is still confirming this request. Backranq will keep checking it in the background.");
+        setServerReviewOpen(false);
+        setServerReviewIds([]);
+        setCollapsed(false);
         return;
       }
-      const result = await enqueueServerAnalysisJobs({ gameIds: serverReviewIds });
       toastServerQueueResult(result);
-      if (result.queued > 0) {
-        const incomingBatch = createServerAnalysisBatch({
-          ownerId: authenticatedOwnerId,
-          queued: result.queued,
-          jobIds: (result.jobs ?? [])
-            .filter((job) => job.acceptedInBatch === true)
-            .map((job) => job.id),
-          failedAtStart: latestStatus.analysisJobs?.failed ?? 0,
-          trainingMomentsAtStart: trainingMomentCount,
-          pendingAtStart: snap.pendingUnanalyzedCount,
-        });
-        const batch = mergeServerAnalysisBatches(
-          mergeServerAnalysisBatches(
-            serverBatch.current,
-            readServerAnalysisBatch(authenticatedOwnerId)
-          ),
-          incomingBatch
-        );
-        serverBatch.current = batch;
-        setHasTrackedServerBatch(!!batch);
-        writeServerAnalysisBatch(authenticatedOwnerId, batch);
-      }
-      setLastCompletion(null);
-      clearLastAnalysisCompletion(authenticatedOwnerId);
-      publishLibraryChanged(authenticatedOwnerId, {
-        invalidateCompletion: true,
-      });
       setServerReviewOpen(false);
       setServerReviewIds([]);
       await refreshAll();
@@ -501,7 +419,7 @@ export function BackgroundAnalysisBar() {
       currentCompletion?.status === "partial");
   const billing = currentSyncStatus?.billing;
   const serverReviewOverCapacity =
-    !billing || serverReviewIds.length > billing.reservableGames;
+    !!billing && serverReviewIds.length > billing.reservableGames;
 
   return (
     <>
@@ -610,7 +528,8 @@ export function BackgroundAnalysisBar() {
         confirmLabel={`Queue ${serverReviewIds.length} game${serverReviewIds.length === 1 ? "" : "s"}`}
         onConfirm={confirmServerAnalysis}
         busy={serverQueueing}
-        confirmDisabled={serverReviewOverCapacity}
+        allowCloseWhileBusy
+        confirmDisabled={false}
       >
         <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
           {billing ? (
@@ -635,8 +554,8 @@ export function BackgroundAnalysisBar() {
               ) : null}
             </>
           ) : (
-            <div className="text-destructive">
-              Credit capacity could not be verified. Close and retry.
+            <div className="text-muted-foreground">
+              Current credit capacity is unavailable. The server will apply the authoritative limits while planning this batch.
             </div>
           )}
           <div>
@@ -649,21 +568,20 @@ export function BackgroundAnalysisBar() {
 }
 
 function toastServerQueueResult(result: {
-  queued: number;
-  skipped: number;
-  requested?: number;
-  accepted?: number;
-  errors?: Array<{ error: string }>;
+  batch: {
+    requested: number;
+    planning: number;
+    queued: number;
+    running: number;
+    skipped: number;
+    failed: number;
+  };
 }) {
-  const parts = [`Queued ${result.queued} game${result.queued === 1 ? "" : "s"}`];
-  if (result.skipped > 0) parts.push(`${result.skipped} already queued or complete`);
-  const rejected =
-    result.requested != null && result.accepted != null
-      ? Math.max(0, result.requested - result.accepted)
-      : 0;
-  if (rejected > 0) parts.push(`${rejected} unavailable`);
-  if (result.errors?.length) parts.push(`${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`);
+  const accepted = acceptedServerAnalysisCount(result.batch);
+  const parts = [`Accepted ${accepted} game${accepted === 1 ? "" : "s"}`];
+  if (result.batch.skipped > 0) parts.push(`${result.batch.skipped} already queued or complete`);
+  if (result.batch.failed > 0) parts.push(`${result.batch.failed} unavailable`);
   const message = `${parts.join(", ")} for server analysis.`;
-  if (result.errors?.length || rejected > 0) toast.warning(message);
+  if (result.batch.failed > 0) toast.warning(message);
   else toast.message(message);
 }
