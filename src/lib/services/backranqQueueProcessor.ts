@@ -26,6 +26,7 @@ import {
     processPracticeDueSweepPage,
 } from '@/lib/training/practiceDueSweep';
 import { processWeeklyMasterRun } from '@/lib/master/pipelineRunner';
+import { runAnalysisMaintenanceHeartbeat } from '@/lib/services/analysisMaintenance';
 
 export async function processBackranqQueueMessage(message: BackranqQueueMessage) {
     if (message.type === 'weekly-master-run') {
@@ -96,6 +97,9 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
         const dispatch = await dispatchQueuedAnalysisJobs();
         const outbox = await flushAnalysisOutbox();
         return { dispatch, outbox };
+    }
+    if (message.type === 'analysis-maintenance') {
+        return runAnalysisMaintenanceHeartbeat();
     }
     if (message.type === 'analysis-batch') {
         const batch = await processAnalysisBatchPage(message.batchId);

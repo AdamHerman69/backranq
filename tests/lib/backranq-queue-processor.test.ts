@@ -18,6 +18,7 @@ const processPracticeDueNotificationPageMock = vi.fn();
 const processPracticeDueSweepPageMock = vi.fn();
 const flushAnalysisOutboxMock = vi.fn();
 const processAnalysisBatchPageMock = vi.fn();
+const runAnalysisMaintenanceHeartbeatMock = vi.fn();
 
 class StaleAnalysisDeliveryError extends Error {}
 
@@ -42,6 +43,10 @@ async function importProcessor() {
     }));
     vi.doMock('@/lib/services/analysisBatches', () => ({
         processAnalysisBatchPage: processAnalysisBatchPageMock,
+    }));
+    vi.doMock('@/lib/services/analysisMaintenance', () => ({
+        runAnalysisMaintenanceHeartbeat:
+            runAnalysisMaintenanceHeartbeatMock,
     }));
     vi.doMock('@/lib/services/autoAnalysisBacklog', () => ({
         dispatchAutoAnalysisPolicySweep:
@@ -104,6 +109,10 @@ describe('Backranq analysis queue processor', () => {
             failed: 0,
             ambiguous: 0,
             items: [],
+        });
+        runAnalysisMaintenanceHeartbeatMock.mockResolvedValue({
+            skipped: null,
+            nextHeartbeat: { queued: true, messageId: 'heartbeat-2' },
         });
     });
 
@@ -334,6 +343,20 @@ describe('Backranq analysis queue processor', () => {
         });
 
         expect(flushAnalysisOutboxMock).toHaveBeenCalledOnce();
+    });
+
+    it('runs and reschedules the durable maintenance heartbeat', async () => {
+        const processor = await importProcessor();
+
+        const result = await processor.processBackranqQueueMessage({
+            type: 'analysis-maintenance',
+            requestedAt: '2026-08-12T12:00:00.000Z',
+        });
+
+        expect(runAnalysisMaintenanceHeartbeatMock).toHaveBeenCalledOnce();
+        expect(result).toMatchObject({
+            nextHeartbeat: { queued: true, messageId: 'heartbeat-2' },
+        });
     });
 
     it('processes a durable per-user auto-analysis reconciliation wakeup', async () => {
