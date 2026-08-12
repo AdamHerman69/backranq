@@ -486,8 +486,9 @@ test.describe('authenticated games library', () => {
             .click();
         await queueStarted;
 
-        await expect(dialog.getByRole('button', { name: 'Close' })).toBeEnabled();
-        await dialog.getByRole('button', { name: 'Close' }).click();
+        const closeButton = dialog.getByText('Close', { exact: true });
+        await expect(closeButton).toBeEnabled();
+        await closeButton.click();
         await expect(dialog).toBeHidden();
         releaseQueue();
     });
