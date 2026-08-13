@@ -259,6 +259,7 @@ describe('incremental sync client', () => {
 
         let reads = 0;
         const result = await waitForIncrementalSyncJobs({
+            ownerId: 'user-1',
             jobIds: ['job-1', 'job-2'],
             initialActivity: queued,
             maxAttempts: 3,
@@ -299,6 +300,7 @@ describe('incremental sync client', () => {
         const running = syncActivity([syncJob('job-1', 'RUNNING')]);
         let reads = 0;
         const result = await waitForIncrementalSyncJobs({
+            ownerId: 'user-1',
             jobIds: ['job-1'],
             initialActivity: running,
             maxAttempts: 2,
@@ -313,6 +315,39 @@ describe('incremental sync client', () => {
             complete: false,
             timedOut: true,
         });
+    });
+
+    it('rejects initial activity from another owner before polling', async () => {
+        const activity = syncActivity([syncJob('job-1', 'RUNNING')]);
+        activity.ownerId = 'user-b';
+        const fetchActivity = async () => syncActivity([]);
+
+        await expect(
+            waitForIncrementalSyncJobs({
+                ownerId: 'user-a',
+                jobIds: ['job-1'],
+                initialActivity: activity,
+                fetchActivity,
+            })
+        ).rejects.toThrow('Invalid initial sync activity owner');
+    });
+
+    it('fails immediately when polling returns another owner', async () => {
+        const fetchActivity = async () => {
+            const activity = syncActivity([]);
+            activity.ownerId = 'user-b';
+            return activity;
+        };
+
+        await expect(
+            waitForIncrementalSyncJobs({
+                ownerId: 'user-a',
+                jobIds: ['job-1'],
+                maxAttempts: 3,
+                wait: async () => undefined,
+                fetchActivity,
+            })
+        ).rejects.toThrow('Invalid sync activity owner');
     });
 
     it('observes an exact requested terminal job after newer activity displaces it', () => {
@@ -378,6 +413,7 @@ function syncJob(
 
 function syncActivity(jobs: SyncJobActivity[]): UserSyncActivity {
     return {
+        ownerId: 'user-1',
         providers: [
             {
                 provider: 'LICHESS',

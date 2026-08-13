@@ -40,6 +40,11 @@ function enumList(values: readonly string[], enumName: string) {
 
 function filterSql(filters: PracticeFilters) {
     const clauses: Prisma.Sql[] = [];
+    if (filters.gameId) {
+        clauses.push(
+            Prisma.sql`moment."gameId" = ${filters.gameId}::uuid`
+        );
+    }
     if (filters.phases?.length) {
         clauses.push(
             Prisma.sql`moment."phase" IN (${enumList(filters.phases, '"GamePhase"')})`
@@ -78,6 +83,23 @@ function filterSql(filters: PracticeFilters) {
     }
     return clauses.length
         ? Prisma.sql`AND ${Prisma.join(clauses, ' AND ')}`
+        : Prisma.empty;
+}
+
+function dueGameScopeSql(filters: PracticeFilters) {
+    if (!filters.gameId) return Prisma.empty;
+    return Prisma.sql`AND EXISTS (
+        SELECT 1
+        FROM "TrainingMoment" scoped_moment
+        WHERE scoped_moment."id" = state."trainingMomentId"
+          AND scoped_moment."userId" = state."userId"
+          AND scoped_moment."gameId" = ${filters.gameId}::uuid
+    )`;
+}
+
+function newGameScopeSql(filters: PracticeFilters) {
+    return filters.gameId
+        ? Prisma.sql`AND moment."gameId" = ${filters.gameId}::uuid`
         : Prisma.empty;
 }
 
@@ -126,6 +148,7 @@ async function queryDueSlice(args: {
             WHERE state."userId" = ${args.userId}::uuid
               AND state."nextDueAt" <= ${args.feedStartedAt}
               AND ${dueBucketSql(args.cursor.bucket)}
+              ${dueGameScopeSql(args.filters)}
               ${dueAfterSql(args.cursor)}
             ORDER BY state."nextDueAt" ASC, state."id" ASC
             LIMIT ${PRACTICE_SCAN_SLICE_SIZE}
@@ -241,6 +264,7 @@ async function queryNewSlice(args: {
               AND moment."archivedAt" IS NULL
               AND moment."currentSolutionRevisionId" IS NOT NULL
               AND moment."createdAt" <= ${args.feedStartedAt}
+              ${newGameScopeSql(args.filters)}
               ${newAfterSql(args.cursor)}
             ORDER BY moment."createdAt" ASC, moment."id" ASC
             LIMIT ${PRACTICE_SCAN_SLICE_SIZE}

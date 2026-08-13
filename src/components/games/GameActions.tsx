@@ -1,9 +1,10 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import {
     BrainCircuit,
     CloudCog,
@@ -41,6 +42,17 @@ import {
     type PreferencesSchema,
 } from '@/lib/preferences';
 import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
+import { resolveSessionOwnerId } from '@/lib/auth/ownerRun';
+import {
+    cleanupBrowserGameAnalysisRun,
+    isBrowserGameAnalysisRunCurrent,
+    type BrowserGameAnalysisRun,
+} from '@/lib/analysis/browserGameAnalysisRun';
+
+type ActiveBrowserAnalysisRun = BrowserGameAnalysisRun<StockfishClient> & {
+    toastId: ReturnType<typeof toast.loading>;
+};
 
 export function GameActions({
     ownerId,
@@ -60,12 +72,20 @@ export function GameActions({
     onAnalysisSaved?: (analysis: GameAnalysis) => void;
 }) {
     const router = useRouter();
+    const { data: session, status: sessionStatus } = useSession();
+    const activeOwnerId = resolveSessionOwnerId({
+        sessionStatus,
+        liveOwnerId: session?.user?.id ?? null,
+        initialOwnerId: ownerId,
+    });
+    const ownerReady = activeOwnerId === ownerId;
     const [busy, setBusy] = useState(false);
     const [progress, setProgress] = useState<AnalysisProgressState | null>(null);
     const [browserReviewOpen, setBrowserReviewOpen] = useState(false);
     const [serverReviewOpen, setServerReviewOpen] = useState(false);
     const [deleteReviewOpen, setDeleteReviewOpen] = useState(false);
-    const engineRef = useRef<StockfishClient | null>(null);
+    const activeBrowserRunRef = useRef<ActiveBrowserAnalysisRun | null>(null);
+    const browserRunGenerationRef = useRef(0);
     const actionLabel = hasAnalysis ? 'Re-analyze' : 'Analyze';
     const hasConfirmingServerRequest =
         useHasConfirmingServerAnalysisRequest(ownerId);
@@ -75,18 +95,58 @@ export function GameActions({
         [normalizedGame]
     );
 
+    function detachBrowserRun(
+        run: ActiveBrowserAnalysisRun | null,
+        dismissToast = false
+    ) {
+        if (!run) return;
+        if (activeBrowserRunRef.current === run) {
+            activeBrowserRunRef.current = null;
+        }
+        cleanupBrowserGameAnalysisRun(run);
+        if (dismissToast) toast.dismiss(run.toastId);
+    }
+
     function cancel() {
-        engineRef.current?.cancelAll();
-        engineRef.current?.terminate();
-        engineRef.current = null;
+        const run = activeBrowserRunRef.current;
+        if (!run) return;
+        browserRunGenerationRef.current += 1;
+        detachBrowserRun(run, true);
         setBusy(false);
         setProgress(null);
         toast.message('Cancelled analysis');
     }
 
+    useEffect(() => {
+        if (ownerReady) return;
+        setBrowserReviewOpen(false);
+        setServerReviewOpen(false);
+        setDeleteReviewOpen(false);
+        const run = activeBrowserRunRef.current;
+        if (run) {
+            browserRunGenerationRef.current += 1;
+            detachBrowserRun(run, true);
+        }
+        setBusy(false);
+        setProgress(null);
+    }, [ownerReady]);
+
+    useEffect(() => {
+        return () => {
+            browserRunGenerationRef.current += 1;
+            detachBrowserRun(activeBrowserRunRef.current, true);
+        };
+    }, []);
+
     async function analyze(mode: 'analyze' | 'reanalyze') {
         if (busy) {
             toast.message('Analysis is already in progress.');
+            return;
+        }
+        if (!ownerReady) {
+            toast.error(
+                'Your signed-in account changed. Reload the game before analyzing it.'
+            );
             return;
         }
         if (!canAnalyze) {
@@ -96,30 +156,56 @@ export function GameActions({
             return;
         }
 
-        setBrowserReviewOpen(false);
-        setBusy(true);
         const id = toast.loading(
             mode === 'reanalyze' ? 'Re-analyzing game…' : 'Analyzing game…'
         );
+        const engine = new StockfishClient();
+        const run: ActiveBrowserAnalysisRun = {
+            ownerId,
+            generation: browserRunGenerationRef.current + 1,
+            controller: new AbortController(),
+            engine,
+            cleaned: false,
+            toastId: id,
+        };
+        browserRunGenerationRef.current = run.generation;
+        activeBrowserRunRef.current = run;
+        const isCurrent = () =>
+            isBrowserGameAnalysisRunCurrent({
+                run,
+                activeRun: activeBrowserRunRef.current,
+                activeOwnerId,
+                currentGeneration: browserRunGenerationRef.current,
+            });
+        setBrowserReviewOpen(false);
+        setBusy(true);
         try {
             let analysisDefaults = pickAnalysisDefaults(defaultPreferences());
             const preferencesResponse = await fetch('/api/user/preferences', {
                 cache: 'no-store',
+                headers: { [EXPECTED_OWNER_HEADER]: run.ownerId },
+                signal: run.controller.signal,
             });
+            if (!isCurrent()) return;
             if (preferencesResponse.ok) {
                 const preferencesJson = (await preferencesResponse
                     .json()
                     .catch(() => null)) as {
+                    ownerId?: string;
                     preferences?: PreferencesSchema;
                 } | null;
+                if (!isCurrent()) return;
+                if (preferencesJson?.ownerId !== run.ownerId) {
+                    throw new Error(
+                        'The server returned analysis settings for a different account.'
+                    );
+                }
                 if (preferencesJson?.preferences) {
                     analysisDefaults = pickAnalysisDefaults(
                         preferencesJson.preferences
                     );
                 }
             }
-            const engine = engineRef.current ?? new StockfishClient();
-            engineRef.current = engine;
 
             const res = await extractTrainingMomentsFromGames({
                 games: [normalizedGame],
@@ -130,6 +216,7 @@ export function GameActions({
                     [normalizedGame.id]: dbGameId,
                 },
                 onProgress: (p) => {
+                    if (!isCurrent()) return;
                     const percent =
                         p.plyCount > 0 ? ((p.ply + 1) / p.plyCount) * 100 : 0;
                     setProgress({
@@ -142,6 +229,7 @@ export function GameActions({
                     returnAnalysis: true,
                 }),
             });
+            if (!isCurrent()) return;
 
             const analysis = res.analysis?.get(normalizedGame.id);
             if (!analysis) throw new Error('Analysis produced no result');
@@ -152,10 +240,15 @@ export function GameActions({
                 throw new Error('Practice position extraction did not complete');
             }
             const engineIdentity = await engine.getIdentity();
+            if (!isCurrent()) return;
 
             const saveRes = await fetch(`/api/games/${dbGameId}/analysis`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    [EXPECTED_OWNER_HEADER]: run.ownerId,
+                },
+                signal: run.controller.signal,
                 body: JSON.stringify({
                     analysis,
                     trainingMoments: res.moments.filter(
@@ -169,18 +262,37 @@ export function GameActions({
                 }),
             });
             const saveJson = (await saveRes.json().catch(() => ({}))) as {
+                ownerId?: string;
                 error?: string;
             };
+            if (!isCurrent()) return;
             if (!saveRes.ok) throw new Error(saveJson.error ?? 'Failed to save');
+            if (saveJson.ownerId !== run.ownerId) {
+                throw new Error(
+                    'The server saved analysis for a different account.'
+                );
+            }
 
             toast.success('Analysis saved', { id });
             onAnalysisSaved?.(analysis);
             router.refresh();
         } catch (e) {
+            if (
+                run.controller.signal.aborted ||
+                (e instanceof Error && e.name === 'AbortError') ||
+                !isCurrent()
+            ) {
+                toast.dismiss(id);
+                return;
+            }
             toast.error(e instanceof Error ? e.message : 'Analysis failed', { id });
         } finally {
-            setBusy(false);
-            setProgress(null);
+            const wasCurrent = activeBrowserRunRef.current === run;
+            detachBrowserRun(run);
+            if (wasCurrent) {
+                setBusy(false);
+                setProgress(null);
+            }
         }
     }
 
@@ -276,7 +388,7 @@ export function GameActions({
             <div className="flex flex-wrap items-center gap-2 rounded-2xl border bg-card/75 p-2.5 shadow-[0_16px_50px_-48px_rgba(15,23,42,0.65)]">
                 {trainingMomentCount > 0 ? (
                     <Button asChild title="Practice positions from this game">
-                        <Link href="/practice">
+                        <Link href={`/practice?gameId=${encodeURIComponent(dbGameId)}`}>
                             <Target aria-hidden="true" />
                             Practice {trainingMomentCount}{' '}
                             {trainingMomentCount === 1 ? 'position' : 'positions'}
@@ -288,7 +400,7 @@ export function GameActions({
                     <Button
                         type="button"
                         variant={trainingMomentCount > 0 ? 'outline' : 'default'}
-                        disabled={busy}
+                        disabled={busy || !ownerReady}
                         onClick={() => setBrowserReviewOpen(true)}
                     >
                         <BrainCircuit aria-hidden="true" />
@@ -300,7 +412,7 @@ export function GameActions({
                     <Button
                         type="button"
                         variant="ghost"
-                        disabled={busy}
+                        disabled={busy || !ownerReady}
                         onClick={() => setServerReviewOpen(true)}
                     >
                         <CloudCog aria-hidden="true" />
@@ -325,6 +437,7 @@ export function GameActions({
                             <DropdownMenuItem
                                 disabled={
                                     busy ||
+                                    !ownerReady ||
                                     (hasAnalysis && hasConfirmingServerRequest)
                                 }
                                 onSelect={() => setBrowserReviewOpen(true)}
@@ -333,7 +446,7 @@ export function GameActions({
                                 {actionLabel} in browser
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                                disabled={busy}
+                                disabled={busy || !ownerReady}
                                 onSelect={() => setServerReviewOpen(true)}
                             >
                                 <CloudCog className="mr-2" aria-hidden="true" />
@@ -345,7 +458,7 @@ export function GameActions({
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
-                                disabled={busy}
+                                disabled={busy || !ownerReady}
                                 className="text-destructive focus:text-destructive"
                                 onSelect={() => setDeleteReviewOpen(true)}
                             >
@@ -385,6 +498,7 @@ export function GameActions({
                 confirmLabel={`Start free ${hasAnalysis ? 're-analysis' : 'analysis'}`}
                 onConfirm={() => analyze(hasAnalysis ? 'reanalyze' : 'analyze')}
                 busy={busy}
+                confirmDisabled={!ownerReady || !canAnalyze}
             >
                 <dl className="grid gap-3 rounded-md border bg-muted/30 p-4 text-sm sm:grid-cols-2">
                     <div>
@@ -436,7 +550,9 @@ export function GameActions({
                 busy={busy}
                 allowCloseWhileBusy
                 confirmDisabled={
-                    !canAnalyze || (hasAnalysis && hasConfirmingServerRequest)
+                    !ownerReady ||
+                    !canAnalyze ||
+                    (hasAnalysis && hasConfirmingServerRequest)
                 }
             >
                 <dl className="grid gap-3 rounded-md border bg-muted/30 p-4 text-sm sm:grid-cols-2">
@@ -547,6 +663,7 @@ export function GameActions({
                 onConfirm={deleteGame}
                 variant="destructive"
                 busy={busy}
+                confirmDisabled={!ownerReady}
             >
                 <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm">
                     Deleting this game also permanently removes every associated

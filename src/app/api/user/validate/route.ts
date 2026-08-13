@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
+import { consumeProviderProxyRateLimit } from '@/lib/api/providerProxyRateLimit';
 import {
     lookupProviderProfile,
     type ProfileProvider,
@@ -9,7 +10,8 @@ export const runtime = 'nodejs';
 
 export async function GET(req: Request) {
     const session = await auth();
-    if (!session?.user?.id) {
+    const userId = session?.user?.id;
+    if (!userId) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -25,6 +27,26 @@ export async function GET(req: Request) {
     }
     if (!username) {
         return NextResponse.json({ ok: true, exists: true });
+    }
+    const rateLimit = await consumeProviderProxyRateLimit({
+        request: req,
+        userId,
+        operation: 'profile',
+    });
+    if (!rateLimit.allowed) {
+        return NextResponse.json(
+            {
+                ok: false,
+                retryable: true,
+                error: 'Too many provider lookups. Try again shortly.',
+            },
+            {
+                status: 429,
+                headers: {
+                    'Retry-After': String(rateLimit.retryAfterSeconds),
+                },
+            }
+        );
     }
 
     const lookup = await lookupProviderProfile({

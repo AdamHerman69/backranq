@@ -6,9 +6,12 @@ import {
     practiceFeedLoadErrorAfterEvent,
     practiceFeedOnlineAfterRead,
     practicePromptKey,
+    isPracticeOwnerRunCurrent,
+    resolvePracticeOwnerId,
     shouldPrefetchPracticeFeed,
     unseenPracticePrompts,
 } from '@/lib/hooks/usePracticeFeed';
+import { trainingQueueStorageKey } from '@/lib/training/offlineQueue';
 
 function prompt(
     id: string,
@@ -135,5 +138,67 @@ describe('practice feed read recovery', () => {
                 event
             )
         ).toBeNull();
+    });
+});
+
+describe('practice owner fencing', () => {
+    it('uses the SSR owner only until the live session resolves', () => {
+        expect(
+            resolvePracticeOwnerId({
+                sessionStatus: 'loading',
+                liveOwnerId: null,
+                initialOwnerId: 'user-a',
+            })
+        ).toBe('user-a');
+        expect(
+            resolvePracticeOwnerId({
+                sessionStatus: 'authenticated',
+                liveOwnerId: 'user-b',
+                initialOwnerId: 'user-a',
+            })
+        ).toBe('user-b');
+        expect(
+            resolvePracticeOwnerId({
+                sessionStatus: 'unauthenticated',
+                liveOwnerId: null,
+                initialOwnerId: 'user-a',
+            })
+        ).toBeNull();
+    });
+
+    it('drops a deferred user A result after switching to B without writing A outbox state', async () => {
+        let resolveRead!: (value: TrainingPromptDto) => void;
+        const deferredRead = new Promise<TrainingPromptDto>((resolve) => {
+            resolveRead = resolve;
+        });
+        let currentOwnerId: string | null = 'user-a';
+        let currentGeneration = 1;
+        const run = { ownerId: 'user-a', generation: 1 };
+        let committedPrompt: TrainingPromptDto | null = null;
+        const storage = new Map<string, string>();
+
+        const completion = deferredRead.then((result) => {
+            if (
+                !isPracticeOwnerRunCurrent({
+                    expectedOwnerId: run.ownerId,
+                    currentOwnerId,
+                    generation: run.generation,
+                    currentGeneration,
+                })
+            ) {
+                return;
+            }
+            committedPrompt = result;
+            storage.set(trainingQueueStorageKey(run.ownerId), 'stale-write');
+        });
+
+        currentOwnerId = 'user-b';
+        currentGeneration += 1;
+        resolveRead(prompt('user-a-moment'));
+        await completion;
+
+        expect(committedPrompt).toBeNull();
+        expect(storage.has(trainingQueueStorageKey('user-a'))).toBe(false);
+        expect(storage.has(trainingQueueStorageKey('user-b'))).toBe(false);
     });
 });

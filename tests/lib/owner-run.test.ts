@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
     advanceOwnerEpoch,
     captureOwnerRun,
+    isOwnerRunGenerationCurrent,
     isOwnerRunCurrent,
+    resolveSessionOwnerId,
     type OwnerEpoch,
 } from '@/lib/auth/ownerRun';
 
@@ -27,5 +29,45 @@ describe('owner run tokens', () => {
         epoch = advanceOwnerEpoch(epoch, null);
 
         expect(isOwnerRunCurrent(enqueueRun!, epoch)).toBe(false);
+    });
+
+    it('uses the server owner only while the live session is loading', () => {
+        expect(
+            resolveSessionOwnerId({
+                sessionStatus: 'loading',
+                liveOwnerId: null,
+                initialOwnerId: 'owner-a',
+            })
+        ).toBe('owner-a');
+        expect(
+            resolveSessionOwnerId({
+                sessionStatus: 'authenticated',
+                liveOwnerId: 'owner-b',
+                initialOwnerId: 'owner-a',
+            })
+        ).toBe('owner-b');
+        expect(
+            resolveSessionOwnerId({
+                sessionStatus: 'unauthenticated',
+                liveOwnerId: null,
+                initialOwnerId: 'owner-a',
+            })
+        ).toBeNull();
+    });
+
+    it('rejects a stale generation even after switching A to B and back to A', () => {
+        let epoch: OwnerEpoch = { ownerId: 'owner-a', generation: 1 };
+        const staleRun = captureOwnerRun(epoch)!;
+        epoch = advanceOwnerEpoch(epoch, 'owner-b');
+        epoch = advanceOwnerEpoch(epoch, 'owner-a');
+
+        expect(
+            isOwnerRunGenerationCurrent({
+                run: staleRun,
+                epoch,
+                generation: 1,
+                currentGeneration: 3,
+            })
+        ).toBe(false);
     });
 });

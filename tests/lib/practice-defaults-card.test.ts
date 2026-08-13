@@ -8,6 +8,7 @@ describe('default position mix save state', () => {
         loadError: null,
         loading: false,
         mix: 'MY_MISTAKES' as const,
+        ownerReady: true,
         savedMix: 'ALL' as const,
     };
 
@@ -36,6 +37,9 @@ describe('default position mix save state', () => {
                 ...readyState,
                 loadError: 'Unavailable',
             })
+        ).toBe(false);
+        expect(
+            canSavePracticeMix({ ...readyState, ownerReady: false })
         ).toBe(false);
     });
 });

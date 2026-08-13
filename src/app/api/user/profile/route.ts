@@ -8,6 +8,7 @@ import {
 import { prisma } from '@/lib/prisma';
 import { linkedUsernameSnapshot } from '@/lib/accounts/chessAccountConnections';
 import { boundedJsonBody, isRecord } from '@/lib/api/validation';
+import { consumeProviderProxyRateLimit } from '@/lib/api/providerProxyRateLimit';
 import {
     lookupProviderProfile,
     providerProfileLabel,
@@ -43,9 +44,33 @@ function ownerConflict() {
 }
 
 async function validateProviderUsername(
+    request: Request,
+    userId: string,
     provider: ProfileProvider,
     username: string
 ) {
+    const rateLimit = await consumeProviderProxyRateLimit({
+        request,
+        userId,
+        operation: 'profile',
+    });
+    if (!rateLimit.allowed) {
+        return {
+            ok: false as const,
+            response: NextResponse.json(
+                {
+                    error: 'Too many provider lookups. Try again shortly.',
+                    retryable: true,
+                },
+                {
+                    status: 429,
+                    headers: {
+                        'Retry-After': String(rateLimit.retryAfterSeconds),
+                    },
+                }
+            ),
+        };
+    }
     const lookup = await lookupProviderProfile({ provider, username });
     if (lookup.state === 'found') return { ok: true as const, lookup };
     if (lookup.state === 'not-found') {
@@ -164,7 +189,7 @@ export async function PATCH(req: Request) {
     if (lichessUsernameRaw !== undefined) {
         const v = (lichessUsernameRaw ?? '').trim();
         const validation = v
-            ? await validateProviderUsername('lichess', v)
+            ? await validateProviderUsername(req, userId, 'lichess', v)
             : null;
         if (validation && !validation.ok) return validation.response;
         const verified = validation?.lookup ?? null;
@@ -181,7 +206,7 @@ export async function PATCH(req: Request) {
     if (chesscomUsernameRaw !== undefined) {
         const v = (chesscomUsernameRaw ?? '').trim().toLowerCase();
         const validation = v
-            ? await validateProviderUsername('chesscom', v)
+            ? await validateProviderUsername(req, userId, 'chesscom', v)
             : null;
         if (validation && !validation.ok) return validation.response;
         const verified = validation?.lookup ?? null;

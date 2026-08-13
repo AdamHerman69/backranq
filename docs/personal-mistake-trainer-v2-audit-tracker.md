@@ -6,7 +6,7 @@ verification gate pass. Checkboxes are intentionally conservative.
 ## Engine/runtime
 
 - [x] Replace the broken Node `stockfish.wasm` server runtime.
-- [x] Prove startup and one real search on supported Node 20 and Node 22.
+- [x] Prove startup and one real search on the supported production Node 24 runtime.
 - [x] Prefer fixed nodes/depth with a wall-clock watchdog.
 - [x] Parse exact MultiPV lines coherently and ignore bound-only scores.
 - [x] Preserve hash between related scan positions where safe.

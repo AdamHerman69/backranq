@@ -14,7 +14,7 @@ test('mobile game review keeps the full board and playback inside the viewport',
     await page.goto(`/games/${E2E_GAMES.standard}`);
 
     const summary = page.getByRole('region', { name: 'Game summary' });
-    const board = page.locator('[data-game-review-board]');
+    const board = page.locator('[data-game-review-board]:visible');
     const playback = page.getByRole('button', { name: 'Play review' });
     const primaryNav = page.getByRole('navigation', { name: 'Main tabs' });
     await expect(summary).toBeVisible();

@@ -1,4 +1,5 @@
-import { Prisma, type AnalysisJob } from '@prisma/client';
+import type { AnalysisJob } from '@prisma/client';
+import { acquireTransactionAdvisoryLock } from '@/lib/db/advisoryLock';
 import { prisma } from '@/lib/prisma';
 import {
     createAnalysisDispatchToken,
@@ -610,8 +611,9 @@ async function claimOneAnalysisJobForUser(args: {
     stageOutbox: boolean;
 }) {
     return prisma.$transaction(async (tx) => {
-        await tx.$queryRaw(
-            Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`analysis-dispatch:${args.userId}`}, 0))`
+        await acquireTransactionAdvisoryLock(
+            tx,
+            `analysis-dispatch:${args.userId}`
         );
 
         const active = await tx.analysisJob.count({

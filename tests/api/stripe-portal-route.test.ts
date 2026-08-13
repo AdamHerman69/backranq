@@ -67,6 +67,7 @@ describe('POST /api/stripe/portal', () => {
 
         expect(response.status).toBe(200);
         await expect(readJson(response)).resolves.toEqual({
+            ownerId: 'user-1',
             id: 'bps_test_1',
             url: 'https://billing.stripe.test/session',
         });

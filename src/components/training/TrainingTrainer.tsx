@@ -95,6 +95,7 @@ export function TrainingTrainer({
     ownerId,
     entry,
     initialMode,
+    initialGameId,
     initialViewMode = 'solve',
     compact = false,
 }: {
@@ -102,6 +103,7 @@ export function TrainingTrainer({
     ownerId?: string;
     entry?: 'progress';
     initialMode?: PracticeFeedMode;
+    initialGameId?: string;
     initialViewMode?: TrainerViewMode;
     compact?: boolean;
 }) {
@@ -109,7 +111,8 @@ export function TrainingTrainer({
         initialMomentId,
         ownerId,
         entry,
-        initialMode
+        initialMode,
+        initialGameId
     );
     const nextPosition = training.next;
     const [flipped, setFlipped] = useState(false);
@@ -307,7 +310,10 @@ export function TrainingTrainer({
         training.appliedPracticeFilters.mode ??
         'RECOMMENDED';
     const isCaughtUp = training.feedExhausted && training.feedHadPositions;
-    const emptyHeading = isCaughtUp
+    const isGameScoped = Boolean(initialGameId);
+    const emptyHeading = isGameScoped
+        ? 'No positions are ready from this game'
+        : isCaughtUp
         ? 'You’re caught up'
         : practiceMode === 'REVIEW'
           ? 'Nothing is due for review'
@@ -316,7 +322,9 @@ export function TrainingTrainer({
             : hasCustomFocus
               ? 'No positions are ready for this focus'
               : 'No practice positions yet';
-    const emptyDescription = isCaughtUp
+    const emptyDescription = isGameScoped
+        ? 'This game has no new or due positions matching the current focus.'
+        : isCaughtUp
         ? 'You’ve completed this queue. Reviewed positions will return when they are due.'
         : practiceMode === 'REVIEW'
           ? 'Your reviewed positions will return here when they are due.'
@@ -496,6 +504,14 @@ export function TrainingTrainer({
                                     {training.queuedCount === 1 ? 'result' : 'results'} waiting to sync
                                 </Badge>
                             ) : null}
+                            {training.failedHistoryWrites.length > 0 ? (
+                                <Badge variant="destructive">
+                                    {training.failedHistoryWrites.length}{' '}
+                                    {training.failedHistoryWrites.length === 1
+                                        ? 'result needs attention'
+                                        : 'results need attention'}
+                                </Badge>
+                            ) : null}
                             <Button
                                 type="button"
                                 size="icon"
@@ -622,22 +638,52 @@ export function TrainingTrainer({
                                 ) : null}
                             </div>
 
-                            {training.error ? (
+                            {training.historyError ||
+                            training.failedHistoryWrites.length > 0 ? (
                                 <div
                                     className="mt-2 flex flex-wrap items-center justify-between gap-2"
                                     role="alert"
                                 >
                                     <p className="text-sm text-destructive">
-                                        {training.error}
+                                        {training.historyError ??
+                                            training.failedHistoryWrites[0]
+                                                ?.lastError?.message ??
+                                            'A practice result was not saved to your history.'}
                                     </p>
-                                    <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() => void training.retryFeed()}
-                                    >
-                                        Reload position
-                                    </Button>
+                                    {training.failedHistoryWrites[0] ? (
+                                        <div className="flex flex-wrap gap-2">
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() =>
+                                                    training.retryHistoryWrite(
+                                                        training
+                                                            .failedHistoryWrites[0]!
+                                                            .request
+                                                            .clientAttemptId
+                                                    )
+                                                }
+                                            >
+                                                Retry saving
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="ghost"
+                                                onClick={() =>
+                                                    training.dismissHistoryWrite(
+                                                        training
+                                                            .failedHistoryWrites[0]!
+                                                            .request
+                                                            .clientAttemptId
+                                                    )
+                                                }
+                                            >
+                                                Discard local copy
+                                            </Button>
+                                        </div>
+                                    ) : null}
                                 </div>
                             ) : null}
                         </div>
@@ -920,6 +966,7 @@ export function TrainingTrainer({
                     <Button
                         type="button"
                         onClick={() => {
+                            if (!training.ownerReady) return;
                             const shouldEnterAnalysis =
                                 revealIntent === 'analysis';
                             setRevealIntent(null);
@@ -928,6 +975,7 @@ export function TrainingTrainer({
                                 enterAnalysis();
                             }
                         }}
+                        disabled={!training.ownerReady}
                     >
                         {revealIntent === 'analysis'
                             ? 'Reveal and analyze'

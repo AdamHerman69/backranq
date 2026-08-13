@@ -8,6 +8,11 @@ export type OwnerRunToken = {
     generation: number;
 };
 
+export type SessionOwnerStatus =
+    | 'loading'
+    | 'authenticated'
+    | 'unauthenticated';
+
 export function advanceOwnerEpoch(
     current: OwnerEpoch,
     nextOwnerId: string | null
@@ -34,5 +39,36 @@ export function isOwnerRunCurrent(
     return (
         token.ownerId === epoch.ownerId &&
         token.generation === epoch.generation
+    );
+}
+
+export function resolveSessionOwnerId({
+    sessionStatus,
+    liveOwnerId,
+    initialOwnerId,
+}: {
+    sessionStatus: SessionOwnerStatus;
+    liveOwnerId: string | null;
+    initialOwnerId: string;
+}): string | null {
+    return sessionStatus === 'loading'
+        ? (liveOwnerId ?? initialOwnerId)
+        : liveOwnerId;
+}
+
+export function isOwnerRunGenerationCurrent({
+    run,
+    epoch,
+    generation,
+    currentGeneration,
+}: {
+    run: OwnerRunToken;
+    epoch: OwnerEpoch;
+    generation: number;
+    currentGeneration: number;
+}): boolean {
+    return (
+        generation === currentGeneration &&
+        isOwnerRunCurrent(run, epoch)
     );
 }

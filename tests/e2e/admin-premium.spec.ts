@@ -32,7 +32,13 @@ test('administrator sees the invitation portal and automatic Pro access', async 
     await expect.poll(() => commandRequests).toBe(0);
 
     await page.goto('/settings');
-    const access = page.getByLabel('Access');
+    const planAndAccount = page.getByRole('region', {
+        name: 'Plan & account',
+    });
+    await expect(planAndAccount).toHaveCount(1);
+    const access = planAndAccount.getByLabel('Access');
     await expect(access).toContainText('Pro — Administrator access');
-    await expect(page.getByLabel('Paid subscription')).toContainText('None');
+    await expect(planAndAccount.getByLabel('Paid subscription')).toContainText(
+        'None'
+    );
 });

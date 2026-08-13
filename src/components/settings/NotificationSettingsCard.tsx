@@ -3,6 +3,15 @@
 import * as React from 'react';
 import { BellRing } from 'lucide-react';
 import { toast } from 'sonner';
+import { useSession } from 'next-auth/react';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
+import {
+    advanceOwnerEpoch,
+    captureOwnerRun,
+    isOwnerRunCurrent,
+    type OwnerEpoch,
+    type OwnerRunToken,
+} from '@/lib/auth/ownerRun';
 import { ErrorState, InlineStatus } from '@/components/ui/async-state';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -11,7 +20,7 @@ import { Input } from '@/components/ui/input';
 import { ListSkeleton } from '@/components/ui/loading-patterns';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-type Preferences = {
+export type NotificationSettingsPreferences = {
     emailPracticeReady: boolean;
     emailAnalysisFailed: boolean;
     emailSyncSummary: boolean;
@@ -24,6 +33,7 @@ type Preferences = {
     digestHour: number;
     emailSuppressedAt: string | null;
 };
+type Preferences = NotificationSettingsPreferences;
 
 const EMAIL_OPTIONS: Array<{ key: keyof Preferences; label: string; description: string }> = [
     { key: 'emailPracticeReady', label: 'New practice ready', description: 'One quiet daily email at most, combining everything that became ready.' },
@@ -33,28 +43,163 @@ const EMAIL_OPTIONS: Array<{ key: keyof Preferences; label: string; description:
     { key: 'emailProductNews', label: 'Product news', description: 'Optional Backranq features and announcements.' },
 ];
 
-export function NotificationSettingsCard() {
+export function resolveNotificationSettingsOwnerId({
+    sessionStatus,
+    liveOwnerId,
+    initialOwnerId,
+}: {
+    sessionStatus: 'loading' | 'authenticated' | 'unauthenticated';
+    liveOwnerId: string | null;
+    initialOwnerId: string;
+}) {
+    return sessionStatus === 'loading'
+        ? (liveOwnerId ?? initialOwnerId)
+        : liveOwnerId;
+}
+
+export function isNotificationSettingsRunCurrent({
+    run,
+    epoch,
+    generation,
+    currentGeneration,
+}: {
+    run: OwnerRunToken;
+    epoch: OwnerEpoch;
+    generation: number;
+    currentGeneration: number;
+}) {
+    return (
+        generation === currentGeneration &&
+        isOwnerRunCurrent(run, epoch)
+    );
+}
+
+export async function disableWebPushForOwner({
+    ownerId,
+    signal,
+    isCurrent,
+    serviceWorker,
+}: {
+    ownerId: string;
+    signal: AbortSignal;
+    isCurrent: () => boolean;
+    serviceWorker: Pick<ServiceWorkerContainer, 'getRegistration'> | null;
+}): Promise<Preferences | null> {
+    const preferenceResponse = await fetch('/api/notifications/preferences', {
+        method: 'PATCH',
+        headers: {
+            'content-type': 'application/json',
+            [EXPECTED_OWNER_HEADER]: ownerId,
+        },
+        body: JSON.stringify({ pushEnabled: false }),
+        signal,
+    });
+    const preferencePayload = await preferenceResponse.json().catch(() => ({})) as {
+        ownerId?: string;
+        preferences?: Preferences;
+        error?: string;
+    };
+    if (!isCurrent()) return null;
+    if (
+        !preferenceResponse.ok ||
+        preferencePayload.ownerId !== ownerId ||
+        !preferencePayload.preferences
+    ) {
+        throw new Error(preferencePayload.error ?? 'Could not disable Web Push.');
+    }
+
+    const registration = await serviceWorker?.getRegistration('/');
+    if (!isCurrent()) return null;
+    const subscription = await registration?.pushManager.getSubscription();
+    if (!isCurrent()) return null;
+    if (subscription) {
+        const response = await fetch(
+            `/api/notifications/push-subscription?endpoint=${encodeURIComponent(subscription.endpoint)}`,
+            {
+                method: 'DELETE',
+                headers: { [EXPECTED_OWNER_HEADER]: ownerId },
+                signal,
+            }
+        );
+        const payload = await response.json().catch(() => ({})) as {
+            ownerId?: string;
+            error?: string;
+        };
+        if (!isCurrent()) return null;
+        if (!response.ok || payload.ownerId !== ownerId) {
+            throw new Error(payload.error ?? 'Could not remove the local Web Push subscription.');
+        }
+        await subscription.unsubscribe();
+        if (!isCurrent()) return null;
+    }
+    return preferencePayload.preferences;
+}
+
+export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId: string }) {
+    const { data: session, status: sessionStatus } = useSession();
+    const liveOwnerId = session?.user?.id ?? null;
+    const ownerId = resolveNotificationSettingsOwnerId({
+        sessionStatus,
+        liveOwnerId,
+        initialOwnerId,
+    });
+    const ownerEpochRef = React.useRef<OwnerEpoch>({ ownerId: null, generation: 0 });
+    ownerEpochRef.current = advanceOwnerEpoch(ownerEpochRef.current, ownerId);
+    const loadControllerRef = React.useRef<AbortController | null>(null);
+    const mutationControllerRef = React.useRef<AbortController | null>(null);
+    const loadGenerationRef = React.useRef(0);
+    const mutationGenerationRef = React.useRef(0);
     const [preferences, setPreferences] = React.useState<Preferences | null>(null);
+    const [loadedOwnerId, setLoadedOwnerId] = React.useState<string | null>(null);
     const [vapidPublicKey, setVapidPublicKey] = React.useState<string | null>(null);
     const [saving, setSaving] = React.useState(false);
     const [loadError, setLoadError] = React.useState<string | null>(null);
 
     const load = React.useCallback(async () => {
+        const run = captureOwnerRun(ownerEpochRef.current);
+        const generation = ++loadGenerationRef.current;
+        loadControllerRef.current?.abort();
+        setLoadedOwnerId(null);
+        setPreferences(null);
+        setVapidPublicKey(null);
+        setSaving(false);
         setLoadError(null);
+        if (!run) {
+            setLoadError('Your session changed. Reload Settings to continue.');
+            return;
+        }
+        const controller = new AbortController();
+        loadControllerRef.current = controller;
+        const isCurrent = () =>
+            !controller.signal.aborted &&
+            isNotificationSettingsRunCurrent({
+                run,
+                epoch: ownerEpochRef.current,
+                generation,
+                currentGeneration: loadGenerationRef.current,
+            });
         try {
             const response = await fetch('/api/notifications/preferences', {
                 cache: 'no-store',
+                signal: controller.signal,
             });
             if (!response.ok) {
                 throw new Error('Could not load notification settings');
             }
             const payload = (await response.json()) as {
+                ownerId?: string;
                 preferences: Preferences;
                 vapidPublicKey: string | null;
             };
+            if (!isCurrent()) return;
+            if (payload.ownerId !== run.ownerId) {
+                throw new Error('The server returned notification settings for a different account.');
+            }
             setPreferences(payload.preferences);
             setVapidPublicKey(payload.vapidPublicKey);
+            setLoadedOwnerId(run.ownerId);
         } catch (error) {
+            if (!isCurrent()) return;
             const message =
                 error instanceof Error
                     ? error.message
@@ -62,45 +207,108 @@ export function NotificationSettingsCard() {
             setPreferences(null);
             setLoadError(message);
             toast.error(message);
+        } finally {
+            if (loadControllerRef.current === controller) {
+                loadControllerRef.current = null;
+            }
         }
     }, []);
 
     React.useEffect(() => {
         void load();
-    }, [load]);
+        return () => {
+            loadControllerRef.current?.abort();
+            mutationControllerRef.current?.abort();
+        };
+    }, [load, ownerId]);
+
+    const ownerReady = Boolean(ownerId && loadedOwnerId === ownerId);
 
     async function save(patch: Partial<Preferences>) {
-        if (!preferences) return;
+        const run = captureOwnerRun(ownerEpochRef.current);
+        if (!preferences || !run || loadedOwnerId !== run.ownerId) return;
+        const generation = ++mutationGenerationRef.current;
+        mutationControllerRef.current?.abort();
+        const controller = new AbortController();
+        mutationControllerRef.current = controller;
+        const isCurrent = () =>
+            !controller.signal.aborted &&
+            isNotificationSettingsRunCurrent({
+                run,
+                epoch: ownerEpochRef.current,
+                generation,
+                currentGeneration: mutationGenerationRef.current,
+            }) &&
+            loadedOwnerId === run.ownerId;
         const previous = preferences;
-        setPreferences({ ...preferences, ...patch });
+        setPreferences((current) => current ? { ...current, ...patch } : current);
         setSaving(true);
         try {
             const response = await fetch('/api/notifications/preferences', {
                 method: 'PATCH',
-                headers: { 'content-type': 'application/json' },
+                headers: {
+                    'content-type': 'application/json',
+                    [EXPECTED_OWNER_HEADER]: run.ownerId,
+                },
                 body: JSON.stringify(patch),
+                signal: controller.signal,
             });
-            const payload = await response.json().catch(() => ({})) as { preferences?: Preferences; error?: string };
+            const payload = await response.json().catch(() => ({})) as {
+                ownerId?: string;
+                preferences?: Preferences;
+                error?: string;
+            };
+            if (!isCurrent()) return;
             if (!response.ok || !payload.preferences) throw new Error(payload.error ?? 'Save failed');
+            if (payload.ownerId !== run.ownerId) {
+                throw new Error('The server saved notification settings for a different account.');
+            }
             setPreferences(payload.preferences);
         } catch (error) {
+            if (!isCurrent()) return;
             setPreferences(previous);
             toast.error(error instanceof Error ? error.message : 'Save failed');
         } finally {
-            setSaving(false);
+            if (mutationControllerRef.current === controller) {
+                mutationControllerRef.current = null;
+            }
+            if (isCurrent()) setSaving(false);
         }
     }
 
     async function togglePush(enabled: boolean) {
-        if (!preferences) return;
+        const run = captureOwnerRun(ownerEpochRef.current);
+        if (!preferences || !run || loadedOwnerId !== run.ownerId) return;
+        const generation = ++mutationGenerationRef.current;
+        mutationControllerRef.current?.abort();
+        const controller = new AbortController();
+        mutationControllerRef.current = controller;
+        const isCurrent = () =>
+            !controller.signal.aborted &&
+            isNotificationSettingsRunCurrent({
+                run,
+                epoch: ownerEpochRef.current,
+                generation,
+                currentGeneration: mutationGenerationRef.current,
+            }) &&
+            loadedOwnerId === run.ownerId;
+        const ownerHeaders = { [EXPECTED_OWNER_HEADER]: run.ownerId };
+        setSaving(true);
+        try {
         if (!enabled) {
-            const registration = await navigator.serviceWorker.ready;
-            const subscription = await registration.pushManager.getSubscription();
-            if (subscription) {
-                await fetch(`/api/notifications/push-subscription?endpoint=${encodeURIComponent(subscription.endpoint)}`, { method: 'DELETE' });
-                await subscription.unsubscribe();
+            const nextPreferences = await disableWebPushForOwner({
+                ownerId: run.ownerId,
+                signal: controller.signal,
+                isCurrent,
+                serviceWorker:
+                    'serviceWorker' in navigator
+                        ? navigator.serviceWorker
+                        : null,
+            });
+            if (nextPreferences && isCurrent()) {
+                setPreferences(nextPreferences);
+                toast.success('Web Push disabled.');
             }
-            await save({ pushEnabled: false });
             return;
         }
         if (!vapidPublicKey || !('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -108,28 +316,45 @@ export function NotificationSettingsCard() {
             return;
         }
         const permission = await Notification.requestPermission();
+        if (!isCurrent()) return;
         if (permission !== 'granted') {
             toast.error('Notification permission was not granted.');
             return;
         }
         const registration = await navigator.serviceWorker.register('/serwist/sw.js', { scope: '/' });
+        if (!isCurrent()) return;
         const subscription =
             (await registration.pushManager.getSubscription()) ??
             (await registration.pushManager.subscribe({
                 userVisibleOnly: true,
                 applicationServerKey: base64UrlToBytes(vapidPublicKey),
             }));
+        if (!isCurrent()) return;
         const response = await fetch('/api/notifications/push-subscription', {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: {
+                'content-type': 'application/json',
+                ...ownerHeaders,
+            },
             body: JSON.stringify(subscription.toJSON()),
+            signal: controller.signal,
         });
-        if (!response.ok) {
-            toast.error('Could not enable Web Push.');
-            return;
+        const payload = await response.json().catch(() => ({})) as { ownerId?: string; error?: string };
+        if (!isCurrent()) return;
+        if (!response.ok || payload.ownerId !== run.ownerId) {
+            throw new Error(payload.error ?? 'Could not enable Web Push.');
         }
-        setPreferences({ ...preferences, pushEnabled: true });
+        setPreferences((current) => current ? { ...current, pushEnabled: true } : current);
         toast.success('Web Push enabled.');
+        } catch (error) {
+            if (!isCurrent()) return;
+            toast.error(error instanceof Error ? error.message : 'Could not change Web Push.');
+        } finally {
+            if (mutationControllerRef.current === controller) {
+                mutationControllerRef.current = null;
+            }
+            if (isCurrent()) setSaving(false);
+        }
     }
 
     return (
@@ -184,7 +409,7 @@ export function NotificationSettingsCard() {
                                 <PreferenceCheckbox
                                     key={option.key}
                                     checked={Boolean(preferences[option.key])}
-                                    disabled={saving || !!preferences.emailSuppressedAt}
+                                    disabled={!ownerReady || saving || !!preferences.emailSuppressedAt}
                                     label={option.label}
                                     description={option.description}
                                     onChange={(checked) => void save({ [option.key]: checked })}
@@ -196,7 +421,7 @@ export function NotificationSettingsCard() {
                                 <span className="font-medium">Game sync digest</span>
                                 <Select
                                     value={preferences.syncDigestFrequency}
-                                    disabled={saving}
+                                    disabled={!ownerReady || saving}
                                     onValueChange={(value) => void save({
                                         syncDigestFrequency: value as Preferences['syncDigestFrequency'],
                                         emailSyncSummary: value !== 'OFF',
@@ -214,7 +439,7 @@ export function NotificationSettingsCard() {
                                 <span className="font-medium">Timezone</span>
                                 <Input
                                     value={preferences.timezone}
-                                    disabled={saving}
+                                    disabled={!ownerReady || saving}
                                     onChange={(event) => setPreferences({ ...preferences, timezone: event.target.value })}
                                     onBlur={() => void save({ timezone: preferences.timezone })}
                                     placeholder="Europe/Prague"
@@ -227,7 +452,7 @@ export function NotificationSettingsCard() {
                                     min={0}
                                     max={23}
                                     value={preferences.digestHour}
-                                    disabled={saving}
+                                    disabled={!ownerReady || saving}
                                     onChange={(event) => setPreferences({ ...preferences, digestHour: Number(event.target.value) })}
                                     onBlur={() => void save({ digestHour: preferences.digestHour })}
                                 />
@@ -240,7 +465,7 @@ export function NotificationSettingsCard() {
                             </div>
                             <Button
                                 variant={preferences.pushEnabled ? 'outline' : 'default'}
-                                disabled={saving}
+                                disabled={!ownerReady || saving}
                                 onClick={() => void togglePush(!preferences.pushEnabled)}
                             >
                                 {preferences.pushEnabled ? 'Disable' : 'Enable'}

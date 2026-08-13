@@ -4,6 +4,13 @@ import * as React from "react";
 import { toast } from "sonner";
 import { useSession } from "next-auth/react";
 import { EXPECTED_OWNER_HEADER } from "@/lib/auth/ownerContract";
+import {
+  advanceOwnerEpoch,
+  captureOwnerRun,
+  isOwnerRunCurrent,
+  type OwnerEpoch,
+  type OwnerRunToken,
+} from "@/lib/auth/ownerRun";
 
 import { gameSourceToUi, timeClassToUi } from "@/lib/api/games";
 import { backgroundAnalysis } from "@/lib/analysis/backgroundAnalysisManager";
@@ -25,6 +32,7 @@ import {
   acceptedServerAnalysisCount,
   queueServerAnalysisBatch,
 } from "@/lib/analysis/serverAnalysisCoordinator";
+import { ModalDialog } from "@/components/ui/ModalDialog";
 
 type ApiGameRow = {
   id: string;
@@ -41,13 +49,23 @@ export function AnalyzeGamesModal({
   open,
   onClose,
   title = "Analyze games",
+  returnFocusElement,
 }: {
   open: boolean;
   onClose: () => void;
   title?: string;
+  returnFocusElement?: HTMLElement | null;
 }) {
   const { data: session } = useSession();
   const ownerId = session?.user?.id ?? null;
+  const ownerEpochRef = React.useRef<OwnerEpoch>({ ownerId: null, generation: 0 });
+  ownerEpochRef.current = advanceOwnerEpoch(ownerEpochRef.current, ownerId);
+  const loadGenerationRef = React.useRef(0);
+  const loadControllerRef = React.useRef<AbortController | null>(null);
+  const returnFocusRef = React.useRef<HTMLElement | null>(null);
+  if (open && returnFocusElement) {
+    returnFocusRef.current = returnFocusElement;
+  }
   const [busy, setBusy] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [games, setGames] = React.useState<ApiGameRow[]>([]);
@@ -60,9 +78,28 @@ export function AnalyzeGamesModal({
   const [serverCapacity, setServerCapacity] = React.useState<
     SyncStatus["billing"] | null
   >(null);
+  const [loadedOwnerId, setLoadedOwnerId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!open) return;
+    const generation = ++loadGenerationRef.current;
+    loadControllerRef.current?.abort();
+    setLoadedOwnerId(null);
+    if (!open || !ownerId) return;
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
+    let ownerMismatch = false;
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      generation === loadGenerationRef.current &&
+      ownerEpochRef.current.ownerId === ownerId;
+    const rejectOwner = (message: string) => {
+      if (!isCurrent() || ownerMismatch) return;
+      ownerMismatch = true;
+      setLoadedOwnerId(null);
+      setGames([]);
+      toast.error(message);
+    };
+
     setBusy(false);
     setLoading(true);
     setGames([]);
@@ -72,43 +109,82 @@ export function AnalyzeGamesModal({
     setServerCapacity(null);
     setAnalysisDefaults(pickAnalysisDefaults(defaultPreferences()));
 
-    fetch("/api/user/preferences", { cache: "no-store" })
+    const preferencesPromise = fetch("/api/user/preferences", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
       .then(async (r) => {
         const json = (await r.json().catch(() => ({}))) as {
+          ownerId?: string;
           preferences?: PreferencesSchema;
           error?: string;
         };
         if (!r.ok) throw new Error(json?.error ?? "Failed to load preferences");
+        if (json.ownerId !== ownerId) {
+          rejectOwner("The server returned analysis settings for a different account.");
+          throw new Error("Preferences belong to a different account");
+        }
         if (!json.preferences) throw new Error("Missing preferences");
+        if (!isCurrent()) return;
         setAnalysisDefaults(pickAnalysisDefaults(json.preferences));
       })
       .catch(() => {
         // ignore: we keep defaults
       })
-      .finally(() => setPrefsLoading(false));
+      .finally(() => {
+        if (isCurrent()) setPrefsLoading(false);
+      });
 
-    getSyncStatus()
+    const statusPromise = getSyncStatus({ signal: controller.signal })
       .then((status) => {
+        if (!isCurrent()) return;
+        if (status.ownerId !== ownerId) {
+          rejectOwner("The server returned analysis capacity for a different account.");
+          throw new Error("Analysis capacity belongs to a different account");
+        }
         setServerCapacity(status.billing ?? null);
       })
       .catch(() => {
+        if (!isCurrent()) return;
         // The enqueue API remains authoritative if capacity cannot be previewed.
         setServerCapacity(null);
       });
 
-    fetch("/api/games?hasAnalysis=false&page=1&limit=50", { cache: "no-store" })
+    const gamesPromise = fetch("/api/games?hasAnalysis=false&page=1&limit=50", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
       .then(async (r) => {
-        const json = (await r.json().catch(() => ({}))) as { games?: ApiGameRow[]; error?: string };
+        const json = (await r.json().catch(() => ({}))) as {
+          ownerId?: string;
+          games?: ApiGameRow[];
+          error?: string;
+        };
         if (!r.ok) throw new Error(json?.error ?? "Failed to load games");
+        if (json.ownerId !== ownerId) {
+          rejectOwner("The server returned games for a different account.");
+          throw new Error("Games belong to a different account");
+        }
+        if (!isCurrent() || ownerMismatch) return;
         const rows = Array.isArray(json.games) ? json.games : [];
         setGames(rows);
+        setLoadedOwnerId(ownerId);
       })
       .catch((e) => {
+        if (!isCurrent() || ownerMismatch) return;
         toast.error(e instanceof Error ? e.message : "Failed to load games");
         setGames([]);
       })
-      .finally(() => setLoading(false));
-  }, [open]);
+      .finally(() => {
+        if (isCurrent()) setLoading(false);
+      });
+
+    void Promise.allSettled([preferencesPromise, statusPromise, gamesPromise]);
+    return () => {
+      controller.abort();
+      if (loadControllerRef.current === controller) loadControllerRef.current = null;
+    };
+  }, [open, ownerId]);
 
   const selectedIds = React.useMemo(() => {
     return Object.entries(selected)
@@ -119,17 +195,17 @@ export function AnalyzeGamesModal({
   const serverQueueableGames = serverCapacity
     ? Math.floor(serverCapacity.reservableCredits / creditsPerGame)
     : null;
+  const ownerLoaded = loadedOwnerId === ownerId;
 
-  React.useEffect(() => {
-    if (!open) return;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, open]);
+  if (!open || !ownerId) return null;
 
-  if (!open) return null;
+  function runIsCurrent(run: OwnerRunToken, generation: number) {
+    return (
+      isOwnerRunCurrent(run, ownerEpochRef.current) &&
+      generation === loadGenerationRef.current &&
+      loadedOwnerId === run.ownerId
+    );
+  }
 
   function close() {
     onClose();
@@ -147,7 +223,9 @@ export function AnalyzeGamesModal({
   }
 
   async function saveAsDefaults() {
-    if (!ownerId) {
+    const run = captureOwnerRun(ownerEpochRef.current);
+    const generation = loadGenerationRef.current;
+    if (!run || !runIsCurrent(run, generation)) {
       toast.error("Your session changed. Reopen analysis and try again.");
       return;
     }
@@ -157,23 +235,37 @@ export function AnalyzeGamesModal({
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          [EXPECTED_OWNER_HEADER]: ownerId,
+          [EXPECTED_OWNER_HEADER]: run.ownerId,
         },
         body: JSON.stringify(analysisDefaults),
       });
       const json = (await res.json().catch(() => ({}))) as {
+        ownerId?: string;
         preferences?: PreferencesSchema;
         error?: string;
       };
       if (!res.ok) throw new Error(json?.error ?? "Save failed");
+      if (json.ownerId !== run.ownerId) {
+        throw new Error("Your session changed before the defaults were saved.");
+      }
+      if (!runIsCurrent(run, generation)) {
+        toast.dismiss(id);
+        return;
+      }
       toast.success("Defaults saved.", { id });
       if (json.preferences) setAnalysisDefaults(pickAnalysisDefaults(json.preferences));
     } catch (e) {
+      if (!runIsCurrent(run, generation)) {
+        toast.dismiss(id);
+        return;
+      }
       toast.error(e instanceof Error ? e.message : "Save failed", { id });
     }
   }
 
   async function analyzeSelected() {
+    const run = captureOwnerRun(ownerEpochRef.current);
+    const generation = loadGenerationRef.current;
     const ids = selectedIds;
     if (ids.length === 0) {
       toast.message("Select at least one game.");
@@ -183,7 +275,7 @@ export function AnalyzeGamesModal({
       toast.message("Choose browser or server analysis.");
       return;
     }
-    if (!ownerId) {
+    if (!run || !runIsCurrent(run, generation)) {
       toast.error("Your session changed. Reopen analysis and try again.");
       return;
     }
@@ -194,68 +286,74 @@ export function AnalyzeGamesModal({
       );
       if (!ok) return;
     }
-    backgroundAnalysis.setOwner(ownerId);
+    backgroundAnalysis.setOwner(run.ownerId);
     setBusy(true);
     try {
       if (analysisMode === "browser") {
-        backgroundAnalysis.enqueueGameDbIdsWithOptions(ownerId, ids, { analysisDefaults });
-        clearLastAnalysisCompletion(ownerId);
-        publishLibraryChanged(ownerId, { invalidateCompletion: true });
-        toast.message(
-          `Browser analysis started for ${ids.length} game${ids.length === 1 ? "" : "s"}. Keep this tab open.`
-        );
+        const enqueue = backgroundAnalysis.enqueueGameDbIdsWithOptions(run.ownerId, ids, { analysisDefaults });
+        if (enqueue.acceptedIds.length > 0) {
+          clearLastAnalysisCompletion(run.ownerId);
+          publishLibraryChanged(run.ownerId, { invalidateCompletion: true });
+          toast.message(
+            `Browser analysis started for ${enqueue.acceptedIds.length} game${enqueue.acceptedIds.length === 1 ? "" : "s"}. Keep this tab open.`
+          );
+        } else {
+          toast.message("Those games are already queued or being analyzed in this browser.");
+        }
       } else {
         const result = await queueServerAnalysisBatch({
-          ownerId,
+          ownerId: run.ownerId,
           gameIds: ids,
           analysisDefaults,
         });
+        if (!runIsCurrent(run, generation)) return;
         if (result.state === "confirming") {
           toast.message("The server is still confirming this request. Backranq will keep checking it in the background.");
         } else {
           toastServerQueueResult(result.batch);
         }
       }
+      if (!runIsCurrent(run, generation)) return;
       onClose();
     } catch (e) {
+      if (!runIsCurrent(run, generation)) return;
       toast.error(e instanceof Error ? e.message : "Failed to start analysis");
     } finally {
-      setBusy(false);
+      if (runIsCurrent(run, generation)) setBusy(false);
     }
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-busy={busy}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onMouseDown={close}
+    <ModalDialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) close();
+      }}
+      title={title}
+      description="Pick which games to analyze and choose whether this device or the server should do the work."
+      className="flex max-h-[calc(100vh-2rem)] max-w-5xl flex-col"
+      bodyClassName="min-h-0 flex-1"
+      onOpenAutoFocus={() => {
+        if (returnFocusRef.current) return;
+        const active = document.activeElement;
+        returnFocusRef.current = active instanceof HTMLElement ? active : null;
+      }}
+      onCloseAutoFocus={(event) => {
+        const target = returnFocusRef.current;
+        if (!target?.isConnected) return;
+        event.preventDefault();
+        target.focus();
+      }}
     >
       <div
-        className="flex w-full max-w-5xl flex-col rounded-xl border bg-card p-4 text-card-foreground shadow-lg"
-        style={{ maxHeight: "calc(100vh - 2rem)" }}
-        onMouseDown={(e) => e.stopPropagation()}
+        aria-busy={busy}
+        className="flex min-h-0 flex-col"
       >
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-base font-semibold">{title}</div>
-          <button
-            type="button"
-            onClick={close}
-            className="h-11 rounded-md border px-3 text-sm font-medium sm:h-9"
-          >
-            Close
-          </button>
-        </div>
-
-        <div className="mt-2 text-sm text-muted-foreground">
-          Pick which games to analyze and choose whether this device or the server should do the work.
-        </div>
         <div className="sr-only" role="status" aria-live="polite">
           {busy ? "Request in progress. You may close this dialog while Backranq continues in the background." : ""}
         </div>
 
-        <div className="mt-4 flex-1 overflow-auto">
+        <div className="min-h-0 flex-1 overflow-auto">
           <div className="rounded-xl border p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm font-semibold">Practice position settings</div>
@@ -272,7 +370,7 @@ export function AnalyzeGamesModal({
                   type="button"
                   className="h-11 rounded-md border px-3 text-sm font-medium sm:h-9"
                   onClick={saveAsDefaults}
-                  disabled={busy || prefsLoading}
+                  disabled={busy || prefsLoading || !ownerLoaded}
                 >
                   Save as defaults
                 </button>
@@ -300,7 +398,7 @@ export function AnalyzeGamesModal({
                 type="button"
                 className="h-11 rounded-md border px-3 text-sm font-medium sm:h-9"
                 onClick={() => toggleAll(true)}
-                disabled={busy || loading || games.length === 0}
+                disabled={busy || loading || !ownerLoaded || games.length === 0}
               >
                 Select all
               </button>
@@ -308,7 +406,7 @@ export function AnalyzeGamesModal({
                 type="button"
                 className="h-11 rounded-md border px-3 text-sm font-medium sm:h-9"
                 onClick={() => toggleAll(false)}
-                disabled={busy || loading || games.length === 0}
+                disabled={busy || loading || !ownerLoaded || games.length === 0}
               >
                 Select none
               </button>
@@ -319,6 +417,7 @@ export function AnalyzeGamesModal({
                 disabled={
                   busy ||
                   loading ||
+                  !ownerLoaded ||
                   selectedIds.length === 0 ||
                   !analysisMode
                 }
@@ -332,7 +431,8 @@ export function AnalyzeGamesModal({
             </div>
           </div>
 
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <fieldset className="mt-4 grid gap-3 sm:grid-cols-2">
+            <legend className="sr-only">Analysis mode</legend>
             <label className="rounded-lg border p-3 text-sm">
               <div className="flex items-start gap-3">
                 <input
@@ -341,7 +441,7 @@ export function AnalyzeGamesModal({
                   name="analysis-mode"
                   checked={analysisMode === "browser"}
                   onChange={() => setAnalysisMode("browser")}
-                  disabled={busy}
+                  disabled={busy || !ownerLoaded}
                 />
                 <span>
                   <span className="block font-medium">Analyze in browser</span>
@@ -359,7 +459,7 @@ export function AnalyzeGamesModal({
                   name="analysis-mode"
                   checked={analysisMode === "server"}
                   onChange={() => setAnalysisMode("server")}
-                  disabled={busy}
+                  disabled={busy || !ownerLoaded}
                 />
                 <span>
                   <span className="block font-medium">Analyze on server</span>
@@ -372,18 +472,18 @@ export function AnalyzeGamesModal({
                 </span>
               </div>
             </label>
-          </div>
+          </fieldset>
 
           <div className="mt-4 overflow-auto rounded-xl border">
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="text-left text-xs text-muted-foreground">
-                  <th className="p-3" />
-                  <th className="p-3">When</th>
-                  <th className="p-3">GameSource</th>
-                  <th className="p-3">Time</th>
-                  <th className="p-3">Players</th>
-                  <th className="p-3">Result</th>
+                  <th className="p-3" scope="col"><span className="sr-only">Select</span></th>
+                  <th className="p-3" scope="col">When</th>
+                  <th className="p-3" scope="col">Game source</th>
+                  <th className="p-3" scope="col">Time</th>
+                  <th className="p-3" scope="col">Players</th>
+                  <th className="p-3" scope="col">Result</th>
                 </tr>
               </thead>
               <tbody>
@@ -395,6 +495,7 @@ export function AnalyzeGamesModal({
                       <td className="p-3">
                         <input
                           type="checkbox"
+                          aria-label={`Select ${g.whiteName} versus ${g.blackName}`}
                           checked={!!selected[g.id]}
                           onChange={(e) =>
                             setSelected((s) => ({
@@ -402,7 +503,7 @@ export function AnalyzeGamesModal({
                               [g.id]: e.target.checked,
                             }))
                           }
-                          disabled={busy}
+                          disabled={busy || !ownerLoaded}
                         />
                       </td>
                       <td className="p-3 font-mono text-xs">
@@ -432,7 +533,7 @@ export function AnalyzeGamesModal({
           </div>
         </div>
       </div>
-    </div>
+    </ModalDialog>
   );
 }
 

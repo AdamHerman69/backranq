@@ -42,14 +42,28 @@ describe('GET /api/admin/readiness', () => {
 
     it('returns readiness for authorized requests', async () => {
         vi.stubEnv('BACKRANQ_ADMIN_API_SECRET', 'ops-secret');
-        vi.stubEnv('DATABASE_URL', 'postgresql://runtime');
-        vi.stubEnv('DIRECT_URL', 'postgresql://direct');
+        vi.stubEnv(
+            'DATABASE_URL',
+            'postgresql://postgres.project:secret@aws-0-region.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1'
+        );
+        vi.stubEnv(
+            'DIRECT_URL',
+            'postgresql://postgres:secret@db.project.supabase.co:5432/postgres'
+        );
+        vi.stubEnv('NEXTAUTH_SECRET', 'auth-secret');
         vi.stubEnv('NEXTAUTH_URL', 'http://localhost:3000');
         vi.stubEnv('STRIPE_SECRET_KEY', 'sk_test_123');
         vi.stubEnv('STRIPE_WEBHOOK_SECRET', 'whsec_123');
         vi.stubEnv('STRIPE_PRICE_PLUS_MONTHLY', 'price_plus');
         vi.stubEnv('STRIPE_PRICE_PRO_MONTHLY', 'price_pro');
         vi.stubEnv('CRON_SECRET', 'cron-secret');
+        vi.stubEnv('SMTP2GO_API_KEY', 'smtp-key');
+        vi.stubEnv('SMTP2GO_WEBHOOK_SECRET', 'smtp-webhook-secret');
+        vi.stubEnv('BACKRANQ_EMAIL_FROM', 'Backranq <notifications@example.com>');
+        vi.stubEnv('NOTIFICATION_UNSUBSCRIBE_SECRET', 'unsubscribe-secret');
+        vi.stubEnv('NEXT_PUBLIC_VAPID_PUBLIC_KEY', 'vapid-public');
+        vi.stubEnv('VAPID_PRIVATE_KEY', 'vapid-private');
+        vi.stubEnv('VAPID_SUBJECT', 'mailto:support@example.com');
         const route = await importRoute();
 
         const response = await route.GET(request('ops-secret'));

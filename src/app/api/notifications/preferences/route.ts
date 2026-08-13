@@ -5,6 +5,10 @@ import { boundedJsonBody, isRecord } from '@/lib/api/validation';
 import { getOrCreateNotificationPreference } from '@/lib/notifications/service';
 import { preferenceDto } from '@/lib/notifications/contracts';
 import { prisma } from '@/lib/prisma';
+import {
+    EXPECTED_OWNER_HEADER,
+    expectedOwnerId,
+} from '@/lib/auth/ownerContract';
 
 export const runtime = 'nodejs';
 const MAX_BODY_BYTES = 16_384;
@@ -23,6 +27,7 @@ export async function GET() {
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const preference = await getOrCreateNotificationPreference(userId);
     return NextResponse.json({
+        ownerId: userId,
         preferences: preferenceDto(preference),
         vapidPublicKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null,
     });
@@ -32,6 +37,14 @@ export async function PATCH(req: Request) {
     const session = await auth();
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (expectedOwnerId(req) !== userId) {
+        return NextResponse.json(
+            {
+                error: `The signed-in account no longer matches ${EXPECTED_OWNER_HEADER}. Reload Settings before saving.`,
+            },
+            { status: 409 }
+        );
+    }
     const parsed = await boundedJsonBody(req, MAX_BODY_BYTES);
     if (!parsed.ok) {
         return NextResponse.json({ error: parsed.error }, { status: parsed.status ?? 400 });
@@ -136,7 +149,10 @@ export async function PATCH(req: Request) {
         }
         return updated;
     });
-    return NextResponse.json({ preferences: preferenceDto(preference) });
+    return NextResponse.json({
+        ownerId: userId,
+        preferences: preferenceDto(preference),
+    });
 }
 
 function disabledEmailTypes(value: Record<string, unknown>) {

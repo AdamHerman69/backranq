@@ -151,7 +151,7 @@ export async function GET(req: Request) {
     ]);
 
     const totalPages = Math.max(1, Math.ceil(total / limit));
-    return NextResponse.json({ games, total, page, totalPages });
+    return NextResponse.json({ ownerId: userId, games, total, page, totalPages });
 }
 
 export async function POST() {

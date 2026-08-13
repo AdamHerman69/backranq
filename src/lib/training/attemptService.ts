@@ -1,13 +1,23 @@
+import { createHash } from 'node:crypto';
+
 import { Chess } from 'chess.js';
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import type {
     RecordTrainingAttemptRequest,
     RecordTrainingAttemptResponse,
+    RecordedTrainingAttemptStepDto,
     TrainingApiErrorCode,
+    TrainingComparisonDto,
+    TrainingGradingManifestDto,
+    TrainingSolutionTreeNodeDto,
 } from '@/lib/training/api';
 import type { AttemptGrade } from '@/lib/training/contracts';
-import { aggregateTrainingGrade } from '@/lib/training/localGrading';
+import { toTrainingPromptDto } from '@/lib/training/apiMappers';
+import {
+    aggregateTrainingGrade,
+    gradeKnownLocalMove,
+} from '@/lib/training/localGrading';
 
 type TrainingWriteDb = Pick<
     PrismaClient,
@@ -17,6 +27,13 @@ type TrainingWriteDb = Pick<
 const attemptMomentSelect = {
     id: true,
     fen: true,
+    sideToMove: true,
+    positionHistory: true,
+    originalMoveUci: true,
+    scoreBefore: true,
+    scoreAfter: true,
+    gameId: true,
+    decisionPly: true,
     phase: true,
     cpLoss: true,
     winChanceLoss: true,
@@ -28,6 +45,7 @@ const attemptMomentSelect = {
         select: {
             provider: true,
             timeClass: true,
+            playedAt: true,
         },
     },
     currentSolutionRevision: {
@@ -37,6 +55,25 @@ const attemptMomentSelect = {
             acceptanceFrontier: true,
             solutionHash: true,
             configHash: true,
+            bestMoveUci: true,
+            acceptedMovesUci: true,
+            solutionShape: true,
+            bestLine: true,
+            scoreAtStart: true,
+            gradingPolicy: true,
+            solutionTree: true,
+            moveAssessments: {
+                select: {
+                    decisionIndex: true,
+                    fen: true,
+                    moveUci: true,
+                    source: true,
+                    status: true,
+                    grade: true,
+                    scoreAfter: true,
+                    evidence: true,
+                },
+            },
         },
     },
 } satisfies Prisma.TrainingMomentSelect;
@@ -80,6 +117,7 @@ async function lockPracticeReviewStream(args: {
     tx: Pick<Prisma.TransactionClient, '$queryRaw'>;
     userId: string;
     trainingMomentId: string;
+    expectedSolutionRevisionId: string;
 }) {
     const lockKey = [
         'practice-review',
@@ -90,15 +128,41 @@ async function lockPracticeReviewStream(args: {
     // Review state is maintained as an absolute scheduler snapshot. Serialize
     // every distinct attempt for one owner + Position before any read/derive/
     // write step so concurrent transactions cannot overwrite an increment.
-    await args.tx.$queryRaw<Array<{ acquired: boolean }>>`
+    const rows = await args.tx.$queryRaw<
+        Array<{
+            acquired: boolean;
+            currentSolutionRevisionId: string;
+        }>
+    >`
         WITH "practice_review_lock" AS MATERIALIZED (
             SELECT pg_advisory_xact_lock(
                 hashtextextended(${lockKey}, 0)
             )
         )
-        SELECT TRUE AS "acquired"
+        SELECT
+            TRUE AS "acquired",
+            moment."currentSolutionRevisionId"
         FROM "practice_review_lock"
+        CROSS JOIN LATERAL (
+            SELECT "currentSolutionRevisionId"
+            FROM "TrainingMoment"
+            WHERE "id" = ${args.trainingMomentId}::uuid
+              AND "userId" = ${args.userId}::uuid
+              AND "status" = 'ACTIVE'
+              AND "archivedAt" IS NULL
+            FOR UPDATE
+        ) AS moment
     `;
+    if (
+        rows[0]?.currentSolutionRevisionId !==
+        args.expectedSolutionRevisionId
+    ) {
+        throw new TrainingAttemptError(
+            'Training solution changed; reload the position',
+            'STALE_REVISION',
+            409
+        );
+    }
 }
 
 async function appendAttemptStatusEvent(args: {
@@ -312,11 +376,77 @@ function applyUci(fen: string, moveUci: string): string | null {
     }
 }
 
-function assertValidRecordedLine(
+type CanonicalRecordedStep = {
+    request: RecordedTrainingAttemptStepDto;
+    grade: AttemptGrade | null;
+    source: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE' | null;
+    comparison: TrainingComparisonDto | null;
+    evidence: unknown;
+};
+
+type CanonicalAttempt = {
+    grade: AttemptGrade | null;
+    gradingSource: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE' | null;
+    comparison: TrainingComparisonDto | null;
+    steps: CanonicalRecordedStep[];
+};
+
+function invalidAttempt(message: string): never {
+    throw new TrainingAttemptError(message, 'INVALID_REQUEST', 400);
+}
+
+function canonicalSelectedBranch(node: TrainingSolutionTreeNodeDto) {
+    return (
+        node.branches.find(
+            (branch) =>
+                normalizeUci(branch.moveUci) ===
+                normalizeUci(node.selectedMoveUci ?? '')
+        ) ??
+        node.branches.find((branch) => branch.best) ??
+        node.branches[0] ??
+        null
+    );
+}
+
+function aggregateCanonicalGradingSource(
+    steps: readonly CanonicalRecordedStep[]
+): 'PRECOMPUTED' | 'TABLEBASE' | null {
+    const userSources = steps.flatMap((step) =>
+        step.request.actor === 'USER' && step.source ? [step.source] : []
+    );
+    return userSources.includes('TABLEBASE')
+        ? 'TABLEBASE'
+        : userSources.includes('PRECOMPUTED')
+          ? 'PRECOMPUTED'
+          : null;
+}
+
+function canonicalizeRecordedLine(
     rootFen: string,
-    request: RecordTrainingAttemptRequest
-) {
-    if (request.status === 'GRADED' && request.steps.length === 0) {
+    request: RecordTrainingAttemptRequest,
+    manifest: TrainingGradingManifestDto
+): CanonicalAttempt {
+    const revealed = request.status === 'REVEALED';
+    if (revealed) {
+        if (
+            request.grade ||
+            request.gradingSource ||
+            request.comparison
+        ) {
+            invalidAttempt(
+                'A revealed attempt cannot carry aggregate grading evidence'
+            );
+        }
+        if (request.steps.length === 0) {
+            return {
+                grade: null,
+                gradingSource: null,
+                comparison: null,
+                steps: [],
+            };
+        }
+    }
+    if (request.steps.length === 0) {
         throw new TrainingAttemptError(
             'A graded attempt requires at least one move',
             'INVALID_REQUEST',
@@ -324,20 +454,23 @@ function assertValidRecordedLine(
         );
     }
     let fen = rootFen;
+    let node: TrainingSolutionTreeNodeDto | null = manifest.solutionTree;
     const userGrades: AttemptGrade[] = [];
+    const canonicalSteps: CanonicalRecordedStep[] = [];
     for (let index = 0; index < request.steps.length; index += 1) {
         const step = request.steps[index]!;
         const expectedActor = index % 2 === 0 ? 'USER' : 'ENGINE';
+        const expectedNodeRole =
+            expectedActor === 'USER' ? 'USER' : 'OPPONENT';
         if (
             step.stepIndex !== index ||
             step.actor !== expectedActor ||
-            step.fenBefore !== fen
+            step.fenBefore !== fen ||
+            !node ||
+            node.fen !== fen ||
+            node.role !== expectedNodeRole
         ) {
-            throw new TrainingAttemptError(
-                'Recorded attempt line is inconsistent',
-                'INVALID_REQUEST',
-                400
-            );
+            invalidAttempt('Recorded attempt line is inconsistent');
         }
         const nextFen = applyUci(fen, step.moveUci);
         if (!nextFen) {
@@ -348,58 +481,140 @@ function assertValidRecordedLine(
             );
         }
         if (step.actor === 'USER') {
-            if (!step.grade) {
-                throw new TrainingAttemptError(
-                    'Every recorded user decision needs a grade',
-                    'INVALID_REQUEST',
-                    400
-                );
+            const evaluation = gradeKnownLocalMove({
+                manifest,
+                node,
+                moveUci: step.moveUci,
+            });
+            if (!evaluation || evaluation.result.status !== 'GRADED') {
+                invalidAttempt('Recorded move has no verified grading evidence');
             }
-            userGrades.push(step.grade);
-        } else if (step.grade || step.source || step.comparison) {
-            throw new TrainingAttemptError(
-                'Engine continuation steps cannot carry a grade',
-                'INVALID_REQUEST',
-                400
+            if (
+                evaluation.source === 'DYNAMIC' ||
+                step.grade !== evaluation.result.grade ||
+                step.source === 'DYNAMIC' ||
+                (step.source !== undefined &&
+                    step.source !== evaluation.source)
+            ) {
+                invalidAttempt('Recorded move grade does not match the verified solution');
+            }
+            userGrades.push(evaluation.result.grade);
+            canonicalSteps.push({
+                request: step,
+                grade: evaluation.result.grade,
+                source: evaluation.source,
+                comparison: evaluation.comparison,
+                evidence: evaluation.evidence,
+            });
+            const branch:
+                | TrainingSolutionTreeNodeDto['branches'][number]
+                | undefined = node.branches.find(
+                (candidate) =>
+                    normalizeUci(candidate.moveUci) ===
+                    normalizeUci(step.moveUci)
             );
+            node = branch?.child ?? null;
+            if (!node && index !== request.steps.length - 1) {
+                invalidAttempt('A rejected move cannot have a continuation');
+            }
+        } else if (step.grade || step.source || step.comparison) {
+            invalidAttempt('Engine continuation steps cannot carry a grade');
+        } else {
+            const branch = canonicalSelectedBranch(node);
+            if (
+                !branch ||
+                normalizeUci(branch.moveUci) !== normalizeUci(step.moveUci)
+            ) {
+                invalidAttempt('Recorded engine continuation is not canonical');
+            }
+            canonicalSteps.push({
+                request: step,
+                grade: null,
+                source: null,
+                comparison: null,
+                evidence: { serverVerified: true, kind: 'CANONICAL_CONTINUATION' },
+            });
+            node = branch.child;
         }
         fen = nextFen;
     }
-    if (request.status === 'GRADED') {
-        if (
-            !request.grade ||
-            request.steps.at(-1)?.actor !== 'USER' ||
-            aggregateTrainingGrade(userGrades) !== request.grade
-        ) {
-            throw new TrainingAttemptError(
-                'Recorded aggregate grade is inconsistent',
-                'INVALID_REQUEST',
-                400
-            );
-        }
-    } else if (request.grade || request.gradingSource) {
-        throw new TrainingAttemptError(
-            'A revealed attempt cannot carry a grade',
-            'INVALID_REQUEST',
-            400
-        );
+    if (revealed) {
+        return {
+            grade: null,
+            gradingSource: null,
+            comparison: null,
+            steps: canonicalSteps,
+        };
     }
+    const grade = aggregateTrainingGrade(userGrades);
+    const firstUserStep = canonicalSteps.find(
+        (step) => step.request.actor === 'USER'
+    );
+    const canonicalGradingSource =
+        aggregateCanonicalGradingSource(canonicalSteps);
+    if (
+        request.steps.at(-1)?.actor !== 'USER' ||
+        (node !== null && node.role !== 'TERMINAL') ||
+        request.grade !== grade ||
+        request.gradingSource === 'DYNAMIC' ||
+        (request.gradingSource !== undefined &&
+            request.gradingSource !== canonicalGradingSource)
+    ) {
+        invalidAttempt('Recorded aggregate grade is inconsistent');
+    }
+    return {
+        grade,
+        gradingSource: canonicalGradingSource,
+        comparison: firstUserStep?.comparison ?? null,
+        steps: canonicalSteps,
+    };
+}
+
+function stableJson(value: unknown): string {
+    if (Array.isArray(value)) {
+        return `[${value.map(stableJson).join(',')}]`;
+    }
+    if (value && typeof value === 'object') {
+        return `{${Object.entries(value as Record<string, unknown>)
+            .filter(([, item]) => item !== undefined)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+            .join(',')}}`;
+    }
+    return JSON.stringify(value);
+}
+
+export function trainingAttemptPayloadHash(args: {
+    momentId: string;
+    request: RecordTrainingAttemptRequest;
+}): string {
+    return createHash('sha256')
+        .update(
+            stableJson({
+                version: 1,
+                momentId: args.momentId,
+                request: args.request,
+            })
+        )
+        .digest('hex');
 }
 
 function assertIdempotentRecord(
     existing: {
         trainingMomentId: string;
         solutionRevisionId: string;
+        clientPayloadHash: string;
     },
     args: {
         momentId: string;
         request: RecordTrainingAttemptRequest;
+        clientPayloadHash: string;
     }
 ) {
     if (
         existing.trainingMomentId !== args.momentId ||
-        existing.solutionRevisionId !==
-            args.request.solutionRevisionId
+        existing.solutionRevisionId !== args.request.solutionRevisionId ||
+        existing.clientPayloadHash !== args.clientPayloadHash
     ) {
         throw new TrainingAttemptError(
             'clientAttemptId payload conflict',
@@ -417,6 +632,7 @@ export async function recordTrainingAttempt(args: {
 }): Promise<RecordTrainingAttemptResponse> {
     const db = args.dependencies.db;
     const now = args.dependencies.now?.() ?? new Date();
+    const clientPayloadHash = trainingAttemptPayloadHash(args);
     const existing = await db.trainingAttempt.findUnique({
         where: {
             userId_clientAttemptId: {
@@ -428,10 +644,11 @@ export async function recordTrainingAttempt(args: {
             id: true,
             trainingMomentId: true,
             solutionRevisionId: true,
+            clientPayloadHash: true,
         },
     });
     if (existing) {
-        assertIdempotentRecord(existing, args);
+        assertIdempotentRecord(existing, { ...args, clientPayloadHash });
         return { attemptId: existing.id, status: 'RECORDED' };
     }
 
@@ -474,12 +691,26 @@ export async function recordTrainingAttempt(args: {
         );
     }
 
-    assertValidRecordedLine(moment.fen, args.request);
+    let manifest: TrainingGradingManifestDto;
+    try {
+        manifest = toTrainingPromptDto(moment).grading;
+    } catch {
+        throw new TrainingAttemptError(
+            'Training moment is not currently trainable',
+            'NOT_FOUND',
+            404
+        );
+    }
+    const canonical = canonicalizeRecordedLine(
+        moment.fen,
+        args.request,
+        manifest
+    );
     const userSteps = args.request.steps.filter(
         (step) => step.actor === 'USER'
     );
     const firstUserStep = userSteps[0] ?? null;
-    const comparison = args.request.comparison ?? null;
+    const comparison = canonical.comparison;
 
     try {
         const attempt = await db.$transaction(async (tx) => {
@@ -487,6 +718,8 @@ export async function recordTrainingAttempt(args: {
                 tx,
                 userId: args.userId,
                 trainingMomentId: args.momentId,
+                expectedSolutionRevisionId:
+                    args.request.solutionRevisionId,
             });
             const created = await tx.trainingAttempt.create({
                 data: {
@@ -496,20 +729,18 @@ export async function recordTrainingAttempt(args: {
                         args.request.solutionRevisionId,
                     clientAttemptId:
                         args.request.clientAttemptId,
+                    clientPayloadHash,
                     userMoveUci: firstUserStep?.moveUci ?? null,
                     timeSpentMs:
                         firstUserStep?.timeSpentMs ?? null,
                     status: args.request.status,
                     grade:
-                        args.request.status === 'GRADED'
-                            ? args.request.grade
-                            : null,
+                        canonical.grade,
                     gradingSource:
-                        args.request.status === 'GRADED'
-                            ? args.request.gradingSource ?? null
-                            : null,
+                        canonical.gradingSource,
                     gradingEvidence: json({
-                        clientGraded: true,
+                        serverVerified: true,
+                        version: 1,
                         submittedScoreAfter:
                             comparison?.submittedScoreAfter ?? null,
                         preservesOutcome:
@@ -537,21 +768,20 @@ export async function recordTrainingAttempt(args: {
             });
             if (args.request.steps.length > 0) {
                 await tx.trainingAttemptStep.createMany({
-                    data: args.request.steps.map((step) => ({
+                    data: canonical.steps.map((step) => ({
                         attemptId: created.id,
-                        stepIndex: step.stepIndex,
-                        actor: step.actor,
-                        fenBefore: step.fenBefore,
-                        moveUci: normalizeUci(step.moveUci),
-                        grade: step.grade ?? null,
+                        stepIndex: step.request.stepIndex,
+                        actor: step.request.actor,
+                        fenBefore: step.request.fenBefore,
+                        moveUci: normalizeUci(step.request.moveUci),
+                        grade: step.grade,
                         evidence: json({
-                            clientGraded:
-                                step.actor === 'USER',
-                            source: step.source ?? null,
-                            comparison:
-                                step.comparison ?? null,
+                            serverVerified: true,
+                            source: step.source,
+                            comparison: step.comparison,
+                            evidence: step.evidence,
                         }),
-                        timeSpentMs: step.timeSpentMs ?? null,
+                        timeSpentMs: step.request.timeSpentMs ?? null,
                     })),
                 });
             }
@@ -574,7 +804,7 @@ export async function recordTrainingAttempt(args: {
                 status: args.request.status,
                 grade:
                     args.request.status === 'GRADED'
-                        ? args.request.grade
+                        ? canonical.grade
                         : null,
                 occurredAt: now,
             });
@@ -589,7 +819,7 @@ export async function recordTrainingAttempt(args: {
                     revision.configHash,
                 grade:
                     args.request.status === 'GRADED'
-                        ? args.request.grade
+                        ? canonical.grade ?? undefined
                         : undefined,
                 revealed: args.request.status === 'REVEALED',
                 occurredAt: now,
@@ -611,10 +841,11 @@ export async function recordTrainingAttempt(args: {
                 id: true,
                 trainingMomentId: true,
                 solutionRevisionId: true,
+                clientPayloadHash: true,
             },
         });
         if (!winner) throw error;
-        assertIdempotentRecord(winner, args);
+        assertIdempotentRecord(winner, { ...args, clientPayloadHash });
         return { attemptId: winner.id, status: 'RECORDED' };
     }
 }

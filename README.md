@@ -1,10 +1,20 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+Backranq supports Node.js 24. Use the version in `.nvmrc`; CI and the
+production Vercel project use the same major runtime.
+
 ## Getting Started
 
 ### Environment variables
 
 Copy `env.local.example` to `.env.local` and fill in at least `DATABASE_URL`, `DIRECT_URL`, `NEXTAUTH_SECRET`, and whichever OAuth provider credentials you want enabled.
+
+The runtime database URL must use the serverless pooler with
+`pgbouncer=true&connection_limit=1` (or `connection_limit=2`). Keep
+`DIRECT_URL` on the direct database endpoint for migrations. Operator scripts
+load environment files with the same precedence as Next.js: explicit process
+variables, environment-specific local values, `.env.local`, environment-specific
+values, then `.env`.
 
 For Supabase-backed local development, also set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. The health endpoint reports Prisma/database health separately from Supabase REST configuration, but still fails overall when required env is missing.
 
@@ -71,17 +81,33 @@ pnpm check:ledger
 pnpm load:analysis-queue
 ```
 
+`pnpm check:runtime` evaluates the same production-readiness contract as the
+authorized admin endpoint. It fails closed for missing auth, database, billing,
+admin, cron, queue, email, or Web Push configuration and never prints secret
+values. Use `pnpm check:runtime -- --local` only to inspect a local environment
+where notification transports may intentionally be disabled.
+
 ### Authenticated end-to-end tests
 
 The Playwright suite starts an isolated PostgreSQL 17 container, applies the
-checked-in Prisma migrations, creates a short-lived Auth.js session plus
-deterministic games and training moments, and removes the container and fixture user
-after the run.
+checked-in Prisma migrations, builds and starts the production Next.js output,
+creates a short-lived Auth.js session plus deterministic games and training
+moments, and removes the container and fixture user after the run. Its child
+environment disables queues and strips provider, billing, OAuth, VAPID,
+Supabase service-role, and Vercel credentials. Email UI receives a deliberately
+invalid E2E-only key and an `example.invalid` sender so configuration journeys
+remain testable without inheriting a deliverable credential. The default suite
+therefore cannot write to external services.
 
 ```bash
 pnpm test:e2e:install
 pnpm test:e2e
+pnpm test:e2e:coach-offline
 ```
+
+The second command covers the Coach and cold-offline PWA journeys against the
+same production server shape. Both suites are required in CI; live provider and
+live Maia model checks remain explicit opt-in jobs.
 
 Use `pnpm test:e2e:headed` for a visible browser or `pnpm test:e2e:ui` for
 Playwright UI mode. Set `BACKRANQ_E2E_KEEP_DB=true` to retain the local
@@ -98,8 +124,25 @@ Never point these variables at the production project.
 Migrations:
 
 ```bash
-pnpm prisma migrate deploy
+pnpm db:migrate:deploy
 ```
+
+The migration wrapper loads `.env.local`, verifies that pooled and direct URLs
+identify the same database, prints only a redacted target fingerprint, enforces
+a bounded timeout, and propagates every Prisma failure. It also verifies the
+migration status after deployment; it never continues after a timeout or error.
+
+For a local billing smoke, create a session only in a loopback database whose
+name ends in `local`, `test`, or `e2e`:
+
+```bash
+pnpm smoke:auth-session
+```
+
+The command accepts only a dedicated `@backranq.local` identity and writes the
+short-lived credential to the gitignored `.backranq-local` directory with
+owner-only permissions. Pass `--print-cookie` only when a local command truly
+needs the raw cookie in the terminal.
 
 First, run the development server:
 

@@ -189,11 +189,13 @@ describe('canonical training routes', () => {
 
         expect(response.status).toBe(200);
         const body = await readJson<{
+            ownerId: string;
             items: Array<Record<string, unknown>>;
             nextCursor: string | null;
             appliedFilters: Record<string, unknown>;
         }>(response);
         expect(body).toMatchObject({
+            ownerId: 'user-1',
             items: [
                 {
                     id: momentId,
@@ -215,6 +217,25 @@ describe('canonical training routes', () => {
                 where: expect.objectContaining({ userId: 'user-1' }),
             })
         );
+    });
+
+    it('returns the authenticated owner with a training moment detail', async () => {
+        prepareRouteModules();
+        prismaMock.trainingMoment.findFirst.mockResolvedValue(feedRow);
+        const route = await import(
+            '@/app/api/training/moments/[id]/route'
+        );
+
+        const response = await route.GET(
+            new Request(`http://localhost/api/training/moments/${momentId}`),
+            { params: Promise.resolve({ id: momentId }) }
+        );
+
+        expect(response.status).toBe(200);
+        await expect(readJson(response)).resolves.toMatchObject({
+            ownerId: 'user-1',
+            moment: { id: momentId, solutionRevisionId: revisionId },
+        });
     });
 
     it('applies the saved practice mix without changing extracted moments', async () => {
@@ -334,6 +355,8 @@ describe('canonical training routes', () => {
                 solutionRevisionId: revisionId,
                 status: 'GRADED',
                 grade: 'BEST',
+            }, {
+                headers: { 'X-Backranq-Owner-Id': 'user-1' },
             }),
             { params: Promise.resolve({ id: momentId }) }
         );
@@ -342,6 +365,34 @@ describe('canonical training routes', () => {
         await expect(readJson(response)).resolves.toEqual({
             error: 'Invalid training attempt request',
             code: 'INVALID_REQUEST',
+        });
+        expect(prismaMock.trainingAttempt.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a training write captured for a different signed-in owner', async () => {
+        prepareRouteModules();
+        const route = await import(
+            '@/app/api/training/moments/[id]/attempts/route'
+        );
+
+        const response = await route.POST(
+            createJsonRequest(
+                'http://localhost',
+                {
+                    kind: 'RECORD',
+                    clientAttemptId,
+                    solutionRevisionId: revisionId,
+                    status: 'REVEALED',
+                    steps: [],
+                },
+                { headers: { 'X-Backranq-Owner-Id': 'user-2' } }
+            ),
+            { params: Promise.resolve({ id: momentId }) }
+        );
+
+        expect(response.status).toBe(409);
+        await expect(readJson(response)).resolves.toMatchObject({
+            code: 'OWNER_MISMATCH',
         });
         expect(prismaMock.trainingAttempt.create).not.toHaveBeenCalled();
     });

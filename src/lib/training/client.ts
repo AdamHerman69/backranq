@@ -6,6 +6,7 @@ import type {
     PracticeFeedRequest,
     PracticeFeedResponse,
 } from '@/lib/training/api';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 
 export class TrainingClientError extends Error {
     readonly status: number;
@@ -53,6 +54,21 @@ async function readJson<T>(response: Response): Promise<T> {
     return body as T;
 }
 
+function requireResponseOwner<T extends { ownerId: string }>(
+    response: T,
+    expectedOwnerId: string
+): T {
+    if (response.ownerId !== expectedOwnerId) {
+        throw new TrainingClientError({
+            message:
+                'Your session changed while practice data was loading. Reload practice to continue.',
+            status: 409,
+            code: 'OWNER_MISMATCH',
+        });
+    }
+    return response;
+}
+
 function appendMany(
     params: URLSearchParams,
     key: string,
@@ -62,6 +78,7 @@ function appendMany(
 }
 
 export async function fetchPracticeFeed(
+    ownerId: string,
     request: PracticeFeedRequest = {},
     signal?: AbortSignal
 ): Promise<PracticeFeedResponse> {
@@ -87,6 +104,9 @@ export async function fetchPracticeFeed(
     if (request.filters?.mode) {
         params.set('mode', request.filters.mode.toLowerCase());
     }
+    if (request.filters?.gameId) {
+        params.set('gameId', request.filters.gameId);
+    }
 
     const query = params.toString();
     const response = await fetch(
@@ -96,10 +116,14 @@ export async function fetchPracticeFeed(
             signal,
         }
     );
-    return readJson<PracticeFeedResponse>(response);
+    return requireResponseOwner(
+        await readJson<PracticeFeedResponse>(response),
+        ownerId
+    );
 }
 
 export async function fetchTrainingMoment(
+    ownerId: string,
     momentId: string,
     signal?: AbortSignal
 ): Promise<TrainingMomentResponse> {
@@ -110,10 +134,14 @@ export async function fetchTrainingMoment(
             signal,
         }
     );
-    return readJson<TrainingMomentResponse>(response);
+    return requireResponseOwner(
+        await readJson<TrainingMomentResponse>(response),
+        ownerId
+    );
 }
 
 export async function recordTrainingAttempt(
+    ownerId: string,
     momentId: string,
     request: RecordTrainingAttemptRequest,
     signal?: AbortSignal
@@ -122,7 +150,10 @@ export async function recordTrainingAttempt(
         `/api/training/moments/${encodeURIComponent(momentId)}/attempts`,
         {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: {
+                'content-type': 'application/json',
+                [EXPECTED_OWNER_HEADER]: ownerId,
+            },
             body: JSON.stringify(request),
             signal,
         }

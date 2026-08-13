@@ -675,6 +675,7 @@ describe('canonical training API boundary', () => {
                 filters: {
                     focus: 'MEANINGFUL',
                     themes: ['defense', 'quiet-move'],
+                    gameId: '11111111-1111-4111-8111-111111111111',
                 },
             },
         });
@@ -690,6 +691,7 @@ describe('canonical training API boundary', () => {
                     filters: {
                         focus: 'MEANINGFUL',
                         themes: ['quiet-move', 'defense'],
+                        gameId: '11111111-1111-4111-8111-111111111111',
                     },
                 },
             })
@@ -699,8 +701,25 @@ describe('canonical training API boundary', () => {
             appliedFilters: {
                 focus: 'MEANINGFUL',
                 themes: ['quiet-move', 'defense'],
+                gameId: '11111111-1111-4111-8111-111111111111',
             },
         });
+
+        await expect(
+            listPracticeFeed({
+                db: db as never,
+                userId: 'user-1',
+                request: {
+                    limit: 1,
+                    cursor: first.nextCursor!,
+                    filters: {
+                        focus: 'MEANINGFUL',
+                        themes: ['quiet-move', 'defense'],
+                        gameId: '11111111-1111-4111-8111-111111111112',
+                    },
+                },
+            })
+        ).rejects.toBeInstanceOf(InvalidPracticeFeedCursorError);
 
         await expect(
             listPracticeFeed({
@@ -722,7 +741,7 @@ describe('canonical training API boundary', () => {
     it('parses repeated filters and rejects unknown queue modes or oversized limits', () => {
         const parsed = parsePracticeFeedRequest(
             new URL(
-                'http://localhost/api/training/feed?focus=meaningful&phase=opening&phase=endgame&sourceKind=my_mistake&theme=quiet-move&mode=new'
+                'http://localhost/api/training/feed?focus=meaningful&phase=opening&phase=endgame&sourceKind=my_mistake&theme=quiet-move&mode=new&gameId=11111111-1111-4111-8111-111111111111'
             )
         );
         expect(parsed).toEqual({
@@ -733,12 +752,20 @@ describe('canonical training API boundary', () => {
                 sourceKinds: ['MY_MISTAKE'],
                 themes: ['quiet-move'],
                 mode: 'NEW',
+                gameId: '11111111-1111-4111-8111-111111111111',
             },
         });
         expect(
             parsePracticeFeedRequest(
                 new URL(
                     'http://localhost/api/training/feed?mode=everything'
+                )
+            )
+        ).toBeNull();
+        expect(
+            parsePracticeFeedRequest(
+                new URL(
+                    'http://localhost/api/training/feed?gameId=not-a-game'
                 )
             )
         ).toBeNull();

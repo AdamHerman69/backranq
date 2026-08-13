@@ -15,6 +15,12 @@ import {
     setMockUserId,
 } from '../helpers/route-mocks';
 
+const consumeProviderProxyRateLimitMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@/lib/api/providerProxyRateLimit', () => ({
+    consumeProviderProxyRateLimit: consumeProviderProxyRateLimitMock,
+}));
+
 type UserProfileRouteModule = typeof import('@/app/api/user/profile/route');
 
 async function importRoute(): Promise<UserProfileRouteModule> {
@@ -44,6 +50,9 @@ describe('GET /api/user/profile', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         setMockUserId('user-1');
+        consumeProviderProxyRateLimitMock.mockResolvedValue({
+            allowed: true,
+        });
     });
 
     afterEach(() => {
@@ -319,6 +328,34 @@ describe('GET /api/user/profile', () => {
         await expect(readJson(response)).resolves.toEqual({
             error: 'Lichess username not found',
         });
+        expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rate limits a profile PATCH before contacting the provider', async () => {
+        const providerFetch = vi.fn();
+        vi.stubGlobal('fetch', providerFetch);
+        consumeProviderProxyRateLimitMock.mockResolvedValue({
+            allowed: false,
+            retryAfterSeconds: 23,
+        });
+        const route = await importRoute();
+
+        const response = await route.PATCH(
+            createPatchRequest({ lichessUsername: 'Ada' })
+        );
+
+        expect(response.status).toBe(429);
+        expect(response.headers.get('Retry-After')).toBe('23');
+        await expect(readJson(response)).resolves.toMatchObject({
+            retryable: true,
+            error: expect.stringContaining('Too many provider lookups'),
+        });
+        expect(consumeProviderProxyRateLimitMock).toHaveBeenCalledWith({
+            request: expect.any(Request),
+            userId: 'user-1',
+            operation: 'profile',
+        });
+        expect(providerFetch).not.toHaveBeenCalled();
         expect(prismaMock.$transaction).not.toHaveBeenCalled();
     });
 

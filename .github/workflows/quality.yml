@@ -28,7 +28,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies
@@ -36,6 +36,12 @@ jobs:
 
       - name: Run lint, types, unit tests and production build
         run: pnpm check
+
+      - name: Verify Queue and Stockfish production bundle boundary
+        run: pnpm check:queue-runtime-bundle && pnpm check:queue-runtime-callback
+
+      - name: Audit production dependencies
+        run: pnpm audit:prod
 
   migrations:
     runs-on: ubuntu-latest
@@ -68,7 +74,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies
@@ -78,7 +84,30 @@ jobs:
         run: pnpm prisma db execute --schema prisma/schema.prisma --file scripts/ci/prepare-migration-db.sql
 
       - name: Apply the complete migration chain
-        run: pnpm prisma migrate deploy
+        run: pnpm db:migrate:deploy
 
-      - name: Verify migration history is current
-        run: pnpm prisma migrate status
+      - name: Verify behavioral RLS and role privileges
+        run: pnpm check:db-contract
+
+      - name: Verify the applied database shape matches Prisma
+        run: pnpm check:schema-shape
+
+      - name: Create a disposable Prisma shadow database
+        run: >-
+          docker exec "${{ job.services.postgres.id }}"
+          createdb -U backranq_ci backranq_shadow
+
+      - name: Verify full migration history matches the Prisma schema
+        env:
+          SHADOW_DATABASE_URL: postgresql://backranq_ci:backranq_ci@127.0.0.1:5432/backranq_shadow?schema=public
+        run: >-
+          pnpm prisma migrate diff
+          --from-migrations prisma/migrations
+          --to-schema-datamodel prisma/schema.prisma
+          --shadow-database-url "$SHADOW_DATABASE_URL"
+          --exit-code
+
+      - name: Verify PostgreSQL advisory locking and push ownership atomically
+        env:
+          BACKRANQ_POSTGRES_INTEGRATION: 'true'
+        run: pnpm vitest run tests/lib/postgres-locking.integration.test.ts

@@ -2,6 +2,104 @@ import { expect, test } from '@playwright/test';
 import { E2E_GAMES, E2E_USER } from './support/fixtures';
 
 test.describe('authenticated games library', () => {
+    test('keeps the analyze dialog owner-bound across close and reopen', async ({
+        page,
+    }) => {
+        let requestCount = 0;
+        let releaseFirst!: () => void;
+        let markFirstStarted!: () => void;
+        const firstStarted = new Promise<void>((resolve) => {
+            markFirstStarted = resolve;
+        });
+        const firstReleased = new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+        });
+        await page.route('**/api/games?hasAnalysis=false&page=1&limit=50', async (route) => {
+            requestCount += 1;
+            const current = requestCount;
+            if (current === 1) {
+                markFirstStarted();
+                await firstReleased;
+            }
+            try {
+                await route.fulfill({
+                    status: 200,
+                    contentType: 'application/json',
+                    body: JSON.stringify({
+                        ownerId: E2E_USER.id,
+                        games: [
+                            {
+                                id: current === 1 ? 'stale-game' : 'current-game',
+                                provider: 'LICHESS',
+                                playedAt: '2026-08-13T00:00:00.000Z',
+                                timeClass: 'RAPID',
+                                whiteName: current === 1 ? 'Stale player' : 'Current player',
+                                blackName: 'Opponent',
+                                result: '1-0',
+                                analyzedAt: null,
+                            },
+                        ],
+                    }),
+                });
+            } catch {
+                // Closing the first generation aborts its request.
+            }
+        });
+
+        await page.goto('/games');
+        const trigger = page
+            .getByRole('button', { name: 'Analyze free in browser' })
+            .first();
+        await trigger.click();
+        const dialog = page.getByRole('dialog', {
+            name: 'Analyze imported games',
+        });
+        await expect(dialog).toBeVisible();
+        await firstStarted;
+        await dialog.getByRole('button', { name: 'Close' }).click();
+        await expect(dialog).toBeHidden();
+
+        await trigger.click();
+        await expect(dialog.getByText('Current player')).toBeVisible();
+        releaseFirst();
+        await expect(dialog.getByText('Stale player')).toHaveCount(0);
+
+        await page.keyboard.press('Escape');
+        await expect(dialog).toBeHidden();
+        await expect(trigger).toBeFocused();
+    });
+
+    test('starts practice in the scope of the reviewed game', async ({ page }) => {
+        const scopedFeedRequest = page.waitForRequest((request) => {
+            const url = new URL(request.url());
+            return (
+                url.pathname === '/api/training/feed' &&
+                url.searchParams.get('gameId') === E2E_GAMES.standard
+            );
+        });
+        await page.goto(`/games/${E2E_GAMES.standard}`);
+        const practice = page.getByRole('link', {
+            name: /Practice \d+ position/,
+        });
+        await expect(practice).toHaveAttribute(
+            'href',
+            `/practice?gameId=${E2E_GAMES.standard}`
+        );
+        await practice.click();
+        await expect(page).toHaveURL(
+            new RegExp(`/practice\\?gameId=${E2E_GAMES.standard}`)
+        );
+        await scopedFeedRequest;
+        await expect(
+            page.getByRole('group', {
+                name: 'White to move — find the best move',
+            })
+        ).toHaveAttribute(
+            'data-board-fen',
+            /^rnbqkbnr\/pppp1ppp\/8\/4p3\/4P3\/8\/PPPP1PPP\/RNBQKBNR w KQkq -/
+        );
+    });
+
     test('treats disabled automation as an ordinary unanalyzed state, not a credit error', async ({
         page,
     }) => {
@@ -375,11 +473,13 @@ test.describe('authenticated games library', () => {
         await expect(
             page.getByRole('heading', { name: 'Games', exact: true })
         ).toBeVisible();
-        await expect(page.getByText('2 games')).toBeVisible();
-        await expect(page.getByText('TacticalTester (1794)')).toBeVisible();
-        await expect(page.getByText('PromotionTester (1701)')).toBeVisible();
-        await expect(page.getByText('W', { exact: true })).toHaveCount(2);
-        await expect(page.getByText('You: Black')).toBeVisible();
+        await expect(page.getByText('2 games').first()).toBeVisible();
+        await expect(page.getByText('TacticalTester (1794)').first()).toBeVisible();
+        await expect(page.getByText('PromotionTester (1701)').first()).toBeVisible();
+        await expect(
+            page.getByText('W', { exact: true }).filter({ visible: true })
+        ).toHaveCount(2);
+        await expect(page.getByText('You: Black').first()).toBeVisible();
 
         await page.goto('/games?result=losses');
         await expect(

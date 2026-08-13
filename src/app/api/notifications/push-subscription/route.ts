@@ -2,8 +2,14 @@ import { NextResponse } from 'next/server';
 import { ECDH } from 'node:crypto';
 import { auth } from '@/lib/auth';
 import { boundedJsonBody, isRecord } from '@/lib/api/validation';
-import { prisma } from '@/lib/prisma';
-import { getOrCreateNotificationPreference } from '@/lib/notifications/service';
+import {
+    deletePushSubscription,
+    savePushSubscription,
+} from '@/lib/notifications/pushSubscriptions';
+import {
+    EXPECTED_OWNER_HEADER,
+    expectedOwnerId,
+} from '@/lib/auth/ownerContract';
 
 export const runtime = 'nodejs';
 const MAX_BODY_BYTES = 32_768;
@@ -83,10 +89,20 @@ function tooManyRequests() {
     );
 }
 
+function ownerMismatch() {
+    return NextResponse.json(
+        {
+            error: `The signed-in account no longer matches ${EXPECTED_OWNER_HEADER}. Reload Settings before changing Web Push.`,
+        },
+        { status: 409 }
+    );
+}
+
 export async function POST(req: Request) {
     const session = await auth();
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (expectedOwnerId(req) !== userId) return ownerMismatch();
     if (rateLimited(userId)) return tooManyRequests();
     if (!process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY) {
         return NextResponse.json({ error: 'Web Push is not configured' }, { status: 503 });
@@ -112,43 +128,15 @@ export async function POST(req: Request) {
     }
     const p256dh = keys.p256dh as string;
     const authKey = keys.auth as string;
-    const saved = await prisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
-        const existing = await tx.pushSubscription.findUnique({
-            where: { endpoint: value.endpoint as string },
-            select: { userId: true },
-        });
-        if (existing && existing.userId !== userId) return false;
-        if (!existing) {
-            const subscriptionCount = await tx.pushSubscription.count({
-                where: { userId },
-            });
-            if (subscriptionCount >= MAX_SUBSCRIPTIONS_PER_USER) return 'limit';
-        }
-        await tx.pushSubscription.upsert({
-            where: { endpoint: value.endpoint as string },
-            create: {
-                userId,
-                endpoint: value.endpoint as string,
-                p256dh,
-                auth: authKey,
-                userAgent: req.headers.get('user-agent')?.slice(0, 1_000),
-            },
-            update: {
-                userId,
-                p256dh,
-                auth: authKey,
-                userAgent: req.headers.get('user-agent')?.slice(0, 1_000),
-            },
-        });
-        await getOrCreateNotificationPreference(userId, tx);
-        await tx.notificationPreference.update({
-            where: { userId },
-            data: { pushEnabled: true },
-        });
-        return 'saved';
+    const saved = await savePushSubscription({
+        userId,
+        endpoint: value.endpoint,
+        p256dh,
+        auth: authKey,
+        userAgent: req.headers.get('user-agent')?.slice(0, 1_000) ?? null,
+        maxSubscriptions: MAX_SUBSCRIPTIONS_PER_USER,
     });
-    if (!saved) {
+    if (saved === 'owner-conflict') {
         return NextResponse.json(
             { error: 'Push subscription belongs to another account' },
             { status: 409 }
@@ -160,22 +148,21 @@ export async function POST(req: Request) {
             { status: 409 }
         );
     }
-    return NextResponse.json({ subscribed: true });
+    return NextResponse.json({ ownerId: userId, subscribed: true });
 }
 
 export async function DELETE(req: Request) {
     const session = await auth();
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (expectedOwnerId(req) !== userId) return ownerMismatch();
     if (rateLimited(userId)) return tooManyRequests();
     const endpoint = new URL(req.url).searchParams.get('endpoint');
     if (!endpoint || !isAllowedPushEndpoint(endpoint)) {
         return NextResponse.json({ error: 'Missing endpoint' }, { status: 400 });
     }
-    const result = await prisma.pushSubscription.deleteMany({ where: { userId, endpoint } });
-    if ((await prisma.pushSubscription.count({ where: { userId } })) === 0) {
-        await getOrCreateNotificationPreference(userId);
-        await prisma.notificationPreference.update({ where: { userId }, data: { pushEnabled: false } });
-    }
-    return NextResponse.json({ deleted: result.count });
+    return NextResponse.json({
+        ownerId: userId,
+        ...(await deletePushSubscription({ userId, endpoint })),
+    });
 }

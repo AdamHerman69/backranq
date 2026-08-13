@@ -439,7 +439,7 @@ model User {
   emailVerified DateTime?
   name          String?
   image         String?
-  preferences   Json      @default(dbgenerated("'{}'::jsonb"))
+  preferences   Json      @default("{}")
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -524,7 +524,7 @@ model AdminAuditLog {
   targetId          String?
   requestId         String?
   reason            String?  @db.Text
-  metadata          Json     @default(dbgenerated("'{}'::jsonb"))
+  metadata          Json     @default("{}")
   createdAt         DateTime @default(now())
 
   adminMembership AdminMembership @relation(fields: [adminMembershipId], references: [id], onDelete: Restrict)
@@ -555,8 +555,8 @@ model NotificationPreference {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([emailWeeklyProgress, timezone, digestHour])
-  @@index([emailProductNews, productNewsConsentedAt])
+  @@index([emailWeeklyProgress, timezone, digestHour], map: "NotificationPreference_emailWeeklyProgress_timezone_digestHour_")
+  @@index([emailProductNews, productNewsConsentedAt], map: "NotificationPreference_emailProductNews_productNewsConsentedAt_")
 }
 
 model Notification {
@@ -566,7 +566,7 @@ model Notification {
   title          String
   body           String           @db.Text
   href           String?
-  metadata       Json             @default(dbgenerated("'{}'::jsonb"))
+  metadata       Json             @default("{}")
   itemCount      Int              @default(1)
   secondaryCount Int              @default(0)
   dedupeKey      String           @unique
@@ -668,7 +668,7 @@ model PushSubscription {
 }
 
 model BillingAccount {
-  id                           String             @id @default(uuid()) @db.Uuid
+  id                           String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId                       String             @unique @db.Uuid
   plan                         BillingPlan        @default(FREE)
   planSource                   BillingPlanSource  @default(FREE)
@@ -690,13 +690,13 @@ model BillingAccount {
   serverCreditsBalance         Int                @default(100)
   monthlyServerCreditsUsed     Int                @default(0)
   serverCreditsPeriodStart     DateTime           @default(now())
-  serverCreditsRenewAt         DateTime           @default(dbgenerated("(now() + '1 mon'::interval)"))
+  serverCreditsRenewAt         DateTime           @default(dbgenerated("(CURRENT_TIMESTAMP + '1 mon'::interval)"))
   monthlyServerCreditsLimit    Int                @default(100)
   autoAnalysisMonthlyGameLimit Int                @default(50)
   autoAnalysisDailyGameLimit   Int                @default(10)
   stopWhenCreditsBelow         Int                @default(0)
   createdAt                    DateTime           @default(now())
-  updatedAt                    DateTime           @updatedAt
+  updatedAt                    DateTime           @default(now()) @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -836,7 +836,7 @@ model AnalyzedGame {
 }
 
 model ProviderSyncState {
-  id                         String       @id @default(uuid()) @db.Uuid
+  id                         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId                     String       @db.Uuid
   provider                   SyncProvider
   providerUsernameNormalized String?
@@ -877,7 +877,7 @@ model HistoryImportQuota {
 }
 
 model SyncJob {
-  id                  String        @id @default(uuid()) @db.Uuid
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId              String        @db.Uuid
   provider            SyncProvider
   status              SyncJobStatus @default(QUEUED)
@@ -904,7 +904,7 @@ model SyncJob {
 }
 
 model AnalysisJob {
-  id               String            @id @default(uuid()) @db.Uuid
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId           String            @db.Uuid
   gameId           String            @db.Uuid
   analysisRunId    String            @db.Uuid
@@ -964,10 +964,10 @@ model AnalysisRun {
   engineSource    String?
   engineFlavor    String?
   engineEvalFile  String?
-  engineOptions   Json                  @default(dbgenerated("'{}'::jsonb"))
+  engineOptions   Json                  @default("{}")
   appVersion      String?
   inputPgnHash    String
-  configSnapshot  Json                  @default(dbgenerated("'{}'::jsonb"))
+  configSnapshot  Json                  @default("{}")
   configHash      String
   startedAt       DateTime?
   completedAt     DateTime?
@@ -1087,8 +1087,8 @@ model AnalysisOutbox {
 model AnalysisRunCheckpoint {
   runId     String   @id @db.Uuid
   stage     String   @default("EXTRACTING")
-  cursor    Json     @default(dbgenerated("'{}'::jsonb"))
-  state     Json     @default(dbgenerated("'{}'::jsonb"))
+  cursor    Json     @default("{}")
+  state     Json     @default("{}")
   version   Int      @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1107,7 +1107,7 @@ model AnalysisMaintenanceLease {
 }
 
 model CreditLedgerEntry {
-  id                 String                 @id @default(uuid()) @db.Uuid
+  id                 String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId             String                 @db.Uuid
   analysisJobId      String?                @db.Uuid
   analysisRunId      String?                @db.Uuid
@@ -1118,7 +1118,7 @@ model CreditLedgerEntry {
   credits            Int
   idempotencyKey     String                 @unique
   reason             String?
-  metadata           Json                   @default(dbgenerated("'{}'::jsonb"))
+  metadata           Json                   @default("{}")
   createdAt          DateTime               @default(now())
 
   user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1197,12 +1197,12 @@ model SolutionRevision {
   acceptedMovesUci   String[]           @default([])
   acceptanceFrontier Json
   bestLine           Json
-  solutionTree       Json               @default(dbgenerated("'{}'::jsonb"))
+  solutionTree       Json               @default("{}")
   scoreAtStart       Json?
   playedMoveScore    Json?
-  targetOutcome      Json               @default(dbgenerated("'{}'::jsonb"))
+  targetOutcome      Json               @default("{}")
   gradingPolicy      Json
-  evidence           Json               @default(dbgenerated("'{}'::jsonb"))
+  evidence           Json               @default("{}")
   generatorVersion   String
   configHash         String
   createdAt          DateTime           @default(now())
@@ -1229,7 +1229,7 @@ model TrainingMomentObservation {
   analysisRunId        String   @db.Uuid
   solutionRevisionId   String   @db.Uuid
   observedSolutionHash String
-  evidence             Json     @default(dbgenerated("'{}'::jsonb"))
+  evidence             Json     @default("{}")
   createdAt            DateTime @default(now())
 
   moment           TrainingMoment   @relation(fields: [momentId], references: [id], onDelete: Cascade)
@@ -1252,7 +1252,7 @@ model SolutionMoveAssessment {
   status             MoveAssessmentStatus @default(PENDING)
   grade              AttemptGrade?
   scoreAfter         Json?
-  evidence           Json                 @default(dbgenerated("'{}'::jsonb"))
+  evidence           Json                 @default("{}")
   attempts           Int                  @default(0)
   lockedAt           DateTime?
   lockedUntil        DateTime?
@@ -1273,13 +1273,14 @@ model TrainingAttempt {
   userId                      String                @db.Uuid
   solutionRevisionId          String                @db.Uuid
   clientAttemptId             String
+  clientPayloadHash           String
   attemptedAt                 DateTime              @default(now())
   userMoveUci                 String?
   timeSpentMs                 Int?
   status                      AttemptStatus         @default(PENDING)
   grade                       AttemptGrade?
   gradingSource               MoveAssessmentSource?
-  gradingEvidence             Json                  @default(dbgenerated("'{}'::jsonb"))
+  gradingEvidence             Json                  @default("{}")
   bestGapCp                   Int?
   bestGapWinChance            Float?
   recoveredCp                 Int?
@@ -1312,9 +1313,9 @@ model TrainingAttempt {
   @@index([solutionRevisionId])
   @@index([userId, trainingMomentId])
   @@index([userId, trainingMomentId, solutionRevisionId])
-  @@index([userId, attemptedAt, status])
-  @@index([userId, contextProvider, contextTimeClass, attemptedAt])
-  @@index([userId, contextPhase, attemptedAt])
+  @@index([userId, attemptedAt, status], map: "TrainingAttempt_user_status_time_idx")
+  @@index([userId, contextProvider, contextTimeClass, attemptedAt], map: "TrainingAttempt_user_provider_class_time_idx")
+  @@index([userId, contextPhase, attemptedAt], map: "TrainingAttempt_user_phase_time_idx")
 }
 
 model TrainingAttemptStep {
@@ -1325,7 +1326,7 @@ model TrainingAttemptStep {
   fenBefore   String
   moveUci     String
   grade       AttemptGrade?
-  evidence    Json             @default(dbgenerated("'{}'::jsonb"))
+  evidence    Json             @default("{}")
   timeSpentMs Int?
   createdAt   DateTime         @default(now())
 
@@ -1357,7 +1358,7 @@ model PracticeExposure {
 
   user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   trainingMoment   TrainingMoment   @relation(fields: [trainingMomentId, userId], references: [id, userId], onDelete: Cascade)
-  solutionRevision SolutionRevision @relation(fields: [solutionRevisionId, trainingMomentId], references: [id, momentId], onDelete: Cascade)
+  solutionRevision SolutionRevision @relation(fields: [solutionRevisionId, trainingMomentId], references: [id, momentId], onDelete: Cascade, map: "PracticeExposure_solutionRevision_moment_fkey")
   attempt          TrainingAttempt? @relation(fields: [attemptId, userId], references: [id, userId], onDelete: Cascade)
 
   @@unique([userId, clientEventId])
@@ -1366,7 +1367,7 @@ model PracticeExposure {
   @@index([trainingMomentId, recordedAt])
   @@index([solutionRevisionId])
   @@index([attemptId])
-  @@index([userId, clientExposureId, recordedAt])
+  @@index([userId, clientExposureId, recordedAt], map: "PracticeExposure_user_exposure_time_idx")
 }
 
 /// Append-only status history. TrainingAttempt remains the current-state row;
@@ -1382,12 +1383,12 @@ model TrainingAttemptStatusEvent {
   occurredAt DateTime
   recordedAt DateTime                         @default(now())
 
-  attempt TrainingAttempt @relation(fields: [attemptId, userId], references: [id, userId], onDelete: Cascade)
+  attempt TrainingAttempt @relation(fields: [attemptId, userId], references: [id, userId], onDelete: Cascade, map: "TrainingAttemptStatusEvent_attempt_user_fkey")
   user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([attemptId, eventKey])
-  @@index([userId, occurredAt])
-  @@index([userId, status, occurredAt])
+  @@index([userId, occurredAt], map: "TrainingAttemptStatusEvent_user_time_idx")
+  @@index([userId, status, occurredAt], map: "TrainingAttemptStatusEvent_user_status_time_idx")
 }
 
 /// Current due-state for one user, Position, and immutable solution semantics.
@@ -1408,10 +1409,10 @@ model PracticeReviewState {
   updatedAt        DateTime @default(now()) @updatedAt
 
   user           User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  trainingMoment TrainingMoment        @relation(fields: [trainingMomentId, userId], references: [id, userId], onDelete: Cascade)
+  trainingMoment TrainingMoment        @relation(fields: [trainingMomentId, userId], references: [id, userId], onDelete: Cascade, map: "PracticeReviewState_moment_user_fkey")
   events         PracticeReviewEvent[]
 
-  @@unique([userId, trainingMomentId, solutionHash, configHash])
+  @@unique([userId, trainingMomentId, solutionHash, configHash], map: "PracticeReviewState_user_moment_semantics_key")
   @@index([userId, nextDueAt, id])
   @@index([nextDueAt, id])
   @@index([trainingMomentId])
@@ -1420,7 +1421,7 @@ model PracticeReviewState {
 /// Durable, bounded scan of one due snapshot. A queue retry always resumes from
 /// the committed raw-state tuple instead of repeating an unbounded aggregate.
 model PracticeDueSweep {
-  id              String                 @id @default(uuid()) @db.Uuid
+  id              String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   referenceAt     DateTime               @unique
   status          PracticeDueSweepStatus @default(SCANNING)
   cursorNextDueAt DateTime?
@@ -1467,12 +1468,12 @@ model PracticeReviewEvent {
   algorithmVersion   String
 
   state   PracticeReviewState @relation(fields: [stateId], references: [id], onDelete: Cascade)
-  attempt TrainingAttempt?    @relation(fields: [attemptId, userId], references: [id, userId], onDelete: Cascade)
+  attempt TrainingAttempt?    @relation(fields: [attemptId, userId], references: [id, userId], onDelete: Cascade, map: "PracticeReviewEvent_attempt_user_fkey")
   user    User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, eventKey])
-  @@index([userId, occurredAt])
-  @@index([stateId, occurredAt])
+  @@index([userId, occurredAt], map: "PracticeReviewEvent_user_time_idx")
+  @@index([stateId, occurredAt], map: "PracticeReviewEvent_state_time_idx")
   @@index([attemptId])
 }
 
@@ -1495,16 +1496,16 @@ model ProgressAnalyticsEvent {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, clientEventId])
-  @@index([userId, eventName, occurredAt])
-  @@index([userId, occurredAt])
-  @@index([userId, recordedAt])
+  @@index([userId, eventName, occurredAt], map: "ProgressAnalyticsEvent_user_event_time_idx")
+  @@index([userId, occurredAt], map: "ProgressAnalyticsEvent_user_time_idx")
+  @@index([userId, recordedAt], map: "ProgressAnalyticsEvent_user_recorded_time_idx")
 }
 
 model ProgressAnalyticsRateBucket {
   userId          String   @id @db.Uuid
   windowStartedAt DateTime
   eventCount      Int
-  updatedAt       DateTime @updatedAt
+  updatedAt       DateTime @default(now()) @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -1578,7 +1579,7 @@ model MasterAccount {
   username            String
   usernameNormalized  String
   profileUrl          String
-  identityEvidence    Json         @default(dbgenerated("'{}'::jsonb"))
+  identityEvidence    Json         @default("{}")
   identityVerifiedAt  DateTime?
   active              Boolean      @default(true)
   priority            Int          @default(0)
@@ -1662,7 +1663,7 @@ model MasterSourceGameSnapshot {
   whiteRating                 Int?
   blackName                   String
   blackRating                 Int?
-  providerMetadata            Json      @default(dbgenerated("'{}'::jsonb"))
+  providerMetadata            Json      @default("{}")
   fetchedAt                   DateTime  @default(now())
 
   sourceGame       MasterSourceGame        @relation("MasterSourceSnapshots", fields: [sourceGameId], references: [id], onDelete: Restrict)
@@ -1686,7 +1687,7 @@ model MasterPipelineRun {
   lockedUntil        DateTime?
   leaseToken         String?
   attempts           Int                   @default(0)
-  configSnapshot     Json                  @default(dbgenerated("'{}'::jsonb"))
+  configSnapshot     Json                  @default("{}")
   configHash         String
   fetchedGames       Int                   @default(0)
   createdSnapshots   Int                   @default(0)
@@ -1718,7 +1719,7 @@ model MasterAnalysisReceipt {
   configHash     String
   complete       Boolean  @default(false)
   candidateCount Int      @default(0)
-  manifest       Json     @default(dbgenerated("'{}'::jsonb"))
+  manifest       Json     @default("{}")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -1759,13 +1760,13 @@ model MasterCandidate {
   acceptedMovesUci      String[]              @default([])
   acceptanceFrontier    Json
   bestLine              Json
-  solutionTree          Json                  @default(dbgenerated("'{}'::jsonb"))
-  moveAssessments       Json                  @default(dbgenerated("'[]'::jsonb"))
+  solutionTree          Json                  @default("{}")
+  moveAssessments       Json                  @default("[]")
   scoreAtStart          Json?
   playedMoveScore       Json?
-  targetOutcome         Json                  @default(dbgenerated("'{}'::jsonb"))
+  targetOutcome         Json                  @default("{}")
   gradingPolicy         Json
-  evidence              Json                  @default(dbgenerated("'{}'::jsonb"))
+  evidence              Json                  @default("{}")
   solutionHash          String
   generatorVersion      String
   configHash            String
@@ -1859,7 +1860,7 @@ model MasterAdminOverride {
   revokedAt           DateTime?
   revokedByAdminId    String?            @db.Uuid
   revokeReason        String?            @db.Text
-  metadata            Json               @default(dbgenerated("'{}'::jsonb"))
+  metadata            Json               @default("{}")
   createdAt           DateTime           @default(now())
 
   slot              MasterSlot?        @relation(fields: [slotId], references: [id], onDelete: Cascade)

@@ -37,7 +37,7 @@ export async function GET(
             { status: 404 }
         );
     }
-    return NextResponse.json(result, {
+    return NextResponse.json({ ownerId: userId, ...result }, {
         headers: { 'Cache-Control': 'private, no-store' },
     });
 }

@@ -32,6 +32,10 @@ import {
     type AnalysisQuality,
 } from '@/lib/analysis/quality';
 import { resolveStoredGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
+import {
+    EXPECTED_OWNER_HEADER,
+    expectedOwnerId,
+} from '@/lib/auth/ownerContract';
 
 export const runtime = 'nodejs';
 
@@ -269,6 +273,15 @@ export async function PUT(
     const userId = session?.user?.id;
     if (!userId)
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (expectedOwnerId(req) !== userId) {
+        return NextResponse.json(
+            {
+                error: `The signed-in account no longer matches ${EXPECTED_OWNER_HEADER}. Reload the game before saving analysis.`,
+                code: 'OWNER_MISMATCH',
+            },
+            { status: 409 }
+        );
+    }
 
     const parsedBody = await boundedJsonBody(req, MAX_BODY_BYTES);
     if (!parsedBody.ok) {
@@ -526,6 +539,7 @@ export async function PUT(
         return NextResponse.json({
             ok: true,
             ...result,
+            ownerId: userId,
             analysisRun: {
                 id: result.run.id,
                 executionMode: result.run.executionMode,

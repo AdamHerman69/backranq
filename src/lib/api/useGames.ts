@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AnalyzedGame } from '@prisma/client';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import type { TrainingMomentCandidate } from '@/lib/training/contracts';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 
 type ApiError = { error?: string };
 type GamesResponse = ApiError & {
@@ -81,7 +82,10 @@ export function useGames(query: GamesQuery) {
     return { data, error, loading, refetch };
 }
 
-export function useGameAnalysis(gameId: string | null) {
+export function useGameAnalysis(
+    ownerId: string | null,
+    gameId: string | null
+) {
     const [analysis, setAnalysis] = useState<GameAnalysis | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -115,6 +119,7 @@ export function useGameAnalysis(gameId: string | null) {
             trainingMoments: TrainingMomentCandidate[];
         }) => {
             if (!gameId) throw new Error('Missing gameId');
+            if (!ownerId) throw new Error('Missing ownerId');
             setLoading(true);
             setError(null);
             try {
@@ -122,13 +127,21 @@ export function useGameAnalysis(gameId: string | null) {
                     `/api/games/${encodeURIComponent(gameId)}/analysis`,
                     {
                         method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: {
+                            'Content-Type': 'application/json',
+                            [EXPECTED_OWNER_HEADER]: ownerId,
+                        },
                         body: JSON.stringify(next),
                     }
                 );
-                const json = (await res.json().catch(() => ({}))) as ApiError;
+                const json = (await res.json().catch(() => ({}))) as ApiError & {
+                    ownerId?: string;
+                };
                 if (!res.ok)
                     throw new Error(json?.error ?? 'Failed to save analysis');
+                if (json.ownerId !== ownerId) {
+                    throw new Error('Analysis was saved for a different account');
+                }
                 setAnalysis(next.analysis);
                 return json as { ok: true };
             } catch (e) {
@@ -140,7 +153,7 @@ export function useGameAnalysis(gameId: string | null) {
                 setLoading(false);
             }
         },
-        [gameId]
+        [gameId, ownerId]
     );
 
     useEffect(() => {

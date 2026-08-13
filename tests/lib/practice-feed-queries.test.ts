@@ -33,6 +33,9 @@ describe('bounded practice feed queries', () => {
             expect(text).toContain(
                 `raw."solutionHash" = solution."solutionHash"`
             );
+            expect(text).toContain('moment."gameId" = ?::uuid');
+            expect(text).toContain('scoped_moment."gameId" = ?::uuid');
+            expect(query.values).toContain(uuid(4));
             if (text.includes('state."lapses" = 0')) return [];
             expect(text).toContain('state."lapses" > 0');
             return [
@@ -49,7 +52,11 @@ describe('bounded practice feed queries', () => {
             db: { $queryRaw: queryRaw } as never,
             userId: uuid(3),
             feedStartedAt: new Date('2026-02-01T00:00:00.000Z'),
-            filters: { focus: 'MAJOR', themes: ['quiet-move'] },
+            filters: {
+                focus: 'MAJOR',
+                themes: ['quiet-move'],
+                gameId: uuid(4),
+            },
             take: 13,
         });
 

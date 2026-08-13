@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readJson } from '../helpers/route';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 import {
     mockAuthModule,
     setMockUserId,
@@ -20,10 +21,12 @@ async function importRoute(): Promise<SyncRouteModule> {
     return import('@/app/api/sync/route');
 }
 
-function post(body: unknown) {
+function post(body: unknown, ownerId: string | null = 'user-1') {
+    const headers = new Headers({ 'Content-Type': 'application/json' });
+    if (ownerId !== null) headers.set(EXPECTED_OWNER_HEADER, ownerId);
     return new Request('http://localhost/api/sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(body),
     });
 }
@@ -66,6 +69,31 @@ describe('/api/sync', () => {
         expect(dispatchUserSyncJobsMock).not.toHaveBeenCalled();
     });
 
+    it.each([null, 'user-a'])(
+        'rejects missing or stale owner %s before parsing or dispatch',
+        async (ownerId) => {
+            const route = await importRoute();
+            setMockUserId('user-1');
+
+            const response = await route.POST(
+                new Request('http://localhost/api/sync', {
+                    method: 'POST',
+                    headers:
+                        ownerId === null
+                            ? undefined
+                            : { [EXPECTED_OWNER_HEADER]: ownerId },
+                    body: 'not-json',
+                })
+            );
+
+            expect(response.status).toBe(409);
+            await expect(readJson(response)).resolves.toMatchObject({
+                code: 'OWNER_MISMATCH',
+            });
+            expect(dispatchUserSyncJobsMock).not.toHaveBeenCalled();
+        }
+    );
+
     it('reads a bounded owner-scoped set of requested completion jobs', async () => {
         getUserSyncActivityMock.mockResolvedValue({
             providers: [],
@@ -85,6 +113,7 @@ describe('/api/sync', () => {
             requestedJobIds: ['job-old', 'job-running'],
         });
         await expect(readJson(response)).resolves.toMatchObject({
+            ownerId: 'user-1',
             requestedJobs: [{ id: 'job-old', status: 'SUCCEEDED' }],
         });
     });
@@ -114,7 +143,10 @@ describe('/api/sync', () => {
         const response = await route.POST(
             new Request('http://localhost/api/sync', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    [EXPECTED_OWNER_HEADER]: 'user-1',
+                },
                 body: '{',
             })
         );
@@ -168,6 +200,7 @@ describe('/api/sync', () => {
 
         expect(response.status).toBe(200);
         await expect(readJson(response)).resolves.toMatchObject({
+            ownerId: 'user-1',
             requested: ['lichess', 'chesscom'],
             providers: [
                 {
@@ -187,7 +220,10 @@ describe('/api/sync', () => {
                     jobStatus: 'QUEUED',
                 },
             ],
-            active: { providers: [{ provider: 'LICHESS' }] },
+            active: {
+                ownerId: 'user-1',
+                providers: [{ provider: 'LICHESS' }],
+            },
         });
         expect(dispatchUserSyncJobsMock).toHaveBeenCalledWith({
             userId: 'user-1',

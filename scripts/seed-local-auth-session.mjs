@@ -1,22 +1,24 @@
 #!/usr/bin/env node
 import crypto from 'node:crypto';
+import path from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { loadEnvFiles } from './lib/load-env.mjs';
+import { assertSafeLocalAuthSeedConfig } from './lib/local-database-safety.mjs';
+import { writePrivateLocalJson } from './lib/private-local-file.mjs';
 
 loadEnvFiles();
 
-if (process.env.NODE_ENV === 'production') {
-    console.error('Refusing to seed an auth session with NODE_ENV=production.');
-    process.exit(1);
-}
-
 const appUrl = process.env.BACKRANQ_APP_URL ?? process.env.NEXTAUTH_URL ?? '';
-if (appUrl && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(appUrl)) {
-    console.error(`Refusing to seed auth session for non-local app URL: ${appUrl}`);
-    process.exit(1);
-}
-
-const email = process.argv[2] ?? 'stripe-smoke@backranq.local';
+const positional = process.argv.slice(2).filter((value) => !value.startsWith('--'));
+const email = positional[0] ?? 'stripe-smoke@backranq.local';
+const printCookie = process.argv.includes('--print-cookie');
+const safety = assertSafeLocalAuthSeedConfig({
+    environment: process.env,
+    appUrl,
+    databaseUrl: process.env.DATABASE_URL,
+    directUrl: process.env.DIRECT_URL,
+    email,
+});
 const token = crypto.randomBytes(32).toString('hex');
 const prisma = new PrismaClient();
 
@@ -38,22 +40,21 @@ try {
         },
     });
 
-    console.log(
-        JSON.stringify(
-            {
-                userId: user.id,
-                email,
-                sessionId: session.id,
-                cookie: `authjs.session-token=${token}`,
-                curlExample:
-                    "curl -i -X POST http://localhost:3000/api/stripe/checkout -H 'Content-Type: application/json' -H 'Cookie: authjs.session-token=" +
-                    token +
-                    "' --data '{\"plan\":\"PLUS\"}'",
-            },
-            null,
-            2
-        )
+    const outputDirectory = path.join(process.cwd(), '.backranq-local');
+    const outputPath = writePrivateLocalJson(
+        outputDirectory,
+        'auth-session.json',
+        {
+            userId: user.id,
+            email,
+            sessionId: session.id,
+            cookie: `authjs.session-token=${token}`,
+            expires: session.expires.toISOString(),
+        }
     );
+    console.log(`Created local auth session in ${safety.databaseFingerprint}.`);
+    console.log(`Credentials were written with owner-only permissions to ${outputPath}.`);
+    if (printCookie) console.log(`authjs.session-token=${token}`);
 } finally {
     await prisma.$disconnect();
 }

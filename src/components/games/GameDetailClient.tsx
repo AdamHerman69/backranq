@@ -92,7 +92,10 @@ export default function GameDetailClient({
 
             {hasAnalysis ? gameActions : null}
 
-            <GameTrainingMomentsPreview trainingMoments={trainingMoments} />
+            <GameTrainingMomentsPreview
+                trainingMoments={trainingMoments}
+                gameId={dbGameId}
+            />
         </div>
     );
 }

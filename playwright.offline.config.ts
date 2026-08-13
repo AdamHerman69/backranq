@@ -35,6 +35,22 @@ export default defineConfig({
                 process.env.NEXTAUTH_SECRET ??
                 'backranq-offline-e2e-secret',
             BACKRANQ_APP_URL: baseURL,
+            BACKRANQ_DISABLE_VERCEL_QUEUE: 'true',
+            SMTP2GO_API_KEY: 'e2e-invalid-key-never-send',
+            SMTP2GO_WEBHOOK_SECRET: '',
+            BACKRANQ_EMAIL_FROM:
+                'Backranq E2E <no-reply@example.invalid>',
+            STRIPE_SECRET_KEY: '',
+            STRIPE_WEBHOOK_SECRET: '',
+            GOOGLE_CLIENT_ID: '',
+            GOOGLE_CLIENT_SECRET: '',
+            GITHUB_ID: '',
+            GITHUB_SECRET: '',
+            LICHESS_ENABLED: 'false',
+            LICHESS_CLIENT_ID: '',
+            LICHESS_CLIENT_SECRET: '',
+            SUPABASE_SERVICE_ROLE_KEY: '',
+            VERCEL_OIDC_TOKEN: '',
         },
     },
     projects: [

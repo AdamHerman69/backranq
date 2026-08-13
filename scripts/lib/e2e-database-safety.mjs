@@ -1,61 +1,16 @@
-const LOCAL_DATABASE_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+import {
+    databaseFingerprint,
+    parseDatabaseTarget,
+    targetsIdentifySameDatabase,
+} from '../../src/lib/config/databaseTarget.mjs';
+
 const REMOTE_WRITE_CONFIRMATION = 'DELETE_ONLY_BACKRANQ_E2E_FIXTURES';
 
-function databaseTarget(rawUrl, label) {
-    if (!rawUrl) {
-        throw new Error(`${label} is required for E2E tests.`);
-    }
-
-    let url;
-    try {
-        url = new URL(rawUrl);
-    } catch {
-        throw new Error(`${label} must be a valid PostgreSQL URL.`);
-    }
-
-    if (url.protocol !== 'postgresql:' && url.protocol !== 'postgres:') {
-        throw new Error(`${label} must use the postgresql protocol.`);
-    }
-
-    return {
-        database: decodeURIComponent(url.pathname.replace(/^\/+/, '')),
-        host: url.host,
-        hostname: url.hostname,
-        isLocal: LOCAL_DATABASE_HOSTS.has(url.hostname),
-        username: decodeURIComponent(url.username),
-    };
+export function databaseTarget(rawUrl, label) {
+    return parseDatabaseTarget(rawUrl, label);
 }
 
-function databaseFingerprint(target) {
-    return `${target.username}@${target.host}/${target.database}`;
-}
-
-function supabaseProjectRef(target) {
-    if (target.hostname.endsWith('.pooler.supabase.com')) {
-        const match = target.username.match(/^postgres\.([A-Za-z0-9_-]+)$/);
-        return match?.[1] ?? null;
-    }
-
-    const directMatch = target.hostname.match(
-        /^db\.([A-Za-z0-9_-]+)\.supabase\.co$/
-    );
-    return directMatch?.[1] ?? null;
-}
-
-function targetsIdentifySameDatabase(database, direct) {
-    if (databaseFingerprint(database) === databaseFingerprint(direct)) {
-        return true;
-    }
-
-    const databaseProjectRef = supabaseProjectRef(database);
-    const directProjectRef = supabaseProjectRef(direct);
-    return Boolean(
-        databaseProjectRef &&
-            directProjectRef &&
-            databaseProjectRef === directProjectRef &&
-            database.database === direct.database
-    );
-}
+export { databaseFingerprint, targetsIdentifySameDatabase };
 
 function confirmedHosts(value) {
     return new Set(
@@ -100,6 +55,7 @@ export function assertSafeE2eDatabaseConfig({
                 'Local E2E mode requires both DATABASE_URL and DIRECT_URL to use localhost.'
             );
         }
+        assertSameDisposableDatabase(database, direct);
         return;
     }
 
@@ -124,7 +80,10 @@ export function assertSafeE2eDatabaseConfig({
             );
         }
     }
+    assertSameDisposableDatabase(database, direct);
+}
 
+function assertSameDisposableDatabase(database, direct) {
     if (!targetsIdentifySameDatabase(database, direct)) {
         throw new Error(
             `DATABASE_URL (${databaseFingerprint(database)}) and DIRECT_URL (${databaseFingerprint(direct)}) do not identify the same disposable database.`

@@ -40,6 +40,8 @@ export type PracticeFilters = {
     themes?: string[];
     minConfidence?: number;
     mode?: PracticeFeedMode;
+    /** Restrict the session to positions extracted from one owned game. */
+    gameId?: string;
 };
 
 export type PracticeFeedRequest = {
@@ -105,6 +107,7 @@ export type TrainingGradingManifestDto = {
 };
 
 export type PracticeFeedResponse = {
+    ownerId: string;
     items: TrainingPromptDto[];
     nextCursor: string | null;
     /**
@@ -116,6 +119,7 @@ export type PracticeFeedResponse = {
 };
 
 export type TrainingMomentResponse = {
+    ownerId: string;
     moment: TrainingPromptDto;
 };
 
@@ -224,6 +228,7 @@ export type RevealedPracticeResult = {
 
 export type TrainingApiErrorCode =
     | 'UNAUTHORIZED'
+    | 'OWNER_MISMATCH'
     | 'NOT_FOUND'
     | 'INVALID_REQUEST'
     | 'ILLEGAL_MOVE'

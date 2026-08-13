@@ -28,7 +28,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Install dependencies
@@ -42,3 +42,6 @@ jobs:
 
       - name: Run authenticated E2E suite
         run: pnpm test:e2e
+
+      - name: Run Coach and cold-offline PWA suite against the production build
+        run: pnpm test:e2e:coach-offline:built

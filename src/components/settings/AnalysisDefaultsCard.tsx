@@ -3,7 +3,15 @@
 import * as React from "react";
 import { Gauge } from "lucide-react";
 import { toast } from "sonner";
+import { useSession } from "next-auth/react";
 import { EXPECTED_OWNER_HEADER } from "@/lib/auth/ownerContract";
+import {
+  advanceOwnerEpoch,
+  captureOwnerRun,
+  isOwnerRunGenerationCurrent,
+  resolveSessionOwnerId,
+  type OwnerEpoch,
+} from "@/lib/auth/ownerRun";
 
 import {
   defaultPreferences,
@@ -31,7 +39,19 @@ export function analysisDefaultsEqual(
   );
 }
 
-export function AnalysisDefaultsCard({ ownerId }: { ownerId: string }) {
+export function AnalysisDefaultsCard({ ownerId: initialOwnerId }: { ownerId: string }) {
+  const { data: session, status: sessionStatus } = useSession();
+  const activeOwnerId = resolveSessionOwnerId({
+    sessionStatus,
+    liveOwnerId: session?.user?.id ?? null,
+    initialOwnerId,
+  });
+  const ownerEpochRef = React.useRef<OwnerEpoch>({ ownerId: null, generation: 0 });
+  ownerEpochRef.current = advanceOwnerEpoch(ownerEpochRef.current, activeOwnerId);
+  const loadControllerRef = React.useRef<AbortController | null>(null);
+  const mutationControllerRef = React.useRef<AbortController | null>(null);
+  const loadGenerationRef = React.useRef(0);
+  const mutationGenerationRef = React.useRef(0);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -40,7 +60,7 @@ export function AnalysisDefaultsCard({ ownerId }: { ownerId: string }) {
   );
   const [savedDefaults, setSavedDefaults] =
     React.useState<AnalysisDefaults | null>(null);
-  const requestIdRef = React.useRef(0);
+  const [loadedOwnerId, setLoadedOwnerId] = React.useState<string | null>(null);
   const valid = analysisDefaultsAreValid(analysisDefaults);
   const dirty =
     savedDefaults !== null &&
@@ -50,41 +70,84 @@ export function AnalysisDefaultsCard({ ownerId }: { ownerId: string }) {
     dirty &&
     !loading &&
     !busy &&
-    loadError === null;
+    loadError === null &&
+    activeOwnerId === initialOwnerId &&
+    loadedOwnerId === initialOwnerId;
 
   const load = React.useCallback(async () => {
-    const requestId = ++requestIdRef.current;
+    const run = captureOwnerRun(ownerEpochRef.current);
+    const generation = loadGenerationRef.current + 1;
+    loadGenerationRef.current = generation;
+    loadControllerRef.current?.abort();
+    mutationGenerationRef.current += 1;
+    mutationControllerRef.current?.abort();
+    mutationControllerRef.current = null;
+    setLoadedOwnerId(null);
+    setSavedDefaults(null);
     setLoading(true);
+    setBusy(false);
     setLoadError(null);
+    if (!run || run.ownerId !== initialOwnerId) {
+      setLoadError("Your signed-in account changed. Reload Settings to continue.");
+      setLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      isOwnerRunGenerationCurrent({
+        run,
+        epoch: ownerEpochRef.current,
+        generation,
+        currentGeneration: loadGenerationRef.current,
+      });
     try {
-      const res = await fetch("/api/user/preferences", { cache: "no-store" });
+      const res = await fetch("/api/user/preferences", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
       const json = (await res.json().catch(() => ({}))) as {
+        ownerId?: string;
         preferences?: PreferencesSchema;
         error?: string;
       };
       if (!res.ok) throw new Error(json?.error ?? "Failed to load preferences");
       if (!json.preferences) throw new Error("Missing preferences");
-      if (requestId !== requestIdRef.current) return;
+      if (!isCurrent()) return;
+      if (json.ownerId !== run.ownerId) {
+        throw new Error("The server returned analysis settings for a different account.");
+      }
       const loaded = pickAnalysisDefaults(json.preferences);
       setAnalysisDefaults(loaded);
       setSavedDefaults(loaded);
+      setLoadedOwnerId(run.ownerId);
     } catch (error) {
-      if (requestId !== requestIdRef.current) return;
+      if (!isCurrent()) return;
       setSavedDefaults(null);
       setLoadError(
         error instanceof Error ? error.message : "Failed to load preferences",
       );
     } finally {
-      if (requestId === requestIdRef.current) setLoading(false);
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null;
+      }
+      if (isCurrent()) setLoading(false);
     }
-  }, []);
+  }, [initialOwnerId]);
 
   React.useEffect(() => {
     void load();
     return () => {
-      requestIdRef.current += 1;
+      loadGenerationRef.current += 1;
+      mutationGenerationRef.current += 1;
+      loadControllerRef.current?.abort();
+      mutationControllerRef.current?.abort();
     };
-  }, [load]);
+  }, [activeOwnerId, load]);
+
+  const ownerReady =
+    activeOwnerId === initialOwnerId && loadedOwnerId === initialOwnerId;
 
   function resetToAppDefaults() {
     if (savedDefaults === null || loading || busy) return;
@@ -94,6 +157,22 @@ export function AnalysisDefaultsCard({ ownerId }: { ownerId: string }) {
 
   async function save() {
     if (!canSave) return;
+    const run = captureOwnerRun(ownerEpochRef.current);
+    if (!run || run.ownerId !== loadedOwnerId) return;
+    mutationControllerRef.current?.abort();
+    const controller = new AbortController();
+    mutationControllerRef.current = controller;
+    const generation = mutationGenerationRef.current + 1;
+    mutationGenerationRef.current = generation;
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      loadedOwnerId === run.ownerId &&
+      isOwnerRunGenerationCurrent({
+        run,
+        epoch: ownerEpochRef.current,
+        generation,
+        currentGeneration: mutationGenerationRef.current,
+      });
     const id = toast.loading("Saving analysis defaults…");
     setBusy(true);
     try {
@@ -101,15 +180,21 @@ export function AnalysisDefaultsCard({ ownerId }: { ownerId: string }) {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          [EXPECTED_OWNER_HEADER]: ownerId,
+          [EXPECTED_OWNER_HEADER]: run.ownerId,
         },
         body: JSON.stringify(analysisDefaults),
+        signal: controller.signal,
       });
       const json = (await res.json().catch(() => ({}))) as {
+        ownerId?: string;
         preferences?: PreferencesSchema;
         error?: string;
       };
+      if (!isCurrent()) return;
       if (!res.ok) throw new Error(json?.error ?? "Save failed");
+      if (json.ownerId !== run.ownerId || !json.preferences) {
+        throw new Error("The server saved analysis settings for a different account.");
+      }
       toast.success("Analysis defaults saved.", { id });
       const persisted = json.preferences
         ? pickAnalysisDefaults(json.preferences)
@@ -117,9 +202,21 @@ export function AnalysisDefaultsCard({ ownerId }: { ownerId: string }) {
       setAnalysisDefaults(persisted);
       setSavedDefaults(persisted);
     } catch (e) {
+      if (
+        controller.signal.aborted ||
+        (e instanceof Error && e.name === "AbortError") ||
+        !isCurrent()
+      ) {
+        toast.dismiss(id);
+        return;
+      }
       toast.error(e instanceof Error ? e.message : "Save failed", { id });
     } finally {
-      setBusy(false);
+      if (!isCurrent()) toast.dismiss(id);
+      if (mutationControllerRef.current === controller) {
+        mutationControllerRef.current = null;
+      }
+      if (isCurrent()) setBusy(false);
     }
   }
 
@@ -141,7 +238,7 @@ export function AnalysisDefaultsCard({ ownerId }: { ownerId: string }) {
         <AnalysisDefaultsFields
           value={analysisDefaults}
           onChange={setAnalysisDefaults}
-          disabled={busy || loading || loadError !== null}
+          disabled={busy || loading || loadError !== null || !ownerReady}
         />
         {loading ? (
           <InlineStatus tone="info" live>

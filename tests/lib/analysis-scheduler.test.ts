@@ -37,6 +37,7 @@ async function importScheduler(): Promise<SchedulerModule> {
                 prismaMock
             )
     );
+    prismaMock.$queryRaw.mockResolvedValue([{ acquired: true }]);
     return import('@/lib/services/analysisScheduler');
 }
 

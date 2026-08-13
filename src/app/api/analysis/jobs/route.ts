@@ -13,10 +13,6 @@ export const runtime = 'nodejs';
 const UUID_PATTERN =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function clampInt(value: number, min: number, max: number) {
-    return Math.max(min, Math.min(max, Math.trunc(value)));
-}
-
 type AnalysisJobApiRecord = {
     id: string;
     gameId: string;
@@ -58,7 +54,14 @@ export async function GET(req: Request) {
 
     const url = new URL(req.url);
     const status = analysisJobStatusFilter(url.searchParams.get('status'));
-    const limit = clampInt(Number(url.searchParams.get('limit') ?? 25), 1, 200);
+    const rawLimit = url.searchParams.get('limit');
+    const limit = rawLimit === null ? 25 : Number(rawLimit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+        return NextResponse.json(
+            { error: 'limit must be an integer between 1 and 200' },
+            { status: 400 }
+        );
+    }
     const idsParam = url.searchParams.get('ids');
     const ids = Array.from(
         new Set(

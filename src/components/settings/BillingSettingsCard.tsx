@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { ArrowUpRight, CreditCard, Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useSession } from 'next-auth/react';
 import type { BillingPresentation } from '@/lib/billing/presentation';
 import {
     Card,
@@ -15,6 +16,13 @@ import { InlineStatus } from '@/components/ui/async-state';
 import { Badge } from '@/components/ui/badge';
 import { LoadingButton } from '@/components/ui/loading-button';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
+import {
+    advanceOwnerEpoch,
+    captureOwnerRun,
+    isOwnerRunGenerationCurrent,
+    resolveSessionOwnerId,
+    type OwnerEpoch,
+} from '@/lib/auth/ownerRun';
 
 export type BillingSettings = {
     presentation: BillingPresentation;
@@ -28,20 +36,80 @@ export type BillingSettings = {
 };
 
 type CheckoutResponse = {
+    ownerId?: string;
     url?: string;
     error?: string;
 };
 
 export function BillingSettingsCard({
     billing,
-    ownerId,
+    ownerId: initialOwnerId,
 }: {
     billing: BillingSettings;
     ownerId: string;
 }) {
+    const { data: session, status: sessionStatus } = useSession();
+    const activeOwnerId = resolveSessionOwnerId({
+        sessionStatus,
+        liveOwnerId: session?.user?.id ?? null,
+        initialOwnerId,
+    });
+    const ownerEpochRef = React.useRef<OwnerEpoch>({
+        ownerId: null,
+        generation: 0,
+    });
+    ownerEpochRef.current = advanceOwnerEpoch(
+        ownerEpochRef.current,
+        activeOwnerId
+    );
+    const requestControllerRef = React.useRef<AbortController | null>(null);
+    const requestGenerationRef = React.useRef(0);
     const [loading, setLoading] = React.useState<string | null>(null);
+    const ownerReady = activeOwnerId === initialOwnerId;
+
+    function beginBillingRequest() {
+        const run = captureOwnerRun(ownerEpochRef.current);
+        if (!run || run.ownerId !== initialOwnerId) return null;
+        requestControllerRef.current?.abort();
+        const controller = new AbortController();
+        requestControllerRef.current = controller;
+        const generation = requestGenerationRef.current + 1;
+        requestGenerationRef.current = generation;
+        const isCurrent = () =>
+            !controller.signal.aborted &&
+            isOwnerRunGenerationCurrent({
+                run,
+                epoch: ownerEpochRef.current,
+                generation,
+                currentGeneration: requestGenerationRef.current,
+            }) &&
+            run.ownerId === initialOwnerId;
+        return { controller, isCurrent, run };
+    }
+
+    React.useEffect(() => {
+        if (ownerReady) return;
+        requestGenerationRef.current += 1;
+        requestControllerRef.current?.abort();
+        requestControllerRef.current = null;
+        setLoading(null);
+    }, [ownerReady]);
+
+    React.useEffect(() => {
+        return () => {
+            requestGenerationRef.current += 1;
+            requestControllerRef.current?.abort();
+        };
+    }, []);
 
     async function redirectToCheckout(plan: 'PLUS' | 'PRO') {
+        const request = beginBillingRequest();
+        if (!request) {
+            toast.error(
+                'Your signed-in account changed. Reload Settings before starting checkout.'
+            );
+            return;
+        }
         setLoading(plan);
         const id = toast.loading(`Opening ${plan} checkout...`);
         try {
@@ -49,49 +117,99 @@ export function BillingSettingsCard({
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    [EXPECTED_OWNER_HEADER]: ownerId,
+                    [EXPECTED_OWNER_HEADER]: request.run.ownerId,
                 },
                 body: JSON.stringify({ plan }),
+                signal: request.controller.signal,
             });
             const json = (await res.json().catch(() => ({}))) as CheckoutResponse;
+            if (!request.isCurrent()) return;
             if (!res.ok || !json.url) {
                 throw new Error(json.error ?? 'Checkout failed');
             }
+            if (json.ownerId !== request.run.ownerId) {
+                throw new Error(
+                    'The server returned checkout for a different account.'
+                );
+            }
             window.location.href = json.url;
         } catch (error) {
+            if (
+                request.controller.signal.aborted ||
+                (error instanceof Error && error.name === 'AbortError') ||
+                !request.isCurrent()
+            ) {
+                toast.dismiss(id);
+                return;
+            }
             toast.error(
                 error instanceof Error ? error.message : 'Checkout failed',
                 { id }
             );
-            setLoading(null);
+        } finally {
+            if (!request.isCurrent()) toast.dismiss(id);
+            if (requestControllerRef.current === request.controller) {
+                requestControllerRef.current = null;
+            }
+            if (request.isCurrent()) setLoading(null);
         }
     }
 
     async function redirectToPortal() {
+        const request = beginBillingRequest();
+        if (!request) {
+            toast.error(
+                'Your signed-in account changed. Reload Settings before opening billing.'
+            );
+            return;
+        }
         setLoading('portal');
         const id = toast.loading('Opening billing portal...');
         try {
             const res = await fetch('/api/stripe/portal', {
                 method: 'POST',
-                headers: { [EXPECTED_OWNER_HEADER]: ownerId },
+                headers: {
+                    [EXPECTED_OWNER_HEADER]: request.run.ownerId,
+                },
+                signal: request.controller.signal,
             });
             const json = (await res.json().catch(() => ({}))) as CheckoutResponse;
+            if (!request.isCurrent()) return;
             if (!res.ok || !json.url) {
                 throw new Error(json.error ?? 'Billing portal failed');
             }
+            if (json.ownerId !== request.run.ownerId) {
+                throw new Error(
+                    'The server returned billing for a different account.'
+                );
+            }
             window.location.href = json.url;
         } catch (error) {
+            if (
+                request.controller.signal.aborted ||
+                (error instanceof Error && error.name === 'AbortError') ||
+                !request.isCurrent()
+            ) {
+                toast.dismiss(id);
+                return;
+            }
             toast.error(
                 error instanceof Error
                     ? error.message
                     : 'Billing portal failed',
                 { id }
             );
-            setLoading(null);
+        } finally {
+            if (!request.isCurrent()) toast.dismiss(id);
+            if (requestControllerRef.current === request.controller) {
+                requestControllerRef.current = null;
+            }
+            if (request.isCurrent()) setLoading(null);
         }
     }
 
-    const disabled = !billing.stripeConfigured || loading !== null;
+    const disabled =
+        !billing.stripeConfigured || loading !== null || !ownerReady;
     const { access, checkoutBlocked, checkoutBlockedReason, paidSubscription } =
         billing.presentation;
 
@@ -207,6 +325,12 @@ export function BillingSettingsCard({
                 </div>
 
                 <div className="space-y-2 text-sm text-muted-foreground">
+                    {!ownerReady ? (
+                        <InlineStatus tone="danger">
+                            Your signed-in account changed. Reload Settings before
+                            managing billing.
+                        </InlineStatus>
+                    ) : null}
                     {!billing.stripeConfigured ? (
                         <InlineStatus tone="danger">
                             Plan changes are temporarily unavailable. Your current

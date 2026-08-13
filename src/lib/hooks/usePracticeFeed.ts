@@ -21,10 +21,14 @@ import {
     TrainingClientError,
 } from '@/lib/training/client';
 import {
+    classifyTrainingWriteFailure,
     enqueueTrainingAttempt,
+    failedTrainingAttempt,
     parseTrainingAttemptQueue,
+    reconcileTrainingAttemptFlush,
     trainingQueueStorageKey,
     type QueuedTrainingAttempt,
+    type TrainingWriteFailure,
 } from '@/lib/training/offlineQueue';
 import { newClientId } from '@/lib/training/clientIds';
 import {
@@ -110,6 +114,7 @@ export function practiceFeedLoadErrorAfterEvent(
 }
 
 type ActiveExposure = {
+    ownerId: string;
     clientExposureId: string;
     momentId: string;
     solutionRevisionId: string;
@@ -117,6 +122,37 @@ type ActiveExposure = {
     terminalRecorded: boolean;
     terminalPending: boolean;
 };
+
+export function resolvePracticeOwnerId({
+    sessionStatus,
+    liveOwnerId,
+    initialOwnerId,
+}: {
+    sessionStatus: 'loading' | 'authenticated' | 'unauthenticated';
+    liveOwnerId: string | null;
+    initialOwnerId?: string;
+}): string | null {
+    return sessionStatus === 'loading'
+        ? (liveOwnerId ?? initialOwnerId ?? null)
+        : liveOwnerId;
+}
+
+export function isPracticeOwnerRunCurrent({
+    expectedOwnerId,
+    currentOwnerId,
+    generation,
+    currentGeneration,
+}: {
+    expectedOwnerId: string;
+    currentOwnerId: string | null;
+    generation: number;
+    currentGeneration: number;
+}): boolean {
+    return (
+        expectedOwnerId === currentOwnerId &&
+        generation === currentGeneration
+    );
+}
 
 function errorMessage(error: unknown): string {
     if (error instanceof TrainingClientError) return error.message;
@@ -129,18 +165,6 @@ function navigatorIsOnline(): boolean {
     return (
         typeof navigator === 'undefined' || navigator.onLine !== false
     );
-}
-
-function shouldQueue(error: unknown): boolean {
-    return (
-        (typeof navigator !== 'undefined' && !navigator.onLine) ||
-        error instanceof TypeError
-    );
-}
-
-function keepQueued(error: unknown): boolean {
-    if (!(error instanceof TrainingClientError)) return true;
-    return error.status >= 500;
 }
 
 function readQueue(ownerId: string): QueuedTrainingAttempt[] {
@@ -176,10 +200,15 @@ export function usePracticeFeed(
     initialMomentId?: string,
     ownerIdOverride?: string,
     entry?: 'progress',
-    initialMode?: PracticeFeedMode
+    initialMode?: PracticeFeedMode,
+    initialGameId?: string
 ) {
-    const { data: session } = useSession();
-    const ownerId = ownerIdOverride ?? session?.user?.id ?? null;
+    const { data: session, status: sessionStatus } = useSession();
+    const ownerId = resolvePracticeOwnerId({
+        sessionStatus,
+        liveOwnerId: session?.user?.id ?? null,
+        initialOwnerId: ownerIdOverride,
+    });
 
     const [buffer, setBuffer] = useState<TrainingPromptDto[]>([]);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -190,19 +219,30 @@ export function usePracticeFeed(
         filters: PracticeFilters;
         revision: number;
     }>(() => ({
-        filters: initialMode ? { mode: initialMode } : {},
+        filters: {
+            ...(initialMode ? { mode: initialMode } : {}),
+            ...(initialGameId ? { gameId: initialGameId } : {}),
+        },
         revision: 0,
     }));
     const [loading, setLoading] = useState(true);
     const [feedExhausted, setFeedExhausted] = useState(false);
     const [feedHadPositions, setFeedHadPositions] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
+    const [loadedOwnerId, setLoadedOwnerId] = useState<string | null>(null);
 
-    const [error, setError] = useState<string | null>(null);
     const [online, setOnline] = useState(navigatorIsOnline);
     const [queuedCount, setQueuedCount] = useState(0);
+    const [failedHistoryWrites, setFailedHistoryWrites] = useState<
+        QueuedTrainingAttempt[]
+    >([]);
+    const [historyError, setHistoryError] = useState<string | null>(null);
 
     const flushInFlightRef = useRef(false);
+    const flushControllerRef = useRef<AbortController | null>(null);
+    const attemptWriteControllersRef = useRef(new Set<AbortController>());
+    const ownerIdRef = useRef(ownerId);
+    ownerIdRef.current = ownerId;
     const advanceInFlightRef = useRef(false);
     const bufferRef = useRef<TrainingPromptDto[]>([]);
     const nextCursorRef = useRef<string | null>(null);
@@ -252,7 +292,12 @@ export function usePracticeFeed(
                 | 'NAVIGATED_AWAY',
             terminalAttemptId?: string
         ) => {
-            if (exposure.terminalRecorded) return;
+            if (
+                exposure.terminalRecorded ||
+                ownerIdRef.current !== exposure.ownerId
+            ) {
+                return;
+            }
             exposure.terminalRecorded = true;
             const occurredAt = new Date().toISOString();
             void recordPracticeExposureEvent({
@@ -339,6 +384,7 @@ export function usePracticeFeed(
             finishExposure('REPLACED');
             const shownAt = new Date().toISOString();
             const exposure: ActiveExposure = {
+                ownerId: ownerIdRef.current ?? '',
                 clientExposureId: newClientId(),
                 momentId: next.id,
                 solutionRevisionId: next.solutionRevisionId,
@@ -346,6 +392,7 @@ export function usePracticeFeed(
                 terminalRecorded: false,
                 terminalPending: false,
             };
+            if (!exposure.ownerId) return;
             activeExposureRef.current = exposure;
             void recordPracticeExposureEvent({
                 kind: 'SHOWN',
@@ -373,7 +420,6 @@ export function usePracticeFeed(
                 });
             }
             activatePuzzlePrompt(next);
-            setError(null);
             setLoadError((current) =>
                 practiceFeedLoadErrorAfterEvent(
                     current,
@@ -394,12 +440,40 @@ export function usePracticeFeed(
         [finishExposure]
     );
 
+    const invalidateFeedForOwnerMismatch = useCallback(
+        (message: string) => {
+            feedGenerationRef.current += 1;
+            initialLoadControllerRef.current?.abort();
+            abortCoordinatedPracticeFeedRequest(pageRequestRef);
+            activeExposureRef.current = null;
+            seenPromptKeysRef.current = new Set();
+            bufferRef.current = [];
+            nextCursorRef.current = null;
+            feedStartedRef.current = false;
+            feedExhaustedRef.current = false;
+            appliedFiltersRef.current = {};
+            setLoadedOwnerId(null);
+            clearPuzzlePrompt();
+            replaceBuffer([]);
+            setNextCursor(null);
+            setFeedStarted(false);
+            setFeedExhausted(false);
+            setFeedHadPositions(false);
+            setAppliedFilters({});
+            setLoading(false);
+            setLoadError(message);
+        },
+        [clearPuzzlePrompt, replaceBuffer]
+    );
+
     const appendFeedPage = useCallback(
         (
             items: readonly TrainingPromptDto[],
             cursor: string | null,
-            filters: PracticeFilters
+            filters: PracticeFilters,
+            responseOwnerId: string
         ): TrainingPromptDto[] => {
+            setLoadedOwnerId(responseOwnerId);
             const unseen = unseenPracticePrompts(
                 items,
                 seenPromptKeysRef.current
@@ -435,6 +509,8 @@ export function usePracticeFeed(
     );
 
     const startFeedPageRequest = useCallback(() => {
+        const requestOwnerId = ownerId;
+        if (!requestOwnerId) return Promise.resolve([]);
         if (feedStartedRef.current && feedExhaustedRef.current) {
             return Promise.resolve([]);
         }
@@ -451,9 +527,15 @@ export function usePracticeFeed(
             slot: pageRequestRef,
             generation,
             isGenerationCurrent: (requestGeneration) =>
-                requestGeneration === feedGenerationRef.current,
+                isPracticeOwnerRunCurrent({
+                    expectedOwnerId: requestOwnerId,
+                    currentOwnerId: ownerIdRef.current,
+                    generation: requestGeneration,
+                    currentGeneration: feedGenerationRef.current,
+                }),
             request: (signal) =>
                 fetchPracticeFeed(
+                    requestOwnerId,
                     {
                         limit: PRACTICE_FEED_BATCH_SIZE,
                         cursor,
@@ -465,9 +547,17 @@ export function usePracticeFeed(
                 appendFeedPage(
                     result.items,
                     result.nextCursor,
-                    result.appliedFilters
+                    result.appliedFilters,
+                    result.ownerId
                 ),
             onFailure: (caught) => {
+                if (
+                    caught instanceof TrainingClientError &&
+                    caught.code === 'OWNER_MISMATCH'
+                ) {
+                    invalidateFeedForOwnerMismatch(caught.message);
+                    return;
+                }
                 setOnline((current) =>
                     practiceFeedOnlineAfterRead({
                         currentOnline: current,
@@ -478,24 +568,35 @@ export function usePracticeFeed(
             },
             staleResult: () => [],
         });
-    }, [appendFeedPage]);
+    }, [appendFeedPage, invalidateFeedForOwnerMismatch, ownerId]);
 
     const loadInitial = useCallback(
         async (generation: number, signal: AbortSignal) => {
             setLoading(true);
             setLoadError(null);
+            const requestOwnerId = ownerId;
+            if (!requestOwnerId) {
+                setLoading(false);
+                clearPuzzlePrompt();
+                return;
+            }
+            const isCurrent = () =>
+                !signal.aborted &&
+                isPracticeOwnerRunCurrent({
+                    expectedOwnerId: requestOwnerId,
+                    currentOwnerId: ownerIdRef.current,
+                    generation,
+                    currentGeneration: feedGenerationRef.current,
+                });
             try {
                 if (initialMomentId) {
                     const detail = await fetchTrainingMoment(
+                        requestOwnerId,
                         initialMomentId,
                         signal
                     );
-                    if (
-                        signal.aborted ||
-                        generation !== feedGenerationRef.current
-                    ) {
-                        return;
-                    }
+                    if (!isCurrent()) return;
+                    setLoadedOwnerId(detail.ownerId);
                     seenPromptKeysRef.current.add(
                         practicePromptKey(detail.moment)
                     );
@@ -525,18 +626,15 @@ export function usePracticeFeed(
                 }
 
                 const result = await fetchPracticeFeed(
+                    requestOwnerId,
                     {
                         limit: PRACTICE_FEED_BATCH_SIZE,
                         filters: feedRequest.filters,
                     },
                     signal
                 );
-                if (
-                    signal.aborted ||
-                    generation !== feedGenerationRef.current
-                ) {
-                    return;
-                }
+                if (!isCurrent()) return;
+                setLoadedOwnerId(result.ownerId);
                 const unseen = unseenPracticePrompts(
                     result.items,
                     seenPromptKeysRef.current
@@ -565,10 +663,12 @@ export function usePracticeFeed(
                     clearPuzzlePrompt();
                 }
             } catch (caught) {
+                if (!isCurrent()) return;
                 if (
-                    signal.aborted ||
-                    generation !== feedGenerationRef.current
+                    caught instanceof TrainingClientError &&
+                    caught.code === 'OWNER_MISMATCH'
                 ) {
+                    invalidateFeedForOwnerMismatch(caught.message);
                     return;
                 }
                 setOnline((current) =>
@@ -581,10 +681,7 @@ export function usePracticeFeed(
                 setLoadError(errorMessage(caught));
                 clearPuzzlePrompt();
             } finally {
-                if (
-                    !signal.aborted &&
-                    generation === feedGenerationRef.current
-                ) {
+                if (isCurrent()) {
                     setLoading(false);
                 }
             }
@@ -593,6 +690,8 @@ export function usePracticeFeed(
             activatePrompt,
             feedRequest,
             initialMomentId,
+            invalidateFeedForOwnerMismatch,
+            ownerId,
             replaceBuffer,
             clearPuzzlePrompt,
             startFeedPageRequest,
@@ -613,7 +712,9 @@ export function usePracticeFeed(
         feedStartedRef.current = false;
         feedExhaustedRef.current = false;
         appliedFiltersRef.current = {};
+        activeExposureRef.current = null;
         requestedFiltersRef.current = feedRequest.filters;
+        setLoadedOwnerId(null);
         clearPuzzlePrompt();
         replaceBuffer([]);
         setNextCursor(null);
@@ -621,7 +722,11 @@ export function usePracticeFeed(
         setFeedExhausted(false);
         setFeedHadPositions(false);
         setAppliedFilters({});
-        void loadInitial(generation, controller.signal);
+        if (ownerId) {
+            void loadInitial(generation, controller.signal);
+        } else {
+            setLoading(false);
+        }
         return () => {
             controller.abort();
             abortCoordinatedPracticeFeedRequest(
@@ -637,10 +742,21 @@ export function usePracticeFeed(
         };
     }, [
         feedRequest.filters,
+        ownerId,
         loadInitial,
         clearPuzzlePrompt,
         replaceBuffer,
     ]);
+
+    useEffect(() => {
+        const controllers = attemptWriteControllersRef.current;
+        return () => {
+            for (const controller of controllers) {
+                controller.abort();
+            }
+            controllers.clear();
+        };
+    }, [ownerId]);
 
     useEffect(() => {
         const onOnline = () => setOnline(true);
@@ -678,33 +794,76 @@ export function usePracticeFeed(
         startFeedPageRequest,
     ]);
 
+    const applyOutboxState = useCallback(
+        (entries: QueuedTrainingAttempt[]) => {
+            if (!ownerId || ownerIdRef.current !== ownerId) return;
+            setQueuedCount(
+                entries.filter((entry) => entry.state === 'PENDING').length
+            );
+            setFailedHistoryWrites(
+                entries.filter(
+                    (entry) => entry.state === 'NEEDS_ATTENTION'
+                )
+            );
+        },
+        [ownerId]
+    );
+
     useEffect(() => {
-        setQueuedCount(ownerId ? readQueue(ownerId).length : 0);
-    }, [ownerId]);
+        flushControllerRef.current?.abort();
+        flushInFlightRef.current = false;
+        setHistoryError(null);
+        if (!ownerId) {
+            setQueuedCount(0);
+            setFailedHistoryWrites([]);
+            return;
+        }
+        applyOutboxState(readQueue(ownerId));
+        return () => flushControllerRef.current?.abort();
+    }, [applyOutboxState, ownerId]);
 
     const queueRecord = useCallback(
-        (momentId: string, request: RecordTrainingAttemptRequest) => {
-            if (!ownerId) return;
+        (
+            momentId: string,
+            request: RecordTrainingAttemptRequest,
+            failure?: TrainingWriteFailure
+        ) => {
+            if (!ownerId || ownerIdRef.current !== ownerId) return;
+            const attemptedAt = failure ? new Date().toISOString() : null;
             const entry: QueuedTrainingAttempt = {
-                version: 2,
+                version: 3,
                 ownerId,
                 momentId,
                 request,
                 queuedAt: new Date().toISOString(),
+                state:
+                    failure?.disposition === 'NEEDS_ATTENTION'
+                        ? 'NEEDS_ATTENTION'
+                        : 'PENDING',
+                attemptCount: failure ? 1 : 0,
+                lastAttemptAt: attemptedAt,
+                lastError: failure?.error ?? null,
             };
             const next = enqueueTrainingAttempt(
                 readQueue(ownerId),
                 entry
             );
-            if (writeQueue(ownerId, next)) {
-                setQueuedCount(next.length);
+            const stored = next.some(
+                (candidate) =>
+                    candidate.request.clientAttemptId ===
+                    request.clientAttemptId
+            );
+            if (stored && writeQueue(ownerId, next)) {
+                applyOutboxState(next);
             } else {
-                setError(
-                    'Your result is graded, but it could not be queued for history sync.'
+                setHistoryError(
+                    stored
+                        ? 'Your result is graded, but local history storage is unavailable.'
+                        : 'Local history storage is full. Resolve an earlier unsaved result before continuing.'
                 );
             }
         },
-        [ownerId]
+        [applyOutboxState, ownerId]
     );
 
     const persistRecord = useCallback(
@@ -712,27 +871,56 @@ export function usePracticeFeed(
             momentId: string,
             request: RecordTrainingAttemptRequest
         ) => {
-            if (!ownerId || !online) {
+            const requestOwnerId = ownerId;
+            if (!requestOwnerId || ownerIdRef.current !== requestOwnerId) {
+                return null;
+            }
+            if (!online) {
                 queueRecord(momentId, request);
                 return null;
             }
+            const controller = new AbortController();
+            attemptWriteControllersRef.current.add(controller);
             try {
                 const recorded = await recordTrainingAttempt(
+                    requestOwnerId,
                     momentId,
-                    request
+                    request,
+                    controller.signal
                 );
+                if (
+                    controller.signal.aborted ||
+                    ownerIdRef.current !== requestOwnerId
+                ) {
+                    return null;
+                }
                 return recorded.attemptId;
             } catch (caught) {
-                queueRecord(momentId, request);
-                if (shouldQueue(caught)) setOnline(false);
+                if (
+                    controller.signal.aborted ||
+                    ownerIdRef.current !== requestOwnerId ||
+                    (caught instanceof Error &&
+                        caught.name === 'AbortError')
+                ) {
+                    return null;
+                }
+                const failure = classifyTrainingWriteFailure(
+                    caught,
+                    navigatorIsOnline()
+                );
+                queueRecord(momentId, request, failure);
+                if (failure.offline) setOnline(false);
                 return null;
+            } finally {
+                attemptWriteControllersRef.current.delete(controller);
             }
         },
         [online, ownerId, queueRecord]
     );
 
     completionSinkRef.current = (completion) => {
-        setError(null);
+        if (loadedOwnerId !== ownerId || !ownerId) return;
+        setHistoryError(null);
         const persistence = persistRecord(
             completion.prompt.id,
             completion.request
@@ -744,44 +932,135 @@ export function usePracticeFeed(
     };
 
     const flushQueue = useCallback(async () => {
-        if (!ownerId || !online || flushInFlightRef.current) return;
+        if (
+            !ownerId ||
+            ownerIdRef.current !== ownerId ||
+            !online ||
+            flushInFlightRef.current
+        ) {
+            return;
+        }
         flushInFlightRef.current = true;
+        const controller = new AbortController();
+        flushControllerRef.current?.abort();
+        flushControllerRef.current = controller;
         try {
             const queued = readQueue(ownerId);
             const remainingEntries: QueuedTrainingAttempt[] = [];
             for (let index = 0; index < queued.length; index += 1) {
                 const entry = queued[index]!;
+                if (entry.state === 'NEEDS_ATTENTION') {
+                    remainingEntries.push(entry);
+                    continue;
+                }
                 try {
                     await recordTrainingAttempt(
+                        ownerId,
                         entry.momentId,
-                        entry.request
+                        entry.request,
+                        controller.signal
                     );
+                    if (
+                        controller.signal.aborted ||
+                        ownerIdRef.current !== ownerId
+                    ) {
+                        return;
+                    }
                 } catch (caught) {
-                    if (keepQueued(caught)) {
-                        remainingEntries.push(
-                            ...queued.slice(index)
-                        );
-                        if (shouldQueue(caught)) setOnline(false);
+                    if (
+                        controller.signal.aborted ||
+                        ownerIdRef.current !== ownerId ||
+                        (caught instanceof Error &&
+                            caught.name === 'AbortError')
+                    ) {
+                        return;
+                    }
+                    const failure = classifyTrainingWriteFailure(
+                        caught,
+                        navigatorIsOnline()
+                    );
+                    remainingEntries.push(
+                        failedTrainingAttempt(
+                            entry,
+                            failure,
+                            new Date().toISOString()
+                        )
+                    );
+                    if (failure.offline) setOnline(false);
+                    if (failure.disposition === 'RETRY') {
+                        remainingEntries.push(...queued.slice(index + 1));
                         break;
                     }
                 }
             }
-            if (!writeQueue(ownerId, remainingEntries)) {
-                setError(
+            if (
+                controller.signal.aborted ||
+                ownerIdRef.current !== ownerId
+            ) {
+                return;
+            }
+            const reconciledEntries = reconcileTrainingAttemptFlush(
+                queued,
+                remainingEntries,
+                readQueue(ownerId)
+            );
+            if (!writeQueue(ownerId, reconciledEntries)) {
+                setHistoryError(
                     'Practice history synced, but local queue cleanup failed.'
                 );
             }
-            setQueuedCount(remainingEntries.length);
+            applyOutboxState(reconciledEntries);
         } finally {
-            flushInFlightRef.current = false;
+            if (flushControllerRef.current === controller) {
+                flushControllerRef.current = null;
+                flushInFlightRef.current = false;
+            }
         }
-    }, [online, ownerId]);
+    }, [applyOutboxState, online, ownerId]);
 
     useEffect(() => {
         if (online && queuedCount > 0) void flushQueue();
     }, [flushQueue, online, queuedCount]);
 
+    const retryHistoryWrite = useCallback(
+        (clientAttemptId: string) => {
+            if (!ownerId || ownerIdRef.current !== ownerId) return;
+            const next = readQueue(ownerId).map((entry) =>
+                entry.request.clientAttemptId === clientAttemptId
+                    ? {
+                          ...entry,
+                          state: 'PENDING' as const,
+                          lastError: null,
+                      }
+                    : entry
+            );
+            if (!writeQueue(ownerId, next)) {
+                setHistoryError('The unsaved result could not be updated locally.');
+                return;
+            }
+            applyOutboxState(next);
+        },
+        [applyOutboxState, ownerId]
+    );
+
+    const dismissHistoryWrite = useCallback(
+        (clientAttemptId: string) => {
+            if (!ownerId || ownerIdRef.current !== ownerId) return;
+            const next = readQueue(ownerId).filter(
+                (entry) =>
+                    entry.request.clientAttemptId !== clientAttemptId
+            );
+            if (!writeQueue(ownerId, next)) {
+                setHistoryError('The unsaved result could not be removed locally.');
+                return;
+            }
+            applyOutboxState(next);
+        },
+        [applyOutboxState, ownerId]
+    );
+
     const next = useCallback(async () => {
+        if (!ownerId || loadedOwnerId !== ownerId) return;
         if (advanceInFlightRef.current) return;
         advanceInFlightRef.current = true;
         try {
@@ -851,6 +1130,8 @@ export function usePracticeFeed(
         activatePrompt,
         finishExposure,
         loading,
+        loadedOwnerId,
+        ownerId,
         clearPuzzlePrompt,
         puzzlePhase,
         replaceBuffer,
@@ -859,7 +1140,7 @@ export function usePracticeFeed(
 
     const resetFeed = useCallback(
         (filters: PracticeFilters) => {
-            if (initialMomentId) return;
+            if (!ownerId || initialMomentId) return;
             finishExposure('REPLACED');
             feedGenerationRef.current += 1;
             initialLoadControllerRef.current?.abort();
@@ -880,21 +1161,27 @@ export function usePracticeFeed(
             setAppliedFilters({});
             setFeedExhausted(false);
             setFeedHadPositions(false);
-            setError(null);
+            setHistoryError(null);
             setFeedRequest((current) => ({
-                filters,
+                filters: {
+                    ...filters,
+                    ...(initialGameId ? { gameId: initialGameId } : {}),
+                },
                 revision: current.revision + 1,
             }));
         },
         [
             finishExposure,
             initialMomentId,
+            initialGameId,
+            ownerId,
             clearPuzzlePrompt,
             replaceBuffer,
         ]
     );
 
     const retryFeed = useCallback(() => {
+        if (!ownerId) return;
         feedGenerationRef.current += 1;
         initialLoadControllerRef.current?.abort();
         abortCoordinatedPracticeFeedRequest(pageRequestRef);
@@ -904,19 +1191,26 @@ export function usePracticeFeed(
             ...current,
             revision: current.revision + 1,
         }));
-    }, []);
+    }, [ownerId]);
+
+    const ownerReady = Boolean(ownerId && loadedOwnerId === ownerId);
 
     return {
         ...puzzleSession,
+        canMove: ownerReady && puzzleSession.canMove,
+        ownerReady,
         loading,
         feedExhausted,
         feedHadPositions,
         bufferedPositions: buffer.length,
         loadError,
-        error,
+        historyError,
+        failedHistoryWrites,
         online,
         queuedCount,
         flushQueue,
+        retryHistoryWrite,
+        dismissHistoryWrite,
         next,
         resetFeed,
         practiceFilters: feedRequest.filters,

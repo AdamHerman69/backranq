@@ -5,6 +5,10 @@ import {
     dispatchUserSyncJobs,
     getUserSyncActivity,
 } from '@/lib/services/syncJobs';
+import {
+    EXPECTED_OWNER_HEADER,
+    expectedOwnerId,
+} from '@/lib/auth/ownerContract';
 
 export const runtime = 'nodejs';
 
@@ -73,6 +77,16 @@ async function userIdOrUnauthorized() {
     return session?.user?.id ?? null;
 }
 
+async function ownerActivity(
+    userId: string,
+    options?: { requestedJobIds: string[] }
+) {
+    return {
+        ...(await getUserSyncActivity(userId, options)),
+        ownerId: userId,
+    };
+}
+
 function parseRequestedJobIds(req?: Request): string[] | { error: string } {
     if (!req) return [];
     const raw = new URL(req.url).searchParams.get('jobIds');
@@ -110,8 +124,8 @@ export async function GET(req?: Request) {
     }
     return NextResponse.json(
         requestedJobIds.length > 0
-            ? await getUserSyncActivity(userId, { requestedJobIds })
-            : await getUserSyncActivity(userId)
+            ? await ownerActivity(userId, { requestedJobIds })
+            : await ownerActivity(userId)
     );
 }
 
@@ -119,6 +133,15 @@ export async function POST(req: Request) {
     const userId = await userIdOrUnauthorized();
     if (!userId) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (expectedOwnerId(req) !== userId) {
+        return NextResponse.json(
+            {
+                code: 'OWNER_MISMATCH',
+                error: `The signed-in account no longer matches ${EXPECTED_OWNER_HEADER}. Reload before starting sync.`,
+            },
+            { status: 409 }
+        );
     }
 
     let body: unknown;
@@ -158,8 +181,9 @@ export async function POST(req: Request) {
     });
 
     return NextResponse.json({
+        ownerId: userId,
         requested: providers.map((item) => item.provider),
         providers,
-        active: await getUserSyncActivity(userId),
+        active: await ownerActivity(userId),
     });
 }

@@ -5,6 +5,7 @@ import {
     useEffect,
     useRef,
     useState,
+    type MouseEvent,
 } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
@@ -200,6 +201,8 @@ export function SyncGamesWidget({
     const router = useRouter();
     const [historyOpen, setHistoryOpen] = useState(false);
     const [analyzeOpen, setAnalyzeOpen] = useState(false);
+    const [analyzeReturnFocus, setAnalyzeReturnFocus] =
+        useState<HTMLElement | null>(null);
     const [status, setStatus] = useState<ExtendedSyncStatus | null>(null);
     const [statusOwnerId, setStatusOwnerId] = useState<string | null>(null);
     const [statusState, setStatusState] = useState<
@@ -216,8 +219,18 @@ export function SyncGamesWidget({
         action: 'idle',
         message: '',
     });
+    const openAnalyze = useCallback(
+        (event: MouseEvent<HTMLButtonElement>) => {
+            setAnalyzeReturnFocus(event.currentTarget);
+            setAnalyzeOpen(true);
+        },
+        []
+    );
     const appOpenAttemptedFor = useRef<string | null>(null);
     const completionControllerRef = useRef<AbortController | null>(null);
+    const statusControllerRef = useRef<AbortController | null>(null);
+    const syncRequestControllerRef = useRef<AbortController | null>(null);
+    const statusGenerationRef = useRef(0);
     const ownerEpochRef = useRef<OwnerEpoch>({
         ownerId: null,
         generation: 0,
@@ -229,14 +242,34 @@ export function SyncGamesWidget({
 
     const refreshStatus = useCallback(async () => {
         if (!ownerId) return;
+        const run = captureOwnerRun(ownerEpochRef.current);
+        if (!run) return;
+        statusControllerRef.current?.abort();
+        const controller = new AbortController();
+        statusControllerRef.current = controller;
+        const generation = statusGenerationRef.current + 1;
+        statusGenerationRef.current = generation;
+        const isCurrent = () =>
+            !controller.signal.aborted &&
+            generation === statusGenerationRef.current &&
+            isOwnerRunCurrent(run, ownerEpochRef.current);
         try {
-            const next = (await getSyncStatus()) as ExtendedSyncStatus;
+            const next = (await getSyncStatus({
+                ownerId: run.ownerId,
+                signal: controller.signal,
+            })) as ExtendedSyncStatus;
+            if (!isCurrent()) return;
             setStatus(next);
-            setStatusOwnerId(ownerId);
+            setStatusOwnerId(run.ownerId);
             setStatusState('ready');
         } catch {
-            setStatusOwnerId(ownerId);
+            if (!isCurrent()) return;
+            setStatusOwnerId(run.ownerId);
             setStatusState('error');
+        } finally {
+            if (statusControllerRef.current === controller) {
+                statusControllerRef.current = null;
+            }
         }
     }, [ownerId]);
 
@@ -269,6 +302,7 @@ export function SyncGamesWidget({
             completionControllerRef.current = controller;
             try {
                 const completion = await waitForIncrementalSyncJobs({
+                    ownerId: run.ownerId,
                     jobIds,
                     initialActivity: result.activity,
                     signal: controller.signal,
@@ -363,28 +397,19 @@ export function SyncGamesWidget({
     useEffect(() => {
         return () => {
             completionControllerRef.current?.abort();
+            statusControllerRef.current?.abort();
+            syncRequestControllerRef.current?.abort();
         };
     }, [ownerId]);
 
     useEffect(() => {
         if (!ownerId) return;
-        let cancelled = false;
-        getSyncStatus()
-            .then((nextStatus) => {
-                if (cancelled) return;
-                setStatus(nextStatus as ExtendedSyncStatus);
-                setStatusOwnerId(ownerId);
-                setStatusState('ready');
-            })
-            .catch(() => {
-                if (cancelled) return;
-                setStatusOwnerId(ownerId);
-                setStatusState('error');
-            });
+        void refreshStatus();
         return () => {
-            cancelled = true;
+            statusGenerationRef.current += 1;
+            statusControllerRef.current?.abort();
         };
-    }, [ownerId]);
+    }, [ownerId, refreshStatus]);
 
     const currentStatus = statusOwnerId === ownerId ? status : null;
     const currentStatusState =
@@ -437,6 +462,7 @@ export function SyncGamesWidget({
         const run = captureOwnerRun(ownerEpochRef.current);
         if (!run) return;
         let cancelled = false;
+        const controller = new AbortController();
         appOpenAttemptedFor.current = ownerId;
         const key = `backranq.app-open-sync:${encodeURIComponent(ownerId)}`;
         try {
@@ -454,8 +480,10 @@ export function SyncGamesWidget({
         }
 
         void requestIncrementalSync({
+            ownerId: run.ownerId,
             providers,
             onlyIfStaleMinutes: 60,
+            signal: controller.signal,
         })
             .then((result) => {
                 if (
@@ -492,6 +520,7 @@ export function SyncGamesWidget({
             });
         return () => {
             cancelled = true;
+            controller.abort();
         };
     }, [
         currentStatus,
@@ -504,6 +533,9 @@ export function SyncGamesWidget({
         if (!currentStatus || syncAction === 'syncing') return;
         const run = captureOwnerRun(ownerEpochRef.current);
         if (!run) return;
+        syncRequestControllerRef.current?.abort();
+        const controller = new AbortController();
+        syncRequestControllerRef.current = controller;
         setSyncFeedback({
             ownerId: run.ownerId,
             action: 'syncing',
@@ -511,7 +543,9 @@ export function SyncGamesWidget({
         });
         try {
             const result = await requestIncrementalSync({
+                ownerId: run.ownerId,
                 providers: allLinkedProviders(currentStatus),
+                signal: controller.signal,
             });
             if (!isOwnerRunCurrent(run, ownerEpochRef.current)) return;
             setSyncFeedback({
@@ -536,6 +570,12 @@ export function SyncGamesWidget({
                 }
             }
         } catch (error) {
+            if (
+                controller.signal.aborted ||
+                (error instanceof Error && error.name === 'AbortError')
+            ) {
+                return;
+            }
             if (!isOwnerRunCurrent(run, ownerEpochRef.current)) return;
             setSyncFeedback({
                 ownerId: run.ownerId,
@@ -545,6 +585,10 @@ export function SyncGamesWidget({
                             error instanceof Error ? error.message : null
                         ),
             });
+        } finally {
+            if (syncRequestControllerRef.current === controller) {
+                syncRequestControllerRef.current = null;
+            }
         }
     }
 
@@ -838,9 +882,7 @@ export function SyncGamesWidget({
                                             type="button"
                                             size="sm"
                                             variant="secondary"
-                                            onClick={() =>
-                                                setAnalyzeOpen(true)
-                                            }
+                                            onClick={openAnalyze}
                                         >
                                             Analyze free in browser
                                         </Button>
@@ -869,7 +911,7 @@ export function SyncGamesWidget({
                                         type="button"
                                         size="sm"
                                         variant="secondary"
-                                        onClick={() => setAnalyzeOpen(true)}
+                                        onClick={openAnalyze}
                                     >
                                         Analyze free in browser
                                     </Button>
@@ -906,6 +948,7 @@ export function SyncGamesWidget({
                 open={analyzeOpen}
                 onClose={() => setAnalyzeOpen(false)}
                 title="Analyze imported games"
+                returnFocusElement={analyzeReturnFocus}
             />
         </>
     );

@@ -6,9 +6,19 @@ import {
     setMockUserId,
 } from '../helpers/route-mocks';
 
+const rateLimitMock = vi.fn<
+    () => Promise<
+        | { allowed: true }
+        | { allowed: false; retryAfterSeconds: number }
+    >
+>(async () => ({ allowed: true }));
+
 async function importRoute() {
     vi.resetModules();
     mockAuthModule();
+    vi.doMock('@/lib/api/providerProxyRateLimit', () => ({
+        consumeProviderProxyRateLimit: rateLimitMock,
+    }));
     return import('@/app/api/user/validate/route');
 }
 
@@ -22,6 +32,7 @@ describe('GET /api/user/validate', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         setMockUserId('user-1');
+        rateLimitMock.mockResolvedValue({ allowed: true });
     });
 
     afterEach(() => {
@@ -106,5 +117,21 @@ describe('GET /api/user/validate', () => {
             retryable: true,
             error: expect.stringContaining('timed out'),
         });
+    });
+
+    it('does not call the provider when the owner limit is exhausted', async () => {
+        const providerFetch = vi.fn();
+        vi.stubGlobal('fetch', providerFetch);
+        rateLimitMock.mockResolvedValue({
+            allowed: false,
+            retryAfterSeconds: 22,
+        });
+        const route = await importRoute();
+
+        const response = await route.GET(request());
+
+        expect(response.status).toBe(429);
+        expect(response.headers.get('Retry-After')).toBe('22');
+        expect(providerFetch).not.toHaveBeenCalled();
     });
 });

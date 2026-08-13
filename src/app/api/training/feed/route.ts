@@ -35,6 +35,7 @@ export async function GET(req: Request) {
     try {
         if (
             !request.cursor &&
+            !request.filters?.gameId &&
             !request.filters?.sourceKinds?.length
         ) {
             const user = await prisma.user.findUnique({
@@ -55,12 +56,13 @@ export async function GET(req: Request) {
                 };
             }
         }
-        return NextResponse.json(
-            await listPracticeFeed({
+        const feed = await listPracticeFeed({
                 db: prisma,
                 userId,
                 request,
-            }),
+            });
+        return NextResponse.json(
+            { ownerId: userId, ...feed },
             {
                 headers: {
                     'Cache-Control': 'private, no-store',

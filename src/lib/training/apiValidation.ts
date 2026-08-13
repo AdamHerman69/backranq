@@ -37,6 +37,7 @@ const FEED_QUERY_KEYS = new Set([
     'theme',
     'minConfidence',
     'mode',
+    'gameId',
 ]);
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -105,6 +106,7 @@ export function parsePracticeFeedRequest(
             'focus',
             'minConfidence',
             'mode',
+            'gameId',
         ].some(
             (key) => url.searchParams.getAll(key).length > 1
         )
@@ -173,6 +175,8 @@ export function parsePracticeFeedRequest(
     ) {
         return null;
     }
+    const gameId = url.searchParams.get('gameId')?.trim() || undefined;
+    if (gameId && !isTrainingApiUuid(gameId)) return null;
 
     return {
         limit,
@@ -207,6 +211,7 @@ export function parsePracticeFeedRequest(
                       >['mode'],
                   }
                 : {}),
+            ...(gameId ? { gameId } : {}),
         },
     };
 }

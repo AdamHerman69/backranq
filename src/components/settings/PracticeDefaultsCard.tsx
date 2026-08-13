@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { Target } from 'lucide-react';
 import { toast } from 'sonner';
+import { useSession } from 'next-auth/react';
 
 import { Button } from '@/components/ui/button';
 import { InlineStatus } from '@/components/ui/async-state';
@@ -27,21 +28,31 @@ import {
     type TrainingSessionMix,
 } from '@/lib/preferences';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
+import {
+    advanceOwnerEpoch,
+    captureOwnerRun,
+    isOwnerRunGenerationCurrent,
+    resolveSessionOwnerId,
+    type OwnerEpoch,
+} from '@/lib/auth/ownerRun';
 
 export function canSavePracticeMix({
     busy,
     loadError,
     loading,
     mix,
+    ownerReady,
     savedMix,
 }: {
     busy: boolean;
     loadError: string | null;
     loading: boolean;
     mix: TrainingSessionMix;
+    ownerReady: boolean;
     savedMix: TrainingSessionMix | null;
 }) {
     return (
+        ownerReady &&
         !busy &&
         !loading &&
         loadError === null &&
@@ -50,7 +61,29 @@ export function canSavePracticeMix({
     );
 }
 
-export function PracticeDefaultsCard({ ownerId }: { ownerId: string }) {
+export function PracticeDefaultsCard({
+    ownerId: initialOwnerId,
+}: {
+    ownerId: string;
+}) {
+    const { data: session, status: sessionStatus } = useSession();
+    const activeOwnerId = resolveSessionOwnerId({
+        sessionStatus,
+        liveOwnerId: session?.user?.id ?? null,
+        initialOwnerId,
+    });
+    const ownerEpochRef = React.useRef<OwnerEpoch>({
+        ownerId: null,
+        generation: 0,
+    });
+    ownerEpochRef.current = advanceOwnerEpoch(
+        ownerEpochRef.current,
+        activeOwnerId
+    );
+    const loadControllerRef = React.useRef<AbortController | null>(null);
+    const mutationControllerRef = React.useRef<AbortController | null>(null);
+    const loadGenerationRef = React.useRef(0);
+    const mutationGenerationRef = React.useRef(0);
     const [loading, setLoading] = React.useState(true);
     const [busy, setBusy] = React.useState(false);
     const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -59,17 +92,47 @@ export function PracticeDefaultsCard({ ownerId }: { ownerId: string }) {
     );
     const [savedMix, setSavedMix] =
         React.useState<TrainingSessionMix | null>(null);
-    const requestIdRef = React.useRef(0);
+    const [loadedOwnerId, setLoadedOwnerId] = React.useState<string | null>(
+        null
+    );
 
     const load = React.useCallback(async () => {
-        const requestId = ++requestIdRef.current;
+        const run = captureOwnerRun(ownerEpochRef.current);
+        const generation = loadGenerationRef.current + 1;
+        loadGenerationRef.current = generation;
+        loadControllerRef.current?.abort();
+        mutationGenerationRef.current += 1;
+        mutationControllerRef.current?.abort();
+        mutationControllerRef.current = null;
+        setLoadedOwnerId(null);
+        setSavedMix(null);
         setLoading(true);
+        setBusy(false);
         setLoadError(null);
+        if (!run || run.ownerId !== initialOwnerId) {
+            setLoadError(
+                'Your signed-in account changed. Reload Settings to continue.'
+            );
+            setLoading(false);
+            return;
+        }
+        const controller = new AbortController();
+        loadControllerRef.current = controller;
+        const isCurrent = () =>
+            !controller.signal.aborted &&
+            isOwnerRunGenerationCurrent({
+                run,
+                epoch: ownerEpochRef.current,
+                generation,
+                currentGeneration: loadGenerationRef.current,
+            });
         try {
             const response = await fetch('/api/user/preferences', {
                 cache: 'no-store',
+                signal: controller.signal,
             });
             const body = (await response.json().catch(() => ({}))) as {
+                ownerId?: string;
                 preferences?: PreferencesSchema;
                 error?: string;
             };
@@ -78,13 +141,19 @@ export function PracticeDefaultsCard({ ownerId }: { ownerId: string }) {
                     body.error ?? 'Failed to load practice settings'
                 );
             }
-            if (requestId !== requestIdRef.current) return;
+            if (!isCurrent()) return;
+            if (body.ownerId !== run.ownerId) {
+                throw new Error(
+                    'The server returned practice settings for a different account.'
+                );
+            }
 
             const loadedMix = body.preferences.trainingSessionMix;
             setMix(loadedMix);
             setSavedMix(loadedMix);
+            setLoadedOwnerId(run.ownerId);
         } catch (error) {
-            if (requestId !== requestIdRef.current) return;
+            if (!isCurrent()) return;
             setSavedMix(null);
             setLoadError(
                 error instanceof Error
@@ -92,27 +161,53 @@ export function PracticeDefaultsCard({ ownerId }: { ownerId: string }) {
                     : 'Failed to load practice settings'
             );
         } finally {
-            if (requestId === requestIdRef.current) setLoading(false);
+            if (loadControllerRef.current === controller) {
+                loadControllerRef.current = null;
+            }
+            if (isCurrent()) setLoading(false);
         }
-    }, []);
+    }, [initialOwnerId]);
 
     React.useEffect(() => {
         void load();
         return () => {
-            requestIdRef.current += 1;
+            loadGenerationRef.current += 1;
+            mutationGenerationRef.current += 1;
+            loadControllerRef.current?.abort();
+            mutationControllerRef.current?.abort();
         };
-    }, [load]);
+    }, [activeOwnerId, load]);
+
+    const ownerReady =
+        activeOwnerId === initialOwnerId && loadedOwnerId === initialOwnerId;
 
     const canSave = canSavePracticeMix({
         busy,
         loadError,
         loading,
         mix,
+        ownerReady,
         savedMix,
     });
 
     async function save() {
         if (!canSave) return;
+        const run = captureOwnerRun(ownerEpochRef.current);
+        if (!run || run.ownerId !== loadedOwnerId) return;
+        mutationControllerRef.current?.abort();
+        const controller = new AbortController();
+        mutationControllerRef.current = controller;
+        const generation = mutationGenerationRef.current + 1;
+        mutationGenerationRef.current = generation;
+        const isCurrent = () =>
+            !controller.signal.aborted &&
+            loadedOwnerId === run.ownerId &&
+            isOwnerRunGenerationCurrent({
+                run,
+                epoch: ownerEpochRef.current,
+                generation,
+                currentGeneration: mutationGenerationRef.current,
+            });
 
         const toastId = toast.loading('Saving position mix…');
         setBusy(true);
@@ -121,28 +216,48 @@ export function PracticeDefaultsCard({ ownerId }: { ownerId: string }) {
                 method: 'PUT',
                 headers: {
                     'content-type': 'application/json',
-                    [EXPECTED_OWNER_HEADER]: ownerId,
+                    [EXPECTED_OWNER_HEADER]: run.ownerId,
                 },
                 body: JSON.stringify({ trainingSessionMix: mix }),
+                signal: controller.signal,
             });
             const body = (await response.json().catch(() => ({}))) as {
+                ownerId?: string;
                 preferences?: PreferencesSchema;
                 error?: string;
             };
+            if (!isCurrent()) return;
             if (!response.ok) {
                 throw new Error(body.error ?? 'Save failed');
+            }
+            if (body.ownerId !== run.ownerId || !body.preferences) {
+                throw new Error(
+                    'The server saved practice settings for a different account.'
+                );
             }
             const persistedMix = body.preferences?.trainingSessionMix ?? mix;
             setMix(persistedMix);
             setSavedMix(persistedMix);
             toast.success('Default position mix saved.', { id: toastId });
         } catch (error) {
+            if (
+                controller.signal.aborted ||
+                (error instanceof Error && error.name === 'AbortError') ||
+                !isCurrent()
+            ) {
+                toast.dismiss(toastId);
+                return;
+            }
             toast.error(
                 error instanceof Error ? error.message : 'Save failed',
                 { id: toastId }
             );
         } finally {
-            setBusy(false);
+            if (!isCurrent()) toast.dismiss(toastId);
+            if (mutationControllerRef.current === controller) {
+                mutationControllerRef.current = null;
+            }
+            if (isCurrent()) setBusy(false);
         }
     }
 
@@ -170,7 +285,9 @@ export function PracticeDefaultsCard({ ownerId }: { ownerId: string }) {
                         onValueChange={(value) =>
                             setMix(value as TrainingSessionMix)
                         }
-                        disabled={loading || busy || loadError !== null}
+                        disabled={
+                            loading || busy || loadError !== null || !ownerReady
+                        }
                     >
                         <SelectTrigger aria-label="Default position mix">
                             <SelectValue />

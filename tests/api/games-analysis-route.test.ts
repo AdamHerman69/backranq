@@ -12,6 +12,7 @@ import {
 } from '@/lib/training/contracts';
 import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
 import { analysisDefaultsToExtractOptions } from '@/lib/preferences';
+import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createJsonRequest, readJson } from '../helpers/route';
 import {
@@ -246,7 +247,10 @@ function createPutRequest(body: Parameters<typeof createJsonRequest>[1]) {
             configHash: defaultConfigHash,
             ...(body as Record<string, unknown>),
         },
-        { method: 'PUT' }
+        {
+            method: 'PUT',
+            headers: { [EXPECTED_OWNER_HEADER]: 'user-1' },
+        }
     );
 }
 
@@ -259,6 +263,27 @@ describe('PUT /api/games/[id]/analysis', () => {
         vi.clearAllMocks();
         setMockUserId('user-1');
         (prismaMock as PrismaMockWithTransaction).$transaction = vi.fn();
+    });
+
+    it('rejects a stale owner before parsing or writing', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(
+            new Request('http://localhost/api/games/game-1/analysis', {
+                method: 'PUT',
+                headers: { [EXPECTED_OWNER_HEADER]: 'user-a' },
+                body: 'not-json',
+            }),
+            routeParams()
+        );
+
+        expect(response.status).toBe(409);
+        await expect(readJson(response)).resolves.toMatchObject({
+            code: 'OWNER_MISMATCH',
+        });
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
+        expect(
+            (prismaMock as PrismaMockWithTransaction).$transaction
+        ).not.toHaveBeenCalled();
     });
 
     it('rejects malformed bodies before any write', async () => {
@@ -296,7 +321,10 @@ describe('PUT /api/games/[id]/analysis', () => {
                     extractionManifest: validManifest,
                     configSnapshot: defaultConfigSnapshot,
                 },
-                { method: 'PUT' }
+                {
+                    method: 'PUT',
+                    headers: { [EXPECTED_OWNER_HEADER]: 'user-1' },
+                }
             ),
             routeParams()
         );
@@ -339,7 +367,10 @@ describe('PUT /api/games/[id]/analysis', () => {
                     analysisQuality: 'STANDARD',
                     configSnapshot: defaultConfigSnapshot,
                 },
-                { method: 'PUT' }
+                {
+                    method: 'PUT',
+                    headers: { [EXPECTED_OWNER_HEADER]: 'user-1' },
+                }
             ),
             routeParams()
         );
@@ -367,7 +398,10 @@ describe('PUT /api/games/[id]/analysis', () => {
                     analysisConfigHash: defaultConfigHash,
                     engineName: 'Stockfish',
                 },
-                { method: 'PUT' }
+                {
+                    method: 'PUT',
+                    headers: { [EXPECTED_OWNER_HEADER]: 'user-1' },
+                }
             ),
             routeParams()
         );

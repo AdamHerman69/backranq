@@ -35,6 +35,17 @@ describe('E2E database safety', () => {
         ).not.toThrow();
     });
 
+    it('rejects local URLs that select different PostgreSQL schemas', () => {
+        expect(() =>
+            assertSafeE2eDatabaseConfig({
+                useExternalDatabase: false,
+                databaseUrl: `${localUrl}?schema=tenant_a`,
+                directUrl: `${localUrl}?schema=public`,
+                environment: {},
+            })
+        ).toThrow(/do not identify the same disposable database/);
+    });
+
     it('rejects a remote direct URL in local mode', () => {
         expect(() =>
             assertSafeE2eDatabaseConfig({

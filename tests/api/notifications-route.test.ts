@@ -54,6 +54,7 @@ describe('/api/notifications', () => {
             expect.objectContaining({ where: { userId: 'user-1', archivedAt: null } })
         );
         await expect(readJson(response)).resolves.toMatchObject({
+            ownerId: 'user-1',
             unreadCount: 1,
             notifications: [
                 {
@@ -65,6 +66,23 @@ describe('/api/notifications', () => {
         });
     });
 
+    it.each(['1.5', 'Infinity', '0', '101'])(
+        'rejects an invalid page limit (%s) before querying Prisma',
+        async (limit) => {
+            const route = await importRoute();
+
+            const response = await route.GET(
+                new Request(
+                    `http://localhost/api/notifications?limit=${encodeURIComponent(limit)}`
+                )
+            );
+
+            expect(response.status).toBe(400);
+            expect(prismaMock.notification.findMany).not.toHaveBeenCalled();
+            expect(prismaMock.notification.count).not.toHaveBeenCalled();
+        }
+    );
+
     it('marks a notification read only within the authenticated owner scope', async () => {
         prismaMock.notification.updateMany.mockResolvedValue({ count: 1 });
         const route = await importRoute();
@@ -72,7 +90,7 @@ describe('/api/notifications', () => {
             createJsonRequest('http://localhost/api/notifications', {
                 action: 'mark-read',
                 id: notificationId,
-            })
+            }, { headers: { 'x-backranq-owner-id': 'user-1' } })
         );
 
         expect(response.status).toBe(200);
@@ -88,10 +106,24 @@ describe('/api/notifications', () => {
             createJsonRequest('http://localhost/api/notifications', {
                 action: 'mark-read',
                 id: 'not-a-uuid',
-            })
+            }, { headers: { 'x-backranq-owner-id': 'user-1' } })
         );
 
         expect(response.status).toBe(400);
+        expect(prismaMock.notification.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects a stale owner before marking another account read', async () => {
+        const route = await importRoute();
+        const response = await route.POST(
+            createJsonRequest(
+                'http://localhost/api/notifications',
+                { action: 'mark-all-read' },
+                { headers: { 'x-backranq-owner-id': 'user-a' } }
+            )
+        );
+
+        expect(response.status).toBe(409);
         expect(prismaMock.notification.updateMany).not.toHaveBeenCalled();
     });
 

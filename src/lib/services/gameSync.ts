@@ -90,11 +90,13 @@ export type SyncProviderActivity = {
 };
 
 export type UserSyncActivity = {
+    ownerId: string;
     providers: SyncProviderActivity[];
     requestedJobs?: SyncJobActivity[];
 };
 
 export type RequestGameSyncResult = {
+    ownerId: string;
     requested: SyncProvider[];
     providers: Array<{
         provider: SyncProvider;
@@ -310,6 +312,7 @@ function chunkArray<T>(items: T[], size: number): T[][] {
 }
 
 export async function getSyncStatus(options: {
+    ownerId?: string;
     signal?: AbortSignal;
     timeoutMs?: number;
 } = {}): Promise<SyncStatus> {
@@ -323,10 +326,18 @@ export async function getSyncStatus(options: {
     );
     if (!response.ok)
         throw new Error(errorMessageFromJson(json, 'Failed to load sync status'));
+    if (
+        !isRecord(json) ||
+        typeof json.ownerId !== 'string' ||
+        (options.ownerId !== undefined && json.ownerId !== options.ownerId)
+    ) {
+        throw new Error('Invalid sync status owner');
+    }
     return json as SyncStatus;
 }
 
 export async function getGameSyncActivity(
+    ownerId: string,
     jobIds: string[] = []
 ): Promise<UserSyncActivity> {
     const uniqueJobIds = [...new Set(jobIds.filter(Boolean))];
@@ -336,28 +347,55 @@ export async function getGameSyncActivity(
                   jobIds: uniqueJobIds.join(','),
               }).toString()}`
             : '';
-    const res = await fetch(`/api/sync${query}`, { cache: 'no-store' });
+    const res = await fetch(`/api/sync${query}`, {
+        cache: 'no-store',
+        headers: { [EXPECTED_OWNER_HEADER]: ownerId },
+    });
     const json = (await res.json().catch(() => ({}))) as unknown;
     if (!res.ok) {
         throw new Error(
             errorMessageFromJson(json, 'Failed to load sync activity')
         );
     }
+    if (
+        !isRecord(json) ||
+        json.ownerId !== ownerId ||
+        !Array.isArray(json.providers)
+    ) {
+        throw new Error('Invalid sync activity response');
+    }
     return json as UserSyncActivity;
 }
 
 export async function requestGameSync(args: {
+    ownerId: string;
     providers?: SyncProvider[];
     onlyIfStaleMinutes?: number;
-} = {}): Promise<RequestGameSyncResult> {
+    signal?: AbortSignal;
+}): Promise<RequestGameSyncResult> {
     const res = await fetch('/api/sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(args),
+        headers: {
+            'Content-Type': 'application/json',
+            [EXPECTED_OWNER_HEADER]: args.ownerId,
+        },
+        body: JSON.stringify({
+            providers: args.providers,
+            onlyIfStaleMinutes: args.onlyIfStaleMinutes,
+        }),
+        signal: args.signal,
     });
     const json = (await res.json().catch(() => ({}))) as unknown;
     if (!res.ok) {
         throw new Error(errorMessageFromJson(json, 'Failed to start sync'));
+    }
+    if (
+        !isRecord(json) ||
+        json.ownerId !== args.ownerId ||
+        !isRecord(json.active) ||
+        json.active.ownerId !== args.ownerId
+    ) {
+        throw new Error('Invalid sync response owner');
     }
     return json as RequestGameSyncResult;
 }

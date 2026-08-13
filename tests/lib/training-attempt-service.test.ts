@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     recordTrainingAttempt,
+    trainingAttemptPayloadHash,
     TrainingAttemptError,
 } from '@/lib/training/attemptService';
 import type { RecordTrainingAttemptRequest } from '@/lib/training/api';
@@ -14,6 +15,192 @@ const rootFen =
     'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const afterE4 =
     'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
+const afterE4E5 =
+    'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2';
+
+const gradingPolicy = {
+    version: 3,
+    pov: 'TRAINING_SIDE',
+    best: { maxCpLoss: 20, maxWinChanceLoss: 0.03 },
+    strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
+    success: {
+        maxCpLoss: 100,
+        maxWinChanceLoss: 0.1,
+        preserveOutcome: true,
+    },
+    improvement: {
+        minRecoveredCp: 40,
+        minRecoveredWinChance: 0.05,
+    },
+    unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
+    matePolicy: 'EXACT',
+    tablebasePolicy: 'EXACT',
+};
+
+function revisionFixture() {
+    return {
+        trainable: true,
+        verificationStatus: 'VERIFIED',
+        acceptanceFrontier: {
+            version: 1,
+            status: 'STABLE',
+            targetCutoffCp: 100,
+            effectiveCutoffCp: 80,
+            boundaryGapCp: 40,
+            moves: [{ moveUci: 'e2e4', tier: 'BEST' }],
+            firstRejectedMoveUci: 'a2a3',
+        },
+        solutionHash: 'solution-hash-1',
+        configHash: 'config-hash-1',
+        bestMoveUci: 'e2e4',
+        acceptedMovesUci: ['e2e4'],
+        solutionShape: 'UNIQUE',
+        bestLine: ['e2e4'],
+        scoreAtStart: { kind: 'cp', cp: 25, pov: 'WHITE' },
+        gradingPolicy,
+        solutionTree: {
+            fen: rootFen,
+            ply: 0,
+            role: 'USER',
+            acceptedMovesUci: ['e2e4'],
+            alternativesComplete: true,
+            branches: [
+                {
+                    moveUci: 'e2e4',
+                    best: true,
+                    child: {
+                        fen: afterE4,
+                        ply: 1,
+                        role: 'TERMINAL',
+                        acceptedMovesUci: [],
+                        alternativesComplete: true,
+                        branches: [],
+                    },
+                },
+            ],
+        },
+        moveAssessments: [
+            {
+                decisionIndex: 0,
+                fen: rootFen,
+                moveUci: 'e2e4',
+                source: 'PRECOMPUTED',
+                status: 'VERIFIED',
+                grade: 'BEST',
+                scoreAfter: { kind: 'cp', cp: 25, pov: 'WHITE' },
+                evidence: {
+                    bestGapCp: 0,
+                    bestGapWinChance: 0,
+                    recoveredCp: 120,
+                    recoveredWinChance: 0.2,
+                    preservesOutcome: true,
+                },
+            },
+        ],
+    };
+}
+
+function momentFixture() {
+    return {
+        id: momentId,
+        fen: rootFen,
+        sideToMove: 'w',
+        positionHistory: [],
+        originalMoveUci: 'd2d4',
+        scoreBefore: { kind: 'cp', cp: 25, pov: 'WHITE' },
+        scoreAfter: { kind: 'cp', cp: -95, pov: 'WHITE' },
+        gameId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        decisionPly: 0,
+        phase: 'MIDDLEGAME',
+        cpLoss: 120,
+        winChanceLoss: 0.2,
+        sourceKinds: ['MY_MISTAKE'],
+        lessonKinds: ['TACTICAL'],
+        themes: ['fork'],
+        currentSolutionRevisionId: revisionId,
+        game: {
+            provider: 'LICHESS',
+            timeClass: 'RAPID',
+            playedAt: new Date('2026-07-30T08:00:00.000Z'),
+        },
+        currentSolutionRevision: revisionFixture(),
+    };
+}
+
+function continuationRevisionFixture() {
+    return {
+        ...revisionFixture(),
+        bestLine: ['e2e4', 'e7e5', 'g1f3'],
+        solutionTree: {
+            fen: rootFen,
+            ply: 0,
+            role: 'USER',
+            acceptedMovesUci: ['e2e4'],
+            alternativesComplete: true,
+            branches: [
+                {
+                    moveUci: 'e2e4',
+                    best: true,
+                    child: {
+                        fen: afterE4,
+                        ply: 1,
+                        role: 'OPPONENT',
+                        acceptedMovesUci: [],
+                        selectedMoveUci: 'e7e5',
+                        alternativesComplete: true,
+                        branches: [
+                            {
+                                moveUci: 'e7e5',
+                                best: true,
+                                child: {
+                                    fen: afterE4E5,
+                                    ply: 2,
+                                    role: 'USER',
+                                    acceptedMovesUci: ['g1f3'],
+                                    alternativesComplete: true,
+                                    branches: [
+                                        {
+                                            moveUci: 'g1f3',
+                                            best: true,
+                                            child: {
+                                                fen: 'rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2',
+                                                ply: 3,
+                                                role: 'TERMINAL',
+                                                acceptedMovesUci: [],
+                                                branches: [],
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        },
+        moveAssessments: [
+            ...revisionFixture().moveAssessments,
+            {
+                decisionIndex: 1,
+                fen: afterE4E5,
+                moveUci: 'g1f3',
+                source: 'PRECOMPUTED',
+                status: 'VERIFIED',
+                grade: 'GOOD',
+                scoreAfter: {
+                    kind: 'cp',
+                    cp: 5,
+                    pov: 'WHITE',
+                },
+                evidence: {
+                    bestGapCp: 20,
+                    bestGapWinChance: 0.02,
+                    preservesOutcome: true,
+                },
+            },
+        ],
+    };
+}
 
 function gradedRequest(): RecordTrainingAttemptRequest {
     return {
@@ -54,7 +241,12 @@ function dependencies() {
         id: '44444444-4444-4444-8444-444444444444',
     };
     const tx = {
-        $queryRaw: vi.fn().mockResolvedValue([{ acquired: true }]),
+        $queryRaw: vi.fn().mockResolvedValue([
+            {
+                acquired: true,
+                currentSolutionRevisionId: revisionId,
+            },
+        ]),
         trainingAttempt: {
             create: vi.fn().mockResolvedValue(created),
         },
@@ -81,28 +273,7 @@ function dependencies() {
             findUnique: vi.fn().mockResolvedValue(null),
         },
         trainingMoment: {
-            findFirst: vi.fn().mockResolvedValue({
-                id: momentId,
-                fen: rootFen,
-                phase: 'MIDDLEGAME',
-                cpLoss: 120,
-                winChanceLoss: 0.2,
-                sourceKinds: ['MY_MISTAKE'],
-                lessonKinds: ['TACTICAL'],
-                themes: ['fork'],
-                currentSolutionRevisionId: revisionId,
-                game: {
-                    provider: 'LICHESS',
-                    timeClass: 'RAPID',
-                },
-                currentSolutionRevision: {
-                    trainable: true,
-                    verificationStatus: 'VERIFIED',
-                    acceptanceFrontier: { status: 'STABLE' },
-                    solutionHash: 'solution-hash-1',
-                    configHash: 'config-hash-1',
-                },
-            }),
+            findFirst: vi.fn().mockResolvedValue(momentFixture()),
         },
         $transaction: vi.fn(
             async (callback: (transaction: typeof tx) => unknown) =>
@@ -139,6 +310,7 @@ function concurrentDependencies() {
             id: string;
             trainingMomentId: string;
             solutionRevisionId: string;
+            clientPayloadHash: string;
         }
     >();
     const reviewEventKeys = new Set<string>();
@@ -175,35 +347,19 @@ function concurrentDependencies() {
         return releaseLock;
     };
 
-    const moment = {
-        id: momentId,
-        fen: rootFen,
-        phase: 'MIDDLEGAME',
-        cpLoss: 120,
-        winChanceLoss: 0.2,
-        sourceKinds: ['MY_MISTAKE'],
-        lessonKinds: ['TACTICAL'],
-        themes: ['fork'],
-        currentSolutionRevisionId: revisionId,
-        game: {
-            provider: 'LICHESS',
-            timeClass: 'RAPID',
-        },
-        currentSolutionRevision: {
-            trainable: true,
-            verificationStatus: 'VERIFIED',
-            acceptanceFrontier: { status: 'STABLE' },
-            solutionHash: 'solution-hash-1',
-            configHash: 'config-hash-1',
-        },
-    };
+    const moment = momentFixture();
 
     const createTransactionClient = (
         setRelease: (release: () => void) => void
     ) => ({
         $queryRaw: vi.fn(async () => {
             setRelease(await acquireLock());
-            return [{ acquired: true }];
+            return [
+                {
+                    acquired: true,
+                    currentSolutionRevisionId: revisionId,
+                },
+            ];
         }),
         trainingAttempt: {
             create: vi.fn(
@@ -212,6 +368,7 @@ function concurrentDependencies() {
                         clientAttemptId: string;
                         trainingMomentId: string;
                         solutionRevisionId: string;
+                        clientPayloadHash: string;
                     };
                 }) => {
                     if (attempts.has(input.data.clientAttemptId)) {
@@ -224,6 +381,8 @@ function concurrentDependencies() {
                             input.data.trainingMomentId,
                         solutionRevisionId:
                             input.data.solutionRevisionId,
+                        clientPayloadHash:
+                            input.data.clientPayloadHash,
                     };
                     attempts.set(input.data.clientAttemptId, created);
                     return { id: created.id };
@@ -389,8 +548,9 @@ describe('client-graded training attempt recording', () => {
                 grade: 'BEST',
                 gradingSource: 'PRECOMPUTED',
                 userMoveUci: 'e2e4',
+                clientPayloadHash: expect.any(String),
                 gradingEvidence: expect.objectContaining({
-                    clientGraded: true,
+                    serverVerified: true,
                 }),
                 contextPhase: 'MIDDLEGAME',
                 contextCpLoss: 120,
@@ -489,6 +649,62 @@ describe('client-graded training attempt recording', () => {
         });
     });
 
+    it('records a reveal after a verified partial continuation', async () => {
+        const { db, tx } = dependencies();
+        db.trainingMoment.findFirst.mockResolvedValue({
+            ...momentFixture(),
+            currentSolutionRevision: continuationRevisionFixture(),
+        });
+        const first = gradedRequest().steps[0]!;
+
+        await expect(
+            recordTrainingAttempt({
+                userId: 'user-1',
+                momentId,
+                request: {
+                    kind: 'RECORD',
+                    clientAttemptId,
+                    solutionRevisionId: revisionId,
+                    status: 'REVEALED',
+                    steps: [
+                        first,
+                        {
+                            stepIndex: 1,
+                            actor: 'ENGINE',
+                            fenBefore: afterE4,
+                            moveUci: 'e7e5',
+                        },
+                    ],
+                },
+                dependencies: { db: db as never },
+            })
+        ).resolves.toMatchObject({ status: 'RECORDED' });
+
+        expect(tx.trainingAttempt.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                status: 'REVEALED',
+                grade: null,
+                gradingSource: null,
+                userMoveUci: 'e2e4',
+            }),
+            select: { id: true },
+        });
+        expect(tx.trainingAttemptStep.createMany).toHaveBeenCalledWith({
+            data: [
+                expect.objectContaining({
+                    stepIndex: 0,
+                    actor: 'USER',
+                    grade: 'BEST',
+                }),
+                expect.objectContaining({
+                    stepIndex: 1,
+                    actor: 'ENGINE',
+                    grade: null,
+                }),
+            ],
+        });
+    });
+
     it('rejects a verified revision whose acceptance frontier is not stable', async () => {
         const { db, tx } = dependencies();
         const moment = await db.trainingMoment.findFirst();
@@ -511,8 +727,37 @@ describe('client-graded training attempt recording', () => {
         expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
     });
 
+    it('rechecks the current revision under the transaction lock before writing', async () => {
+        const { db, tx } = dependencies();
+        tx.$queryRaw.mockResolvedValue([
+            {
+                acquired: true,
+                currentSolutionRevisionId:
+                    '99999999-9999-4999-8999-999999999999',
+            },
+        ]);
+
+        await expect(
+            recordTrainingAttempt({
+                userId: 'user-1',
+                momentId,
+                request: gradedRequest(),
+                dependencies: { db: db as never },
+            })
+        ).rejects.toMatchObject({
+            code: 'STALE_REVISION',
+            status: 409,
+        });
+        expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
+        expect(tx.practiceReviewState.upsert).not.toHaveBeenCalled();
+    });
+
     it('validates the complete local continuation line before writing', async () => {
         const { db, tx } = dependencies();
+        db.trainingMoment.findFirst.mockResolvedValue({
+            ...momentFixture(),
+            currentSolutionRevision: continuationRevisionFixture(),
+        });
         const request = gradedRequest();
         request.steps = [
             request.steps[0]!,
@@ -525,8 +770,7 @@ describe('client-graded training attempt recording', () => {
             {
                 stepIndex: 2,
                 actor: 'USER',
-                fenBefore:
-                    'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2',
+                fenBefore: afterE4E5,
                 moveUci: 'g1f3',
                 grade: 'GOOD',
                 source: 'PRECOMPUTED',
@@ -551,6 +795,76 @@ describe('client-graded training attempt recording', () => {
                 }),
             ]),
         });
+    });
+
+    it('aggregates a later tablebase step into the server grading source', async () => {
+        const { db, tx } = dependencies();
+        const revision = continuationRevisionFixture();
+        revision.moveAssessments[1] = {
+            ...revision.moveAssessments[1]!,
+            source: 'TABLEBASE',
+        };
+        db.trainingMoment.findFirst.mockResolvedValue({
+            ...momentFixture(),
+            currentSolutionRevision: revision,
+        });
+        const request = gradedRequest();
+        request.steps = [
+            request.steps[0]!,
+            {
+                stepIndex: 1,
+                actor: 'ENGINE',
+                fenBefore: afterE4,
+                moveUci: 'e7e5',
+            },
+            {
+                stepIndex: 2,
+                actor: 'USER',
+                fenBefore: afterE4E5,
+                moveUci: 'g1f3',
+                grade: 'GOOD',
+                source: 'TABLEBASE',
+            },
+        ];
+        request.grade = 'GOOD';
+        request.gradingSource = 'TABLEBASE';
+
+        await expect(
+            recordTrainingAttempt({
+                userId: 'user-1',
+                momentId,
+                request,
+                dependencies: { db: db as never },
+            })
+        ).resolves.toMatchObject({ status: 'RECORDED' });
+        expect(tx.trainingAttempt.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                grade: 'GOOD',
+                gradingSource: 'TABLEBASE',
+            }),
+            select: { id: true },
+        });
+    });
+
+    it('rejects a graded attempt that stops before the solution tree is terminal', async () => {
+        const { db, tx } = dependencies();
+        db.trainingMoment.findFirst.mockResolvedValue({
+            ...momentFixture(),
+            currentSolutionRevision: continuationRevisionFixture(),
+        });
+
+        await expect(
+            recordTrainingAttempt({
+                userId: 'user-1',
+                momentId,
+                request: gradedRequest(),
+                dependencies: { db: db as never },
+            })
+        ).rejects.toMatchObject({
+            code: 'INVALID_REQUEST',
+            status: 400,
+        });
+        expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
     });
 
     it('rejects illegal, discontinuous, and forged aggregate results', async () => {
@@ -582,6 +896,21 @@ describe('client-graded training attempt recording', () => {
                 dependencies: { db: db as never },
             })
         ).rejects.toBeInstanceOf(TrainingAttemptError);
+
+        const legalButLosing = gradedRequest();
+        legalButLosing.steps[0] = {
+            ...legalButLosing.steps[0]!,
+            moveUci: 'a2a3',
+            grade: 'BEST',
+        };
+        await expect(
+            recordTrainingAttempt({
+                userId: 'user-1',
+                momentId,
+                request: legalButLosing,
+                dependencies: { db: db as never },
+            })
+        ).rejects.toMatchObject({ code: 'INVALID_REQUEST', status: 400 });
         expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
     });
 
@@ -591,6 +920,10 @@ describe('client-graded training attempt recording', () => {
             id: 'existing-attempt',
             trainingMomentId: momentId,
             solutionRevisionId: revisionId,
+            clientPayloadHash: trainingAttemptPayloadHash({
+                momentId,
+                request: gradedRequest(),
+            }),
         });
 
         await expect(
@@ -609,6 +942,18 @@ describe('client-graded training attempt recording', () => {
         expect(
             tx.trainingAttemptStatusEvent.create
         ).not.toHaveBeenCalled();
+
+        await expect(
+            recordTrainingAttempt({
+                userId: 'user-1',
+                momentId,
+                request: { ...gradedRequest(), grade: 'GOOD' },
+                dependencies: { db: db as never },
+            })
+        ).rejects.toMatchObject({
+            code: 'IDEMPOTENCY_CONFLICT',
+            status: 409,
+        });
     });
 
     it('serializes distinct attempts and preserves the newer schedule when timestamps arrive out of order', async () => {

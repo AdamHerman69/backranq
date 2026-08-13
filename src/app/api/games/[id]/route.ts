@@ -19,6 +19,8 @@ export const runtime = 'nodejs';
 
 const MAX_PGN_LENGTH = 2_000_000;
 const MAX_PATCH_BODY_BYTES = 2_100_000;
+const UUID_PATTERN =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PATCH_FIELDS = new Set([
     'url',
     'pgn',
@@ -124,6 +126,13 @@ function immutableSourceSnapshotResponse() {
     );
 }
 
+function invalidGameIdResponse() {
+    return NextResponse.json(
+        { error: 'Invalid game id' },
+        { status: 400 }
+    );
+}
+
 function isSerializationConflict(error: unknown) {
     return (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -141,6 +150,7 @@ export async function GET(
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const { id } = await params;
+    if (!UUID_PATTERN.test(id)) return invalidGameIdResponse();
     const game = await prisma.analyzedGame.findFirst({
         where: { id, userId },
         select: {
@@ -182,6 +192,9 @@ export async function PATCH(
     if (!userId)
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
+    const { id } = await params;
+    if (!UUID_PATTERN.test(id)) return invalidGameIdResponse();
+
     const requestBody = await boundedJsonBody(req, MAX_PATCH_BODY_BYTES);
     if (!requestBody.ok) {
         return NextResponse.json(
@@ -189,7 +202,6 @@ export async function PATCH(
             { status: requestBody.status ?? 400 }
         );
     }
-    const { id } = await params;
     const parsed = parsePatch(requestBody.value);
     if (!parsed.ok) {
         return NextResponse.json(
@@ -320,6 +332,7 @@ export async function DELETE(
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const { id } = await params;
+    if (!UUID_PATTERN.test(id)) return invalidGameIdResponse();
     try {
         const result = await deleteOwnedGameSafely({ userId, gameId: id });
         return NextResponse.json({ ok: true, ...result });

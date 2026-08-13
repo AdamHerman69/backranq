@@ -63,7 +63,16 @@ export function ProfileForm({ initialUser }: Props) {
     );
     const ownerFenceErrorRef = useRef<string | null>(null);
     const writesEnabled = ownerReady && ownerFenceError === null;
-    const mutationControllerRef = useRef<AbortController | null>(null);
+    const mutationControllersRef = useRef<
+        Record<SyncProvider, AbortController | null>
+    >({
+        lichess: null,
+        chesscom: null,
+    });
+    const mutationGenerationsRef = useRef<Record<SyncProvider, number>>({
+        lichess: 0,
+        chesscom: 0,
+    });
     const syncControllersRef = useRef<
         Record<SyncProvider, AbortController | null>
     >({
@@ -73,8 +82,10 @@ export function ProfileForm({ initialUser }: Props) {
 
     useEffect(() => {
         const controllers = syncControllersRef.current;
+        const mutationControllers = mutationControllersRef.current;
         return () => {
-            mutationControllerRef.current?.abort();
+            mutationControllers.lichess?.abort();
+            mutationControllers.chesscom?.abort();
             controllers.lichess?.abort();
             controllers.chesscom?.abort();
         };
@@ -87,14 +98,18 @@ export function ProfileForm({ initialUser }: Props) {
 
     useEffect(() => {
         if (ownerReady) return;
-        mutationControllerRef.current?.abort();
+        mutationControllersRef.current.lichess?.abort();
+        mutationControllersRef.current.chesscom?.abort();
         syncControllersRef.current.lichess?.abort();
         syncControllersRef.current.chesscom?.abort();
         setUser(initialUser);
     }, [initialUser, ownerReady]);
 
     const update = useCallback(
-        async (patch: Partial<Pick<UserProfile, 'lichessUsername' | 'chesscomUsername'>>) => {
+        async (
+            provider: SyncProvider,
+            patch: Partial<Pick<UserProfile, 'lichessUsername' | 'chesscomUsername'>>
+        ) => {
             const run = captureOwnerRun(ownerEpochRef.current);
             if (
                 !run ||
@@ -106,9 +121,12 @@ export function ProfileForm({ initialUser }: Props) {
                     'Your signed-in account changed. Reload Settings before making changes.'
                 );
             }
-            mutationControllerRef.current?.abort();
+            mutationControllersRef.current[provider]?.abort();
             const controller = new AbortController();
-            mutationControllerRef.current = controller;
+            mutationControllersRef.current[provider] = controller;
+            const generation =
+                mutationGenerationsRef.current[provider] + 1;
+            mutationGenerationsRef.current[provider] = generation;
             try {
                 const res = await fetch('/api/user/profile', {
                     method: 'PATCH',
@@ -134,6 +152,7 @@ export function ProfileForm({ initialUser }: Props) {
                 }
                 if (
                     json.user.id !== run.ownerId ||
+                    mutationGenerationsRef.current[provider] !== generation ||
                     !isOwnerRunCurrent(run, ownerEpochRef.current)
                 ) {
                     const message =
@@ -143,11 +162,18 @@ export function ProfileForm({ initialUser }: Props) {
                     setUser(initialUser);
                     throw new Error(message);
                 }
-                setUser(json.user);
+                const field =
+                    provider === 'lichess'
+                        ? 'lichessUsername'
+                        : 'chesscomUsername';
+                setUser((current) => ({
+                    ...current,
+                    [field]: json.user[field],
+                }));
                 return json.user;
             } finally {
-                if (mutationControllerRef.current === controller) {
-                    mutationControllerRef.current = null;
+                if (mutationControllersRef.current[provider] === controller) {
+                    mutationControllersRef.current[provider] = null;
                 }
             }
         },
@@ -170,7 +196,7 @@ export function ProfileForm({ initialUser }: Props) {
                 : 'Disconnecting Lichess…'
         );
         try {
-            const updated = await update({
+            const updated = await update('lichess', {
                 lichessUsername: next || null,
             });
             const run = captureOwnerRun(ownerEpochRef.current);
@@ -221,7 +247,7 @@ export function ProfileForm({ initialUser }: Props) {
                 : 'Disconnecting Chess.com…'
         );
         try {
-            const updated = await update({
+            const updated = await update('chesscom', {
                 chesscomUsername: next || null,
             });
             const run = captureOwnerRun(ownerEpochRef.current);
@@ -275,7 +301,9 @@ export function ProfileForm({ initialUser }: Props) {
         const expectedIdentity = normalizeProviderUsername(expectedUsername);
         try {
             let result = await requestIncrementalSync({
+                ownerId: run.ownerId,
                 providers: [provider],
+                signal: controller.signal,
             });
             if (!profileRunIsCurrent(run)) return;
             if (
@@ -294,6 +322,7 @@ export function ProfileForm({ initialUser }: Props) {
             );
             if (firstJobIds.length > 0) {
                 const completion = await waitForIncrementalSyncJobs({
+                    ownerId: run.ownerId,
                     jobIds: firstJobIds,
                     initialActivity: activity,
                     signal: controller.signal,
@@ -355,7 +384,9 @@ export function ProfileForm({ initialUser }: Props) {
                 syncedIdentity !== expectedIdentity
             ) {
                 result = await requestIncrementalSync({
+                    ownerId: run.ownerId,
                     providers: [provider],
+                    signal: controller.signal,
                 });
                 if (!profileRunIsCurrent(run)) return;
                 const followUpJobIds = result.providers.flatMap((item) =>
@@ -366,6 +397,7 @@ export function ProfileForm({ initialUser }: Props) {
                         `Starting ${providerLabel(provider)} sync for the new username…`
                     );
                     const followUp = await waitForIncrementalSyncJobs({
+                        ownerId: run.ownerId,
                         jobIds: followUpJobIds,
                         initialActivity: result.activity,
                         signal: controller.signal,

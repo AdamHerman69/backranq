@@ -13,6 +13,9 @@ export function ModalDialog({
     description,
     children,
     className,
+    bodyClassName,
+    onOpenAutoFocus,
+    onCloseAutoFocus,
 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
@@ -20,6 +23,9 @@ export function ModalDialog({
     description?: string;
     children: ReactNode;
     className?: string;
+    bodyClassName?: string;
+    onOpenAutoFocus?: (event: Event) => void;
+    onCloseAutoFocus?: (event: Event) => void;
 }) {
     return (
         <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
@@ -33,6 +39,8 @@ export function ModalDialog({
                         'fixed left-1/2 top-1/2 z-[210] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-background p-5 shadow-xl focus:outline-none focus:ring-2 focus:ring-ring',
                         className
                     )}
+                    onOpenAutoFocus={onOpenAutoFocus}
+                    onCloseAutoFocus={onCloseAutoFocus}
                 >
                     <DialogPrimitive.Title className="pr-8 text-lg font-semibold">
                         {title}
@@ -44,7 +52,7 @@ export function ModalDialog({
                             {description}
                         </DialogPrimitive.Description>
                     ) : null}
-                    <div className="mt-4">{children}</div>
+                    <div className={cn('mt-4', bodyClassName)}>{children}</div>
                     <DialogPrimitive.Close
                         className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring"
                         aria-label="Close"

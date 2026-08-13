@@ -63,7 +63,11 @@ export async function POST(req: Request) {
             email: session.user?.email ?? null,
             plan,
         });
-        return NextResponse.json({ id: checkout.id, url: checkout.url });
+        return NextResponse.json({
+            ownerId: userId,
+            id: checkout.id,
+            url: checkout.url,
+        });
     } catch (error) {
         return NextResponse.json(
             {

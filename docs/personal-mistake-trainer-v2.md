@@ -152,7 +152,7 @@ implementation details instead of user intent.
 
 ### Engine and verification
 
-- The server engine starts on supported Node 20 and Node 22 runtimes.
+- The server engine starts on the supported production Node 24 runtime.
 - Search uses fixed nodes with bounded depth/time safety limits.
 - Browser and server implement the same analysis contract.
 - Engine name, version, source, network hash, options, nodes, depth, and

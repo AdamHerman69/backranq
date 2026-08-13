@@ -269,13 +269,24 @@ export class ServerStockfishClient implements StockfishEngine {
             .then(async (engine) => {
                 this.engine = engine;
                 engine.listener = (line) => this.onLine(String(line));
+                engine.errorListener = (error) =>
+                    this.handleRuntimeFailure(engine, error);
 
                 const uciOk = this.waitForProtocolLine(
                     (line) => line === 'uciok',
                     10_000,
                     'uciok'
                 );
-                engine.sendCommand('uci');
+                try {
+                    engine.sendCommand('uci');
+                } catch (error) {
+                    // The outer startup catch rejects all waiters. Attach a
+                    // handler first so this locally-created promise cannot
+                    // surface as an unhandled rejection while that cleanup
+                    // runs.
+                    void uciOk.catch(() => undefined);
+                    throw error;
+                }
                 await uciOk;
 
                 engine.sendCommand(
@@ -293,9 +304,17 @@ export class ServerStockfishClient implements StockfishEngine {
                 return engine;
             })
             .catch((error) => {
-                this.engine = null;
-                this.enginePromise = null;
-                throw error;
+                const runtimeError =
+                    error instanceof Error
+                        ? error
+                        : new Error(String(error));
+                // Startup commands can fail synchronously after the child has
+                // been created (for example if IPC disconnects between ready
+                // and `uci`). Tear down that runtime and every pending protocol
+                // waiter immediately instead of leaving a live child and a
+                // later unhandled waiter timeout behind.
+                this.resetFailedRuntime(runtimeError);
+                throw runtimeError;
             });
 
         return this.enginePromise;
@@ -307,7 +326,12 @@ export class ServerStockfishClient implements StockfishEngine {
             10_000,
             'readyok'
         );
-        engine.sendCommand('isready');
+        try {
+            this.sendRuntimeCommand(engine, 'isready');
+        } catch (error) {
+            void ready.catch(() => undefined);
+            throw error;
+        }
         await ready;
     }
 
@@ -375,10 +399,13 @@ export class ServerStockfishClient implements StockfishEngine {
         // option is committed before position/go while intentionally retaining
         // the engine session's transposition table across related positions.
         if (this.needsNewGameBoundary) {
-            engine.sendCommand('ucinewgame');
+            this.sendRuntimeCommand(engine, 'ucinewgame');
             this.needsNewGameBoundary = false;
         }
-        engine.sendCommand(`setoption name MultiPV value ${multiPv}`);
+        this.sendRuntimeCommand(
+            engine,
+            `setoption name MultiPV value ${multiPv}`
+        );
         await this.waitUntilReady(engine);
         if (opts.signal?.aborted) {
             throw new Error('Analysis aborted');
@@ -417,18 +444,37 @@ export class ServerStockfishClient implements StockfishEngine {
                     opts.signal?.removeEventListener('abort', onAbort);
             }
 
-            engine.sendCommand(`position fen ${opts.fen}`);
+            this.sendRuntimeCommand(engine, `position fen ${opts.fen}`);
 
             // Deterministic work limits win over wall time. Movetime remains a
             // compatibility fallback and the watchdog above is always present.
             if (opts.nodes != null || (depth == null && movetimeMs == null)) {
-                engine.sendCommand(`go nodes ${nodes}`);
+                this.sendRuntimeCommand(engine, `go nodes ${nodes}`);
             } else if (depth != null) {
-                engine.sendCommand(`go depth ${depth}`);
+                this.sendRuntimeCommand(engine, `go depth ${depth}`);
             } else {
-                engine.sendCommand(`go movetime ${movetimeMs}`);
+                this.sendRuntimeCommand(engine, `go movetime ${movetimeMs}`);
             }
         });
+    }
+
+    private sendRuntimeCommand(engine: StockfishInstance, command: string) {
+        try {
+            engine.sendCommand(command);
+        } catch (error) {
+            const runtimeError =
+                error instanceof Error ? error : new Error(String(error));
+            if (this.engine === engine) {
+                this.resetFailedRuntime(runtimeError);
+            } else {
+                try {
+                    engine.terminate?.();
+                } catch {
+                    // Preserve the original IPC error.
+                }
+            }
+            throw runtimeError;
+        }
     }
 
     private stopAndReject(job: ActiveJob, error: Error) {
@@ -439,7 +485,16 @@ export class ServerStockfishClient implements StockfishEngine {
             job.abortCleanup?.();
             job.reject(error);
         }
-        this.engine?.sendCommand('stop');
+        try {
+            this.engine?.sendCommand('stop');
+        } catch (stopError) {
+            this.resetFailedRuntime(
+                stopError instanceof Error
+                    ? stopError
+                    : new Error(String(stopError))
+            );
+            return;
+        }
 
         // Stockfish normally emits bestmove after stop. If it does not, unblock
         // the serialized queue and force a fresh readiness handshake.
@@ -450,6 +505,35 @@ export class ServerStockfishClient implements StockfishEngine {
             this.enginePromise = null;
             this.clearActive();
         }, 2_000);
+    }
+
+    private handleRuntimeFailure(engine: StockfishInstance, error: Error) {
+        if (this.engine !== engine) return;
+        this.resetFailedRuntime(error);
+    }
+
+    private resetFailedRuntime(error: Error) {
+        const engine = this.engine;
+        this.engine = null;
+        this.enginePromise = null;
+        try {
+            engine?.terminate?.();
+        } catch {
+            // Runtime teardown is best effort; local jobs and protocol waiters
+            // still have to be rejected and released below.
+        }
+        for (const waiter of this.protocolWaiters) {
+            clearTimeout(waiter.timeout);
+            waiter.reject(error);
+        }
+        this.protocolWaiters.clear();
+        const job = this.active;
+        if (job && !job.settled) {
+            job.settled = true;
+            job.reject(error);
+        }
+        this.needsNewGameBoundary = true;
+        this.clearActive();
     }
 
     private clearActive() {

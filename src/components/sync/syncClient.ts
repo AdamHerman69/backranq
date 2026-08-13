@@ -26,6 +26,7 @@ export type IncrementalSyncProviderResult = {
 };
 
 export type IncrementalSyncResult = {
+    ownerId: string;
     state:
         | 'started'
         | 'awaiting-worker'
@@ -39,8 +40,10 @@ export type IncrementalSyncResult = {
 };
 
 type RequestIncrementalSyncOptions = {
+    ownerId: string;
     providers?: SyncProvider[];
     onlyIfStaleMinutes?: number;
+    signal?: AbortSignal;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -252,6 +255,7 @@ export function parseIncrementalSyncResponse(
                     : 'Sync started in the background.');
 
     return {
+        ownerId: stringValue(record, 'ownerId') ?? '',
         state,
         providers,
         message,
@@ -262,7 +266,7 @@ export function parseIncrementalSyncResponse(
 }
 
 export async function requestIncrementalSync(
-    options: RequestIncrementalSyncOptions = {}
+    options: RequestIncrementalSyncOptions
 ): Promise<IncrementalSyncResult> {
     const body = await requestGameSync(options);
     return parseIncrementalSyncResponse(body, true);
@@ -353,6 +357,7 @@ function waitForDelay(ms: number, signal?: AbortSignal) {
 }
 
 export async function waitForIncrementalSyncJobs(args: {
+    ownerId: string;
     jobIds: string[];
     initialActivity?: UserSyncActivity | null;
     signal?: AbortSignal;
@@ -360,6 +365,12 @@ export async function waitForIncrementalSyncJobs(args: {
     fetchActivity?: () => Promise<UserSyncActivity>;
     wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }): Promise<SyncCompletionResult> {
+    if (
+        args.initialActivity &&
+        args.initialActivity.ownerId !== args.ownerId
+    ) {
+        throw new Error('Invalid initial sync activity owner');
+    }
     const jobIds = [...new Set(args.jobIds.filter(Boolean))];
     if (jobIds.length === 0) {
         return {
@@ -377,7 +388,8 @@ export async function waitForIncrementalSyncJobs(args: {
 
     const maxAttempts = Math.max(1, Math.min(args.maxAttempts ?? 12, 30));
     const fetchActivity =
-        args.fetchActivity ?? (() => getGameSyncActivity(jobIds));
+        args.fetchActivity ??
+        (() => getGameSyncActivity(args.ownerId, jobIds));
     const wait = args.wait ?? waitForDelay;
     let activity = args.initialActivity ?? null;
     let observation = activity
@@ -397,13 +409,19 @@ export async function waitForIncrementalSyncJobs(args: {
             await wait(delay, args.signal);
         }
         if (args.signal?.aborted) throw abortError();
+        let nextActivity: UserSyncActivity;
         try {
-            activity = await fetchActivity();
-            observation = observeIncrementalSyncJobs(activity, jobIds);
+            nextActivity = await fetchActivity();
         } catch (error) {
             if (args.signal?.aborted) throw abortError();
             if (attempt === maxAttempts - 1) throw error;
+            continue;
         }
+        if (nextActivity.ownerId !== args.ownerId) {
+            throw new Error('Invalid sync activity owner');
+        }
+        activity = nextActivity;
+        observation = observeIncrementalSyncJobs(activity, jobIds);
     }
 
     if (observation?.complete) {
@@ -491,6 +509,7 @@ export function isCreditOrCapBlockReason(
 function isUserSyncActivity(value: unknown): value is UserSyncActivity {
     return (
         isRecord(value) &&
+        typeof value.ownerId === 'string' &&
         Array.isArray(value.providers)
     );
 }

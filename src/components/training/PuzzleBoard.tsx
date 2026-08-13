@@ -2,6 +2,7 @@
 
 import {
     useCallback,
+    useEffect,
     useMemo,
     useState,
     type CSSProperties,
@@ -27,6 +28,10 @@ type PendingPromotion = {
     to: Square;
     choices: PromotionPiece[];
 };
+
+// @dnd-kit keeps a document-level click guard for 50 ms after a drag ends.
+// Keep the newly opened promotion actions disabled until that guard is gone.
+const PROMOTION_INPUT_SETTLE_MS = 75;
 
 export type PuzzleBoardArrow = {
     startSquare: Square;
@@ -101,6 +106,7 @@ export function PuzzleBoard({
     } | null>(null);
     const [pendingPromotion, setPendingPromotion] =
         useState<PendingPromotion | null>(null);
+    const [promotionInputReady, setPromotionInputReady] = useState(false);
     const selectedSquare =
         canMove && selection?.fen === positionFen
             ? selection.square
@@ -109,6 +115,15 @@ export function PuzzleBoard({
         canMove && pendingPromotion?.fen === positionFen
             ? pendingPromotion
             : null;
+
+    useEffect(() => {
+        if (!activePromotion) return;
+        const timeout = window.setTimeout(
+            () => setPromotionInputReady(true),
+            PROMOTION_INPUT_SETTLE_MS
+        );
+        return () => window.clearTimeout(timeout);
+    }, [activePromotion]);
 
     const { legalTargets, captureTargets } = useMemo(() => {
         const targets = new Set<Square>();
@@ -201,6 +216,7 @@ export function PuzzleBoard({
                     )
                 );
                 if (choices.length > 0) {
+                    setPromotionInputReady(false);
                     setPendingPromotion({
                         fen: positionFen,
                         from,
@@ -405,6 +421,7 @@ export function PuzzleBoard({
                                 key={piece}
                                 type="button"
                                 variant="outline"
+                                disabled={!promotionInputReady}
                                 aria-label={`Promote to ${label}`}
                                 onClick={() => {
                                     if (!activePromotion) return;

@@ -16,6 +16,14 @@ const validSubscription = {
     },
 };
 
+function pushRequest(body: unknown, ownerId = 'user-1') {
+    return createJsonRequest(
+        'http://localhost/api/notifications/push-subscription',
+        body,
+        { headers: { 'X-Backranq-Owner-Id': ownerId } }
+    );
+}
+
 async function importRoute() {
     vi.resetModules();
     mockAuthModule();
@@ -31,9 +39,11 @@ describe('/api/notifications/push-subscription', () => {
         prismaMock.$transaction.mockImplementation(async (callback: unknown) =>
             (callback as (tx: typeof prismaMock) => Promise<unknown>)(prismaMock)
         );
+        prismaMock.$queryRaw.mockResolvedValue([{ acquired: true }]);
         prismaMock.pushSubscription.findUnique.mockResolvedValue(null);
         prismaMock.pushSubscription.count.mockResolvedValue(0);
-        prismaMock.pushSubscription.upsert.mockResolvedValue({});
+        prismaMock.pushSubscription.create.mockResolvedValue({});
+        prismaMock.pushSubscription.updateMany.mockResolvedValue({ count: 1 });
         prismaMock.notificationPreference.upsert.mockResolvedValue({});
         prismaMock.notificationPreference.update.mockResolvedValue({});
     });
@@ -41,7 +51,7 @@ describe('/api/notifications/push-subscription', () => {
     it('rejects arbitrary HTTPS endpoints before persistence', async () => {
         const route = await importRoute();
         const response = await route.POST(
-            createJsonRequest('http://localhost/api/notifications/push-subscription', {
+            pushRequest({
                 ...validSubscription,
                 endpoint: 'https://127.0.0.1/internal',
             })
@@ -54,7 +64,7 @@ describe('/api/notifications/push-subscription', () => {
     it('rejects malformed Web Push key material', async () => {
         const route = await importRoute();
         const response = await route.POST(
-            createJsonRequest('http://localhost/api/notifications/push-subscription', {
+            pushRequest({
                 ...validSubscription,
                 keys: { p256dh: 'short', auth: 'short' },
             })
@@ -67,26 +77,28 @@ describe('/api/notifications/push-subscription', () => {
     it('accepts a valid browser push subscription', async () => {
         const route = await importRoute();
         const response = await route.POST(
-            createJsonRequest(
-                'http://localhost/api/notifications/push-subscription',
-                validSubscription
-            )
+            pushRequest(validSubscription)
         );
 
         expect(response.status).toBe(200);
-        await expect(readJson(response)).resolves.toEqual({ subscribed: true });
-        expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
-        expect(prismaMock.pushSubscription.upsert).toHaveBeenCalled();
+        await expect(readJson(response)).resolves.toEqual({
+            ownerId: 'user-1',
+            subscribed: true,
+        });
+        expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(2);
+        expect(prismaMock.pushSubscription.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                userId: 'user-1',
+                endpoint: validSubscription.endpoint,
+            }),
+        });
     });
 
     it('caps subscriptions created for one user', async () => {
         prismaMock.pushSubscription.count.mockResolvedValue(10);
         const route = await importRoute();
         const response = await route.POST(
-            createJsonRequest(
-                'http://localhost/api/notifications/push-subscription',
-                validSubscription
-            )
+            pushRequest(validSubscription)
         );
 
         expect(response.status).toBe(409);
@@ -98,15 +110,38 @@ describe('/api/notifications/push-subscription', () => {
         let response: Response | undefined;
         for (let index = 0; index < 21; index += 1) {
             response = await route.POST(
-                createJsonRequest(
-                    'http://localhost/api/notifications/push-subscription',
-                    validSubscription
-                )
+                pushRequest(validSubscription)
             );
         }
 
         expect(response?.status).toBe(429);
         expect(response?.headers.get('retry-after')).toBe('60');
         expect(prismaMock.$transaction).toHaveBeenCalledTimes(20);
+    });
+
+    it('rejects a stale owner before parsing or persisting a subscription', async () => {
+        const route = await importRoute();
+        const response = await route.POST(
+            pushRequest(validSubscription, 'user-a')
+        );
+
+        expect(response.status).toBe(409);
+        expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects a stale owner before deleting a subscription', async () => {
+        const route = await importRoute();
+        const response = await route.DELETE(
+            new Request(
+                `http://localhost/api/notifications/push-subscription?endpoint=${encodeURIComponent(validSubscription.endpoint)}`,
+                {
+                    method: 'DELETE',
+                    headers: { 'X-Backranq-Owner-Id': 'user-a' },
+                }
+            )
+        );
+
+        expect(response.status).toBe(409);
+        expect(prismaMock.$transaction).not.toHaveBeenCalled();
     });
 });

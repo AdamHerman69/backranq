@@ -8,7 +8,7 @@ test('desktop game review keeps the board and playback controls in the first vie
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.goto(`/games/${E2E_GAMES.standard}`);
 
-    const board = page.locator('[data-game-review-board]');
+    const board = page.locator('[data-game-review-board]:visible');
     const playback = page.getByRole('button', { name: 'Play review' });
     await expect(board).toBeVisible();
     await expect(playback).toBeVisible();

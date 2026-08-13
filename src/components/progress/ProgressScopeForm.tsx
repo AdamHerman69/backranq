@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import { SlidersHorizontal } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -89,7 +88,8 @@ export function ProgressScopeForm({
                                 variant={isCurrent ? 'default' : 'ghost'}
                                 className="min-h-11 px-3 sm:min-h-10"
                             >
-                                <Link
+                                {/* This server-filter navigation must also work before hydration. */}
+                                <a
                                     href={progressHref(
                                         option.value,
                                         filters
@@ -99,7 +99,7 @@ export function ProgressScopeForm({
                                     }
                                 >
                                     {option.label}
-                                </Link>
+                                </a>
                             </Button>
                         );
                     })}
@@ -237,7 +237,7 @@ export function ProgressScopeForm({
                                 variant="outline"
                                 className="min-h-11"
                             >
-                                <Link href="/progress">Reset view</Link>
+                                <a href="/progress">Reset view</a>
                             </Button>
                         ) : null}
                     </div>

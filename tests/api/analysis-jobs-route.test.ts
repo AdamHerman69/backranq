@@ -152,6 +152,24 @@ describe('GET /api/analysis/jobs', () => {
             })
         );
     });
+
+    it.each(['abc', '1.5', '0', '201', 'Infinity'])(
+        'rejects invalid limit %s before querying Prisma',
+        async (limit) => {
+            const route = await importRoute();
+            const response = await route.GET(
+                new Request(
+                    `http://localhost/api/analysis/jobs?limit=${encodeURIComponent(limit)}`
+                )
+            );
+
+            expect(response.status).toBe(400);
+            await expect(readJson(response)).resolves.toEqual({
+                error: 'limit must be an integer between 1 and 200',
+            });
+            expect(prismaMock.analysisJob.findMany).not.toHaveBeenCalled();
+        }
+    );
 });
 
 describe('POST /api/analysis/jobs', () => {

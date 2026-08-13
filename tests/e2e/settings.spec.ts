@@ -191,15 +191,53 @@ test('automation refuses settings returned for another owner', async ({
 
     await page.goto('/settings');
 
+    const chessSources = page.getByRole('region', {
+        name: 'Chess sources',
+    });
+    await expect(chessSources).toHaveCount(1);
     await expect(
-        page.getByText('Automation settings unavailable')
+        chessSources.getByText('Automation settings unavailable')
     ).toBeVisible();
     await expect(
-        page.getByText(/different account/)
+        chessSources.getByText(/different account/)
     ).toBeVisible();
     await expect(
-        page.getByRole('button', { name: 'Try again' })
+        chessSources.getByRole('button', { name: 'Try again' })
     ).toBeEnabled();
+});
+
+test('practice and analysis defaults refuse settings returned for another owner', async ({
+    page,
+}) => {
+    await page.route('**/api/user/preferences', async (route) => {
+        if (route.request().method() !== 'GET') {
+            await route.continue();
+            return;
+        }
+        const response = await route.fetch();
+        const body = (await response.json()) as Record<string, unknown>;
+        await route.fulfill({
+            response,
+            json: { ...body, ownerId: 'different-owner' },
+        });
+    });
+
+    await page.goto('/settings');
+
+    const training = page.getByRole('region', {
+        name: 'Training preferences',
+    });
+    await expect(training).toHaveCount(1);
+    const practice = training.locator('#practice-defaults');
+    const analysis = training.locator('#analysis-defaults');
+    await expect(practice).toContainText('different account');
+    await expect(analysis).toContainText('different account');
+    await expect(
+        practice.getByRole('button', { name: 'Save default' })
+    ).toBeDisabled();
+    await expect(
+        analysis.getByRole('button', { name: 'Save', exact: true })
+    ).toBeDisabled();
 });
 
 test('linked-account updates reject a server owner mismatch', async ({
@@ -250,4 +288,74 @@ test('linked-account updates reject a server owner mismatch', async ({
             .getByRole('alert')
     ).toContainText('signed-in account changed before the update finished');
     expect(syncRequests).toBe(0);
+});
+
+test('Lichess and Chess.com updates complete independently in reverse response order', async ({
+    page,
+}) => {
+    const releases: Record<'lichess' | 'chesscom', () => void> = {
+        lichess: () => undefined,
+        chesscom: () => undefined,
+    };
+    const started = new Set<string>();
+    await page.route('**/api/user/profile', async (route) => {
+        if (route.request().method() !== 'PATCH') {
+            await route.continue();
+            return;
+        }
+        const body = route.request().postDataJSON() as {
+            lichessUsername?: string;
+            chesscomUsername?: string;
+        };
+        const provider = body.lichessUsername ? 'lichess' : 'chesscom';
+        started.add(provider);
+        await new Promise<void>((resolve) => {
+            releases[provider] = resolve;
+        });
+        await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+                user: {
+                    id: E2E_USER.id,
+                    email: E2E_USER.email,
+                    name: E2E_USER.name,
+                    image: null,
+                    lichessUsername:
+                        provider === 'lichess'
+                            ? 'new-lichess-user'
+                            : E2E_USER.username,
+                    chesscomUsername:
+                        provider === 'chesscom'
+                            ? 'new-chesscom-user'
+                            : E2E_USER.username,
+                },
+            }),
+        });
+    });
+
+    await page.goto('/settings');
+    const lichessInput = page.getByRole('textbox', {
+        name: 'Lichess username',
+    });
+    const chesscomInput = page.getByRole('textbox', {
+        name: 'Chess.com username',
+    });
+    const lichessCard = lichessInput.locator(
+        'xpath=ancestor::div[contains(@class,"space-y-3")][1]'
+    );
+    const chesscomCard = chesscomInput.locator(
+        'xpath=ancestor::div[contains(@class,"space-y-3")][1]'
+    );
+    await lichessInput.fill('new-lichess-user');
+    await chesscomInput.fill('new-chesscom-user');
+    await lichessCard.getByRole('button', { name: 'Replace' }).click();
+    await chesscomCard.getByRole('button', { name: 'Replace' }).click();
+    await expect.poll(() => started.size).toBe(2);
+
+    releases.chesscom();
+    await expect(chesscomCard.getByText('@new-chesscom-user')).toBeVisible();
+    releases.lichess();
+    await expect(lichessCard.getByText('@new-lichess-user')).toBeVisible();
+    await expect(chesscomCard.getByText('@new-chesscom-user')).toBeVisible();
 });

@@ -1,5 +1,4 @@
 import type { BackranqQueueMessage } from '@/lib/queues/backranq';
-import { analyzeGameJob } from '@/lib/services/serverAnalysis';
 import { dispatchQueuedAnalysisJobs } from '@/lib/services/analysisScheduler';
 import {
     getAnalysisJobWakeupAt,
@@ -25,11 +24,46 @@ import {
     processPracticeDueNotificationPage,
     processPracticeDueSweepPage,
 } from '@/lib/training/practiceDueSweep';
-import { processWeeklyMasterRun } from '@/lib/master/pipelineRunner';
 import { runAnalysisMaintenanceHeartbeat } from '@/lib/services/analysisMaintenance';
 
 export async function processBackranqQueueMessage(message: BackranqQueueMessage) {
+    if (message.type === 'runtime-smoke') {
+        if (process.env.BACKRANQ_QUEUE_SMOKE_MODE !== 'true') {
+            throw new Error('Queue runtime smoke messages are disabled.');
+        }
+        const parentFetch = globalThis.fetch;
+        const { ServerStockfishClient } = await import(
+            '@/lib/analysis/serverStockfishClient'
+        );
+        const engine = new ServerStockfishClient({
+            defaultNodes: 1_000,
+            defaultTimeoutMs: 15_000,
+        });
+        try {
+            const identity = await engine.getIdentity();
+            const result = await engine.evalPosition({
+                fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                nodes: 1_000,
+                timeoutMs: 15_000,
+            });
+            if (
+                typeof globalThis.fetch !== 'function' ||
+                globalThis.fetch !== parentFetch
+            ) {
+                throw new Error('Stockfish changed the parent fetch binding.');
+            }
+            return {
+                engine: identity.name,
+                bestMoveUci: result.bestMoveUci,
+            };
+        } finally {
+            engine.terminate();
+        }
+    }
     if (message.type === 'weekly-master-run') {
+        const { processWeeklyMasterRun } = await import(
+            '@/lib/master/pipelineRunner'
+        );
         return processWeeklyMasterRun(message.runId);
     }
     if (message.type === 'notification-delivery') {
@@ -108,6 +142,9 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
         return { batch, dispatch, outbox };
     }
     if (message.type === 'analysis-job') {
+        const { analyzeGameJob } = await import(
+            '@/lib/services/serverAnalysis'
+        );
         let analysis:
             | Awaited<ReturnType<typeof analyzeGameJob>>
             | { status: 'STALE'; jobId: string; retryAt: Date | null };

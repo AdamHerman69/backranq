@@ -35,12 +35,13 @@ export default defineConfig({
         video: 'retain-on-failure',
     },
     webServer: {
-        command: `pnpm dev --hostname 127.0.0.1 --port ${port}`,
+        command: `pnpm start --hostname 127.0.0.1 --port ${port}`,
         url: baseURL,
         reuseExistingServer: false,
         timeout: 120_000,
         env: {
             ...process.env,
+            NODE_ENV: 'production',
             NEXTAUTH_URL: baseURL,
             BACKRANQ_APP_URL: baseURL,
         },

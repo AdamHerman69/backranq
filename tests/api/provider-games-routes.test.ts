@@ -4,10 +4,23 @@ import { mockAuthModule, setMockUserId } from '../helpers/route-mocks';
 
 type LichessRouteModule = typeof import('@/app/api/lichess/games/route');
 type ChessComRouteModule = typeof import('@/app/api/chesscom/games/route');
+const rateLimitMock = vi.fn<
+    () => Promise<
+        | { allowed: true }
+        | { allowed: false; retryAfterSeconds: number }
+    >
+>(async () => ({ allowed: true }));
+
+function mockRateLimitModule() {
+    vi.doMock('@/lib/api/providerProxyRateLimit', () => ({
+        consumeProviderProxyRateLimit: rateLimitMock,
+    }));
+}
 
 async function importLichessRoute(): Promise<LichessRouteModule> {
     vi.resetModules();
     mockAuthModule();
+    mockRateLimitModule();
 
     return import('@/app/api/lichess/games/route');
 }
@@ -15,6 +28,7 @@ async function importLichessRoute(): Promise<LichessRouteModule> {
 async function importChessComRoute(): Promise<ChessComRouteModule> {
     vi.resetModules();
     mockAuthModule();
+    mockRateLimitModule();
 
     return import('@/app/api/chesscom/games/route');
 }
@@ -26,6 +40,7 @@ function createGetRequest(path: string) {
 describe('provider game proxy routes', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        rateLimitMock.mockResolvedValue({ allowed: true });
         vi.stubGlobal('fetch', vi.fn());
     });
 
@@ -82,6 +97,23 @@ describe('provider game proxy routes', () => {
             error: 'Missing username',
         });
         expect(response.status).toBe(400);
+        expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('rate limits an authenticated owner before calling either provider', async () => {
+        rateLimitMock.mockResolvedValue({
+            allowed: false,
+            retryAfterSeconds: 37,
+        });
+        const route = await importLichessRoute();
+        setMockUserId('user-1');
+
+        const response = await route.GET(
+            createGetRequest('/api/lichess/games?username=ada')
+        );
+
+        expect(response.status).toBe(429);
+        expect(response.headers.get('Retry-After')).toBe('37');
         expect(fetch).not.toHaveBeenCalled();
     });
 });

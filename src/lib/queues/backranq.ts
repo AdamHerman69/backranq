@@ -3,6 +3,7 @@ import { QueueClient } from '@vercel/queue';
 export const BACKRANQ_QUEUE_TOPIC = 'backranq-jobs';
 
 export type BackranqQueueMessage =
+    | { type: 'runtime-smoke' }
     | { type: 'sync-all'; requestedAt: string }
     | { type: 'sync-job'; jobId: string }
     | {
@@ -61,7 +62,31 @@ export type BackranqQueuePublishResult = {
     error?: unknown;
 };
 
-const queue = new QueueClient({ region: process.env.VERCEL_REGION ?? 'iad1' });
+function queueClient() {
+    if (process.env.BACKRANQ_QUEUE_SMOKE_MODE !== 'true') {
+        return new QueueClient({ region: process.env.VERCEL_REGION ?? 'iad1' });
+    }
+    if (process.env.VERCEL || process.env.VERCEL_ENV) {
+        throw new Error('Queue smoke mode is forbidden in a Vercel environment.');
+    }
+    const value = process.env.BACKRANQ_QUEUE_SMOKE_BASE_URL;
+    if (!value) throw new Error('Queue smoke mode requires a loopback base URL.');
+    const baseUrl = new URL(value);
+    if (
+        baseUrl.protocol !== 'http:' ||
+        !['localhost', '127.0.0.1', '::1'].includes(baseUrl.hostname)
+    ) {
+        throw new Error('Queue smoke mode only accepts an HTTP loopback base URL.');
+    }
+    return new QueueClient({
+        region: 'iad1',
+        token: 'backranq-local-queue-smoke',
+        deploymentId: null,
+        resolveBaseUrl: () => baseUrl,
+    });
+}
+
+const queue = queueClient();
 
 export const handleBackranqQueueCallback = queue.handleCallback;
 

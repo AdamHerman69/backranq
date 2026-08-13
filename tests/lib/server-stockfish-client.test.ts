@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ServerStockfishClient } from '@/lib/analysis/serverStockfishClient';
 import type { ServerStockfishRuntime } from '@/lib/analysis/serverStockfishRuntime';
 
@@ -6,9 +6,153 @@ const clients: ServerStockfishClient[] = [];
 
 afterEach(() => {
     for (const client of clients.splice(0)) client.terminate();
+    vi.unstubAllGlobals();
 });
 
 describe('ServerStockfishClient integration', () => {
+    it('tears down the isolated runtime when the startup handshake cannot be sent', async () => {
+        const runtime: ServerStockfishRuntime = {
+            sendCommand() {
+                throw new Error('Stockfish IPC disconnected before UCI');
+            },
+            terminate: vi.fn(),
+        };
+        const client = new ServerStockfishClient({
+            runtimeFactory: async () => runtime,
+        });
+        clients.push(client);
+
+        await expect(client.getIdentity()).rejects.toThrow(
+            'Stockfish IPC disconnected before UCI'
+        );
+        expect(runtime.terminate).toHaveBeenCalledOnce();
+    });
+
+    it('rejects an active search immediately when the isolated runtime exits', async () => {
+        const runtime: ServerStockfishRuntime = {
+            sendCommand(command) {
+                if (command === 'uci') {
+                    queueMicrotask(() => runtime.listener?.('uciok'));
+                } else if (command === 'isready') {
+                    queueMicrotask(() => runtime.listener?.('readyok'));
+                } else if (command.startsWith('go nodes ')) {
+                    queueMicrotask(() =>
+                        runtime.errorListener?.(
+                            new Error('Stockfish child exited unexpectedly')
+                        )
+                    );
+                }
+            },
+            terminate: vi.fn(),
+        };
+        const client = new ServerStockfishClient({
+            defaultTimeoutMs: 15_000,
+            runtimeFactory: async () => runtime,
+        });
+        clients.push(client);
+
+        await expect(
+            client.evalPosition({
+                fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                nodes: 1_000,
+            })
+        ).rejects.toThrow('Stockfish child exited unexpectedly');
+        expect(runtime.terminate).toHaveBeenCalledOnce();
+    });
+
+    it('treats a failed stop command as a rejected search instead of an uncaught error', async () => {
+        const runtime: ServerStockfishRuntime = {
+            sendCommand(command) {
+                if (command === 'uci') {
+                    queueMicrotask(() => runtime.listener?.('uciok'));
+                } else if (command === 'isready') {
+                    queueMicrotask(() => runtime.listener?.('readyok'));
+                } else if (command === 'stop') {
+                    throw new Error('Stockfish process is terminated');
+                }
+            },
+            terminate: vi.fn(),
+        };
+        const client = new ServerStockfishClient({
+            defaultTimeoutMs: 15_000,
+            runtimeFactory: async () => runtime,
+        });
+        clients.push(client);
+        const controller = new AbortController();
+        const analysis = client.evalPosition({
+            fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+            nodes: 1_000,
+            signal: controller.signal,
+        });
+        await vi.waitFor(() => {
+            expect(runtime.listener).toBeTypeOf('function');
+        });
+        controller.abort();
+
+        await expect(analysis).rejects.toThrow('Analysis aborted');
+        expect(runtime.terminate).toHaveBeenCalledOnce();
+    });
+
+    it('replaces a poisoned runtime when IPC disconnects during search readiness', async () => {
+        const runtimes: Array<{
+            runtime: ServerStockfishRuntime;
+            terminate: ReturnType<typeof vi.fn>;
+        }> = [];
+        const runtimeFactory = vi.fn(async () => {
+            const generation = runtimes.length;
+            let readyCommands = 0;
+            const terminate = vi.fn();
+            const runtime: ServerStockfishRuntime = {
+                sendCommand(command) {
+                    if (command === 'uci') {
+                        queueMicrotask(() => runtime.listener?.('uciok'));
+                    } else if (command === 'isready') {
+                        readyCommands += 1;
+                        if (generation === 0 && readyCommands === 2) {
+                            throw new Error(
+                                'Stockfish IPC disconnected during search readiness'
+                            );
+                        }
+                        queueMicrotask(() => runtime.listener?.('readyok'));
+                    } else if (command.startsWith('go nodes ')) {
+                        queueMicrotask(() => {
+                            runtime.listener?.(
+                                'info depth 8 multipv 1 score cp 30 nodes 1000 pv e2e4'
+                            );
+                            runtime.listener?.('bestmove e2e4');
+                        });
+                    }
+                },
+                terminate,
+            };
+            runtimes.push({ runtime, terminate });
+            return runtime;
+        });
+        const client = new ServerStockfishClient({
+            defaultTimeoutMs: 5_000,
+            runtimeFactory,
+        });
+        clients.push(client);
+
+        await expect(
+            client.evalPosition({
+                fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                nodes: 1_000,
+            })
+        ).rejects.toThrow(
+            'Stockfish IPC disconnected during search readiness'
+        );
+        expect(runtimes[0]?.terminate).toHaveBeenCalledOnce();
+
+        await expect(
+            client.evalPosition({
+                fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                nodes: 1_000,
+            })
+        ).resolves.toMatchObject({ bestMoveUci: 'e2e4' });
+        expect(runtimeFactory).toHaveBeenCalledTimes(2);
+    });
+
     it('uses a rule-exact mate-in-one fallback when bestmove arrives without a PV', async () => {
         const runtime: ServerStockfishRuntime = {
             sendCommand(command) {
@@ -286,6 +430,42 @@ describe('ServerStockfishClient integration', () => {
             expect(result.pvUci.length).toBeGreaterThan(0);
             expect(result.nodes).toBeGreaterThanOrEqual(2_000);
             expect(result.depth).toBeGreaterThan(0);
+        },
+        20_000
+    );
+
+    it(
+        'keeps the parent fetch binding callable and usable by Queue after engine startup',
+        async () => {
+            const parentFetch = globalThis.fetch;
+            expect(parentFetch).toBeTypeOf('function');
+
+            const client = new ServerStockfishClient({
+                defaultNodes: 1_000,
+                defaultTimeoutMs: 15_000,
+            });
+            clients.push(client);
+            await client.getIdentity();
+
+            expect(globalThis.fetch).toBe(parentFetch);
+            const queueFetch = vi.fn().mockResolvedValue(
+                Response.json({ messageId: 'queue-after-stockfish' })
+            );
+            vi.stubGlobal('fetch', queueFetch);
+            const { QueueClient } = await import('@vercel/queue');
+            const queue = new QueueClient({
+                region: 'iad1',
+                token: 'test-token',
+                deploymentId: null,
+            });
+
+            await expect(
+                queue.send('backranq-runtime-smoke', { ok: true })
+            ).resolves.toEqual({ messageId: 'queue-after-stockfish' });
+            expect(queueFetch).toHaveBeenCalledOnce();
+            expect(queueFetch.mock.calls[0]?.[0]).toContain(
+                '/api/v3/topic/backranq-runtime-smoke'
+            );
         },
         20_000
     );

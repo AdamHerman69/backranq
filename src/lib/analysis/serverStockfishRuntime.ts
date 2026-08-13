@@ -1,6 +1,13 @@
 import path from 'node:path';
-import StockfishModule from 'stockfish/bin/stockfish-18-lite-single.js';
+import { spawn } from 'node:child_process';
 
+const processPath = path.join(
+    process.cwd(),
+    'src',
+    'lib',
+    'analysis',
+    'serverStockfishProcess.mjs'
+);
 const wasmPath = path.join(
     process.cwd(),
     'node_modules',
@@ -8,112 +15,108 @@ const wasmPath = path.join(
     'bin',
     'stockfish-18-lite-single.wasm'
 );
+const STARTUP_TIMEOUT_MS = 20_000;
 
 export type ServerStockfishRuntime = {
     listener?: (line: string) => void;
+    errorListener?: (error: Error) => void;
     sendCommand(command: string): void;
     terminate?: () => void;
 };
 
-type EmscriptenStockfishModule = ServerStockfishRuntime & {
-    locateFile(path: string): string;
-    print(line: unknown): void;
-    printErr(line: unknown): void;
-    ccall(
-        name: string,
-        returnType: null,
-        argumentTypes: string[],
-        args: string[],
-        options: { async: boolean }
-    ): unknown;
-    _isReady?: () => boolean;
-};
+type ProcessMessage =
+    | { type: 'ready' }
+    | { type: 'line'; line: string }
+    | { type: 'fatal'; error: string };
 
 /**
- * Minimal Emscripten host for the exact Stockfish flavor we ship. Importing the
- * concrete build avoids tracing the package's unused 100+ MB engine variants.
+ * Start Stockfish in an isolated Node child process.
+ *
+ * The upstream Emscripten runtime declares its own `fetch` binding. Keeping the
+ * entire runtime in another process is a hard boundary: neither that
+ * binding nor future process-global hooks from the engine can affect the Queue
+ * SDK, Next.js, or any other code in the callback worker.
  */
 export async function createStockfish18LiteEngine(): Promise<ServerStockfishRuntime> {
-    const existingUncaughtExceptionListeners = new Set(
-        process.listeners('uncaughtException')
-    );
-    const existingUnhandledRejectionListeners = new Set(
-        process.listeners('unhandledRejection')
-    );
-    const runtime: EmscriptenStockfishModule = {
-        locateFile(path) {
-            return path.endsWith('.wasm') ? wasmPath : path;
+    const child = spawn(process.execPath, [processPath], {
+        env: {
+            ...process.env,
+            BACKRANQ_STOCKFISH_WASM_PATH: wasmPath,
         },
-        print(line) {
-            runtime.listener?.(String(line));
+        stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    });
+    let terminated = false;
+    let startupSettled = false;
+
+    const runtime: ServerStockfishRuntime = {
+        sendCommand(command) {
+            if (terminated || !child.connected) {
+                throw new Error('Stockfish process is terminated');
+            }
+            child.send({ type: 'command', command });
         },
-        printErr(line) {
-            runtime.listener?.(String(line));
-        },
-        ccall() {
-            throw new Error('Stockfish runtime is not initialized');
-        },
-        sendCommand() {
-            throw new Error('Stockfish runtime is not initialized');
+        terminate() {
+            if (terminated) return;
+            terminated = true;
+            child.kill('SIGTERM');
         },
     };
 
-    const initialized = StockfishModule()(runtime);
-    const addedUncaughtExceptionListeners = process
-        .listeners('uncaughtException')
-        .filter(
-            (listener) =>
-                !existingUncaughtExceptionListeners.has(listener)
-        );
-    const addedUnhandledRejectionListeners = process
-        .listeners('unhandledRejection')
-        .filter(
-            (listener) =>
-                !existingUnhandledRejectionListeners.has(listener)
-        );
-    let listenersRemoved = false;
-    const removeRuntimeProcessListeners = () => {
-        if (listenersRemoved) return;
-        listenersRemoved = true;
-        for (const listener of addedUncaughtExceptionListeners) {
-            process.removeListener('uncaughtException', listener);
-        }
-        for (const listener of addedUnhandledRejectionListeners) {
-            process.removeListener('unhandledRejection', listener);
-        }
-    };
-    try {
-        await initialized;
-    } catch (error) {
-        removeRuntimeProcessListeners();
-        throw error;
-    }
+    const startup = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            settle(() =>
+                reject(
+                    new Error(
+                        `Stockfish process did not initialize within ${STARTUP_TIMEOUT_MS}ms`
+                    )
+                )
+            );
+        }, STARTUP_TIMEOUT_MS);
 
-    const terminateRuntime = runtime.terminate?.bind(runtime);
-    runtime.terminate = () => {
-        try {
-            terminateRuntime?.();
-        } finally {
-            removeRuntimeProcessListeners();
-        }
-    };
+        const settle = (operation: () => void) => {
+            if (startupSettled) return;
+            startupSettled = true;
+            clearTimeout(timeout);
+            operation();
+        };
 
-    while (runtime._isReady && !runtime._isReady()) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
-    delete runtime._isReady;
+        const fail = (error: Error) => {
+            if (terminated) return;
+            if (!startupSettled) {
+                settle(() => reject(error));
+                return;
+            }
+            terminated = true;
+            runtime.errorListener?.(error);
+        };
 
-    runtime.sendCommand = (command: string) => {
-        setImmediate(() => {
-            runtime.ccall(
-                'command',
-                null,
-                ['string'],
-                [command],
-                { async: /^go\b/.test(command) }
+        child.on('message', (message: ProcessMessage) => {
+            if (message.type === 'ready') {
+                settle(resolve);
+                return;
+            }
+            if (message.type === 'line') {
+                runtime.listener?.(message.line);
+                return;
+            }
+            fail(new Error(message.error));
+        });
+        child.once('error', fail);
+        child.once('exit', (code, signal) => {
+            if (terminated) return;
+            fail(
+                new Error(
+                    `Stockfish process exited unexpectedly (${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`})`
+                )
             );
         });
-    };
+    });
 
-    return runtime;
+    try {
+        await startup;
+        return runtime;
+    } catch (error) {
+        runtime.terminate?.();
+        throw error;
+    }
 }

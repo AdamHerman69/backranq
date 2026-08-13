@@ -26,6 +26,12 @@ export default async function PracticePage({
             : sp.mode === 'new'
               ? 'NEW'
               : undefined;
+    const rawGameId =
+        typeof sp.gameId === 'string' ? sp.gameId.trim() : undefined;
+    const gameId =
+        rawGameId && isTrainingApiUuid(rawGameId)
+            ? rawGameId
+            : undefined;
     const callbackSearchParams = new URLSearchParams();
     if (momentId) callbackSearchParams.set('momentId', momentId);
     if (entry) callbackSearchParams.set('entry', entry);
@@ -35,6 +41,7 @@ export default async function PracticePage({
     if (initialMode) {
         callbackSearchParams.set('mode', initialMode.toLowerCase());
     }
+    if (gameId) callbackSearchParams.set('gameId', gameId);
     const practiceCallbackUrl = safeAuthCallbackUrl(
         callbackSearchParams.size > 0
             ? `/practice?${callbackSearchParams.toString()}`
@@ -63,6 +70,7 @@ export default async function PracticePage({
                 ownerId={userId}
                 entry={entry}
                 initialMode={initialMode}
+                initialGameId={gameId}
                 initialViewMode={initialViewMode}
             />
         </div>

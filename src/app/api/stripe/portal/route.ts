@@ -26,7 +26,11 @@ export async function POST(req: Request) {
 
     try {
         const portal = await createStripePortalSession(userId);
-        return NextResponse.json({ id: portal.id, url: portal.url });
+        return NextResponse.json({
+            ownerId: userId,
+            id: portal.id,
+            url: portal.url,
+        });
     } catch (error) {
         return NextResponse.json(
             {

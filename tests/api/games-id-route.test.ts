@@ -8,6 +8,7 @@ import {
 } from '../helpers/route-mocks';
 
 type GameRouteModule = typeof import('@/app/api/games/[id]/route');
+const GAME_ID = '11111111-1111-4111-8111-111111111111';
 
 async function importRoute(): Promise<GameRouteModule> {
     vi.resetModules();
@@ -33,7 +34,7 @@ function createDeleteRequest() {
 }
 
 function routeParams() {
-    return { params: Promise.resolve({ id: 'game-1' }) };
+    return { params: Promise.resolve({ id: GAME_ID }) };
 }
 
 describe('GET /api/games/[id]', () => {
@@ -55,11 +56,40 @@ describe('GET /api/games/[id]', () => {
         expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
     });
 
+    it('rejects malformed UUIDs for every method before parsing or querying Prisma', async () => {
+        const route = await importRoute();
+        const invalidParams = {
+            params: Promise.resolve({ id: 'not-a-uuid' }),
+        };
+
+        const getResponse = await route.GET(createGetRequest(), invalidParams);
+        const patchResponse = await route.PATCH(
+            new Request('http://localhost/api/games/not-a-uuid', {
+                method: 'PATCH',
+                body: 'not-json',
+            }),
+            invalidParams
+        );
+        const deleteResponse = await route.DELETE(
+            createDeleteRequest(),
+            invalidParams
+        );
+
+        expect(getResponse.status).toBe(400);
+        expect(patchResponse.status).toBe(400);
+        expect(deleteResponse.status).toBe(400);
+        await expect(readJson(getResponse)).resolves.toEqual({
+            error: 'Invalid game id',
+        });
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
+        expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    });
+
     it('returns analysis in the game detail contract', async () => {
         const route = await importRoute();
         const analysis = { gameId: 'lichess:abc', moves: [] };
         const game = {
-            id: 'game-1',
+            id: GAME_ID,
             provider: 'LICHESS',
             externalId: 'abc',
             pgn: '[Event "Test"]',
@@ -74,7 +104,7 @@ describe('GET /api/games/[id]', () => {
         await expect(readJson(response)).resolves.toEqual({ game });
         expect(prismaMock.analyzedGame.findFirst).toHaveBeenCalledWith(
             expect.objectContaining({
-                where: { id: 'game-1', userId: 'user-1' },
+                where: { id: GAME_ID, userId: 'user-1' },
                 select: expect.objectContaining({
                     analysis: true,
                     analyzedAt: true,
@@ -123,7 +153,7 @@ describe('PATCH /api/games/[id]', () => {
     it('rejects PGN replacement while an analysis job is active', async () => {
         const route = await importRoute();
         prismaMock.analyzedGame.findFirst.mockResolvedValue({
-            id: 'game-1',
+            id: GAME_ID,
             provider: 'LICHESS',
             pgn: '[Event "Old"]',
         });
@@ -168,14 +198,14 @@ describe('PATCH /api/games/[id]', () => {
         async (provider) => {
             const route = await importRoute();
             prismaMock.analyzedGame.findFirst.mockResolvedValue({
-                id: 'game-1',
+                id: GAME_ID,
                 provider,
                 pgn: '[Event "Old"]',
             });
             prismaMock.analysisJob.findFirst.mockResolvedValue(null);
             prismaMock.analyzedGame.updateMany.mockResolvedValue({ count: 1 });
             prismaMock.analyzedGame.findUniqueOrThrow.mockResolvedValue({
-                id: 'game-1',
+                id: GAME_ID,
                 pgn: '[Event "New"]',
             });
             prismaMock.trainingMoment.updateMany.mockResolvedValue({ count: 2 });
@@ -196,7 +226,7 @@ describe('PATCH /api/games/[id]', () => {
             expect(response.status).toBe(200);
             expect(prismaMock.analyzedGame.updateMany).toHaveBeenCalledWith({
                 where: {
-                    id: 'game-1',
+                    id: GAME_ID,
                     userId: 'user-1',
                     pgn: '[Event "Old"]',
                 },
@@ -208,7 +238,7 @@ describe('PATCH /api/games/[id]', () => {
                 }),
             });
             expect(prismaMock.trainingMoment.updateMany).toHaveBeenCalledWith({
-                where: { gameId: 'game-1', archivedAt: null },
+                where: { gameId: GAME_ID, archivedAt: null },
                 data: {
                     status: 'INVALIDATED',
                     archivedAt: expect.any(Date),
@@ -222,7 +252,7 @@ describe('PATCH /api/games/[id]', () => {
         async (provider) => {
             const route = await importRoute();
             prismaMock.analyzedGame.findFirst.mockResolvedValue({
-                id: 'game-1',
+                id: GAME_ID,
                 provider,
                 pgn: '[Event "Old"]',
             });
@@ -254,7 +284,7 @@ describe('PATCH /api/games/[id]', () => {
     it('maps a database local-source invariant violation to the same sanitized conflict', async () => {
         const route = await importRoute();
         prismaMock.analyzedGame.findFirst.mockResolvedValue({
-            id: 'game-1',
+            id: GAME_ID,
             provider: 'LICHESS',
             pgn: '[Event "Old"]',
         });
@@ -296,7 +326,7 @@ describe('DELETE /api/games/[id]', () => {
     it('atomically cancels active analysis and deletes the game', async () => {
         const route = await importRoute();
         prismaMock.analyzedGame.findFirst.mockResolvedValue({
-            id: 'game-1',
+            id: GAME_ID,
         });
         prismaMock.analysisJob.findMany.mockResolvedValue([
             {
@@ -335,7 +365,7 @@ describe('DELETE /api/games/[id]', () => {
             }),
         });
         expect(prismaMock.analyzedGame.deleteMany).toHaveBeenCalledWith({
-            where: { id: 'game-1', userId: 'user-1' },
+            where: { id: GAME_ID, userId: 'user-1' },
         });
     });
 });

@@ -1,13 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     ClientRequestTimeoutError,
     fetchHistoricalGames,
+    getGameSyncActivity,
     getSyncStatus,
+    requestGameSync,
     saveHistoricalGamesToLibrary,
     unresolvedHistoryPageGameCount,
 } from '@/lib/services/gameSync';
 import type { NormalizedGame } from '@/lib/types/game';
+
+afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+});
 
 function makeGame(
     id: string,
@@ -231,6 +238,51 @@ describe('bounded status requests', () => {
         );
         await vi.advanceTimersByTimeAsync(5);
         await rejection;
-        vi.useRealTimers();
+    });
+});
+
+describe('owner-bound incremental sync client', () => {
+    it('sends the owner fence and accepts only a matching response owner', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(
+            jsonResponse({
+                ownerId: 'user-a',
+                requested: [],
+                providers: [],
+                active: { ownerId: 'user-a', providers: [] },
+            })
+        );
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(
+            requestGameSync({ ownerId: 'user-a', providers: ['lichess'] })
+        ).resolves.toMatchObject({ ownerId: 'user-a' });
+
+        const [, init] = fetchMock.mock.calls[0] ?? [];
+        expect(
+            new Headers((init as RequestInit | undefined)?.headers).get(
+                'X-Backranq-Owner-Id'
+            )
+        ).toBe('user-a');
+    });
+
+    it('rejects stale sync and activity responses from another owner', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn().mockResolvedValue(
+                jsonResponse({
+                    ownerId: 'user-b',
+                    requested: [],
+                    providers: [],
+                    active: { ownerId: 'user-b', providers: [] },
+                })
+            )
+        );
+
+        await expect(
+            requestGameSync({ ownerId: 'user-a' })
+        ).rejects.toThrow('Invalid sync response owner');
+        await expect(
+            getGameSyncActivity('user-a')
+        ).rejects.toThrow('Invalid sync activity response');
     });
 });

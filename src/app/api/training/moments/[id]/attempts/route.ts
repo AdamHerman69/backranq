@@ -4,6 +4,7 @@ import { boundedJsonBody } from '@/lib/api/validation';
 import { prisma } from '@/lib/prisma';
 import { recordTrainingAttempt } from '@/lib/training/attemptService';
 import type { TrainingApiErrorResponse } from '@/lib/training/api';
+import { expectedOwnerId } from '@/lib/auth/ownerContract';
 import {
     isTrainingApiUuid,
     MAX_TRAINING_API_BODY_BYTES,
@@ -26,6 +27,13 @@ export async function POST(
             'Unauthorized',
             'UNAUTHORIZED',
             401
+        );
+    }
+    if (expectedOwnerId(req) !== userId) {
+        return trainingErrorResponse(
+            'The signed-in account changed before this result was saved.',
+            'OWNER_MISMATCH',
+            409
         );
     }
 

@@ -2,12 +2,20 @@
     "name": "backranq",
     "version": "0.1.0",
     "private": true,
+    "type": "module",
+    "engines": {
+        "node": "24.x"
+    },
     "scripts": {
         "dev": "next dev",
         "prebuild": "prisma generate && node scripts/copy-stockfish-browser.mjs && node scripts/build-maia-browser.mjs",
         "build": "next build",
         "vercel-build": "prisma generate && node scripts/copy-stockfish-browser.mjs && node scripts/build-maia-browser.mjs && next build",
-        "db:migrate:deploy": "prisma migrate deploy",
+        "db:migrate:deploy": "node scripts/migrate-with-timeout.mjs",
+        "check:db-contract": "node scripts/ci/verify-database-contract.mjs",
+        "check:schema-shape": "node scripts/ci/verify-prisma-schema-shape.mjs",
+        "check:queue-runtime-bundle": "node scripts/ci/verify-queue-runtime-bundle.mjs",
+        "check:queue-runtime-callback": "node scripts/ci/smoke-queue-runtime-callback.mjs",
         "start": "next start",
         "lint": "eslint",
         "typecheck": "tsc --noEmit",
@@ -15,8 +23,9 @@
         "test:e2e": "node scripts/run-e2e.mjs",
         "test:e2e:headed": "node scripts/run-e2e.mjs --headed",
         "test:e2e:ui": "node scripts/run-e2e.mjs --ui",
-        "test:e2e:coach-offline": "pnpm build && pnpm exec playwright test --config=playwright.offline.config.ts",
-        "test:e2e:maia-model": "pnpm build && RUN_MAIA_BROWSER_SMOKE=1 playwright test --config=playwright.offline.config.ts tests/e2e/coach-maia-model.live.spec.ts",
+        "test:e2e:coach-offline": "node scripts/run-e2e.mjs --config=playwright.offline.config.ts",
+        "test:e2e:coach-offline:built": "node scripts/run-e2e.mjs --skip-build --config=playwright.offline.config.ts",
+        "test:e2e:maia-model": "RUN_MAIA_BROWSER_SMOKE=1 node scripts/run-e2e.mjs --config=playwright.offline.config.ts tests/e2e/coach-maia-model.live.spec.ts",
         "test:maia-model": "RUN_MAIA_MODEL_SMOKE=1 vitest run tests/lib/coach-maia-model.live.test.ts",
         "test:e2e:install": "playwright install chromium",
         "check:runtime": "node scripts/check-runtime-readiness.mjs",
@@ -31,6 +40,7 @@
         "quality:extract": "node scripts/run-extraction-quality-lab.mjs full",
         "quality:extract:confirmation": "node scripts/run-extraction-quality-lab.mjs confirmation",
         "load:analysis-queue": "node scripts/simulate-analysis-queue-load.mjs",
+        "audit:prod": "pnpm audit --prod --audit-level=high",
         "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
         "postinstall": "prisma generate && node scripts/copy-stockfish-browser.mjs && node scripts/build-maia-browser.mjs"
     },
@@ -89,8 +99,9 @@
         "overrides": {
             "@babel/core": "7.29.6",
             "defu": "6.1.5",
-            "minimatch@10.2.5>brace-expansion": "5.0.8",
-            "postcss": "8.5.18",
+            "minimatch@10.2.5>brace-expansion": "5.0.9",
+            "nanoid": "3.3.18",
+            "postcss": "8.5.23",
             "sharp": "0.35.0",
             "ws": "8.21.0"
         }

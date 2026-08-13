@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import { clickMove, dragMove, square, waitForBoard } from './support/board';
 import { resetE2eTrainingAttempts } from './support/database';
 import {
+    E2E_USER,
     E2E_TRAINING_MOMENTS,
     practicePath,
 } from './support/fixtures';
@@ -448,6 +449,105 @@ test.describe('authenticated personal decision practice', () => {
         ).toHaveCount(0);
     });
 
+    test('keeps a permanently rejected history write visible across reload', async ({
+        page,
+    }) => {
+        const momentId = E2E_TRAINING_MOMENTS.wrongMove;
+        await page.route(
+            `**/api/training/moments/${momentId}/attempts`,
+            async (route) => {
+                expect(
+                    route.request().headers()['x-backranq-owner-id']
+                ).toBe(E2E_USER.id);
+                await route.fulfill({
+                    status: 422,
+                    contentType: 'application/json',
+                    body: JSON.stringify({
+                        error: 'This result can no longer be recorded.',
+                        code: 'STALE_REVISION',
+                    }),
+                });
+            }
+        );
+
+        await page.goto(practicePath(momentId));
+        await dragMove(page, 'g1', 'f3');
+        await expect(page.getByText('Best move — well found.')).toBeVisible();
+        await expect(
+            page
+                .getByRole('alert')
+                .filter({ hasText: 'This result can no longer be recorded.' })
+        ).toBeVisible();
+        await expect(
+            page.getByText('1 result needs attention')
+        ).toBeVisible();
+
+        await page.reload();
+        await expect(
+            page
+                .getByRole('alert')
+                .filter({ hasText: 'This result can no longer be recorded.' })
+        ).toBeVisible();
+        const storedState = await page.evaluate((ownerId) => {
+            const raw = window.localStorage.getItem(
+                `backranq:training-attempts:v3:${ownerId}`
+            );
+            return raw ? JSON.parse(raw)[0]?.state : null;
+        }, E2E_USER.id);
+        expect(storedState).toBe('NEEDS_ATTENTION');
+    });
+
+    test('retries a rate-limited history write without losing it', async ({
+        page,
+    }) => {
+        const momentId = E2E_TRAINING_MOMENTS.dragMove;
+        let writes = 0;
+        await page.route(
+            `**/api/training/moments/${momentId}/attempts`,
+            async (route) => {
+                writes += 1;
+                if (writes === 1) {
+                    await route.fulfill({
+                        status: 429,
+                        contentType: 'application/json',
+                        body: JSON.stringify({
+                            error: 'Try again shortly.',
+                            code: 'INVALID_REQUEST',
+                        }),
+                    });
+                    return;
+                }
+                await route.fulfill({
+                    status: 200,
+                    contentType: 'application/json',
+                    body: JSON.stringify({
+                        attemptId:
+                            '40000000-0000-4000-8000-00000000e2e1',
+                        status: 'RECORDED',
+                    }),
+                });
+            }
+        );
+
+        await page.goto(practicePath(momentId));
+        await dragMove(page, 'g1', 'f3');
+        await expect(
+            page.getByText('Opponent replied. Find the best move.')
+        ).toBeVisible();
+        await dragMove(page, 'f1', 'b5');
+
+        await expect.poll(() => writes).toBe(2);
+        await expect(
+            page.getByText(/result waiting to sync/)
+        ).toHaveCount(0);
+        expect(
+            await page.evaluate((ownerId) =>
+                window.localStorage.getItem(
+                    `backranq:training-attempts:v3:${ownerId}`
+                ), E2E_USER.id)
+        ).toBeNull();
+    });
+
     test('offers every legal promotion choice before submitting', async ({
         page,
     }) => {
@@ -465,9 +565,11 @@ test.describe('authenticated personal decision practice', () => {
             ).toBeVisible();
         }
 
-        await dialog
-            .getByRole('button', { name: 'Promote to Knight' })
-            .click();
+        const knightChoice = dialog.getByRole('button', {
+            name: 'Promote to Knight',
+        });
+        await expect(knightChoice).toBeEnabled();
+        await knightChoice.click();
         await expect(page.getByText('Best move — well found.')).toBeVisible();
     });
 
@@ -488,6 +590,7 @@ test.describe('authenticated personal decision practice', () => {
                 status: 200,
                 contentType: 'application/json',
                 body: JSON.stringify({
+                    ownerId: E2E_USER.id,
                     items: [],
                     nextCursor: null,
                     appliedFilters: {

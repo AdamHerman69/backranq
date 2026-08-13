@@ -2,9 +2,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-
 import { assertSafeE2eDatabaseConfig } from './lib/e2e-database-safety.mjs';
+import { runCommand } from './lib/run-command.mjs';
 
 const root = process.cwd();
 const composeFile = path.join(root, 'docker-compose.e2e.yml');
@@ -13,6 +12,11 @@ const localDatabaseUrl =
 const useExternalDatabase =
     process.env.BACKRANQ_E2E_USE_EXTERNAL_DATABASE === 'true';
 const keepDatabase = process.env.BACKRANQ_E2E_KEEP_DB === 'true';
+const commandArguments = process.argv.slice(2);
+const skipBuild = commandArguments.includes('--skip-build');
+const playwrightArguments = commandArguments.filter(
+    (argument) => argument !== '--skip-build'
+);
 
 function readEnvFile(file) {
     if (!fs.existsSync(file)) return {};
@@ -35,26 +39,7 @@ function readEnvFile(file) {
 }
 
 function run(command, args, env, options = {}) {
-    return new Promise((resolve, reject) => {
-        const child = spawn(command, args, {
-            cwd: root,
-            env,
-            stdio: 'inherit',
-            ...options,
-        });
-        child.on('error', reject);
-        child.on('exit', (code, signal) => {
-            if (signal) {
-                reject(new Error(`${command} exited after signal ${signal}`));
-                return;
-            }
-            if (code !== 0) {
-                reject(new Error(`${command} exited with code ${code}`));
-                return;
-            }
-            resolve();
-        });
-    });
+    return runCommand(command, args, env, { cwd: root, ...options });
 }
 
 const fileEnv = useExternalDatabase
@@ -99,7 +84,7 @@ const baseUrl =
     process.env.BACKRANQ_E2E_BASE_URL ?? 'http://127.0.0.1:3100';
 const env = {
     ...safetyEnvironment,
-    NODE_ENV: 'development',
+    NODE_ENV: 'test',
     DATABASE_URL: databaseUrl,
     DIRECT_URL: directUrl,
     NEXTAUTH_URL: baseUrl,
@@ -107,11 +92,35 @@ const env = {
     NEXTAUTH_SECRET:
         process.env.NEXTAUTH_SECRET ??
         'backranq-local-e2e-secret-not-for-production',
-    SMTP2GO_API_KEY:
-        process.env.SMTP2GO_API_KEY ?? 'e2e-placeholder-never-send',
-    BACKRANQ_EMAIL_FROM:
-        process.env.BACKRANQ_EMAIL_FROM ??
-        'Backranq E2E <no-reply@example.invalid>',
+    // Browser tests must never inherit credentials capable of external writes.
+    // Dedicated live-provider and billing smoke commands own those integrations.
+    BACKRANQ_DISABLE_VERCEL_QUEUE: 'true',
+    SMTP2GO_API_KEY: 'e2e-invalid-key-never-send',
+    SMTP2GO_WEBHOOK_SECRET: '',
+    BACKRANQ_EMAIL_FROM: 'Backranq E2E <no-reply@example.invalid>',
+    NOTIFICATION_UNSUBSCRIBE_SECRET: 'e2e-unsubscribe-secret',
+    NEXT_PUBLIC_VAPID_PUBLIC_KEY: '',
+    VAPID_PRIVATE_KEY: '',
+    VAPID_SUBJECT: '',
+    STRIPE_SECRET_KEY: '',
+    STRIPE_WEBHOOK_SECRET: '',
+    STRIPE_PRICE_PLUS_MONTHLY: '',
+    STRIPE_PRICE_PRO_MONTHLY: '',
+    GOOGLE_CLIENT_ID: '',
+    GOOGLE_CLIENT_SECRET: '',
+    GITHUB_ID: '',
+    GITHUB_SECRET: '',
+    LICHESS_ENABLED: 'false',
+    LICHESS_CLIENT_ID: '',
+    LICHESS_CLIENT_SECRET: '',
+    NEXT_PUBLIC_SUPABASE_URL: '',
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: '',
+    SUPABASE_URL: '',
+    SUPABASE_ANON_KEY: '',
+    SUPABASE_SERVICE_ROLE_KEY: '',
+    VERCEL_OIDC_TOKEN: '',
+    VERCEL_DEPLOYMENT_ID: '',
+    VERCEL_ENV: '',
     // The global analysis bar performs independent polling and can resize the
     // sticky header while pointer-based board tests are in progress. Dedicated
     // unit/integration coverage owns that feature; keep authenticated browser
@@ -182,7 +191,15 @@ $roles$;`,
     }
 
     await run('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], env);
-    await run('pnpm', ['exec', 'playwright', 'test', ...process.argv.slice(2)], env);
+    if (!skipBuild) {
+        await run('pnpm', ['build'], { ...env, NODE_ENV: 'production' });
+    }
+    await run(
+        'pnpm',
+        ['exec', 'playwright', 'test', ...playwrightArguments],
+        env,
+        { captureRuntimeLogs: true }
+    );
 } catch (error) {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;

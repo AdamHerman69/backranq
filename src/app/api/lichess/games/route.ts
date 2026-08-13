@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
+import { consumeProviderProxyRateLimit } from '@/lib/api/providerProxyRateLimit';
 import {
     clampInt,
     parseBooleanParam,
@@ -26,6 +27,22 @@ export async function GET(req: Request) {
         return NextResponse.json(
             { error: 'Missing username' },
             { status: 400 }
+        );
+    }
+    const rateLimit = await consumeProviderProxyRateLimit({
+        request: req,
+        userId,
+        operation: 'games',
+    });
+    if (!rateLimit.allowed) {
+        return NextResponse.json(
+            { error: 'Too many provider requests. Try again shortly.' },
+            {
+                status: 429,
+                headers: {
+                    'Retry-After': String(rateLimit.retryAfterSeconds),
+                },
+            }
         );
     }
 

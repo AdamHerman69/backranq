@@ -159,7 +159,7 @@ export default async function SettingsPage() {
                 title="Notifications"
                 description="Keep only the updates that help you return at the right moment."
             >
-                <NotificationSettingsCard />
+                <NotificationSettingsCard ownerId={initialUser.id} />
             </SettingsSection>
 
             <SettingsSection

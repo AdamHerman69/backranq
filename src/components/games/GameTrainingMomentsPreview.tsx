@@ -8,8 +8,10 @@ export type GameTrainingMomentRow = GameTrainingMomentMarker;
 
 export function GameTrainingMomentsPreview({
     trainingMoments,
+    gameId,
 }: {
     trainingMoments: GameTrainingMomentRow[];
+    gameId: string;
 }) {
     return (
         <section className="space-y-4 rounded-[1.25rem] border bg-card/70 p-4 sm:p-5">
@@ -26,7 +28,7 @@ export function GameTrainingMomentsPreview({
                 </div>
                 {trainingMoments.length > 0 ? (
                     <Button asChild size="sm">
-                        <Link href="/practice">
+                        <Link href={`/practice?gameId=${encodeURIComponent(gameId)}`}>
                             <Target aria-hidden="true" />
                             Start practice
                         </Link>

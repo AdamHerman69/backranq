@@ -228,6 +228,7 @@ function practiceFilterHash(filters: PracticeFilters): string {
                 minConfidence:
                     filters.minConfidence ?? null,
                 mode: filters.mode ?? 'RECOMMENDED',
+                gameId: filters.gameId ?? null,
             })
         )
         .digest('hex');
@@ -300,7 +301,7 @@ export async function listPracticeFeed(args: {
     userId: string;
     request: PracticeFeedRequest;
     now?: () => Date;
-}): Promise<PracticeFeedResponse> {
+}): Promise<Omit<PracticeFeedResponse, 'ownerId'>> {
     const limit = args.request.limit ?? 10;
     const filters = args.request.filters ?? {};
     const mode = filters.mode ?? 'RECOMMENDED';
@@ -449,7 +450,7 @@ export async function getTrainingMomentPrompt(args: {
     db: TrainingReadClient;
     userId: string;
     momentId: string;
-}): Promise<TrainingMomentResponse | null> {
+}): Promise<Omit<TrainingMomentResponse, 'ownerId'> | null> {
     const row = await args.db.trainingMoment.findFirst({
         where: {
             id: args.momentId,

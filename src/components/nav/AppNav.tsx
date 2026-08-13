@@ -142,7 +142,7 @@ export function MobileBottomNav({
 export function AppNav() {
   const pathname = usePathname();
   const { data } = useSession();
-  const authed = !!data?.user?.id;
+  const authed = Boolean(data?.user?.id);
   const user = data?.user;
   const label = user?.name ?? user?.email ?? "User";
 
@@ -199,7 +199,7 @@ export function AppNav() {
       </div>
 
       <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
-        <NotificationBell enabled={authed} />
+        <NotificationBell ownerId={data?.user?.id ?? null} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button

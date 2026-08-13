@@ -2,6 +2,9 @@ import type { NextConfig } from 'next';
 import { withSerwist } from '@serwist/turbopack';
 
 const stockfishLiteRuntime = [
+    './src/lib/analysis/serverStockfishProcess.mjs',
+    './node_modules/stockfish/package.json',
+    './node_modules/stockfish/bin/stockfish-18-lite-single.js',
     './node_modules/stockfish/bin/stockfish-18-lite-single.wasm',
     './node_modules/stockfish/Copying.txt',
 ];
@@ -14,18 +17,15 @@ const unusedStockfishVariants = [
 const nextConfig: NextConfig = {
     /* config options here */
     reactCompiler: true,
-    // Keep the queue SDK out of Turbopack's combined worker chunk. When it is
-    // bundled beside Stockfish, the SDK's internal fetch call can be rewritten
-    // to a non-callable chunk binding, which breaks visibility changes/retries.
-    serverExternalPackages: ['@vercel/queue'],
+    // Neither runtime belongs in Turbopack's Queue callback chunk. Stockfish is
+    // loaded only by serverStockfishProcess.mjs in a separate Node process;
+    // Queue stays an external package so its request transport is untouched.
+    serverExternalPackages: ['@vercel/queue', 'stockfish'],
     outputFileTracingIncludes: {
         '/api/queues/backranq-jobs': stockfishLiteRuntime,
-        '/api/training/moments/*/attempts': stockfishLiteRuntime,
     },
     outputFileTracingExcludes: {
         '/api/queues/backranq-jobs': unusedStockfishVariants,
-        '/api/training/moments/*/attempts':
-            unusedStockfishVariants,
         // Reveal uses the read-only portion of attemptService and never starts
         // the dynamically evaluated move path.
         '/api/training/moments/*/reveal': [
