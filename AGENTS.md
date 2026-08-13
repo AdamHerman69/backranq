@@ -1,5 +1,15 @@
 # Backranq repository instructions
 
+## Repository workflow skill
+
+- For every task in this repository, invoke and follow
+  `$backranq-orchestrator` from
+  `.agents/skills/backranq-orchestrator/SKILL.md`.
+- Use its solo mode for small or tightly coupled tasks; do not spawn agents
+  merely because the skill is active.
+- Skill activation does not broaden authority for external writes, destructive
+  actions, commits, pushes, pull requests, merges, or deployments.
+
 ## Product idea capture
 
 - `/Users/adam/dev/backranq/ideas.md` is the single untracked backlog shared by

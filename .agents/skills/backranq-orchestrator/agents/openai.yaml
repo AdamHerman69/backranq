@@ -1,0 +1,7 @@
+interface:
+  display_name: "Backranq Orchestrator"
+  short_description: "Current-state workflow for Backranq tasks"
+  default_prompt: "Use $backranq-orchestrator to discover the current repository state, choose the simplest safe execution mode, implement the task, review it, and verify it against current project gates."
+
+policy:
+  allow_implicit_invocation: true
