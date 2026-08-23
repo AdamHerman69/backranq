@@ -180,9 +180,13 @@ describe('Progress SQL read service', () => {
         ).sql;
         expect(sql).toContain('WITH games AS MATERIALIZED');
         expect(sql).toContain('WITH eligible AS MATERIALIZED');
-        expect(sql).toContain('WITH attempts AS MATERIALIZED');
+        expect(sql).toContain('WITH selected_attempts AS MATERIALIZED');
+        expect(sql).toContain('attempts AS MATERIALIZED');
         expect(attemptsSql).not.toContain('attempt.*');
         expect(attemptsSql).not.toContain('attempt."gradingEvidence"');
+        expect(sql).not.toContain(
+            'WHERE step."attemptId" = attempt."id"'
+        );
         expect(attemptsSql).not.toContain('attempt."contextThemes"');
         expect(sql).toContain('LIMIT 20');
         expect(sql).not.toContain('LIMIT 25001');

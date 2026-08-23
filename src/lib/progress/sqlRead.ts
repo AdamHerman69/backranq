@@ -355,6 +355,28 @@ export async function readProgressPositionsSummary(args: {
                 SELECT * FROM eligible
                 WHERE "playedAt" < ${args.asOf}
                   AND (${args.from}::timestamptz IS NULL OR "playedAt" >= ${args.from})
+            ), position_attempts AS MATERIALIZED (
+                SELECT
+                    attempt."id",
+                    attempt."trainingMomentId",
+                    attempt."completedAt",
+                    attempt."status",
+                    attempt."grade",
+                    attempt."contextConfigHash",
+                    attempt."contextSolutionHash"
+                FROM "TrainingAttempt" attempt
+                WHERE attempt."userId" = ${args.userId}::uuid
+                  AND attempt."completedAt" IS NOT NULL
+                  AND attempt."completedAt" <= ${args.asOf}
+                  AND attempt."status" IN ('GRADED'::"AttemptStatus", 'REVEALED'::"AttemptStatus")
+            ), position_root_steps AS MATERIALIZED (
+                SELECT DISTINCT ON (step."attemptId")
+                    step."attemptId",
+                    step."grade"
+                FROM "TrainingAttemptStep" step
+                JOIN position_attempts attempt ON attempt."id" = step."attemptId"
+                WHERE step."actor" = 'USER'::"AttemptStepActor"
+                ORDER BY step."attemptId", step."stepIndex"
             ), attempts AS MATERIALIZED (
                 SELECT
                     attempt."id",
@@ -364,20 +386,9 @@ export async function readProgressPositionsSummary(args: {
                     attempt."grade",
                     attempt."contextConfigHash",
                     attempt."contextSolutionHash",
-                    root.grade AS root_grade
-                FROM "TrainingAttempt" attempt
-                LEFT JOIN LATERAL (
-                    SELECT step."grade"
-                    FROM "TrainingAttemptStep" step
-                    WHERE step."attemptId" = attempt."id"
-                      AND step."actor" = 'USER'::"AttemptStepActor"
-                    ORDER BY step."stepIndex"
-                    LIMIT 1
-                ) root ON TRUE
-                WHERE attempt."userId" = ${args.userId}::uuid
-                  AND attempt."completedAt" IS NOT NULL
-                  AND attempt."completedAt" <= ${args.asOf}
-                  AND attempt."status" IN ('GRADED'::"AttemptStatus", 'REVEALED'::"AttemptStatus")
+                    root."grade" AS root_grade
+                FROM position_attempts attempt
+                LEFT JOIN position_root_steps root ON root."attemptId" = attempt."id"
             ), semantic AS MATERIALIZED (
                 SELECT attempt.*
                 FROM attempts attempt
@@ -556,7 +567,7 @@ type ProgressAttemptsSummaryArgs = {
 
 function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
     return Prisma.sql`
-            WITH attempts AS MATERIALIZED (
+            WITH selected_attempts AS MATERIALIZED (
                 SELECT
                     attempt."id",
                     attempt."trainingMomentId",
@@ -571,7 +582,6 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
                     attempt."contextCpLoss",
                     attempt."contextWinChanceLoss",
                     attempt."contextSourceKinds",
-                    root.grade AS root_grade,
                     CASE
                         WHEN attempt."contextWinChanceLoss"::text NOT IN ('NaN', 'Infinity', '-Infinity') AND attempt."contextWinChanceLoss" >= 0.12 THEN 'WIN_CHANCE_MAJOR'
                         WHEN attempt."contextWinChanceLoss"::text NOT IN ('NaN', 'Infinity', '-Infinity') AND attempt."contextWinChanceLoss" >= 0.08 THEN 'WIN_CHANCE_MEANINGFUL'
@@ -587,14 +597,6 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
                     ), 'UNKNOWN') AS source_mix_key,
                     (${attemptFilter(args.filters)}) AS filtered
                 FROM "TrainingAttempt" attempt
-                LEFT JOIN LATERAL (
-                    SELECT step."grade"
-                    FROM "TrainingAttemptStep" step
-                    WHERE step."attemptId" = attempt."id"
-                      AND step."actor" = 'USER'::"AttemptStepActor"
-                    ORDER BY step."stepIndex"
-                    LIMIT 1
-                ) root ON TRUE
                 WHERE attempt."userId" = ${args.userId}::uuid
                   AND attempt."completedAt" IS NOT NULL
                   AND attempt."completedAt" <= ${args.asOf}
@@ -603,6 +605,35 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
                       'REVEALED'::"AttemptStatus",
                       'UNRESOLVED'::"AttemptStatus"
                   )
+            ), root_steps AS MATERIALIZED (
+                SELECT DISTINCT ON (step."attemptId")
+                    step."attemptId",
+                    step."grade"
+                FROM "TrainingAttemptStep" step
+                JOIN selected_attempts attempt ON attempt."id" = step."attemptId"
+                WHERE step."actor" = 'USER'::"AttemptStepActor"
+                ORDER BY step."attemptId", step."stepIndex"
+            ), attempts AS MATERIALIZED (
+                SELECT
+                    attempt."id",
+                    attempt."trainingMomentId",
+                    attempt."completedAt",
+                    attempt."status",
+                    attempt."grade",
+                    attempt."contextConfigHash",
+                    attempt."contextSolutionHash",
+                    attempt."contextProvider",
+                    attempt."contextTimeClass",
+                    attempt."contextPhase",
+                    attempt."contextCpLoss",
+                    attempt."contextWinChanceLoss",
+                    attempt."contextSourceKinds",
+                    attempt.impact_key,
+                    attempt.source_mix_key,
+                    attempt.filtered,
+                    root."grade" AS root_grade
+                FROM selected_attempts attempt
+                LEFT JOIN root_steps root ON root."attemptId" = attempt."id"
             ), current_attempts AS MATERIALIZED (
                 SELECT * FROM attempts
                 WHERE filtered

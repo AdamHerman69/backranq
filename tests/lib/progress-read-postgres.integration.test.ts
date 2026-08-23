@@ -588,12 +588,18 @@ function oracle(scope: 90 | 'all') {
 }
 
 integration('Progress PostgreSQL aggregate reader', () => {
-    beforeAll(seedProgressFixture);
+    beforeAll(seedProgressFixture, 60_000);
 
-    afterAll(async () => {
-        await db.user.deleteMany({ where: { id: ids.user } });
-        await db.$disconnect();
-    });
+    afterAll(
+        async () => {
+            try {
+                await db.user.deleteMany({ where: { id: ids.user } });
+            } finally {
+                await db.$disconnect();
+            }
+        },
+        60_000
+    );
 
     it.each([90 as const, 'all' as const])(
         'matches the pure aggregate oracle for a non-empty %s-day snapshot',
@@ -703,6 +709,9 @@ integration('Progress PostgreSQL aggregate reader', () => {
             // query text itself so wide attempt payloads cannot regress here.
             expect(attemptsQuery.text).not.toContain('gradingEvidence');
             expect(attemptsQuery.text).not.toContain('contextThemes');
+            expect(attemptsQuery.text).not.toContain(
+                'WHERE step."attemptId" = attempt."id"'
+            );
         },
         60_000
     );
