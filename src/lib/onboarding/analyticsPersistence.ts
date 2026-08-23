@@ -1,81 +1,108 @@
+import { randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { prisma } from '@/lib/prisma';
 
 import type { OnboardingAnalyticsEvent } from './analytics';
 import {
-    consumeOnboardingRateLimit,
     onboardingSessionKeyHash,
 } from './rateLimit';
 
-type AnalyticsPersistenceDb = Pick<PrismaClient, '$transaction'>;
+type AnalyticsPersistenceDb = Pick<PrismaClient, '$queryRaw'>;
 
 export async function recordOnboardingAnalyticsEvent(
     event: OnboardingAnalyticsEvent,
     db: AnalyticsPersistenceDb = prisma
 ) {
-    try {
-        return await db.$transaction(async (tx) => {
-            const rateLimit = await consumeOnboardingRateLimit({
-                keyHash: onboardingSessionKeyHash(
-                    event.sessionId,
-                    'onboarding-events'
-                ),
-                namespace: 'onboarding-events',
-                limit: 60,
-                db: tx,
-            });
-            if (!rateLimit.allowed) {
-                return {
-                    recorded: false,
-                    duplicate: false,
-                    rateLimited: true,
-                    retryAfterSeconds: rateLimit.retryAfterSeconds,
-                } as const;
-            }
-            await tx.onboardingAnalyticsEvent.create({
-                data: {
-                    sessionId: event.sessionId,
-                    eventId: event.eventId,
-                    onboardingRunId: event.runId ?? null,
-                    eventName: event.eventName,
-                    provider:
-                        event.provider === 'lichess'
-                            ? 'LICHESS'
-                            : event.provider === 'chesscom'
-                              ? 'CHESSCOM'
-                              : null,
-                    puzzleKind: event.puzzleKind ?? null,
-                    experimentKey: event.experimentKey ?? null,
-                    variantKey: event.variantKey ?? null,
-                    durationMs: event.durationMs ?? null,
-                    gameCount: event.gameCount ?? null,
-                    gameIndex: event.gameIndex ?? null,
-                    progressMilestone: event.progressMilestone ?? null,
-                    reason: event.reason ?? null,
-                    masterState: event.masterState ?? null,
-                    occurredAt: new Date(event.occurredAt),
-                },
-            });
-            return {
-                recorded: true,
-                duplicate: false,
-                rateLimited: false,
-                retryAfterSeconds: 0,
-            } as const;
-        });
-    } catch (error) {
-        if (
-            error instanceof Prisma.PrismaClientKnownRequestError &&
-            error.code === 'P2002'
-        ) {
-            return {
-                recorded: true,
-                duplicate: true,
-                rateLimited: false,
-                retryAfterSeconds: 0,
-            } as const;
-        }
-        throw error;
+    const now = new Date();
+    const windowMs = 60_000;
+    const windowStartedAt = new Date(
+        Math.floor(now.getTime() / windowMs) * windowMs
+    );
+    const provider =
+        event.provider === 'lichess'
+            ? 'LICHESS'
+            : event.provider === 'chesscom'
+              ? 'CHESSCOM'
+              : null;
+    const rows = await db.$queryRaw<
+        Array<{ allowed: boolean; inserted: boolean }>
+    >(Prisma.sql`
+        WITH "claimed" AS (
+            INSERT INTO "OnboardingRateBucket"
+                ("keyHash", "namespace", "windowStartedAt", "requestCount", "updatedAt")
+            VALUES
+                (${onboardingSessionKeyHash(event.sessionId, 'onboarding-events')}, 'onboarding-events', ${windowStartedAt}, 1, ${now})
+            ON CONFLICT ("keyHash", "namespace") DO UPDATE
+            SET
+                "windowStartedAt" = CASE
+                    WHEN "OnboardingRateBucket"."windowStartedAt" < EXCLUDED."windowStartedAt"
+                    THEN EXCLUDED."windowStartedAt"
+                    ELSE "OnboardingRateBucket"."windowStartedAt"
+                END,
+                "requestCount" = CASE
+                    WHEN "OnboardingRateBucket"."windowStartedAt" < EXCLUDED."windowStartedAt"
+                    THEN 1
+                    ELSE "OnboardingRateBucket"."requestCount" + 1
+                END,
+                "updatedAt" = EXCLUDED."updatedAt"
+            WHERE
+                "OnboardingRateBucket"."windowStartedAt" < EXCLUDED."windowStartedAt"
+                OR "OnboardingRateBucket"."requestCount" < 60
+            RETURNING 1
+        ),
+        "inserted" AS (
+            INSERT INTO "OnboardingAnalyticsEvent" (
+                "id", "sessionId", "eventId", "onboardingRunId", "eventName",
+                "provider", "puzzleKind", "experimentKey", "variantKey",
+                "durationMs", "gameCount", "gameIndex", "progressMilestone",
+                "reason", "masterState", "occurredAt", "recordedAt"
+            )
+            SELECT
+                ${randomUUID()}::uuid,
+                ${event.sessionId}::uuid,
+                ${event.eventId},
+                ${event.runId ?? null}::uuid,
+                ${event.eventName}::"OnboardingEventName",
+                ${provider}::"SyncProvider",
+                ${event.puzzleKind ?? null}::"OnboardingPuzzleKind",
+                ${event.experimentKey ?? null},
+                ${event.variantKey ?? null},
+                ${event.durationMs ?? null},
+                ${event.gameCount ?? null},
+                ${event.gameIndex ?? null},
+                ${event.progressMilestone ?? null},
+                ${event.reason ?? null},
+                ${event.masterState ?? null}::"OnboardingMasterState",
+                ${new Date(event.occurredAt)},
+                ${now}
+            FROM "claimed"
+            ON CONFLICT ("sessionId", "eventId") DO NOTHING
+            RETURNING 1
+        )
+        SELECT
+            EXISTS (SELECT 1 FROM "claimed") AS "allowed",
+            EXISTS (SELECT 1 FROM "inserted") AS "inserted"
+    `);
+    const row = rows[0] ?? { allowed: false, inserted: false };
+    if (!row.allowed) {
+        return {
+            recorded: false,
+            duplicate: false,
+            rateLimited: true,
+            retryAfterSeconds: Math.max(
+                1,
+                Math.ceil(
+                    (windowStartedAt.getTime() + windowMs - now.getTime()) /
+                        1_000
+                )
+            ),
+        } as const;
     }
+    return {
+        recorded: true,
+        duplicate: !row.inserted,
+        rateLimited: false,
+        retryAfterSeconds: 0,
+    } as const;
 }

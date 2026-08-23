@@ -46,12 +46,17 @@ export function ManualPgnImportButton({ ownerId }: { ownerId: string }) {
                 ? ` ${result.duplicates} already in your library.`
                 : '';
             const analysisText =
-                analyze && result.needsAnalysisGameIds.length > 0
+                result.analysisStart === 'started'
                     ? ' Free browser analysis started; keep Backranq open. Practice updates automatically as verified positions are found.'
                     : '';
-            toast.success(
-                `${result.created} ${result.created === 1 ? 'game' : 'games'} imported.${duplicateText}${analysisText}`
-            );
+            const importMessage = `${result.created} ${result.created === 1 ? 'game' : 'games'} imported.${duplicateText}${analysisText}`;
+            if (result.analysisStart === 'failed') {
+                toast.warning(
+                    `${importMessage} Browser analysis could not start; use Analyze free in browser to retry it.`
+                );
+            } else {
+                toast.success(importMessage);
+            }
             setOpen(false);
             setPgn('');
             router.refresh();

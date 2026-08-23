@@ -13,11 +13,22 @@ import {
     trainingSourceKindsForSessionMix,
     type PartialPreferences,
 } from '@/lib/preferences';
+import {
+    measureRequestPhase,
+    withRequestTrace,
+} from '@/lib/performance/requestTrace';
 
 export const runtime = 'nodejs';
 
 export async function GET(req: Request) {
-    const session = await auth();
+    return withRequestTrace(
+        { route: '/api/training/feed', request: req },
+        () => getPracticeFeed(req)
+    );
+}
+
+async function getPracticeFeed(req: Request) {
+    const session = await measureRequestPhase('auth', () => auth());
     const userId = session?.user?.id;
     if (!userId) {
         return NextResponse.json<TrainingApiErrorResponse>(
@@ -38,10 +49,12 @@ export async function GET(req: Request) {
             !request.filters?.gameId &&
             !request.filters?.sourceKinds?.length
         ) {
-            const user = await prisma.user.findUnique({
-                where: { id: userId },
-                select: { preferences: true },
-            });
+            const user = await measureRequestPhase('preferences', () =>
+                prisma.user.findUnique({
+                    where: { id: userId },
+                    select: { preferences: true },
+                })
+            );
             const preferences = mergePreferences(
                 defaultPreferences(),
                 (user?.preferences ?? {}) as PartialPreferences
@@ -56,11 +69,11 @@ export async function GET(req: Request) {
                 };
             }
         }
-        const feed = await listPracticeFeed({
+        const feed = await measureRequestPhase('feed', () => listPracticeFeed({
                 db: prisma,
                 userId,
                 request,
-            });
+            }));
         return NextResponse.json(
             { ownerId: userId, ...feed },
             {

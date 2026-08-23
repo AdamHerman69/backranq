@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import { clickMove, dragMove, square, waitForBoard } from './support/board';
 import { resetE2eTrainingAttempts } from './support/database';
 import {
+    E2E_GAMES,
     E2E_USER,
     E2E_TRAINING_MOMENTS,
     practicePath,
@@ -18,6 +19,124 @@ test.describe('authenticated personal decision practice', () => {
 
         expect(response?.status()).toBe(404);
         expect(new URL(page.url()).pathname).toBe('/training');
+    });
+
+    test('hydrates a server-rendered position before client session or feed reads', async ({
+        page,
+    }) => {
+        const momentId = E2E_TRAINING_MOMENTS.wrongMove;
+        await page.addInitScript(() => {
+            const readStarts: Array<{
+                url: string;
+                boardPresent: boolean;
+            }> = [];
+            Object.assign(window, {
+                __practiceReadStarts: readStarts,
+            });
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = (input, init) => {
+                const url =
+                    typeof input === 'string'
+                        ? input
+                        : input instanceof URL
+                          ? input.href
+                          : input.url;
+                if (
+                    url.includes('/api/auth/session') ||
+                    url.includes('/api/training/feed') ||
+                    url.includes('/api/training/moments/')
+                ) {
+                    readStarts.push({
+                        url,
+                        boardPresent: Boolean(
+                            document.querySelector('[data-board-stage]')
+                        ),
+                    });
+                }
+                return originalFetch(input, init);
+            };
+        });
+
+        await page.goto(
+            `${practicePath(momentId)}&mode=new&gameId=${E2E_GAMES.standard}`
+        );
+        await waitForBoard(page);
+        await expect(
+            page.getByText('Preparing your positions…')
+        ).toHaveCount(0);
+
+        await square(page, 'g1').click();
+        await expect(page.locator('[data-board-stage]')).toHaveAttribute(
+            'data-board-selected-square',
+            'g1'
+        );
+        await expect
+            .poll(() =>
+                page.evaluate(() =>
+                    (
+                        window as Window & {
+                            __practiceReadStarts?: Array<{ url: string }>;
+                        }
+                    ).__practiceReadStarts?.filter((entry) =>
+                        entry.url.includes('/api/training/feed')
+                    ).length ?? 0
+                )
+            )
+            .toBeGreaterThan(0);
+
+        const readStarts = await page.evaluate(
+            () =>
+                (
+                    window as Window & {
+                        __practiceReadStarts?: Array<{
+                            url: string;
+                            boardPresent: boolean;
+                        }>;
+                    }
+                ).__practiceReadStarts ?? []
+        );
+        expect(readStarts).not.toEqual([]);
+        expect(readStarts.every((entry) => entry.boardPresent)).toBe(true);
+        expect(
+            readStarts.some((entry) =>
+                entry.url.includes('/api/auth/session')
+            )
+        ).toBe(false);
+        expect(
+            readStarts.some((entry) =>
+                entry.url.includes(`/api/training/moments/${momentId}`)
+            )
+        ).toBe(false);
+    });
+
+    test('continues a server-rendered default feed from its cursor without refetching the first prompt', async ({
+        page,
+    }) => {
+        const feedRequests: string[] = [];
+        page.on('request', (request) => {
+            const url = new URL(request.url());
+            if (url.pathname === '/api/training/feed') {
+                feedRequests.push(url.href);
+            }
+        });
+
+        await page.goto(
+            `/practice?mode=new&gameId=${E2E_GAMES.standard}`
+        );
+        await waitForBoard(page);
+        await expect(
+            page.getByText('Preparing your positions…')
+        ).toHaveCount(0);
+        await expect
+            .poll(() => feedRequests.length)
+            .toBeGreaterThan(0);
+
+        const continuation = new URL(feedRequests[0]!);
+        expect(continuation.searchParams.get('cursor')).toBeTruthy();
+        expect(continuation.searchParams.get('mode')).toBe('new');
+        expect(continuation.searchParams.get('gameId')).toBe(
+            E2E_GAMES.standard
+        );
     });
 
     test('always shows legal destinations after selecting a piece', async ({
@@ -52,7 +171,9 @@ test.describe('authenticated personal decision practice', () => {
             page.getByRole('heading', { name: 'Practice', exact: true })
         ).toBeVisible();
         await expect(
-            page.getByText('White to move — find the best move')
+            page.getByRole('heading', {
+                name: 'White to move — find the best move',
+            })
         ).toBeVisible();
         await expect(page.getByText("King's Pawn Game")).toHaveCount(0);
         await expect(page.getByText(/mistake/i)).toHaveCount(0);

@@ -8,6 +8,10 @@ import {
 } from '@/lib/api/validation';
 import { Prisma } from '@prisma/client';
 import { isGameSource } from '@/lib/types/game';
+import {
+    measureRequestPhase,
+    withRequestTrace,
+} from '@/lib/performance/requestTrace';
 
 export const runtime = 'nodejs';
 
@@ -26,7 +30,13 @@ function parseDateFilter(
 }
 
 export async function GET(req: Request) {
-    const session = await auth();
+    return withRequestTrace({ route: '/api/games', request: req }, () =>
+        listGames(req)
+    );
+}
+
+async function listGames(req: Request) {
+    const session = await measureRequestPhase('auth', () => auth());
     const userId = session?.user?.id;
     if (!userId) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -117,37 +127,41 @@ export async function GET(req: Request) {
     if (hasAnalysis === 'false') where.analyzedAt = null;
 
     const [total, games] = await Promise.all([
-        prisma.analyzedGame.count({ where }),
-        prisma.analyzedGame.findMany({
-            where,
-            orderBy: { playedAt: 'desc' },
-            skip: (page - 1) * limit,
-            take: limit,
-            select: {
-                id: true,
-                provider: true,
-                sourceUsername: true,
-                sourceAccountId: true,
-                userSide: true,
-                externalId: true,
-                url: true,
-                playedAt: true,
-                timeClass: true,
-                rated: true,
-                result: true,
-                termination: true,
-                whiteName: true,
-                whiteRating: true,
-                blackName: true,
-                blackRating: true,
-                openingEco: true,
-                openingName: true,
-                openingVariation: true,
-                analyzedAt: true,
-                createdAt: true,
-                updatedAt: true,
-            },
-        }),
+        measureRequestPhase('count', () =>
+            prisma.analyzedGame.count({ where })
+        ),
+        measureRequestPhase('page', () =>
+            prisma.analyzedGame.findMany({
+                where,
+                orderBy: { playedAt: 'desc' },
+                skip: (page - 1) * limit,
+                take: limit,
+                select: {
+                    id: true,
+                    provider: true,
+                    sourceUsername: true,
+                    sourceAccountId: true,
+                    userSide: true,
+                    externalId: true,
+                    url: true,
+                    playedAt: true,
+                    timeClass: true,
+                    rated: true,
+                    result: true,
+                    termination: true,
+                    whiteName: true,
+                    whiteRating: true,
+                    blackName: true,
+                    blackRating: true,
+                    openingEco: true,
+                    openingName: true,
+                    openingVariation: true,
+                    analyzedAt: true,
+                    createdAt: true,
+                    updatedAt: true,
+                },
+            })
+        ),
     ]);
 
     const totalPages = Math.max(1, Math.ceil(total / limit));

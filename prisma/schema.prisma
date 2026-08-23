@@ -810,6 +810,8 @@ model AnalyzedGame {
   openingName                 String?
   openingVariation            String?
   analysis                    Json
+  whiteAccuracy               Float?
+  blackAccuracy               Float?
   analyzedAt                  DateTime?
   currentAnalysisRunId        String?      @db.Uuid
   currentAnalysisValid        Boolean      @default(false)

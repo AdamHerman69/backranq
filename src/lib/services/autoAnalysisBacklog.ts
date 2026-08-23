@@ -28,10 +28,11 @@ import {
     DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT,
     DEFAULT_SERVER_CREDITS_BALANCE,
     DEFAULT_STOP_WHEN_CREDITS_BELOW,
-    getEffectiveBillingAccount,
+    readEffectiveBillingSnapshot,
     InsufficientServerCreditsError,
     MonthlyServerCreditsLimitExceededError,
     ServerCreditStopThresholdError,
+    type EffectiveBillingSnapshot,
 } from '@/lib/services/billingAccounts';
 import { analysisCreditsPerGame } from '@/lib/analysis/quality';
 import { summarizeCreditLedgerEntries } from '@/lib/services/creditLedger';
@@ -99,6 +100,19 @@ type LedgerRow = {
     analysisRunCreatedAt?: Date;
 };
 
+export type BillingCapacityAccount =
+    | BillingAccount
+    | EffectiveBillingSnapshot;
+
+export type AutoAnalysisCapacitySummaryInput = {
+    policy: AutoAnalysisPolicy;
+    account: BillingCapacityAccount | null;
+    allOutstandingReserved: number;
+    monthlyAutoGames: number;
+    dailyAutoGames: number;
+    now: Date;
+};
+
 type Candidate = {
     id: string;
     provider: GameSource;
@@ -152,7 +166,7 @@ export type AutoAnalysisWakeupReason =
 
 export function calculateAutoAnalysisCapacity(args: {
     policy: AutoAnalysisPolicy;
-    account: BillingAccount | null;
+    account: BillingCapacityAccount | null;
     ledger: LedgerRow[];
     now: Date;
 }): AutoAnalysisCapacity {
@@ -200,14 +214,9 @@ function countCommittedRuns(entries: LedgerRow[]) {
     ).length;
 }
 
-function calculateAutoAnalysisCapacityFromSummaries(args: {
-    policy: AutoAnalysisPolicy;
-    account: BillingAccount | null;
-    allOutstandingReserved: number;
-    monthlyAutoGames: number;
-    dailyAutoGames: number;
-    now: Date;
-}): AutoAnalysisCapacity {
+export function calculateAutoAnalysisCapacityFromSummaries(
+    args: AutoAnalysisCapacitySummaryInput
+): AutoAnalysisCapacity {
     const planMonthlyLimit =
         args.account?.monthlyServerCreditsLimit ??
         DEFAULT_MONTHLY_SERVER_CREDITS_LIMIT;
@@ -284,11 +293,16 @@ function calculateAutoAnalysisCapacityFromSummaries(args: {
 
 export async function getAutoAnalysisStatus(
     userId: string,
-    now = new Date()
+    options: {
+        now?: Date;
+        billingSnapshot?: EffectiveBillingSnapshot;
+    } = {}
 ): Promise<AutoAnalysisStatus> {
+    const now = options.now ?? new Date();
     const context = await loadContext(userId, now, {
         initializeMissingEnabledAt: false,
         candidateScanLimit: STATUS_CANDIDATE_SCAN_LIMIT,
+        billingSnapshot: options.billingSnapshot,
     });
     return statusFromContext(context);
 }
@@ -718,6 +732,7 @@ async function loadContext(
         initializeMissingEnabledAt: boolean;
         candidateScanLimit: number;
         candidateCursor?: AutoAnalysisReconcileCursor;
+        billingSnapshot?: EffectiveBillingSnapshot;
     }
 ) {
     const user = await prisma.user.findUnique({
@@ -845,7 +860,12 @@ async function loadContext(
                 queuedReason: { in: [...AUTO_ANALYSIS_QUEUED_REASONS] },
             },
         }),
-        loadAutoAnalysisCapacity(userId, policy, now),
+        loadAutoAnalysisCapacity(
+            userId,
+            policy,
+            now,
+            options.billingSnapshot
+        ),
     ]);
     const candidatesTruncated =
         scannedCandidates.length > options.candidateScanLimit;
@@ -892,9 +912,11 @@ async function loadContext(
 async function loadAutoAnalysisCapacity(
     userId: string,
     policy: AutoAnalysisPolicy,
-    now: Date
+    now: Date,
+    billingSnapshot?: EffectiveBillingSnapshot
 ) {
-    const account = await getEffectiveBillingAccount(userId);
+    const account =
+        billingSnapshot ?? (await readEffectiveBillingSnapshot(userId));
     const monthStart = account.serverCreditsPeriodStart;
     const [allTotals, monthlyAutoRuns] = await Promise.all([
         prisma.creditLedgerEntry.groupBy({

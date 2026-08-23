@@ -1,20 +1,14 @@
 import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
-import { StockfishClient } from '@/lib/analysis/stockfishClient';
-import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
-import {
-    extractTrainingMomentsFromGames,
-    type TrainingMomentExtractionOptions,
-} from '@/lib/analysis/extractTrainingMoments';
+import type { StockfishClient } from '@/lib/analysis/stockfishClient';
+import type { LichessTablebaseClient } from '@/lib/analysis/tablebase';
+import type { TrainingMomentExtractionOptions } from '@/lib/analysis/extractTrainingMoments';
 import { gameSourceToUi, timeClassToUi } from '@/lib/api/games';
 import type { GameSource, TimeClass } from '@prisma/client';
 import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
-import {
-    analysisDefaultsToExtractOptions,
-    defaultPreferences,
-    pickAnalysisDefaults,
-    type AnalysisDefaults,
-    type PreferencesSchema,
+import type {
+    AnalysisDefaults,
+    PreferencesSchema,
 } from '@/lib/preferences';
 import type { AnalysisQuality } from '@/lib/analysis/quality';
 import {
@@ -164,7 +158,7 @@ export function normalizeApiDbGameToNormalized(
 
 class BackgroundAnalysisManager {
     private listeners = new Set<Listener>();
-    private readonly tablebase = new LichessTablebaseClient();
+    private tablebase: LichessTablebaseClient | null = null;
     private ownerId: string | null = null;
     private runGeneration = 0;
     private activeRun: AnalysisRunContext | null = null;
@@ -201,9 +195,27 @@ class BackgroundAnalysisManager {
         for (const cb of this.listeners) cb(s);
     }
 
-    private ensureEngine(run: AnalysisRunContext) {
-        if (!run.engine) run.engine = new StockfishClient();
+    private async ensureEngine(run: AnalysisRunContext) {
+        if (!run.engine) {
+            const { StockfishClient } = await import(
+                '@/lib/analysis/stockfishClient'
+            );
+            if (!this.isCurrentRun(run)) {
+                throw new Error('Analysis session changed.');
+            }
+            run.engine = new StockfishClient();
+        }
         return run.engine;
+    }
+
+    private async ensureTablebase() {
+        if (!this.tablebase) {
+            const { LichessTablebaseClient } = await import(
+                '@/lib/analysis/tablebase'
+            );
+            this.tablebase = new LichessTablebaseClient();
+        }
+        return this.tablebase;
     }
 
     private cleanupRunEngine(run: AnalysisRunContext) {
@@ -381,6 +393,15 @@ class BackgroundAnalysisManager {
         }
     }
 
+    setPendingUnanalyzedCount(ownerId: string, count: number) {
+        this.assertOwner(ownerId);
+        this.pendingUnanalyzedCount = Math.max(
+            0,
+            Number.isFinite(count) ? Math.trunc(count) : 0
+        );
+        this.emit();
+    }
+
     async enqueuePendingUnanalyzed(
         ownerId: string,
         opts?: { limit?: number }
@@ -409,35 +430,6 @@ class BackgroundAnalysisManager {
     }
 
     private async run(run: AnalysisRunContext) {
-        // Resolve the extraction options once for the whole run, so settings are consistent.
-        // Priority: caller-provided overrides (modal) → saved preferences → defaults.
-        try {
-            const prefs = await this.loadPreferences();
-            if (!this.isCurrentRun(run)) return;
-            const defaults =
-                run.analysisDefaultsOverride ??
-                pickAnalysisDefaults(prefs);
-            run.activeExtractOptions = analysisDefaultsToExtractOptions(
-                defaults,
-                {
-                    returnAnalysis: true,
-                }
-            );
-            run.activeAnalysisDefaults = defaults;
-            run.activeAnalysisQuality = defaults.analysisQuality;
-        } catch {
-            if (!this.isCurrentRun(run)) return;
-            const prefs = defaultPreferences();
-            const defaults = pickAnalysisDefaults(prefs);
-            run.activeExtractOptions = analysisDefaultsToExtractOptions(
-                defaults,
-                { returnAnalysis: true }
-            );
-            run.activeAnalysisDefaults = defaults;
-            run.activeAnalysisQuality = prefs.analysisQuality;
-        }
-        run.analysisDefaultsOverride = null;
-
         let failed = 0;
         let trainingMomentsGenerated = 0;
         const errors: string[] = [];
@@ -445,6 +437,41 @@ class BackgroundAnalysisManager {
         let pendingCountRefreshed = false;
 
         try {
+            // Resolve extraction options once for the whole run. Lazy-module
+            // failure belongs to the same terminal lifecycle as engine or API
+            // failure, otherwise the singleton can remain permanently busy.
+            const {
+                analysisDefaultsToExtractOptions,
+                defaultPreferences,
+                pickAnalysisDefaults,
+            } = await import('@/lib/preferences');
+            try {
+                const prefs = await this.loadPreferences();
+                if (!this.isCurrentRun(run)) return;
+                const defaults =
+                    run.analysisDefaultsOverride ??
+                    pickAnalysisDefaults(prefs);
+                run.activeExtractOptions = analysisDefaultsToExtractOptions(
+                    defaults,
+                    {
+                        returnAnalysis: true,
+                    }
+                );
+                run.activeAnalysisDefaults = defaults;
+                run.activeAnalysisQuality = defaults.analysisQuality;
+            } catch {
+                if (!this.isCurrentRun(run)) return;
+                const prefs = defaultPreferences();
+                const defaults = pickAnalysisDefaults(prefs);
+                run.activeExtractOptions = analysisDefaultsToExtractOptions(
+                    defaults,
+                    { returnAnalysis: true }
+                );
+                run.activeAnalysisDefaults = defaults;
+                run.activeAnalysisQuality = prefs.analysisQuality;
+            }
+            run.analysisDefaultsOverride = null;
+
             do {
                 while (
                     this.isCurrentRun(run) &&
@@ -520,12 +547,26 @@ class BackgroundAnalysisManager {
                     await this.refreshPendingUnanalyzedCount(run.ownerId);
                 if (!this.isCurrentRun(run)) return;
             } while (run.queue.length > 0);
+        } catch (error) {
+            if (!this.isCurrentRun(run)) return;
+            if (!run.cancelled) {
+                failed += Math.max(0, run.total - run.completed - failed);
+                errors.push(
+                    error instanceof Error
+                        ? error.message
+                        : 'Analysis failed'
+                );
+            }
         } finally {
             this.cleanupRunEngine(run);
             if (!this.isCurrentRun(run)) return;
             if (!pendingCountRefreshed) {
-                pendingAtCompletion =
-                    await this.refreshPendingUnanalyzedCount(run.ownerId);
+                try {
+                    pendingAtCompletion =
+                        await this.refreshPendingUnanalyzedCount(run.ownerId);
+                } catch {
+                    pendingAtCompletion = null;
+                }
             }
             if (!this.isCurrentRun(run)) return;
             const summary = createBrowserAnalysisCompletion({
@@ -579,20 +620,24 @@ class BackgroundAnalysisManager {
             throw new Error('Game has invalid immutable analysis provenance');
         }
 
-        const engine = this.ensureEngine(opts.run);
-        const fallbackDefaults = pickAnalysisDefaults(defaultPreferences());
-        const extractOptions =
-            opts.run.activeExtractOptions ??
-            analysisDefaultsToExtractOptions(fallbackDefaults, {
-                returnAnalysis: true,
-            });
-        const analysisQuality =
-            opts.run.activeAnalysisQuality ?? fallbackDefaults.analysisQuality;
-        const out = await extractTrainingMomentsFromGames({
+        const [engine, tablebase, extraction] = await Promise.all([
+            this.ensureEngine(opts.run),
+            this.ensureTablebase(),
+            import('@/lib/analysis/extractTrainingMoments'),
+        ]);
+        if (!this.isCurrentRun(opts.run)) {
+            throw new Error('Analysis session changed.');
+        }
+        const extractOptions = opts.run.activeExtractOptions;
+        const analysisQuality = opts.run.activeAnalysisQuality;
+        if (!extractOptions || !analysisQuality) {
+            throw new Error('Analysis settings were not initialized.');
+        }
+        const out = await extraction.extractTrainingMomentsFromGames({
             games: [g],
             selectedGameIds: new Set([g.id]),
             engine,
-            tablebase: this.tablebase,
+            tablebase,
             canonicalSourceGameIdByGameId: {
                 [g.id]: opts.gameDbId,
             },

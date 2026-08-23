@@ -5,14 +5,19 @@ const publishLibraryChanged = vi.fn();
 const setOwner = vi.fn();
 const enqueueGameDbIds = vi.fn();
 
-async function importClient() {
+async function importClient(opts?: { analysisImportFails?: boolean }) {
     vi.resetModules();
     vi.doMock('@/lib/analysis/analysisCompletion', () => ({
         publishLibraryChanged,
     }));
-    vi.doMock('@/lib/analysis/backgroundAnalysisManager', () => ({
-        backgroundAnalysis: { setOwner, enqueueGameDbIds },
-    }));
+    vi.doMock('@/lib/analysis/backgroundAnalysisManager', () => {
+        if (opts?.analysisImportFails) {
+            throw new Error('analysis chunk failed');
+        }
+        return {
+            backgroundAnalysis: { setOwner, enqueueGameDbIds },
+        };
+    });
     return import('@/lib/games/manualPgnImportClient');
 }
 
@@ -42,7 +47,10 @@ describe('manual PGN import client owner fence', () => {
                 playerName: 'Ada',
                 analyze: true,
             })
-        ).resolves.toMatchObject({ createdGameIds: ['game-1'] });
+        ).resolves.toMatchObject({
+            createdGameIds: ['game-1'],
+            analysisStart: 'started',
+        });
 
         expect(providerFetch).toHaveBeenCalledWith('/api/games/import', {
             method: 'POST',
@@ -60,6 +68,37 @@ describe('manual PGN import client owner fence', () => {
         });
         expect(setOwner).toHaveBeenCalledWith('user-1');
         expect(enqueueGameDbIds).toHaveBeenCalledWith('user-1', ['game-1']);
+    });
+
+    it('keeps a successful import successful when browser analysis cannot load', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () =>
+                Response.json({
+                    created: 1,
+                    duplicates: 0,
+                    createdGameIds: ['game-1'],
+                    duplicateGameIds: [],
+                    needsAnalysisGameIds: ['game-1'],
+                })
+            )
+        );
+        const client = await importClient({ analysisImportFails: true });
+
+        await expect(
+            client.importManualPgnGamesAndAnalyze({
+                ownerId: 'user-1',
+                pgn: '[Event "Test"]',
+                playerName: 'Ada',
+                analyze: true,
+            })
+        ).resolves.toMatchObject({
+            created: 1,
+            analysisStart: 'failed',
+        });
+        expect(publishLibraryChanged).toHaveBeenCalledTimes(1);
+        expect(setOwner).not.toHaveBeenCalled();
+        expect(enqueueGameDbIds).not.toHaveBeenCalled();
     });
 
     it('rejects an owner mismatch response before returning analysis ids', async () => {

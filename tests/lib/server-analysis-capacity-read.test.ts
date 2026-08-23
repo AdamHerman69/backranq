@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
 
-const getEffectiveBillingAccountMock = vi.fn();
+const readEffectiveBillingSnapshotMock = vi.fn();
 
 async function importCapacity() {
     vi.resetModules();
     mockPrismaModule();
     vi.doMock('@/lib/services/billingAccounts', () => ({
-        getEffectiveBillingAccount: getEffectiveBillingAccountMock,
+        readEffectiveBillingSnapshot: readEffectiveBillingSnapshotMock,
     }));
     return import('@/lib/games/serverAnalysisCapacity');
 }
@@ -15,7 +15,7 @@ async function importCapacity() {
 describe('manual server-analysis capacity read', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        getEffectiveBillingAccountMock.mockResolvedValue({
+        readEffectiveBillingSnapshotMock.mockResolvedValue({
             userId: 'user-1',
             plan: 'PRO',
             planSource: 'ADMIN',
@@ -39,7 +39,7 @@ describe('manual server-analysis capacity read', () => {
             monthlyLimit: 5_000,
             reservableCredits: 5_000,
         });
-        expect(getEffectiveBillingAccountMock).toHaveBeenCalledWith('user-1');
+        expect(readEffectiveBillingSnapshotMock).toHaveBeenCalledWith('user-1');
         expect(prismaMock.creditLedgerEntry.groupBy).toHaveBeenCalledWith({
             by: ['type'],
             where: {
@@ -49,5 +49,38 @@ describe('manual server-analysis capacity read', () => {
             },
             _sum: { credits: true },
         });
+    });
+
+    it('uses a caller-owned immutable snapshot without rereading billing', async () => {
+        const capacity = await importCapacity();
+        const billingSnapshot = Object.freeze({
+            userId: 'user-1',
+            plan: 'PLUS' as const,
+            planSource: 'STRIPE' as const,
+            stripePlan: 'PLUS' as const,
+            stripeSubscriptionStatus: 'active',
+            stripeCurrentPeriodStart: new Date('2026-08-01T00:00:00Z'),
+            stripeCurrentPeriodEnd: new Date('2026-09-01T00:00:00Z'),
+            serverCreditsBalance: 900,
+            monthlyServerCreditsUsed: 100,
+            serverCreditsPeriodStart: new Date('2026-08-01T00:00:00Z'),
+            serverCreditsRenewAt: new Date('2026-09-01T00:00:00Z'),
+            monthlyServerCreditsLimit: 1_000,
+            autoAnalysisMonthlyGameLimit: 500,
+            autoAnalysisDailyGameLimit: 50,
+            stopWhenCreditsBelow: 0,
+            persisted: true,
+            needsReconciliation: false,
+        });
+
+        await expect(
+            capacity.getManualServerAnalysisCapacity('user-1', {
+                billingSnapshot,
+            })
+        ).resolves.toMatchObject({
+            currentBalance: 900,
+            monthlyLimit: 1_000,
+        });
+        expect(readEffectiveBillingSnapshotMock).not.toHaveBeenCalled();
     });
 });

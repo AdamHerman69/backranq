@@ -36,21 +36,12 @@ import {
   SERVER_ANALYSIS_TRACKING_EVENT,
   type TrackedServerAnalysisRequest,
 } from "@/lib/analysis/serverAnalysisCoordinator";
-import { shouldPollAnalysis } from "@/lib/analysis/analysisRefreshPolicy";
+import {
+  initialAnalysisStatusDelayMs,
+  shouldPollAnalysis,
+} from "@/lib/analysis/analysisRefreshPolicy";
 
 const NEW_DISMISS_PREFIX = "backranq.analysisBar.dismiss.v2";
-const BACKGROUND_REFRESH_STEP_TIMEOUT_MS = 10_000;
-
-function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(
-      () => reject(new Error("Background refresh timed out")),
-      timeoutMs
-    );
-    promise.then(resolve, reject).finally(() => window.clearTimeout(timeout));
-  });
-}
-
 function dismissKey(ownerId: string) {
   return `${NEW_DISMISS_PREFIX}:${encodeURIComponent(ownerId)}`;
 }
@@ -73,22 +64,6 @@ function writeDismissedCount(ownerId: string, n: number) {
   }
 }
 
-async function fetchTrainingMomentCount(): Promise<number | null> {
-  try {
-    const { response, json } = await fetchJsonWithTimeout(
-      "/api/training/feed?limit=50",
-      { cache: "no-store" }
-    );
-    if (!response.ok) return null;
-    const parsed = json as {
-      items?: unknown[];
-    };
-    return Array.isArray(parsed.items) ? parsed.items.length : null;
-  } catch {
-    return null;
-  }
-}
-
 function completionMessage(summary: AnalysisCompletionSummary) {
   const analyzed = `${summary.succeeded} game${summary.succeeded === 1 ? "" : "s"} analyzed`;
   const failed = summary.failed > 0 ? `, ${summary.failed} failed` : "";
@@ -106,7 +81,6 @@ export function BackgroundAnalysisBar() {
   const ownerId = session?.user?.id ?? null;
   const [snap, setSnap] = React.useState<BackgroundAnalysisSnapshot>(() => backgroundAnalysis.snapshot());
   const [syncStatus, setSyncStatus] = React.useState<SyncStatus | null>(null);
-  const [trainingMomentCount, setTrainingMomentCount] = React.useState<number | null>(null);
   const [lastCompletion, setLastCompletion] = React.useState<AnalysisCompletionSummary | null>(null);
   const [collapsed, setCollapsed] = React.useState(false);
   const [dismissedForPending, setDismissedForPending] = React.useState(0);
@@ -118,6 +92,7 @@ export function BackgroundAnalysisBar() {
   const toastedCompletionId = React.useRef<string | null>(null);
   const refreshInFlight = React.useRef<Promise<void> | null>(null);
   const activeOwnerId = React.useRef<string | null>(ownerId);
+  const hasTrackedServerBatch = trackedServerRequests.length > 0;
 
   const showCompletionToast = React.useCallback(
     (summary: AnalysisCompletionSummary) => {
@@ -140,7 +115,6 @@ export function BackgroundAnalysisBar() {
     activeOwnerId.current = ownerId;
     backgroundAnalysis.setOwner(ownerId);
     setSyncStatus(null);
-    setTrainingMomentCount(null);
     setLastCompletion(ownerId ? readLastAnalysisCompletion(ownerId) : null);
     setDismissedForPending(ownerId ? readDismissedCount(ownerId) : 0);
     setSnap(backgroundAnalysis.snapshot());
@@ -169,31 +143,29 @@ export function BackgroundAnalysisBar() {
     return () => window.removeEventListener(ANALYSIS_COMPLETION_EVENT, onCompletion);
   }, [ownerId, router, showCompletionToast]);
 
-  const refreshAll = React.useCallback(() => {
+  const refreshAll = React.useCallback((options: { preferCached?: boolean } = {}) => {
     if (sessionStatus !== "authenticated" || !ownerId) {
       return Promise.resolve();
     }
     if (refreshInFlight.current) return refreshInFlight.current;
 
     const task = (async () => {
-      const [, statusResult, trainingMomentResult] =
+      const [statusResult] =
         await Promise.allSettled([
-          settleWithin(
-            backgroundAnalysis.refreshPendingUnanalyzedCount(ownerId),
-            BACKGROUND_REFRESH_STEP_TIMEOUT_MS
-          ),
-          getSyncStatus(),
-          fetchTrainingMomentCount(),
+          getSyncStatus({ ownerId, preferCached: options.preferCached }),
           reconcileTrackedServerAnalysis(ownerId),
         ]);
       if (activeOwnerId.current !== ownerId) return;
 
       const nextStatus =
         statusResult.status === "fulfilled" ? statusResult.value : null;
-      const nextTrainingMomentCount =
-        trainingMomentResult.status === "fulfilled" ? trainingMomentResult.value : null;
-      if (nextStatus) setSyncStatus(nextStatus);
-      if (nextTrainingMomentCount != null) setTrainingMomentCount(nextTrainingMomentCount);
+      if (nextStatus) {
+        setSyncStatus(nextStatus);
+        backgroundAnalysis.setPendingUnanalyzedCount(
+          ownerId,
+          nextStatus.inventory.unanalyzed
+        );
+      }
       setTrackedServerRequests(readTrackedServerAnalysisRequests(ownerId));
     })();
     const tracked = task.finally(() => {
@@ -204,9 +176,22 @@ export function BackgroundAnalysisBar() {
   }, [ownerId, sessionStatus]);
 
   React.useEffect(() => {
-    if (sessionStatus !== "authenticated" || !ownerId) return;
-    void refreshAll();
-  }, [ownerId, refreshAll, sessionStatus]);
+    const delayMs = initialAnalysisStatusDelayMs({
+      authenticated: sessionStatus === "authenticated",
+      ownerId,
+      hasTrackedServerBatch,
+    });
+    if (delayMs === null) return;
+    if (delayMs === 0) {
+      void refreshAll({ preferCached: true });
+      return;
+    }
+    const timer = window.setTimeout(
+      () => void refreshAll({ preferCached: true }),
+      delayMs
+    );
+    return () => window.clearTimeout(timer);
+  }, [hasTrackedServerBatch, ownerId, refreshAll, sessionStatus]);
 
   React.useEffect(() => {
     if (!ownerId) return;
@@ -272,7 +257,6 @@ export function BackgroundAnalysisBar() {
   const trackedRunning = trackedServerRequests.reduce((sum, request) => sum + request.running, 0);
   const serverQueued = trackedPlanning + trackedQueued || currentSyncStatus?.analysisJobs?.queued || 0;
   const serverRunning = trackedRunning || currentSyncStatus?.analysisJobs?.running || 0;
-  const hasTrackedServerBatch = trackedServerRequests.length > 0;
   const isRunning = snap.ownerId === ownerId && snap.state === "running";
 
   React.useEffect(() => {
@@ -409,9 +393,7 @@ export function BackgroundAnalysisBar() {
 
   const completionHasTrainingMoments =
     !!currentCompletion &&
-    (currentCompletion.trainingMomentsGenerated ??
-      trainingMomentCount ??
-      0) > 0;
+    (currentCompletion.trainingMomentsGenerated ?? 0) > 0;
   const canRetry =
     pending > 0 &&
     (isError ||

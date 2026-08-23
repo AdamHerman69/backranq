@@ -1,14 +1,8 @@
 "use client";
 
-import type { LucideIcon } from "lucide-react";
 import {
-  House,
-  Library,
-  LineChart,
   LogOut,
   Settings,
-  Swords,
-  Target,
   User2,
 } from "lucide-react";
 import Link from "next/link";
@@ -29,54 +23,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { signOutAndClearCoachSession } from "@/lib/coach/signOut";
 import { cn } from "@/lib/utils";
+import { itemIsActive, primaryNavItems } from "@/components/nav/appNavItems";
 
-type NavItem = {
-  href: string;
-  label: string;
-  icon: LucideIcon;
-  active?: (pathname: string) => boolean;
-};
-
-export const appNavItems: NavItem[] = [
-  {
-    href: "/home",
-    label: "Home",
-    icon: House,
-    active: (p) => p === "/home" || p.startsWith("/home/"),
-  },
-  {
-    href: "/practice",
-    label: "Practice",
-    icon: Target,
-    active: (p) => p === "/practice" || p.startsWith("/practice/"),
-  },
-  {
-    href: "/play",
-    label: "Play",
-    icon: Swords,
-    active: (p) => p === "/play" || p.startsWith("/play/"),
-  },
-  {
-    href: "/games",
-    label: "Games",
-    icon: Library,
-    active: (p) => p === "/games" || p.startsWith("/games/"),
-  },
-  {
-    href: "/progress",
-    label: "Progress",
-    icon: LineChart,
-    active: (p) => p === "/progress" || p.startsWith("/progress/"),
-  },
-  {
-    href: "/settings",
-    label: "Settings",
-    icon: Settings,
-    active: (p) => p === "/settings" || p.startsWith("/settings/"),
-  },
-];
-
-const primaryNavItems = appNavItems.filter((item) => item.href !== "/settings");
+export { appNavItems } from "@/components/nav/appNavItems";
 
 function initials(nameOrEmail: string) {
   const parts = nameOrEmail.trim().split(/\s+/).filter(Boolean);
@@ -85,58 +34,6 @@ function initials(nameOrEmail: string) {
   const a = parts[0]?.[0] ?? "";
   const b = parts[parts.length - 1]?.[0] ?? "";
   return `${a}${b}`.toUpperCase() || "?";
-}
-
-function itemIsActive(item: NavItem, pathname: string) {
-  return item.active ? item.active(pathname) : pathname === item.href;
-}
-
-export function MobileBottomNav({
-  pathname,
-}: {
-  pathname: string;
-}) {
-  return (
-    <nav
-      aria-label="Main tabs"
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-foreground/10 bg-background/[0.94] px-2 pb-[env(safe-area-inset-bottom)] shadow-[0_-16px_40px_-32px_hsl(var(--foreground)/0.45)] backdrop-blur-xl lg:hidden"
-    >
-      <div className="mx-auto grid h-16 max-w-xl grid-cols-5">
-        {primaryNavItems.map((item) => {
-          const active = itemIsActive(item, pathname);
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              aria-current={active ? "page" : undefined}
-              className={cn(
-                "group relative flex min-w-0 flex-col items-center justify-center gap-0.5 px-1 text-[10px] font-medium transition-[color,transform] duration-fast ease-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset motion-safe:active:scale-[0.96]",
-                active ? "text-primary" : "text-muted-foreground"
-              )}
-            >
-              <span
-                className={cn(
-                  "absolute left-1/2 top-0 h-0.5 w-8 -translate-x-1/2 bg-primary transition-[opacity,transform] duration-base ease-emphasized",
-                  active ? "scale-x-100 opacity-100" : "scale-x-0 opacity-0"
-                )}
-                aria-hidden="true"
-              />
-              <Icon
-                className={cn(
-                  "relative h-[1.15rem] w-[1.15rem] transition-transform duration-fast",
-                  active && "motion-safe:-translate-y-px"
-                )}
-                strokeWidth={active ? 2.25 : 1.8}
-                aria-hidden="true"
-              />
-              <span className="relative truncate">{item.label}</span>
-            </Link>
-          );
-        })}
-      </div>
-    </nav>
-  );
 }
 
 export function AppNav() {
@@ -162,7 +59,7 @@ export function AppNav() {
           variant="ghost"
           className="group h-11 gap-2 px-0.5 text-base font-semibold tracking-[-0.03em] sm:h-10 sm:px-1"
         >
-          <Link href="/home" aria-label="Backranq home">
+          <Link href="/home" prefetch={false} aria-label="Backranq home">
             <span
               className="relative inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-sm bg-foreground text-[10px] font-bold text-background shadow-control transition-transform duration-fast after:absolute after:-right-1 after:-top-1 after:h-2.5 after:w-2.5 after:rounded-full after:bg-accent motion-safe:group-hover:-rotate-2"
               aria-hidden="true"
@@ -189,7 +86,11 @@ export function AppNav() {
                     : "text-muted-foreground after:scale-x-0 hover:text-foreground"
                 )}
               >
-                <Link href={item.href} aria-current={active ? "page" : undefined}>
+                <Link
+                  href={item.href}
+                  prefetch={false}
+                  aria-current={active ? "page" : undefined}
+                >
                   {item.label}
                 </Link>
               </Button>
@@ -234,13 +135,13 @@ export function AppNav() {
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
-              <Link href="/profile">
+              <Link href="/profile" prefetch={false}>
                 <User2 className="mr-2" aria-hidden="true" />
                 Profile
               </Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
-              <Link href="/settings">
+              <Link href="/settings" prefetch={false}>
                 <Settings className="mr-2" aria-hidden="true" />
                 Settings
               </Link>
@@ -253,7 +154,7 @@ export function AppNav() {
               </DropdownMenuItem>
             ) : (
               <DropdownMenuItem asChild>
-                <Link href="/login">Sign in</Link>
+                <Link href="/login" prefetch={false}>Sign in</Link>
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>

@@ -23,8 +23,8 @@ export async function dragMove(page: Page, from: string, to: string) {
     await expect(source).toBeVisible();
     await expect(target).toBeVisible();
 
-    // Authenticated E2E runs disable unrelated background-analysis polling, so
-    // the board remains stable while we use real pointer events for dnd-kit.
+    // Keep pointer events explicit so dnd-kit receives the same interaction
+    // sequence as it does in a real browser session.
     await source.hover();
     await page.mouse.down();
     const targetBox = await target.boundingBox();

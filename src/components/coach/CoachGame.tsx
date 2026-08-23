@@ -45,6 +45,7 @@ import {
     isStructurallyCompleteMultiPvBundle,
     type MultiPvResult,
 } from '@/lib/analysis/stockfishClient';
+import { prepareStockfishOfflineCache } from '@/lib/analysis/stockfishOfflineCache';
 import { moveToUci, parseUci } from '@/lib/chess/utils';
 import {
     assessUserMove,
@@ -244,6 +245,7 @@ export function CoachGame({
     const [sessionLoaded, setSessionLoaded] = useState(false);
     const [loadedOwnerKey, setLoadedOwnerKey] =
         useState<string | null>(null);
+    const [offlineShellReady, setOfflineShellReady] = useState(false);
     const [offlineAssetsReady, setOfflineAssetsReady] = useState(false);
 
     const gameRef = useRef(new Chess());
@@ -383,7 +385,7 @@ export function CoachGame({
         let cancelled = false;
         const markReady = () => {
             void navigator.serviceWorker.ready.then(() => {
-                if (!cancelled) setOfflineAssetsReady(true);
+                if (!cancelled) setOfflineShellReady(true);
             });
         };
         void navigator.serviceWorker.getRegistration('/').then((registration) => {
@@ -409,6 +411,22 @@ export function CoachGame({
             );
         };
     }, []);
+
+    useEffect(() => {
+        if (!offlineShellReady || engineWarmup !== 'ready') return;
+        let cancelled = false;
+        setOfflineAssetsReady(false);
+        void prepareStockfishOfflineCache()
+            .then((ready) => {
+                if (!cancelled) setOfflineAssetsReady(ready);
+            })
+            .catch(() => {
+                if (!cancelled) setOfflineAssetsReady(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [engineWarmup, offlineShellReady]);
 
     useEffect(() => {
         if (phase !== 'setup' || engineWarmup !== 'idle') return;

@@ -21,8 +21,23 @@ vi.mock('@/components/admin/AdminSubmitButton', async () => {
 vi.mock('@/components/auth/SignOutButton', async () => {
     const React = await import('react');
     return {
-        SignOutButton: ({ children, callbackUrl }: { children: React.ReactNode; callbackUrl?: string }) =>
-            React.createElement('button', { 'data-callback-url': callbackUrl }, children),
+        SignOutButton: ({
+            children,
+            callbackUrl,
+            ownerId,
+        }: {
+            children: React.ReactNode;
+            callbackUrl?: string;
+            ownerId?: string | null;
+        }) =>
+            React.createElement(
+                'button',
+                {
+                    'data-callback-url': callbackUrl,
+                    'data-owner-id': ownerId,
+                },
+                children
+            ),
     };
 });
 vi.mock('@/app/invite/[token]/actions', () => ({
@@ -75,6 +90,7 @@ describe('premium invitation page states', () => {
         const markup = await renderPage();
         expect(markup).toContain('Switch account');
         expect(markup).toContain('data-callback-url="/invite/safe-token"');
+        expect(markup).toContain('data-owner-id="user-1"');
         expect(markup).toContain('Get help');
     });
 

@@ -39,7 +39,11 @@ import {
     type OwnerEpoch,
     type OwnerRunToken,
 } from '@/lib/auth/ownerRun';
-import { getSyncStatus, type SyncStatus } from '@/lib/services/gameSync';
+import {
+    getSyncStatus,
+    primeSyncStatusSnapshot,
+    type SyncStatus,
+} from '@/lib/services/gameSync';
 
 const AnalyzeGamesModal = dynamic(
     () =>
@@ -55,11 +59,6 @@ const SyncGamesModal = dynamic(
         ),
     { ssr: false }
 );
-
-type LibraryCounts = {
-    total: number;
-    unanalyzed: number;
-};
 
 type SyncActionState = 'idle' | 'syncing' | 'success' | 'error';
 type SyncFeedback = {
@@ -87,11 +86,6 @@ function friendlySyncError(message?: string | null) {
 }
 
 type ExtendedSyncStatus = SyncStatus & {
-    inventory?: {
-        totalImported: number;
-        analyzed: number;
-        unanalyzed: number;
-    };
     automation?: {
         policy?: {
             enabled: boolean;
@@ -122,39 +116,6 @@ type ExtendedSyncStatus = SyncStatus & {
         };
     };
 };
-
-async function fetchLibraryCounts(): Promise<LibraryCounts> {
-    const [allResponse, pendingResponse] = await Promise.all([
-        fetch('/api/games?page=1&limit=1', { cache: 'no-store' }),
-        fetch('/api/games?hasAnalysis=false&page=1&limit=1', {
-            cache: 'no-store',
-        }),
-    ]);
-    const [allJson, pendingJson] = (await Promise.all([
-        allResponse.json().catch(() => ({})),
-        pendingResponse.json().catch(() => ({})),
-    ])) as [
-        { total?: number; error?: string },
-        { total?: number; error?: string },
-    ];
-    if (!allResponse.ok || !pendingResponse.ok) {
-        throw new Error(
-            allJson.error ??
-                pendingJson.error ??
-                'Could not load game analysis status'
-        );
-    }
-    if (
-        typeof allJson.total !== 'number' ||
-        typeof pendingJson.total !== 'number'
-    ) {
-        throw new Error('Game analysis status is unavailable');
-    }
-    return {
-        total: allJson.total,
-        unanalyzed: pendingJson.total,
-    };
-}
 
 function enabledLinkedProviders(status: SyncStatus) {
     const providers: Array<'lichess' | 'chesscom'> = [];
@@ -190,30 +151,36 @@ export function SyncGamesWidget({
     enableAnalyze = true,
     variant: _variant = 'button',
     syncIsPrimary = false,
+    initialOwnerId,
+    initialStatus,
 }: {
     context: 'home' | 'games';
     enableAnalyze?: boolean;
     variant?: 'button' | 'banner';
     syncIsPrimary?: boolean;
+    initialOwnerId?: string;
+    initialStatus?: ExtendedSyncStatus | null;
 }) {
-    const { data: session } = useSession();
-    const ownerId = session?.user?.id ?? null;
+    const { data: session, status: sessionState } = useSession();
+    const ownerId =
+        sessionState === 'unauthenticated'
+            ? null
+            : (session?.user?.id ?? initialOwnerId ?? null);
+    const hasServerInitial = initialOwnerId !== undefined;
     const router = useRouter();
     const [historyOpen, setHistoryOpen] = useState(false);
     const [analyzeOpen, setAnalyzeOpen] = useState(false);
     const [analyzeReturnFocus, setAnalyzeReturnFocus] =
         useState<HTMLElement | null>(null);
-    const [status, setStatus] = useState<ExtendedSyncStatus | null>(null);
-    const [statusOwnerId, setStatusOwnerId] = useState<string | null>(null);
+    const [status, setStatus] = useState<ExtendedSyncStatus | null>(
+        initialStatus ?? null
+    );
+    const [statusOwnerId, setStatusOwnerId] = useState<string | null>(
+        initialOwnerId ?? initialStatus?.ownerId ?? null
+    );
     const [statusState, setStatusState] = useState<
         'loading' | 'ready' | 'error'
-    >('loading');
-    const [libraryCounts, setLibraryCounts] = useState<LibraryCounts | null>(
-        null
-    );
-    const [countsState, setCountsState] = useState<
-        'idle' | 'loading' | 'ready' | 'error'
-    >('idle');
+    >(hasServerInitial ? (initialStatus ? 'ready' : 'error') : 'loading');
     const [syncFeedback, setSyncFeedback] = useState<SyncFeedback>({
         ownerId: null,
         action: 'idle',
@@ -272,18 +239,6 @@ export function SyncGamesWidget({
             }
         }
     }, [ownerId]);
-
-    const refreshCounts = useCallback(async () => {
-        if (!ownerId || context !== 'games') return;
-        setCountsState('loading');
-        try {
-            setLibraryCounts(await fetchLibraryCounts());
-            setCountsState('ready');
-        } catch {
-            setLibraryCounts(null);
-            setCountsState('error');
-        }
-    }, [context, ownerId]);
 
     const monitorSyncCompletion = useCallback(
         async (
@@ -366,7 +321,7 @@ export function SyncGamesWidget({
                 publishLibraryChanged(run.ownerId, {
                     invalidateCompletion: imported > 0,
                 });
-                await Promise.all([refreshStatus(), refreshCounts()]);
+                await refreshStatus();
                 if (isOwnerRunCurrent(run, ownerEpochRef.current)) {
                     router.refresh();
                 }
@@ -391,7 +346,7 @@ export function SyncGamesWidget({
                 }
             }
         },
-        [refreshCounts, refreshStatus, router]
+        [refreshStatus, router]
     );
 
     useEffect(() => {
@@ -403,13 +358,22 @@ export function SyncGamesWidget({
     }, [ownerId]);
 
     useEffect(() => {
+        if (initialOwnerId === undefined) return;
+        if (initialStatus) primeSyncStatusSnapshot(initialStatus);
+        setStatus(initialStatus ?? null);
+        setStatusOwnerId(initialOwnerId);
+        setStatusState(initialStatus ? 'ready' : 'error');
+    }, [initialOwnerId, initialStatus]);
+
+    useEffect(() => {
         if (!ownerId) return;
+        if (initialOwnerId === ownerId) return;
         void refreshStatus();
         return () => {
             statusGenerationRef.current += 1;
             statusControllerRef.current?.abort();
         };
-    }, [ownerId, refreshStatus]);
+    }, [initialOwnerId, ownerId, refreshStatus]);
 
     const currentStatus = statusOwnerId === ownerId ? status : null;
     const currentStatusState =
@@ -421,31 +385,6 @@ export function SyncGamesWidget({
         syncFeedback.ownerId === ownerId ? syncFeedback.action : 'idle';
     const syncMessage =
         syncFeedback.ownerId === ownerId ? syncFeedback.message : '';
-
-    useEffect(() => {
-        if (
-            context !== 'games' ||
-            statusState !== 'ready' ||
-            currentStatus?.inventory
-        ) {
-            return;
-        }
-        let cancelled = false;
-        void fetchLibraryCounts()
-            .then((counts) => {
-                if (cancelled) return;
-                setLibraryCounts(counts);
-                setCountsState('ready');
-            })
-            .catch(() => {
-                if (cancelled) return;
-                setLibraryCounts(null);
-                setCountsState('error');
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, [context, currentStatus?.inventory, statusState]);
 
     useEffect(() => {
         if (
@@ -461,7 +400,6 @@ export function SyncGamesWidget({
         if (providers.length === 0) return;
         const run = captureOwnerRun(ownerEpochRef.current);
         if (!run) return;
-        let cancelled = false;
         const controller = new AbortController();
         appOpenAttemptedFor.current = ownerId;
         const key = `backranq.app-open-sync:${encodeURIComponent(ownerId)}`;
@@ -485,47 +423,18 @@ export function SyncGamesWidget({
             onlyIfStaleMinutes: 60,
             signal: controller.signal,
         })
-            .then((result) => {
-                if (
-                    cancelled ||
-                    !isOwnerRunCurrent(run, ownerEpochRef.current)
-                ) {
-                    return;
-                }
-                if (
-                    result.state === 'started' ||
-                    result.state === 'partial' ||
-                    result.state === 'awaiting-worker'
-                ) {
-                    setSyncFeedback({
-                        ownerId: run.ownerId,
-                        action:
-                            result.state === 'partial' ||
-                            result.state === 'awaiting-worker'
-                            ? 'error'
-                            : result.providers.some(
-                                    (provider) => provider.jobId
-                                )
-                              ? 'syncing'
-                              : 'success',
-                        message: result.message,
-                    });
-                }
-                if (!isOwnerRunCurrent(run, ownerEpochRef.current)) return;
-                void monitorSyncCompletion(result, run, { silent: true });
-            })
+            // App-open sync is a fire-and-forget background hint. Foreground
+            // job polling is reserved for an explicit Sync now action.
             .catch(() => {
                 // App-open sync is deliberately silent. Manual Sync now
                 // remains available and reports errors.
             });
         return () => {
-            cancelled = true;
             controller.abort();
         };
     }, [
         currentStatus,
         hasLinked,
-        monitorSyncCompletion,
         ownerId,
     ]);
 
@@ -564,7 +473,7 @@ export function SyncGamesWidget({
                 if (!isOwnerRunCurrent(run, ownerEpochRef.current)) return;
                 void monitorSyncCompletion(result, run);
             } else {
-                await Promise.all([refreshStatus(), refreshCounts()]);
+                await refreshStatus();
                 if (isOwnerRunCurrent(run, ownerEpochRef.current)) {
                     router.refresh();
                 }
@@ -629,7 +538,7 @@ export function SyncGamesWidget({
                     date.
                 </div>
                 <Button asChild size="sm" variant="outline">
-                    <Link href="/settings">Connect account</Link>
+                    <Link href="/settings" prefetch={false}>Connect account</Link>
                 </Button>
             </div>
         );
@@ -644,12 +553,10 @@ export function SyncGamesWidget({
         providerStates?.lichess?.lastError ??
         providerStates?.chesscom?.lastError ??
         null;
-    const inventoryCounts: LibraryCounts | null = currentStatus.inventory
-        ? {
-              total: currentStatus.inventory.totalImported,
-              unanalyzed: currentStatus.inventory.unanalyzed,
-          }
-        : libraryCounts;
+    const inventoryCounts = {
+        total: currentStatus.inventory.totalImported,
+        unanalyzed: currentStatus.inventory.unanalyzed,
+    };
     const backlog = currentStatus.automation?.backlog;
     const queued =
         backlog?.queued ?? currentStatus.analysisJobs?.queued ?? 0;
@@ -657,11 +564,7 @@ export function SyncGamesWidget({
         backlog?.running ?? currentStatus.analysisJobs?.running ?? 0;
     const failed =
         backlog?.terminalFailed ?? currentStatus.analysisJobs?.failed ?? 0;
-    const ready = currentStatus.inventory
-        ? currentStatus.inventory.analyzed
-        : inventoryCounts === null
-          ? null
-          : Math.max(0, inventoryCounts.total - inventoryCounts.unanalyzed);
+    const ready = currentStatus.inventory.analyzed;
     const rawBlockedReason =
         backlog?.blockedReason ??
         currentStatus.automation?.capacity?.blockingReason ??
@@ -789,30 +692,7 @@ export function SyncGamesWidget({
 
                 {context === 'games' ? (
                     <div className="space-y-2 border-t pt-3">
-                        {!currentStatus.inventory &&
-                        countsState === 'loading' ? (
-                            <p
-                                className="text-xs text-muted-foreground"
-                                role="status"
-                            >
-                                Checking game analysis status…
-                            </p>
-                        ) : !currentStatus.inventory &&
-                          countsState === 'error' ? (
-                            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                <span>Game analysis totals are unavailable.</span>
-                                <Button
-                                    type="button"
-                                    variant="link"
-                                    size="sm"
-                                    className="h-auto p-0 text-xs"
-                                    onClick={() => void refreshCounts()}
-                                >
-                                    Try again
-                                </Button>
-                            </div>
-                        ) : (
-                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                                 <span>
                                     Imported{' '}
                                     <strong className="text-foreground">
@@ -860,8 +740,7 @@ export function SyncGamesWidget({
                                         {failed}
                                     </strong>
                                 </span>
-                            </div>
-                        )}
+                        </div>
 
                         {isAnalysisBlocked ? (
                             <div className="flex flex-col gap-2 rounded-md bg-muted/60 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
@@ -888,7 +767,7 @@ export function SyncGamesWidget({
                                         </Button>
                                     ) : null}
                                     <Button asChild size="sm" variant="outline">
-                                        <Link href={blockedAction.href}>
+                                        <Link href={blockedAction.href} prefetch={false}>
                                             {blockedAction.label}
                                         </Link>
                                     </Button>
@@ -921,7 +800,7 @@ export function SyncGamesWidget({
                                             size="sm"
                                             variant="outline"
                                         >
-                                            <Link href="/settings#game-automation">
+                                            <Link href="/settings#game-automation" prefetch={false}>
                                                 Manage automation
                                             </Link>
                                         </Button>
@@ -933,23 +812,27 @@ export function SyncGamesWidget({
                 ) : null}
             </section>
 
-            <SyncGamesModal
-                open={historyOpen}
-                onClose={() => setHistoryOpen(false)}
-                context={context}
-                enableAnalyze={enableAnalyze}
-                onFinished={() => {
-                    router.refresh();
-                    void Promise.all([refreshStatus(), refreshCounts()]);
-                }}
-            />
+            {historyOpen ? (
+                <SyncGamesModal
+                    open
+                    onClose={() => setHistoryOpen(false)}
+                    context={context}
+                    enableAnalyze={enableAnalyze}
+                    onFinished={() => {
+                        router.refresh();
+                        void refreshStatus();
+                    }}
+                />
+            ) : null}
 
-            <AnalyzeGamesModal
-                open={analyzeOpen}
-                onClose={() => setAnalyzeOpen(false)}
-                title="Analyze imported games"
-                returnFocusElement={analyzeReturnFocus}
-            />
+            {analyzeOpen ? (
+                <AnalyzeGamesModal
+                    open
+                    onClose={() => setAnalyzeOpen(false)}
+                    title="Analyze imported games"
+                    returnFocusElement={analyzeReturnFocus}
+                />
+            ) : null}
         </>
     );
 }

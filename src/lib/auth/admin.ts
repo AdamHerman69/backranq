@@ -1,6 +1,6 @@
 import { cache } from 'react';
 
-import { auth } from '@/lib/auth';
+import { getRequestSession } from '@/lib/auth/requestSession';
 import { prisma } from '@/lib/prisma';
 
 export const ADMIN_ROLES = ['EDITOR', 'ADMIN'] as const;
@@ -69,7 +69,7 @@ export function roleHasCapability(
  * not authoritative so revocation takes effect on the next request.
  */
 export const getAdminPrincipal = cache(async function getAdminPrincipal(): Promise<AdminPrincipal | null> {
-    const session = await auth();
+    const session = await getRequestSession();
     const userId = session?.user?.id;
     if (!userId) return null;
 
@@ -103,7 +103,7 @@ export async function requireAdminSession(
 ): Promise<AdminPrincipal> {
     const principal = await getAdminPrincipal();
     if (!principal) {
-        const session = await auth();
+        const session = await getRequestSession();
         throw new AdminAccessError(session?.user?.id ? 403 : 401);
     }
     if (!roleHasCapability(principal.role, capability)) {

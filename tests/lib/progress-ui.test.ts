@@ -86,7 +86,7 @@ describe('Progress information architecture', () => {
         expect(proxyConfig.matcher).toContain('/progress/:path*');
         expect(proxyConfig.matcher).not.toContain('/stats/:path*');
         expect(proxyConfig.matcher).not.toContain('/insights/:path*');
-        expect(existsSync('src/app/progress/page.tsx')).toBe(true);
+        expect(existsSync('src/app/(app)/progress/page.tsx')).toBe(true);
         expect(existsSync('src/app/stats/page.tsx')).toBe(false);
     });
 

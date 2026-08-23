@@ -7,7 +7,26 @@ test('cold-starts the saved coach game offline with the real Stockfish runtime',
     page,
     context,
 }) => {
+    const landingStockfishRequests: string[] = [];
+    page.on('request', (request) => {
+        if (request.url().includes('/vendor/stockfish/')) {
+            landingStockfishRequests.push(request.url());
+        }
+    });
+    await page.goto('/login');
+    await page.waitForTimeout(500);
+    expect(landingStockfishRequests).toEqual([]);
+    await expect
+        .poll(() =>
+            page.evaluate(async () =>
+                (await navigator.serviceWorker.getRegistrations()).length
+            )
+        )
+        .toBe(0);
+
     await page.goto('/');
+    await page.waitForTimeout(500);
+    expect(landingStockfishRequests).toEqual([]);
     await expect
         .poll(() =>
             page.evaluate(async () =>
@@ -38,6 +57,9 @@ test('cold-starts the saved coach game offline with the real Stockfish runtime',
     await page.evaluate(async () => {
         await navigator.serviceWorker.ready;
     });
+    await expect(page.getByText('Offline assets saved')).toBeVisible({
+        timeout: 30_000,
+    });
 
     // The first worker is intentionally not allowed to take over an active
     // game. Reload once online so the newly active worker controls the page.
@@ -47,6 +69,22 @@ test('cold-starts the saved coach game offline with the real Stockfish runtime',
             page.evaluate(() => Boolean(navigator.serviceWorker.controller))
         )
         .toBe(true);
+    await expect(page.getByText('Offline assets saved')).toBeVisible();
+
+    const requestsBeforeReturningLanding =
+        landingStockfishRequests.length;
+    await page.goto('/');
+    await expect
+        .poll(() =>
+            page.evaluate(() => Boolean(navigator.serviceWorker.controller))
+        )
+        .toBe(true);
+    await page.waitForTimeout(500);
+    expect(landingStockfishRequests).toHaveLength(
+        requestsBeforeReturningLanding
+    );
+
+    await page.goto('/~offline/coach');
     await expect(page.getByText('Offline assets saved')).toBeVisible();
 
     await page

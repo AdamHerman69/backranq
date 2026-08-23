@@ -2,157 +2,234 @@ import { expect, test } from '@playwright/test';
 import { E2E_USER } from './support/fixtures';
 import { square, waitForBoard } from './support/board';
 
-test('Home keeps available Practice when sync status is unavailable', async ({
+test('Home paints its server snapshot without dashboard mount requests', async ({
     page,
 }) => {
-    await page.route('**/api/training/due', async (route) => {
-        await route.fulfill({
-            status: 200,
-            contentType: 'application/json',
-            body: JSON.stringify({
-                availableCount: 3,
-                availableCountIsExact: true,
-                dueCount: 0,
-                dueCountIsExact: true,
-                newCount: 3,
-                newCountIsExact: true,
-                earliestDueAt: null,
-            }),
+    await page.addInitScript((ownerId) => {
+        sessionStorage.setItem(
+            `backranq.app-open-sync:${encodeURIComponent(ownerId)}`,
+            String(Date.now())
+        );
+    }, E2E_USER.id);
+    const dashboardRequests: string[] = [];
+    for (const pattern of [
+        '**/api/training/due',
+        '**/api/games?**',
+        '**/api/sync/status',
+    ]) {
+        await page.route(pattern, async (route) => {
+            dashboardRequests.push(route.request().url());
+            await route.continue();
         });
-    });
-    await page.route('**/api/sync/status', async (route) => {
-        await route.fulfill({
-            status: 503,
-            contentType: 'application/json',
-            body: JSON.stringify({ error: 'sync status unavailable' }),
-        });
-    });
+    }
 
     await page.goto('/home');
 
-    const practiceLink = page.getByRole('link', { name: 'Practice now' });
-    await expect(practiceLink).toBeVisible();
-    await expect(practiceLink).toHaveAttribute('href', '/practice');
-    await expect(page.getByText('3 practice positions ready')).toBeVisible();
     await expect(
-        page.getByText('Could not load source sync status.')
+        page.getByRole('heading', { level: 1, name: 'Welcome back, Backranq' })
     ).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Practice now' })).toHaveAttribute(
+        'href',
+        '/practice'
+    );
+    await expect(page.getByText('Loading your next step')).toHaveCount(0);
+    expect(dashboardRequests).toEqual([]);
 });
 
-test('Home shows one dominant connection action when no account is linked', async ({
+test('Home and Games share one owner-scoped sync snapshot with the global bar', async ({
     page,
 }) => {
-    await page.route('**/api/training/due', async (route) => {
+    test.setTimeout(30_000);
+    await page.addInitScript((ownerId) => {
+        sessionStorage.setItem(
+            `backranq.app-open-sync:${encodeURIComponent(ownerId)}`,
+            String(Date.now())
+        );
+    }, E2E_USER.id);
+    const statusRequests: string[] = [];
+    await page.route('**/api/sync/status', async (route) => {
+        statusRequests.push(route.request().url());
+        await route.continue();
+    });
+
+    await page.goto('/home');
+    await expect(
+        page.locator('[data-background-analysis-host="true"]')
+    ).toHaveCount(1);
+    await page.waitForTimeout(16_000);
+    expect(statusRequests).toEqual([]);
+
+    await page.getByRole('link', { name: 'Games', exact: true }).first().click();
+    await expect(page).toHaveURL(/\/games$/);
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect
+        .poll(() => statusRequests.length, { timeout: 5_000 })
+        .toBe(1);
+    await page.waitForTimeout(1_000);
+    expect(statusRequests).toHaveLength(1);
+});
+
+test('a hard-loaded Games page singleflights widget and active-batch status reads', async ({
+    page,
+}) => {
+    await page.addInitScript((ownerId) => {
+        const now = new Date().toISOString();
+        localStorage.setItem(
+            `backranq.analysis.serverRequests.v3:${encodeURIComponent(ownerId)}`,
+            JSON.stringify([
+                {
+                    id: 'e2e-active-batch',
+                    requestId: 'e2e-active-request',
+                    status: 'QUEUED',
+                    requested: 1,
+                    planning: 0,
+                    queued: 1,
+                    running: 0,
+                    succeeded: 0,
+                    failed: 0,
+                    skipped: 0,
+                    completedAt: null,
+                    ownerId,
+                    payloadFingerprint: 'e2e-active-fingerprint',
+                    createdAt: now,
+                    updatedAt: now,
+                },
+            ])
+        );
+    }, E2E_USER.id);
+    let statusRequests = 0;
+    let batchRequests = 0;
+    await page.route('**/api/sync/status', async (route) => {
+        statusRequests += 1;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await route.continue();
+    });
+    await page.route('**/api/analysis/batches?**', async (route) => {
+        batchRequests += 1;
         await route.fulfill({
-            status: 200,
             contentType: 'application/json',
             body: JSON.stringify({
-                availableCount: 0,
-                availableCountIsExact: true,
-                dueCount: 0,
-                dueCountIsExact: true,
-                newCount: 0,
-                newCountIsExact: true,
-                earliestDueAt: null,
+                batch: {
+                    id: 'e2e-active-batch',
+                    requestId: 'e2e-active-request',
+                    status: 'QUEUED',
+                    counts: {
+                        total: 1,
+                        pending: 0,
+                        queued: 1,
+                        running: 0,
+                        succeeded: 0,
+                        failed: 0,
+                        skipped: 0,
+                    },
+                    completedAt: null,
+                },
             }),
         });
     });
-    await page.route('**/api/games?**', async (route) => {
-        await route.fulfill({
-            status: 200,
-            contentType: 'application/json',
-            body: JSON.stringify({ games: [], total: 0 }),
-        });
+
+    await page.goto('/games');
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect.poll(() => batchRequests).toBeGreaterThan(0);
+    await expect.poll(() => statusRequests).toBe(1);
+    await page.waitForTimeout(500);
+    expect(statusRequests).toBe(1);
+});
+
+test('silent app-open sync publishes once without foreground job polling', async ({
+    page,
+}) => {
+    await page.addInitScript((ownerId) => {
+        sessionStorage.removeItem(
+            `backranq.app-open-sync:${encodeURIComponent(ownerId)}`
+        );
+    }, E2E_USER.id);
+    let syncPosts = 0;
+    let activityReads = 0;
+    page.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname !== '/api/sync') return;
+        if (request.method() === 'POST') syncPosts += 1;
+        if (request.method() === 'GET') activityReads += 1;
     });
-    await page.route('**/api/sync/status', async (route) => {
+    await page.route('**/api/sync', async (route) => {
+        if (route.request().method() !== 'POST') {
+            await route.continue();
+            return;
+        }
         await route.fulfill({
-            status: 200,
             contentType: 'application/json',
             body: JSON.stringify({
                 ownerId: E2E_USER.id,
-                linked: {
-                    lichessUsername: null,
-                    chesscomUsername: null,
-                },
-                lastSync: { lichess: null, chesscom: null },
-                gameAutomation: {
-                    paused: true,
-                    rules: {
-                        lichess: { rapid: 'IMPORT_ONLY' },
-                        chesscom: { rapid: 'IMPORT_ONLY' },
+                requested: ['lichess'],
+                providers: [
+                    {
+                        provider: 'lichess',
+                        queued: true,
+                        jobId: 'e2e-silent-sync-job',
+                        skippedReason: null,
+                        queuePublished: true,
+                        jobStatus: 'QUEUED',
                     },
-                    schedule: '0 3 * * *',
-                    states: { lichess: null, chesscom: null },
+                ],
+                active: {
+                    ownerId: E2E_USER.id,
+                    providers: [],
+                    requestedJobs: [],
                 },
-                analysisJobs: { queued: 0, running: 0, failed: 0 },
             }),
         });
     });
 
     await page.goto('/home');
+    await expect.poll(() => syncPosts).toBe(1);
+    await page.waitForTimeout(1_500);
 
-    await expect(page.getByText('Link a chess account')).toBeVisible();
-    await expect(
-        page.getByRole('link', { name: 'Open settings' })
-    ).toHaveCount(1);
+    expect(syncPosts).toBe(1);
+    expect(activityReads).toBe(0);
+});
+
+test('Home hydrates linked-source controls from the server snapshot', async ({
+    page,
+}) => {
+    await page.addInitScript((ownerId) => {
+        sessionStorage.setItem(
+            `backranq.app-open-sync:${encodeURIComponent(ownerId)}`,
+            String(Date.now())
+        );
+    }, E2E_USER.id);
+
+    await page.goto('/home');
+
+    await expect(page.getByText('Lichess', { exact: true })).toBeVisible();
+    await expect(page.getByText('Chess.com', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sync now' })).toBeVisible();
     await expect(
         page.getByRole('link', { name: 'Connect account' })
     ).toHaveCount(0);
-    await expect(
-        page.getByRole('button', { name: 'Sync now' })
-    ).toHaveCount(0);
 });
 
-test('Home links a scheduled review count to the due-only queue', async ({
-    page,
-}) => {
-    await page.route('**/api/training/due', async (route) => {
-        await route.fulfill({
-            status: 200,
-            contentType: 'application/json',
-            body: JSON.stringify({
-                availableCount: 6,
-                availableCountIsExact: true,
-                dueCount: 3,
-                dueCountIsExact: true,
-                newCount: 3,
-                newCountIsExact: true,
-                earliestDueAt: '2026-08-01T09:00:00.000Z',
-            }),
-        });
-    });
+test('Home summary links the server-owned library snapshot', async ({ page }) => {
+    await page.addInitScript((ownerId) => {
+        sessionStorage.setItem(
+            `backranq.app-open-sync:${encodeURIComponent(ownerId)}`,
+            String(Date.now())
+        );
+    }, E2E_USER.id);
 
     await page.goto('/home');
 
-    await expect(page.getByText('3 reviews due')).toBeVisible();
-    await expect(
-        page.getByRole('link', { name: 'Review due positions' })
-    ).toHaveAttribute('href', '/practice?mode=review');
-});
-
-test('Home never presents future-reviewed inventory as ready', async ({
-    page,
-}) => {
-    await page.route('**/api/training/due', async (route) => {
-        await route.fulfill({
-            status: 200,
-            contentType: 'application/json',
-            body: JSON.stringify({
-                availableCount: 0,
-                availableCountIsExact: true,
-                dueCount: 0,
-                dueCountIsExact: true,
-                newCount: 0,
-                newCountIsExact: true,
-                earliestDueAt: null,
-            }),
-        });
+    const summary = page.getByRole('region', {
+        name: 'Your library at a glance',
     });
-
-    await page.goto('/home');
-
-    await expect(page.getByText(/practice position.*ready/i)).toHaveCount(0);
-    await expect(page.getByText('Analyze your imported games')).toBeVisible();
+    await expect(summary).toBeVisible();
+    await expect(summary.getByRole('link', { name: /Games/ })).toHaveAttribute(
+        'href',
+        '/games'
+    );
+    await expect(
+        summary.getByRole('link', { name: /Ready to practice/ })
+    ).toHaveAttribute('href', '/practice');
 });
 
 test('public root stays a marketing landing for signed-in visitors', async ({

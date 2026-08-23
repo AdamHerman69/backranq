@@ -11,7 +11,7 @@ on:
       - 'scripts/build-maia-browser.mjs'
       - 'src/app/~offline/coach/**'
       - 'src/app/manifest.ts'
-      - 'src/app/play/**'
+      - 'src/app/(app)/play/**'
       - 'src/app/serwist/**'
       - 'src/app/sw.ts'
       - 'src/components/coach/**'

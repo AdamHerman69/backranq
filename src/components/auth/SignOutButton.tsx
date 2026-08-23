@@ -1,13 +1,12 @@
 'use client';
 
-import { useSession } from 'next-auth/react';
-import type { ReactNode } from 'react';
-import { toast } from 'sonner';
+import { useId, useState, type ReactNode } from 'react';
 
 import { Button, type ButtonProps } from '@/components/ui/button';
 import { signOutAndClearCoachSession } from '@/lib/coach/signOut';
 
 type Props = {
+    ownerId?: string | null;
     callbackUrl?: string;
     children?: ReactNode;
     variant?: ButtonProps['variant'];
@@ -16,31 +15,46 @@ type Props = {
 };
 
 export function SignOutButton({
+    ownerId,
     callbackUrl = '/',
     children,
     variant = 'outline',
     size = 'default',
     className,
 }: Props) {
-    const { data } = useSession();
+    const errorId = useId();
+    const [error, setError] = useState<string | null>(null);
     return (
-        <Button
-            type="button"
-            onClick={() => {
-                void signOutAndClearCoachSession(
-                    data?.user?.id,
-                    callbackUrl
-                ).catch(() => {
-                    toast.error(
-                        'Could not sign out. Your local coach game was left intact.'
-                    );
-                });
-            }}
-            variant={variant}
-            size={size}
-            className={className}
-        >
-            {children ?? 'Sign out'}
-        </Button>
+        <>
+            <Button
+                type="button"
+                aria-describedby={error ? errorId : undefined}
+                onClick={() => {
+                    setError(null);
+                    void signOutAndClearCoachSession(
+                        ownerId,
+                        callbackUrl
+                    ).catch(() => {
+                        setError(
+                            'Could not sign out. Your local coach game was left intact.'
+                        );
+                    });
+                }}
+                variant={variant}
+                size={size}
+                className={className}
+            >
+                {children ?? 'Sign out'}
+            </Button>
+            {error ? (
+                <span
+                    id={errorId}
+                    role="alert"
+                    className="text-sm text-destructive"
+                >
+                    {error}
+                </span>
+            ) : null}
+        </>
     );
 }

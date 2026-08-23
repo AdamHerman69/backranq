@@ -87,6 +87,184 @@ describe('billing account server credit policy', () => {
         });
     });
 
+    it('projects a missing Free account without starting a transaction or writing', async () => {
+        const billing = await importBilling();
+        const now = new Date('2026-08-23T12:00:00Z');
+        prismaMock.billingAccount.findUnique.mockResolvedValue(null);
+
+        const snapshot = await billing.readEffectiveBillingSnapshot('user-1', {
+            now,
+        });
+
+        expect(snapshot).toMatchObject({
+            userId: 'user-1',
+            plan: 'FREE',
+            planSource: 'FREE',
+            serverCreditsBalance: 100,
+            monthlyServerCreditsUsed: 0,
+            serverCreditsPeriodStart: now,
+            monthlyServerCreditsLimit: 100,
+            autoAnalysisMonthlyGameLimit: 50,
+            autoAnalysisDailyGameLimit: 10,
+            persisted: false,
+            needsReconciliation: true,
+        });
+        expect(Object.isFrozen(snapshot)).toBe(true);
+        expect(prismaMock.$transaction).not.toHaveBeenCalled();
+        expect(prismaMock.billingAccount.upsert).not.toHaveBeenCalled();
+        expect(prismaMock.billingAccount.update).not.toHaveBeenCalled();
+        expect(prismaMock.creditLedgerEntry.create).not.toHaveBeenCalled();
+    });
+
+    it('projects administrator entitlement for a missing account without persisting it', async () => {
+        const billing = await importBilling();
+        prismaMock.billingAccount.findUnique.mockResolvedValue(null);
+        prismaMock.adminMembership.findUnique.mockResolvedValue({ active: true });
+
+        const snapshot = await billing.readEffectiveBillingSnapshot('user-1', {
+            now: new Date('2026-08-23T12:00:00Z'),
+        });
+
+        expect(snapshot).toMatchObject({
+            plan: 'PRO',
+            planSource: 'ADMIN',
+            serverCreditsBalance: 5_000,
+            monthlyServerCreditsLimit: 5_000,
+            autoAnalysisMonthlyGameLimit: 5_000,
+            autoAnalysisDailyGameLimit: 250,
+            persisted: false,
+        });
+        expect(prismaMock.billingAccount.upsert).not.toHaveBeenCalled();
+    });
+
+    it('projects a complimentary upgrade while preserving already spent credits', async () => {
+        const billing = await importBilling();
+        prismaMock.billingAccount.findUnique.mockResolvedValue(account());
+        prismaMock.planGrant.findMany.mockResolvedValue([
+            { id: 'grant-1', plan: 'PLUS' },
+        ]);
+        prismaMock.creditLedgerEntry.groupBy.mockResolvedValue([
+            { type: 'RESERVED', _sum: { credits: 20 } },
+        ]);
+
+        const snapshot = await billing.readEffectiveBillingSnapshot('user-1', {
+            now: new Date('2026-08-23T12:00:00Z'),
+        });
+
+        expect(snapshot).toMatchObject({
+            plan: 'PLUS',
+            planSource: 'COMPLIMENTARY',
+            serverCreditsBalance: 910,
+            monthlyServerCreditsLimit: 1_000,
+            persisted: true,
+            needsReconciliation: true,
+        });
+        expect(prismaMock.creditLedgerEntry.groupBy).toHaveBeenCalledWith({
+            by: ['type'],
+            where: {
+                userId: 'user-1',
+                scope: 'RESERVATION',
+                billingPeriodStart: new Date('2026-07-05T00:00:00Z'),
+            },
+            _sum: { credits: true },
+        });
+        expect(prismaMock.billingAccount.update).not.toHaveBeenCalled();
+    });
+
+    it('projects a local renewal boundary without mutating the stored period', async () => {
+        const billing = await importBilling();
+        const now = new Date('2026-08-23T12:00:00Z');
+        prismaMock.billingAccount.findUnique.mockResolvedValue(
+            account({
+                serverCreditsBalance: 4,
+                monthlyServerCreditsUsed: 96,
+                serverCreditsRenewAt: new Date('2026-08-05T00:00:00Z'),
+            })
+        );
+
+        const snapshot = await billing.readEffectiveBillingSnapshot('user-1', {
+            now,
+        });
+
+        expect(snapshot).toMatchObject({
+            serverCreditsBalance: 100,
+            monthlyServerCreditsUsed: 0,
+            serverCreditsPeriodStart: now,
+            needsReconciliation: true,
+        });
+        expect(prismaMock.creditLedgerEntry.groupBy).not.toHaveBeenCalled();
+        expect(prismaMock.billingAccount.update).not.toHaveBeenCalled();
+    });
+
+    it('uses the active Stripe allowance period in the pure projection', async () => {
+        const billing = await importBilling();
+        const periodStart = new Date('2026-08-15T08:00:00Z');
+        const periodEnd = new Date('2026-09-15T08:00:00Z');
+        prismaMock.billingAccount.findUnique.mockResolvedValue(
+            account({
+                stripePlan: 'PLUS',
+                stripeSubscriptionStatus: 'active',
+                stripeCurrentPeriodStart: periodStart,
+                stripeCurrentPeriodEnd: periodEnd,
+            })
+        );
+
+        const snapshot = await billing.readEffectiveBillingSnapshot('user-1', {
+            now: new Date('2026-08-23T12:00:00Z'),
+        });
+
+        expect(snapshot).toMatchObject({
+            plan: 'PLUS',
+            planSource: 'STRIPE',
+            serverCreditsBalance: 1_000,
+            monthlyServerCreditsUsed: 0,
+            serverCreditsPeriodStart: periodStart,
+            serverCreditsRenewAt: periodEnd,
+        });
+        expect(prismaMock.billingAccount.update).not.toHaveBeenCalled();
+    });
+
+    it('retries the explicit ensure command after a serializable write conflict', async () => {
+        const billing = await importBilling();
+        prismaMock.billingAccount.upsert.mockResolvedValue(account());
+        prismaMock.$transaction.mockRejectedValueOnce(
+            Object.assign(new Error('conflict'), { code: 'P2034' })
+        );
+
+        await expect(
+            billing.ensureEffectiveBillingAccount('user-1', {
+                now: new Date('2026-08-23T12:00:00Z'),
+            })
+        ).resolves.toMatchObject({ userId: 'user-1' });
+        expect(prismaMock.$transaction).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps a concurrent snapshot read outside the reservation transaction', async () => {
+        const billing = await importBilling();
+        prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);
+        prismaMock.billingAccount.upsert.mockResolvedValue(account());
+        prismaMock.billingAccount.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.billingAccount.findUniqueOrThrow.mockResolvedValue(
+            account({ serverCreditsBalance: 9 })
+        );
+        prismaMock.creditLedgerEntry.create.mockResolvedValue(ledgerEntry());
+
+        const [snapshot, reservation] = await Promise.all([
+            billing.readEffectiveBillingSnapshot('user-1', {
+                now: new Date('2026-07-05T12:00:00Z'),
+            }),
+            billing.reserveServerAnalysisCredits({
+                userId: 'user-1',
+                credits: 1,
+                idempotencyKey: 'reserve:concurrent-status',
+            }),
+        ]);
+
+        expect(snapshot.serverCreditsBalance).toBe(10);
+        expect(reservation.account?.serverCreditsBalance).toBe(9);
+        expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    });
+
     it('reserves credits by debiting the billing account and appending a ledger entry', async () => {
         const billing = await importBilling();
         prismaMock.creditLedgerEntry.findUnique.mockResolvedValue(null);

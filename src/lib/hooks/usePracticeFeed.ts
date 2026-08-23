@@ -9,6 +9,7 @@ import {
 import { useSession } from 'next-auth/react';
 
 import type {
+    PracticeFeedInitialData,
     PracticeFeedMode,
     PracticeFilters,
     RecordTrainingAttemptRequest,
@@ -80,6 +81,54 @@ export function shouldPrefetchPracticeFeed({
         !feedExhausted &&
         bufferedPositions <= PRACTICE_FEED_LOW_WATER_MARK
     );
+}
+
+export function shouldFillPracticeFeedAfterPaint({
+    hasPrompt,
+    bufferedPositions,
+    feedStarted,
+    feedExhausted,
+    online,
+}: {
+    hasPrompt: boolean;
+    bufferedPositions: number;
+    feedStarted: boolean;
+    feedExhausted: boolean;
+    online: boolean;
+}): boolean {
+    if (!online) return false;
+    if (!hasPrompt) return feedStarted && !feedExhausted;
+    return (
+        !feedStarted ||
+        shouldPrefetchPracticeFeed({
+            bufferedPositions,
+            feedStarted,
+            feedExhausted,
+            online,
+        })
+    );
+}
+
+export function practiceFeedPageAdoption<T>({
+    activePrompt,
+    currentBuffer,
+    unseen,
+}: {
+    activePrompt: T | null;
+    currentBuffer: readonly T[];
+    unseen: readonly T[];
+}): { activate: T | null; buffer: T[] } {
+    const [first, ...remaining] = unseen;
+    if (!activePrompt && first) {
+        return {
+            activate: first,
+            buffer: [...currentBuffer, ...remaining],
+        };
+    }
+    return {
+        activate: null,
+        buffer: [...currentBuffer, ...unseen],
+    };
 }
 
 type PracticeFeedReadOutcome =
@@ -154,6 +203,24 @@ export function isPracticeOwnerRunCurrent({
     );
 }
 
+export function canAdoptInitialPracticeFeed({
+    initialOwnerId,
+    currentOwnerId,
+    feedRevision,
+    invalidated,
+}: {
+    initialOwnerId: string;
+    currentOwnerId: string | null;
+    feedRevision: number;
+    invalidated: boolean;
+}): boolean {
+    return (
+        !invalidated &&
+        feedRevision === 0 &&
+        currentOwnerId === initialOwnerId
+    );
+}
+
 function errorMessage(error: unknown): string {
     if (error instanceof TrainingClientError) return error.message;
     return error instanceof Error
@@ -196,13 +263,21 @@ function writeQueue(
     }
 }
 
-export function usePracticeFeed(
-    initialMomentId?: string,
-    ownerIdOverride?: string,
-    entry?: 'progress',
-    initialMode?: PracticeFeedMode,
-    initialGameId?: string
-) {
+export function usePracticeFeed({
+    initialPractice,
+    initialMomentId,
+    ownerIdOverride,
+    entry,
+    initialMode,
+    initialGameId,
+}: {
+    initialPractice: PracticeFeedInitialData;
+    initialMomentId?: string;
+    ownerIdOverride?: string;
+    entry?: 'progress';
+    initialMode?: PracticeFeedMode;
+    initialGameId?: string;
+}) {
     const { data: session, status: sessionStatus } = useSession();
     const ownerId = resolvePracticeOwnerId({
         sessionStatus,
@@ -210,26 +285,47 @@ export function usePracticeFeed(
         initialOwnerId: ownerIdOverride,
     });
 
+    const requestedInitialFilters: PracticeFilters = {
+        ...(initialMode ? { mode: initialMode } : {}),
+        ...(initialGameId ? { gameId: initialGameId } : {}),
+    };
+    const canSeedFromServer =
+        initialPractice.ownerId === ownerIdOverride;
+    const serverInitial = canSeedFromServer ? initialPractice : null;
+
     const [buffer, setBuffer] = useState<TrainingPromptDto[]>([]);
-    const [nextCursor, setNextCursor] = useState<string | null>(null);
-    const [feedStarted, setFeedStarted] = useState(false);
+    const [nextCursor, setNextCursor] = useState<string | null>(
+        serverInitial?.nextCursor ?? null
+    );
+    const [feedStarted, setFeedStarted] = useState(
+        serverInitial?.feedStarted ?? false
+    );
     const [appliedFilters, setAppliedFilters] =
-        useState<PracticeFilters>({});
+        useState<PracticeFilters>(serverInitial?.appliedFilters ?? {});
     const [feedRequest, setFeedRequest] = useState<{
         filters: PracticeFilters;
         revision: number;
     }>(() => ({
-        filters: {
-            ...(initialMode ? { mode: initialMode } : {}),
-            ...(initialGameId ? { gameId: initialGameId } : {}),
-        },
+        filters: requestedInitialFilters,
         revision: 0,
     }));
-    const [loading, setLoading] = useState(true);
-    const [feedExhausted, setFeedExhausted] = useState(false);
-    const [feedHadPositions, setFeedHadPositions] = useState(false);
-    const [loadError, setLoadError] = useState<string | null>(null);
-    const [loadedOwnerId, setLoadedOwnerId] = useState<string | null>(null);
+    const [loading, setLoading] = useState(!serverInitial);
+    const [feedExhausted, setFeedExhausted] = useState(
+        Boolean(
+            serverInitial?.feedStarted &&
+                serverInitial.nextCursor === null
+        )
+    );
+    const [feedHadPositions, setFeedHadPositions] = useState(
+        serverInitial?.feedHadPositions ?? false
+    );
+    const [loadError, setLoadError] = useState<string | null>(
+        serverInitial?.loadError ?? null
+    );
+    const [loadedOwnerId, setLoadedOwnerId] = useState<string | null>(
+        serverInitial?.ownerId ?? null
+    );
+    const [backgroundFillReady, setBackgroundFillReady] = useState(false);
 
     const [online, setOnline] = useState(navigatorIsOnline);
     const [queuedCount, setQueuedCount] = useState(0);
@@ -245,14 +341,32 @@ export function usePracticeFeed(
     ownerIdRef.current = ownerId;
     const advanceInFlightRef = useRef(false);
     const bufferRef = useRef<TrainingPromptDto[]>([]);
-    const nextCursorRef = useRef<string | null>(null);
-    const feedStartedRef = useRef(false);
-    const feedExhaustedRef = useRef(false);
-    const appliedFiltersRef = useRef<PracticeFilters>({});
-    const requestedFiltersRef = useRef<PracticeFilters>({});
+    const nextCursorRef = useRef<string | null>(
+        serverInitial?.nextCursor ?? null
+    );
+    const feedStartedRef = useRef(serverInitial?.feedStarted ?? false);
+    const feedExhaustedRef = useRef(
+        Boolean(
+            serverInitial?.feedStarted &&
+                serverInitial.nextCursor === null
+        )
+    );
+    const appliedFiltersRef = useRef<PracticeFilters>(
+        serverInitial?.appliedFilters ?? {}
+    );
+    const requestedFiltersRef = useRef<PracticeFilters>(
+        requestedInitialFilters
+    );
     const feedGenerationRef = useRef(0);
+    const initialStateInvalidatedRef = useRef(!serverInitial);
     const initialLoadControllerRef = useRef<AbortController | null>(null);
-    const seenPromptKeysRef = useRef(new Set<string>());
+    const seenPromptKeysRef = useRef(
+        new Set(
+            serverInitial?.prompt
+                ? [practicePromptKey(serverInitial.prompt)]
+                : []
+        )
+    );
     const pageRequestRef =
         useRef<
             CoordinatedPracticeFeedRequest<TrainingPromptDto[]> | null
@@ -263,8 +377,12 @@ export function usePracticeFeed(
         (completion: PuzzleSessionCompletion) => void
     >(() => undefined);
     const puzzleSession = usePuzzleSession({
+        initialPrompt: serverInitial?.prompt ?? null,
         unresolvedMode: 'RETRY',
-        prewarmEngine: true,
+        // The prompt ships a local grading manifest. Loading a multi-megabyte
+        // engine before an unknown move or explicit Analysis intent competes
+        // with the only thing the user needs first: an interactive board.
+        prewarmEngine: false,
         onCompleted: (completion) =>
             completionSinkRef.current(completion),
     });
@@ -273,6 +391,8 @@ export function usePracticeFeed(
         clearPrompt: clearPuzzlePrompt,
         phase: puzzlePhase,
     } = puzzleSession;
+    const activePromptRef = useRef(puzzleSession.prompt);
+    activePromptRef.current = puzzleSession.prompt;
 
     const recommendationKey =
         entry === 'progress'
@@ -379,7 +499,7 @@ export function usePracticeFeed(
         setFeedExhausted(exhausted);
     }, []);
 
-    const activatePrompt = useCallback(
+    const recordShownPrompt = useCallback(
         (next: TrainingPromptDto) => {
             finishExposure('REPLACED');
             const shownAt = new Date().toISOString();
@@ -419,7 +539,6 @@ export function usePracticeFeed(
                     recommendationKey,
                 });
             }
-            activatePuzzlePrompt(next);
             setLoadError((current) =>
                 practiceFeedLoadErrorAfterEvent(
                     current,
@@ -430,10 +549,36 @@ export function usePracticeFeed(
         [
             entry,
             finishExposure,
-            activatePuzzlePrompt,
             recommendationKey,
         ]
     );
+
+    const activatePrompt = useCallback(
+        (next: TrainingPromptDto) => {
+            recordShownPrompt(next);
+            activatePuzzlePrompt(next);
+        },
+        [activatePuzzlePrompt, recordShownPrompt]
+    );
+
+    const initialExposureRecordedRef = useRef(false);
+    useEffect(() => {
+        const initialPrompt = serverInitial?.prompt;
+        if (
+            initialExposureRecordedRef.current ||
+            !initialPrompt ||
+            ownerId !== serverInitial.ownerId ||
+            loadedOwnerId !== serverInitial.ownerId
+        ) {
+            return;
+        }
+        const timeoutId = window.setTimeout(() => {
+            if (initialExposureRecordedRef.current) return;
+            initialExposureRecordedRef.current = true;
+            recordShownPrompt(initialPrompt);
+        }, 0);
+        return () => window.clearTimeout(timeoutId);
+    }, [loadedOwnerId, ownerId, recordShownPrompt, serverInitial]);
 
     useEffect(
         () => () => finishExposure('NAVIGATED_AWAY'),
@@ -482,7 +627,15 @@ export function usePracticeFeed(
                 seenPromptKeysRef.current.add(practicePromptKey(item));
             }
             if (unseen.length > 0) {
-                replaceBuffer([...bufferRef.current, ...unseen]);
+                const adoption = practiceFeedPageAdoption({
+                    activePrompt: activePromptRef.current,
+                    currentBuffer: bufferRef.current,
+                    unseen,
+                });
+                if (adoption.activate) {
+                    activatePrompt(adoption.activate);
+                }
+                replaceBuffer(adoption.buffer);
                 setFeedHadPositions(true);
             }
             appliedFiltersRef.current = filters;
@@ -505,7 +658,7 @@ export function usePracticeFeed(
             );
             return unseen;
         },
-        [replaceBuffer, updateCursor]
+        [activatePrompt, replaceBuffer, updateCursor]
     );
 
     const startFeedPageRequest = useCallback(() => {
@@ -618,10 +771,6 @@ export function usePracticeFeed(
                         })
                     );
                     activatePrompt(detail.moment);
-                    void startFeedPageRequest().catch(() => {
-                        // The deep-linked position remains fully usable even if
-                        // the next practice page cannot be prepared yet.
-                    });
                     return;
                 }
 
@@ -694,12 +843,39 @@ export function usePracticeFeed(
             ownerId,
             replaceBuffer,
             clearPuzzlePrompt,
-            startFeedPageRequest,
             updateCursor,
         ]
     );
 
     useEffect(() => {
+        const canAdoptServerState =
+            serverInitial !== null &&
+            canAdoptInitialPracticeFeed({
+                initialOwnerId: serverInitial.ownerId,
+                currentOwnerId: ownerId,
+                feedRevision: feedRequest.revision,
+                invalidated: initialStateInvalidatedRef.current,
+            });
+        if (canAdoptServerState) {
+            const generation = feedGenerationRef.current;
+            return () => {
+                abortCoordinatedPracticeFeedRequest(
+                    pageRequestRef,
+                    generation
+                );
+                if (generation === feedGenerationRef.current) {
+                    feedGenerationRef.current += 1;
+                }
+            };
+        }
+        if (
+            serverInitial &&
+            (ownerId !== serverInitial.ownerId ||
+                feedRequest.revision !== 0)
+        ) {
+            initialStateInvalidatedRef.current = true;
+        }
+
         const generation = feedGenerationRef.current + 1;
         feedGenerationRef.current = generation;
         initialLoadControllerRef.current?.abort();
@@ -742,10 +918,12 @@ export function usePracticeFeed(
         };
     }, [
         feedRequest.filters,
+        feedRequest.revision,
         ownerId,
         loadInitial,
         clearPuzzlePrompt,
         replaceBuffer,
+        serverInitial,
     ]);
 
     useEffect(() => {
@@ -770,8 +948,38 @@ export function usePracticeFeed(
     }, []);
 
     useEffect(() => {
+        setBackgroundFillReady(false);
+        if (!ownerId) return;
+
+        let idleId: number | null = null;
+        let timeoutId: number | null = null;
+        const frameId = window.requestAnimationFrame(() => {
+            if (typeof window.requestIdleCallback === 'function') {
+                idleId = window.requestIdleCallback(
+                    () => setBackgroundFillReady(true),
+                    { timeout: 500 }
+                );
+                return;
+            }
+            timeoutId = window.setTimeout(
+                () => setBackgroundFillReady(true),
+                0
+            );
+        });
+
+        return () => {
+            window.cancelAnimationFrame(frameId);
+            if (idleId !== null) window.cancelIdleCallback(idleId);
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
+        };
+    }, [feedRequest.revision, initialMomentId, ownerId]);
+
+    useEffect(() => {
         if (
-            !shouldPrefetchPracticeFeed({
+            !backgroundFillReady ||
+            loadedOwnerId !== ownerId ||
+            !shouldFillPracticeFeedAfterPaint({
+                hasPrompt: Boolean(puzzleSession.prompt),
                 bufferedPositions: buffer.length,
                 feedStarted,
                 feedExhausted,
@@ -786,11 +994,15 @@ export function usePracticeFeed(
             // request without replacing the current position.
         });
     }, [
+        backgroundFillReady,
         buffer.length,
         feedExhausted,
         feedStarted,
+        loadedOwnerId,
         nextCursor,
         online,
+        ownerId,
+        puzzleSession.prompt,
         startFeedPageRequest,
     ]);
 

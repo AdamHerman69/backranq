@@ -1,5 +1,7 @@
 import type {
     BillingAccount,
+    BillingPlan,
+    BillingPlanSource,
     CreditLedgerEntry,
     CreditLedgerEntryType,
     Prisma,
@@ -48,6 +50,31 @@ export type BillingTransactionClient = Pick<
     | 'notificationDelivery'
     | 'pushSubscription'
 >;
+
+type BillingSnapshotClient = Pick<
+    BillingTransactionClient,
+    'billingAccount' | 'creditLedgerEntry' | 'adminMembership' | 'planGrant'
+>;
+
+export type EffectiveBillingSnapshot = Readonly<{
+    userId: string;
+    plan: BillingPlan;
+    planSource: BillingPlanSource;
+    stripePlan: BillingPlan;
+    stripeSubscriptionStatus: string | null;
+    stripeCurrentPeriodStart: Date | null;
+    stripeCurrentPeriodEnd: Date | null;
+    serverCreditsBalance: number;
+    monthlyServerCreditsUsed: number;
+    serverCreditsPeriodStart: Date;
+    serverCreditsRenewAt: Date;
+    monthlyServerCreditsLimit: number;
+    autoAnalysisMonthlyGameLimit: number;
+    autoAnalysisDailyGameLimit: number;
+    stopWhenCreditsBelow: number;
+    persisted: boolean;
+    needsReconciliation: boolean;
+}>;
 
 type CreditLedgerReference = {
     userId: string;
@@ -137,24 +164,89 @@ export class ServerCreditStopThresholdError extends BillingAccountError {
     }
 }
 
-export async function getOrCreateDefaultBillingAccount(userId: string) {
-    return prisma.$transaction(
-        async (tx) =>
-            getOrCreateDefaultBillingAccountInTransaction({
-                tx,
-                userId,
-                now: new Date(),
-            }),
-        serializableTransactionOptions()
+export async function ensureEffectiveBillingAccount(
+    userId: string,
+    options: { now?: Date } = {}
+) {
+    const now = options.now ?? new Date();
+    return runSerializableBillingWrite((tx) =>
+        getOrCreateDefaultBillingAccountInTransaction({ tx, userId, now })
     );
 }
 
 /**
- * Canonical read for every billing-capacity decision. It materializes the
- * effective ADMIN/COMPLIMENTARY/STRIPE entitlement and the authoritative
- * allowance period in the same serializable transaction.
+ * Pure capacity read. It projects the effective ADMIN/COMPLIMENTARY/STRIPE
+ * entitlement and current allowance period without creating or updating rows.
+ * Reservation and other write commands reconcile the same state inside their
+ * own serializable transaction before they mutate credits.
  */
-export const getEffectiveBillingAccount = getOrCreateDefaultBillingAccount;
+export async function readEffectiveBillingSnapshot(
+    userId: string,
+    options: { now?: Date; db?: BillingSnapshotClient } = {}
+): Promise<EffectiveBillingSnapshot> {
+    const now = options.now ?? new Date();
+    const db = options.db ?? prisma;
+    const account =
+        (await db.billingAccount.findUnique({ where: { userId } })) ?? null;
+    const effective = await resolveEffectiveBillingEntitlement({
+        tx: db,
+        userId,
+        account: account ?? {
+            stripePlan: 'FREE',
+            stripeSubscriptionStatus: null,
+        },
+        now,
+    });
+    const transition = describeBillingTransition(account, effective, now);
+    const outstandingReserved = transition.requiresOutstandingReservations
+        ? (
+              await getLedgerSummary(
+                  db,
+                  { userId },
+                  { billingPeriodStart: account!.serverCreditsPeriodStart }
+              )
+          ).outstandingReserved
+        : 0;
+    const projected = projectBillingState({
+        account,
+        effective,
+        now,
+        outstandingReserved,
+        transition,
+    });
+    return Object.freeze({
+        userId,
+        plan: projected.data.plan,
+        planSource: projected.data.planSource,
+        stripePlan: account?.stripePlan ?? 'FREE',
+        stripeSubscriptionStatus: account?.stripeSubscriptionStatus ?? null,
+        stripeCurrentPeriodStart: account?.stripeCurrentPeriodStart ?? null,
+        stripeCurrentPeriodEnd: account?.stripeCurrentPeriodEnd ?? null,
+        serverCreditsBalance: projected.data.serverCreditsBalance,
+        monthlyServerCreditsUsed: projected.data.monthlyServerCreditsUsed,
+        serverCreditsPeriodStart: projected.data.serverCreditsPeriodStart,
+        serverCreditsRenewAt: projected.data.serverCreditsRenewAt,
+        monthlyServerCreditsLimit: projected.data.monthlyServerCreditsLimit,
+        autoAnalysisMonthlyGameLimit:
+            projected.data.autoAnalysisMonthlyGameLimit,
+        autoAnalysisDailyGameLimit: projected.data.autoAnalysisDailyGameLimit,
+        stopWhenCreditsBelow: projected.data.stopWhenCreditsBelow,
+        persisted: account !== null,
+        needsReconciliation: transition.needsReconciliation,
+    });
+}
+
+/**
+ * Existing read call sites retain their name, but the contract is now pure.
+ * New code should use readEffectiveBillingSnapshot explicitly.
+ */
+export const getEffectiveBillingAccount = readEffectiveBillingSnapshot;
+
+/**
+ * Existing settings code still uses this write-shaped name. New command paths
+ * should use ensureEffectiveBillingAccount explicitly.
+ */
+export const getOrCreateDefaultBillingAccount = ensureEffectiveBillingAccount;
 
 export async function reserveServerAnalysisCredits(
     args: ReserveServerAnalysisCreditsArgs
@@ -520,85 +612,30 @@ export async function reconcileBillingAccountInTransaction(args: {
         account,
         now: args.now,
     });
-    const entitlements = BILLING_PLAN_ENTITLEMENTS[effective.plan];
-    const planChanged = account.plan !== effective.plan;
-    const sourceChanged =
-        (account.planSource ?? 'FREE') !== effective.source;
-    const stripePeriod = activeStripeAllowancePeriod(account);
-    const stripePeriodReset =
-        stripePeriod !== null &&
-        (!sameInstant(account.serverCreditsPeriodStart, stripePeriod.start) ||
-            !sameInstant(account.serverCreditsRenewAt, stripePeriod.end));
-    const localPeriodReset =
-        !hasActiveStripeEntitlement(account) &&
-        account.serverCreditsRenewAt <= args.now;
-    const resetPeriod = stripePeriodReset || localPeriodReset;
-    const limitsChanged =
-        account.monthlyServerCreditsLimit !==
-            entitlements.monthlyServerCreditsLimit ||
-        account.autoAnalysisMonthlyGameLimit !==
-            entitlements.autoAnalysisMonthlyGameLimit ||
-        account.autoAnalysisDailyGameLimit !==
-            entitlements.autoAnalysisDailyGameLimit ||
-        account.stopWhenCreditsBelow !== entitlements.stopWhenCreditsBelow;
-
-    let serverCreditsBalance = account.serverCreditsBalance;
-    let monthlyServerCreditsUsed = account.monthlyServerCreditsUsed;
-    let serverCreditsPeriodStart = account.serverCreditsPeriodStart;
-    let serverCreditsRenewAt = account.serverCreditsRenewAt;
-
-    if (resetPeriod) {
-        serverCreditsBalance = entitlements.monthlyServerCreditsLimit;
-        monthlyServerCreditsUsed = 0;
-        serverCreditsPeriodStart = stripePeriod?.start ?? args.now;
-        serverCreditsRenewAt =
-            stripePeriod?.end ?? nextMonthlyRenewAt(args.now);
-    } else if (planChanged || limitsChanged) {
-        const currentOutstanding = (
-            await getLedgerSummary(
-                args.tx,
-                { userId: args.userId },
-                { billingPeriodStart: account.serverCreditsPeriodStart }
-            )
-        ).outstandingReserved;
-        const remainingUnderTarget = Math.max(
-            0,
-            entitlements.monthlyServerCreditsLimit -
-                account.monthlyServerCreditsUsed -
-                currentOutstanding
-        );
-        const allowanceIncrease = Math.max(
-            0,
-            entitlements.monthlyServerCreditsLimit -
-                account.monthlyServerCreditsLimit
-        );
-        serverCreditsBalance = Math.min(
-            remainingUnderTarget,
-            account.serverCreditsBalance + allowanceIncrease
-        );
-    }
-
-    const data = {
-        plan: effective.plan,
-        planSource: effective.source,
-        monthlyServerCreditsLimit: entitlements.monthlyServerCreditsLimit,
-        autoAnalysisMonthlyGameLimit:
-            entitlements.autoAnalysisMonthlyGameLimit,
-        autoAnalysisDailyGameLimit:
-            entitlements.autoAnalysisDailyGameLimit,
-        stopWhenCreditsBelow: entitlements.stopWhenCreditsBelow,
-        serverCreditsBalance,
-        monthlyServerCreditsUsed,
-        serverCreditsPeriodStart,
-        serverCreditsRenewAt,
-    };
-    if (!planChanged && !sourceChanged && !resetPeriod && !limitsChanged) {
+    const transition = describeBillingTransition(account, effective, args.now);
+    const outstandingReserved = transition.requiresOutstandingReservations
+        ? (
+              await getLedgerSummary(
+                  args.tx,
+                  { userId: args.userId },
+                  { billingPeriodStart: account.serverCreditsPeriodStart }
+              )
+          ).outstandingReserved
+        : 0;
+    const projected = projectBillingState({
+        account,
+        effective,
+        now: args.now,
+        outstandingReserved,
+        transition,
+    });
+    if (!transition.needsReconciliation) {
         if (!existed) {
             await recordAllowanceEntry({
                 tx: args.tx,
                 userId: args.userId,
                 type: 'ALLOWANCE_GRANTED',
-                credits: entitlements.monthlyServerCreditsLimit,
+                credits: projected.data.monthlyServerCreditsLimit,
                 billingPeriodStart: account.serverCreditsPeriodStart,
                 now: args.now,
                 transition: `initial:${effective.plan}:${effective.source}`,
@@ -608,7 +645,7 @@ export async function reconcileBillingAccountInTransaction(args: {
     }
     const updated = await args.tx.billingAccount.update({
         where: { userId: args.userId },
-        data,
+        data: projected.data,
     });
 
     await recordAllowanceReconciliation({
@@ -616,7 +653,7 @@ export async function reconcileBillingAccountInTransaction(args: {
         userId: args.userId,
         previous: existed,
         updated,
-        resetPeriod,
+        resetPeriod: transition.resetPeriod,
         now: args.now,
     });
     return updated;
@@ -688,7 +725,7 @@ async function findIdempotentEntry(
 }
 
 async function getLedgerSummary(
-    tx: BillingTransactionClient,
+    tx: Pick<BillingTransactionClient, 'creditLedgerEntry'>,
     ref: CreditLedgerReference,
     options: {
         createdAtGte?: Date;
@@ -736,6 +773,119 @@ async function getLedgerSummary(
             credits: entry._sum.credits ?? 0,
         })) as LedgerEntryForSummary[]
     );
+}
+
+type BillingTransition = ReturnType<typeof describeBillingTransition>;
+
+function describeBillingTransition(
+    account: BillingAccount | null,
+    effective: { plan: BillingPlan; source: BillingPlanSource },
+    now: Date
+) {
+    const entitlements = BILLING_PLAN_ENTITLEMENTS[effective.plan];
+    const planChanged = account?.plan !== effective.plan;
+    const sourceChanged = (account?.planSource ?? 'FREE') !== effective.source;
+    const stripePeriod = account ? activeStripeAllowancePeriod(account) : null;
+    const stripePeriodReset =
+        account !== null &&
+        stripePeriod !== null &&
+        (!sameInstant(account.serverCreditsPeriodStart, stripePeriod.start) ||
+            !sameInstant(account.serverCreditsRenewAt, stripePeriod.end));
+    const localPeriodReset =
+        account !== null &&
+        !hasActiveStripeEntitlement(account) &&
+        account.serverCreditsRenewAt <= now;
+    const resetPeriod = stripePeriodReset || localPeriodReset;
+    const limitsChanged =
+        account !== null &&
+        (account.monthlyServerCreditsLimit !==
+            entitlements.monthlyServerCreditsLimit ||
+            account.autoAnalysisMonthlyGameLimit !==
+                entitlements.autoAnalysisMonthlyGameLimit ||
+            account.autoAnalysisDailyGameLimit !==
+                entitlements.autoAnalysisDailyGameLimit ||
+            account.stopWhenCreditsBelow !== entitlements.stopWhenCreditsBelow);
+    return {
+        entitlements,
+        planChanged,
+        sourceChanged,
+        stripePeriod,
+        resetPeriod,
+        limitsChanged,
+        needsReconciliation:
+            account === null ||
+            planChanged ||
+            sourceChanged ||
+            resetPeriod ||
+            limitsChanged,
+        requiresOutstandingReservations:
+            account !== null &&
+            !resetPeriod &&
+            (planChanged || limitsChanged),
+    };
+}
+
+function projectBillingState(args: {
+    account: BillingAccount | null;
+    effective: { plan: BillingPlan; source: BillingPlanSource };
+    now: Date;
+    outstandingReserved: number;
+    transition: BillingTransition;
+}) {
+    const { account, effective, transition } = args;
+    let serverCreditsBalance =
+        account?.serverCreditsBalance ??
+        transition.entitlements.monthlyServerCreditsLimit;
+    let monthlyServerCreditsUsed = account?.monthlyServerCreditsUsed ?? 0;
+    let serverCreditsPeriodStart = account?.serverCreditsPeriodStart ?? args.now;
+    let serverCreditsRenewAt =
+        account?.serverCreditsRenewAt ?? nextMonthlyRenewAt(args.now);
+
+    if (transition.resetPeriod) {
+        serverCreditsBalance =
+            transition.entitlements.monthlyServerCreditsLimit;
+        monthlyServerCreditsUsed = 0;
+        serverCreditsPeriodStart = transition.stripePeriod?.start ?? args.now;
+        serverCreditsRenewAt =
+            transition.stripePeriod?.end ?? nextMonthlyRenewAt(args.now);
+    } else if (
+        account !== null &&
+        (transition.planChanged || transition.limitsChanged)
+    ) {
+        const remainingUnderTarget = Math.max(
+            0,
+            transition.entitlements.monthlyServerCreditsLimit -
+                account.monthlyServerCreditsUsed -
+                args.outstandingReserved
+        );
+        const allowanceIncrease = Math.max(
+            0,
+            transition.entitlements.monthlyServerCreditsLimit -
+                account.monthlyServerCreditsLimit
+        );
+        serverCreditsBalance = Math.min(
+            remainingUnderTarget,
+            account.serverCreditsBalance + allowanceIncrease
+        );
+    }
+
+    return {
+        data: {
+            plan: effective.plan,
+            planSource: effective.source,
+            monthlyServerCreditsLimit:
+                transition.entitlements.monthlyServerCreditsLimit,
+            autoAnalysisMonthlyGameLimit:
+                transition.entitlements.autoAnalysisMonthlyGameLimit,
+            autoAnalysisDailyGameLimit:
+                transition.entitlements.autoAnalysisDailyGameLimit,
+            stopWhenCreditsBelow: transition.entitlements.stopWhenCreditsBelow,
+            serverCreditsBalance,
+            monthlyServerCreditsUsed,
+            serverCreditsPeriodStart,
+            serverCreditsRenewAt,
+        },
+    };
 }
 
 function ledgerWhere(ref: CreditLedgerReference) {
@@ -1066,4 +1216,30 @@ function serializableTransactionOptions() {
     return {
         isolationLevel: PrismaRuntime.TransactionIsolationLevel.Serializable,
     };
+}
+
+async function runSerializableBillingWrite<T>(
+    operation: (tx: Prisma.TransactionClient) => Promise<T>
+): Promise<T> {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+            return await prisma.$transaction(
+                operation,
+                serializableTransactionOptions()
+            );
+        } catch (error) {
+            if (attempt < 3 && isTransactionWriteConflict(error)) continue;
+            throw error;
+        }
+    }
+    throw new Error('Billing transaction retry limit exceeded');
+}
+
+function isTransactionWriteConflict(error: unknown) {
+    return (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: unknown }).code === 'P2034'
+    );
 }

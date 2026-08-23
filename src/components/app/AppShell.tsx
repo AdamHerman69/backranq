@@ -3,33 +3,56 @@
 import * as React from "react";
 import { usePathname } from "next/navigation";
 
-import { BackgroundAnalysisBar } from "@/components/analysis/BackgroundAnalysisBar";
-import { AppNav, MobileBottomNav } from "@/components/nav/AppNav";
+import { AppNav } from "@/components/nav/AppNav";
+import { MobileBottomNav } from "@/components/nav/MobileBottomNav";
 import { cn } from "@/lib/utils";
 
-function isPublicRoute(pathname: string) {
-  return (
-    pathname === "/" ||
-    pathname === "/login" ||
-    pathname === "/privacy" ||
-    pathname === "/terms" ||
-    pathname === "/support" ||
-    pathname.startsWith("/invite/")
-  );
-}
+function DeferredBackgroundAnalysisBar() {
+  const [AnalysisBar, setAnalysisBar] = React.useState<React.ComponentType | null>(null);
 
-function isKnownAppRoute(pathname: string) {
-  return [
-    "/home",
-    "/practice",
-    "/play",
-    "/games",
-    "/progress",
-    "/settings",
-    "/profile",
-    "/admin",
-    "/~offline/coach",
-  ].some((route) => pathname === route || pathname.startsWith(`${route}/`));
+  React.useEffect(() => {
+    let disposed = false;
+    const idleWindow = window as typeof window & {
+      requestIdleCallback?: (
+        callback: () => void,
+        options?: { timeout: number }
+      ) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const load = () => {
+      if (!navigator.onLine) {
+        window.addEventListener("online", load, { once: true });
+        return;
+      }
+      void import("@/components/analysis/BackgroundAnalysisBar")
+        .then((module) => {
+          if (!disposed) {
+            setAnalysisBar(() => module.BackgroundAnalysisBar);
+          }
+        })
+        .catch(() => {
+          // This status surface is non-critical. A failed lazy chunk (for
+          // example while the device goes offline) must not replace the page.
+        });
+    };
+    let idleHandle: number | null = null;
+    let timeoutHandle: number | null = null;
+    if (idleWindow.requestIdleCallback) {
+      idleHandle = idleWindow.requestIdleCallback(load, {
+        timeout: 1_500,
+      });
+    } else {
+      timeoutHandle = window.setTimeout(load, 1_500);
+    }
+    return () => {
+      disposed = true;
+      window.removeEventListener("online", load);
+      if (idleHandle !== null) idleWindow.cancelIdleCallback?.(idleHandle);
+      if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
+    };
+  }, []);
+
+  return AnalysisBar ? <AnalysisBar /> : null;
 }
 
 function shellMode(pathname: string): "app" | "workspace" | "reading" | "admin" {
@@ -71,10 +94,6 @@ export function AppShell({
 }) {
   const pathname = usePathname();
 
-  if (isPublicRoute(pathname) || !isKnownAppRoute(pathname)) {
-    return <>{children}</>;
-  }
-
   const mode = shellMode(pathname);
   const isAdmin = mode === "admin";
 
@@ -93,15 +112,15 @@ export function AppShell({
       <MobileBottomNav pathname={pathname} />
 
       {disableBackgroundAnalysisBar || isAdmin ? null : (
-        <div className="relative z-30">
-          <BackgroundAnalysisBar />
+        <div className="relative z-30" data-background-analysis-host="true">
+          <DeferredBackgroundAnalysisBar />
         </div>
       )}
 
       <main
         className={cn(
           containerClassByMode[mode],
-          "animate-soft-enter py-4 pb-[calc(5.25rem+env(safe-area-inset-bottom))] sm:py-6 lg:pb-10",
+          "py-4 pb-[calc(5.25rem+env(safe-area-inset-bottom))] sm:py-6 lg:pb-10",
           mode === "workspace" && "py-3 sm:py-5 lg:py-6"
         )}
       >

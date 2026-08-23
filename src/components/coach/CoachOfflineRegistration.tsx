@@ -9,8 +9,8 @@ export const COACH_OFFLINE_READY_EVENT =
 
 /**
  * Register the production worker only after someone opens the coach. This
- * keeps the roughly 9 MB offline payload out of unrelated landing/login
- * visits while preserving a true cold offline start after the first visit.
+ * keeps the offline shell out of unrelated landing/login visits. Stockfish is
+ * persisted separately after Coach has actually prepared the engine.
  */
 export function CoachOfflineRegistration({
     authenticatedOwnerId,

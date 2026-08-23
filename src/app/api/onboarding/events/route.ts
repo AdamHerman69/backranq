@@ -7,19 +7,32 @@ import {
     consumeOnboardingRateLimit,
     onboardingRequestKeyHash,
 } from '@/lib/onboarding/rateLimit';
+import {
+    measureRequestPhase,
+    withRequestTrace,
+} from '@/lib/performance/requestTrace';
 
 export const runtime = 'nodejs';
 const MAX_BODY_BYTES = 4_096;
 
 export async function POST(request: Request) {
-    const networkLimit = await consumeOnboardingRateLimit({
-        keyHash: onboardingRequestKeyHash(
-            request,
-            'onboarding-events-network'
-        ),
-        namespace: 'onboarding-events-network',
-        limit: 240,
-    });
+    return withRequestTrace(
+        { route: '/api/onboarding/events', request },
+        () => recordEvent(request)
+    );
+}
+
+async function recordEvent(request: Request) {
+    const networkLimit = await measureRequestPhase('network_limit', () =>
+        consumeOnboardingRateLimit({
+            keyHash: onboardingRequestKeyHash(
+                request,
+                'onboarding-events-network'
+            ),
+            namespace: 'onboarding-events-network',
+            limit: 240,
+        })
+    );
     if (!networkLimit.allowed) {
         return NextResponse.json(
             { accepted: false, rateLimited: true },
@@ -32,7 +45,9 @@ export async function POST(request: Request) {
             }
         );
     }
-    const body = await boundedJsonBody(request, MAX_BODY_BYTES);
+    const body = await measureRequestPhase('parse', () =>
+        boundedJsonBody(request, MAX_BODY_BYTES)
+    );
     const event = body.ok ? parseOnboardingAnalyticsEvent(body.value) : null;
     if (!event) {
         return NextResponse.json(
@@ -44,7 +59,9 @@ export async function POST(request: Request) {
         );
     }
 
-    const result = await recordOnboardingAnalyticsEvent(event);
+    const result = await measureRequestPhase('persist', () =>
+        recordOnboardingAnalyticsEvent(event)
+    );
     if (result.rateLimited) {
         return NextResponse.json(
             { accepted: false, rateLimited: true },

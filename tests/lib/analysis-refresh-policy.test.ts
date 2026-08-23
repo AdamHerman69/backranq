@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { shouldPollAnalysis } from '@/lib/analysis/analysisRefreshPolicy';
+import {
+    IDLE_ANALYSIS_STATUS_DELAY_MS,
+    initialAnalysisStatusDelayMs,
+    shouldPollAnalysis,
+} from '@/lib/analysis/analysisRefreshPolicy';
 
 describe('analysis refresh policy', () => {
     it('polls a tracked same-tab server batch without a linked provider', () => {
@@ -39,5 +43,29 @@ describe('analysis refresh policy', () => {
                 browserRunning: false,
             })
         ).toBe(false);
+    });
+
+    it('refreshes tracked work immediately but keeps idle status off the critical path', () => {
+        expect(
+            initialAnalysisStatusDelayMs({
+                authenticated: true,
+                ownerId: 'owner-a',
+                hasTrackedServerBatch: true,
+            })
+        ).toBe(0);
+        expect(
+            initialAnalysisStatusDelayMs({
+                authenticated: true,
+                ownerId: 'owner-a',
+                hasTrackedServerBatch: false,
+            })
+        ).toBe(IDLE_ANALYSIS_STATUS_DELAY_MS);
+        expect(
+            initialAnalysisStatusDelayMs({
+                authenticated: false,
+                ownerId: null,
+                hasTrackedServerBatch: false,
+            })
+        ).toBeNull();
     });
 });

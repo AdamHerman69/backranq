@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Newsreader } from "next/font/google";
 import "./globals.css";
-import { SessionProvider } from "@/components/auth/SessionProvider";
-import { SonnerToaster } from "@/components/ui/SonnerToaster";
-import { AppShell } from "@/components/app/AppShell";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -51,14 +48,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${newsreader.variable} font-sans antialiased`}
       >
-        <SessionProvider>
-          <AppShell
-            disableBackgroundAnalysisBar={process.env.BACKRANQ_E2E_AUTH === "true"}
-          >
-            {children}
-          </AppShell>
-          <SonnerToaster />
-        </SessionProvider>
+        {children}
       </body>
     </html>
   );

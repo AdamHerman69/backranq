@@ -1,4 +1,5 @@
 import { QueueClient } from '@vercel/queue';
+import { backranqQueueRegion } from '@/lib/queues/region';
 
 export const BACKRANQ_QUEUE_TOPIC = 'backranq-jobs';
 
@@ -64,7 +65,7 @@ export type BackranqQueuePublishResult = {
 
 function queueClient() {
     if (process.env.BACKRANQ_QUEUE_SMOKE_MODE !== 'true') {
-        return new QueueClient({ region: process.env.VERCEL_REGION ?? 'iad1' });
+        return new QueueClient({ region: backranqQueueRegion() });
     }
     if (process.env.VERCEL || process.env.VERCEL_ENV) {
         throw new Error('Queue smoke mode is forbidden in a Vercel environment.');
@@ -79,7 +80,7 @@ function queueClient() {
         throw new Error('Queue smoke mode only accepts an HTTP loopback base URL.');
     }
     return new QueueClient({
-        region: 'iad1',
+        region: backranqQueueRegion(),
         token: 'backranq-local-queue-smoke',
         deploymentId: null,
         resolveBaseUrl: () => baseUrl,

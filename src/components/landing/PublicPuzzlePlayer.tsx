@@ -120,6 +120,7 @@ export function PublicPuzzlePlayer({
         }
         setKeyboardMove('');
         setKeyboardError(null);
+        session.requestEnginePrewarm();
         onAttemptStarted?.();
         void session.submitMove(move);
     };
@@ -190,6 +191,7 @@ export function PublicPuzzlePlayer({
                         reducedMotion={reducedMotion}
                         ariaLabel={`${puzzle.prompt.sideToMove === 'w' ? 'White' : 'Black'} to move — find the best move`}
                         onMove={(move) => {
+                            session.requestEnginePrewarm();
                             onAttemptStarted?.();
                             void session.submitMove(move);
                         }}

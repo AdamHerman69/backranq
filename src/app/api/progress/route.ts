@@ -6,6 +6,10 @@ import {
     ProgressUserNotFoundError,
 } from '@/lib/progress/readService';
 import { parseProgressRequest } from '@/lib/progress/query';
+import {
+    measureRequestPhase,
+    withRequestTrace,
+} from '@/lib/performance/requestTrace';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,7 +19,13 @@ const NO_STORE_HEADERS = {
 };
 
 export async function GET(req: Request) {
-    const session = await auth();
+    return withRequestTrace({ route: '/api/progress', request: req }, () =>
+        progressResponse(req)
+    );
+}
+
+async function progressResponse(req: Request) {
+    const session = await measureRequestPhase('auth', () => auth());
     const userId = session?.user?.id;
     if (!userId) {
         return NextResponse.json(
@@ -37,10 +47,12 @@ export async function GET(req: Request) {
 
     try {
         return NextResponse.json(
-            await getProgressSnapshot({
-                userId,
-                ...request,
-            }),
+            await measureRequestPhase('snapshot', () =>
+                getProgressSnapshot({
+                    userId,
+                    ...request,
+                })
+            ),
             {
                 headers: NO_STORE_HEADERS,
             }

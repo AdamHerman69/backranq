@@ -168,6 +168,11 @@ function queueReadiness(
     profile: ReadinessProfile
 ): DeploymentReadinessCheck {
     const warnings: string[] = [];
+    const configuredRegion = env.BACKRANQ_QUEUE_REGION?.trim().toLowerCase();
+    const missing =
+        profile === 'production' && !configuredRegion
+            ? ['BACKRANQ_QUEUE_REGION']
+            : [];
     if (!vercel.queueTopic) {
         warnings.push('vercel.json has no queue trigger topic');
     } else if (vercel.queueTopic !== expectedQueueTopic) {
@@ -184,7 +189,12 @@ function queueReadiness(
     if (profile === 'production' && env.BACKRANQ_QUEUE_SMOKE_MODE === 'true') {
         warnings.push('Queue smoke mode must not be enabled in production');
     }
-    return check('queues', true, [], warnings);
+    if (configuredRegion && !/^[a-z]{3}\d$/.test(configuredRegion)) {
+        warnings.push(
+            'BACKRANQ_QUEUE_REGION must be an explicit Vercel region code such as iad1 or dub1'
+        );
+    }
+    return check('queues', true, missing, warnings);
 }
 
 function emailReadiness(

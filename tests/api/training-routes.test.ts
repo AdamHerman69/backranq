@@ -188,6 +188,12 @@ describe('canonical training routes', () => {
         );
 
         expect(response.status).toBe(200);
+        expect(response.headers.get('server-timing')).toMatch(
+            /auth;dur=.*preferences;dur=.*feed;dur=.*db_ops_sum;dur=.*total;dur=/
+        );
+        expect(response.headers.get('x-backranq-db-operation-count')).toBe(
+            '0'
+        );
         const body = await readJson<{
             ownerId: string;
             items: Array<Record<string, unknown>>;
