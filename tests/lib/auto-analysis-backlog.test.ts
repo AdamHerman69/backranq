@@ -38,7 +38,7 @@ async function importBacklog() {
             >();
             return {
                 ...actual,
-                getEffectiveBillingAccount: (userId: string) =>
+                readEffectiveBillingSnapshot: (userId: string) =>
                     prismaMock.billingAccount.findUnique({
                         where: { userId },
                     }),
@@ -80,6 +80,29 @@ function account(serverCreditsBalance: number) {
         createdAt: new Date('2026-07-01T00:00:00Z'),
         updatedAt: new Date('2026-07-01T00:00:00Z'),
     };
+}
+
+function billingSnapshot(serverCreditsBalance: number) {
+    const stored = account(serverCreditsBalance);
+    return Object.freeze({
+        userId: stored.userId,
+        plan: stored.plan,
+        planSource: stored.planSource,
+        stripePlan: stored.stripePlan,
+        stripeSubscriptionStatus: stored.stripeSubscriptionStatus,
+        stripeCurrentPeriodStart: stored.stripeCurrentPeriodStart,
+        stripeCurrentPeriodEnd: stored.stripeCurrentPeriodEnd,
+        serverCreditsBalance: stored.serverCreditsBalance,
+        monthlyServerCreditsUsed: stored.monthlyServerCreditsUsed,
+        serverCreditsPeriodStart: stored.serverCreditsPeriodStart,
+        serverCreditsRenewAt: stored.serverCreditsRenewAt,
+        monthlyServerCreditsLimit: stored.monthlyServerCreditsLimit,
+        autoAnalysisMonthlyGameLimit: stored.autoAnalysisMonthlyGameLimit,
+        autoAnalysisDailyGameLimit: stored.autoAnalysisDailyGameLimit,
+        stopWhenCreditsBelow: stored.stopWhenCreditsBelow,
+        persisted: true,
+        needsReconciliation: false,
+    });
 }
 
 function enabledPreferences(overrides: Record<string, unknown> = {}) {
@@ -162,7 +185,7 @@ describe('auto-analysis backlog', () => {
 
         const status = await backlog.getAutoAnalysisStatus(
             'user-1',
-            new Date('2026-07-21T00:00:00Z')
+            { now: new Date('2026-07-21T00:00:00Z') }
         );
 
         expect(status.inventory).toEqual({
@@ -195,6 +218,19 @@ describe('auto-analysis backlog', () => {
             },
             _sum: { credits: true },
         });
+    });
+
+    it('uses a caller-owned billing snapshot without rereading the account', async () => {
+        primeContext(25);
+        const backlog = await importBacklog();
+
+        const status = await backlog.getAutoAnalysisStatus('user-1', {
+            now: new Date('2026-07-21T00:00:00Z'),
+            billingSnapshot: billingSnapshot(25),
+        });
+
+        expect(status.capacity.currentBalance).toBe(25);
+        expect(prismaMock.billingAccount.findUnique).not.toHaveBeenCalled();
     });
 
     it('does not create a failed job when blocked and queues on a later rerun after top-up', async () => {

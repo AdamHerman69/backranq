@@ -20,9 +20,13 @@ export const {
             revision: `coach-offline-shell-${offlineShellRevision}`,
         },
     ],
-    // Maia is roughly 56 MiB. Keep its local ONNX Runtime assets out of the
-    // install-time coach precache; selecting Maia prepares and caches them.
-    globIgnores: ['public/vendor/maia/**/*'],
+    // Keep both chess engines out of install-time precaching. Opening Coach
+    // explicitly persists Stockfish; selecting Maia prepares its larger model.
+    // Landing/login therefore install neither engine in a fresh profile.
+    globIgnores: [
+        'public/vendor/maia/**/*',
+        'public/vendor/stockfish/**/*',
+    ],
     maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
     swSrc: 'src/app/sw.ts',
     useNativeEsbuild: true,

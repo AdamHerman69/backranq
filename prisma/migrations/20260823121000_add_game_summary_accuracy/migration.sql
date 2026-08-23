@@ -1,0 +1,3 @@
+ALTER TABLE "AnalyzedGame"
+ADD COLUMN "whiteAccuracy" DOUBLE PRECISION,
+ADD COLUMN "blackAccuracy" DOUBLE PRECISION;

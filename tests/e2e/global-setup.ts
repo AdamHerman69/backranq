@@ -573,6 +573,8 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                         },
                     ],
                 },
+                whiteAccuracy: 91.4,
+                blackAccuracy: 84.2,
                 analyzedAt: new Date('2026-07-20T12:15:00.000Z'),
             },
             {

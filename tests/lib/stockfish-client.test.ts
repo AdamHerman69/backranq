@@ -8,9 +8,12 @@ import {
 } from '@/lib/analysis/stockfishClient';
 import {
     STOCKFISH_BROWSER_CACHE_NAME,
+    STOCKFISH_BROWSER_NESTED_WORKER_URL,
     STOCKFISH_BROWSER_REVISION,
-    STOCKFISH_BROWSER_WORKER_URL,
+    STOCKFISH_BROWSER_RUNTIME_ASSET_URLS,
+    STOCKFISH_BROWSER_WASM_URL,
 } from '@/lib/analysis/stockfishMetadata';
+import { allowsPublicEnginePrewarm } from '@/lib/hooks/usePublicPuzzleSession';
 
 function line(multipv: number, move: string): MultiPvLine {
     return {
@@ -62,24 +65,37 @@ describe('browser Stockfish MultiPV completeness', () => {
 });
 
 describe('browser Stockfish asset revision', () => {
-    it('versions both the worker request and its service-worker cache', () => {
-        expect(STOCKFISH_BROWSER_WORKER_URL).toContain(
-            encodeURIComponent(STOCKFISH_BROWSER_REVISION)
-        );
+    it('versions every runtime request and its service-worker cache', () => {
+        for (const assetUrl of STOCKFISH_BROWSER_RUNTIME_ASSET_URLS) {
+            expect(assetUrl).toContain(
+                encodeURIComponent(STOCKFISH_BROWSER_REVISION)
+            );
+        }
+        expect(STOCKFISH_BROWSER_NESTED_WORKER_URL).toContain('.js?v=');
+        expect(STOCKFISH_BROWSER_WASM_URL).toContain('.wasm?v=');
         expect(STOCKFISH_BROWSER_CACHE_NAME).toContain(
             STOCKFISH_BROWSER_REVISION
         );
-        expect(
-            readFileSync(
-                resolve(
-                    process.cwd(),
-                    'public/vendor/stockfish/backranq-engine.worker.js'
-                ),
-                'utf8'
-            )
-        ).toContain(
+        const workerSource = readFileSync(
+            resolve(
+                process.cwd(),
+                'public/vendor/stockfish/backranq-engine.worker.js'
+            ),
+            'utf8'
+        );
+        expect(workerSource).toContain(
             `const runtimeRevision = '${STOCKFISH_BROWSER_REVISION}'`
         );
+        expect(workerSource).toContain("'stockfish-18-lite-single.wasm'");
+        expect(workerSource).toContain('workerUrl.hash =');
+    });
+});
+
+describe('public puzzle engine intent', () => {
+    it('allows speculative post-intent warmup unless data saving is enabled', () => {
+        expect(allowsPublicEnginePrewarm(undefined)).toBe(true);
+        expect(allowsPublicEnginePrewarm({ saveData: false })).toBe(true);
+        expect(allowsPublicEnginePrewarm({ saveData: true })).toBe(false);
     });
 });
 

@@ -23,7 +23,7 @@ import {
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { StockfishClient } from '@/lib/analysis/stockfishClient';
+import type { StockfishClient } from '@/lib/analysis/stockfishClient';
 import {
     fetchCurrentMasterPuzzle,
     fetchOnboardingGames,
@@ -36,7 +36,6 @@ import type {
     PublicChessIdentity,
     PublicChessProvider,
 } from '@/lib/onboarding/contracts';
-import { findFirstVerifiedPersonalPuzzle } from '@/lib/onboarding/personalPuzzleFinder';
 import { landingOnboardingReducer } from '@/lib/onboarding/state';
 import { WARMUP_PUZZLE } from '@/lib/onboarding/warmupPuzzle';
 
@@ -225,6 +224,13 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                 provider,
                 gameCount: response.games.length,
             });
+            const [stockfishModule, puzzleFinderModule] = await Promise.all([
+                import('@/lib/analysis/stockfishClient'),
+                import('@/lib/onboarding/personalPuzzleFinder'),
+            ]);
+            if (controller.signal.aborted) return;
+            const { StockfishClient } = stockfishModule;
+            const { findFirstVerifiedPersonalPuzzle } = puzzleFinderModule;
             const engine = new StockfishClient();
             engineRef.current = engine;
             const puzzle = await findFirstVerifiedPersonalPuzzle({

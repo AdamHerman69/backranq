@@ -33,7 +33,10 @@ import {
     TabsTrigger,
 } from '@/components/ui/tabs';
 import { usePracticeFeed } from '@/lib/hooks/usePracticeFeed';
-import type { PracticeFeedMode } from '@/lib/training/api';
+import type {
+    PracticeFeedInitialData,
+    PracticeFeedMode,
+} from '@/lib/training/api';
 import { legalMoveFromInput } from '@/lib/training/boardInput';
 import { bestMoveReviewArrows } from '@/lib/training/boardPresentation';
 import {
@@ -91,6 +94,7 @@ function unresolvedExplanation(
 }
 
 export function TrainingTrainer({
+    initialPractice,
     initialMomentId,
     ownerId,
     entry,
@@ -99,6 +103,7 @@ export function TrainingTrainer({
     initialViewMode = 'solve',
     compact = false,
 }: {
+    initialPractice: PracticeFeedInitialData;
     initialMomentId?: string;
     ownerId?: string;
     entry?: 'progress';
@@ -107,13 +112,14 @@ export function TrainingTrainer({
     initialViewMode?: TrainerViewMode;
     compact?: boolean;
 }) {
-    const training = usePracticeFeed(
+    const training = usePracticeFeed({
+        initialPractice,
         initialMomentId,
-        ownerId,
+        ownerIdOverride: ownerId,
         entry,
         initialMode,
-        initialGameId
-    );
+        initialGameId,
+    });
     const nextPosition = training.next;
     const [flipped, setFlipped] = useState(false);
     const [viewMode, setViewMode] =

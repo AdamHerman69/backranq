@@ -107,7 +107,11 @@ jobs:
           --shadow-database-url "$SHADOW_DATABASE_URL"
           --exit-code
 
-      - name: Verify PostgreSQL advisory locking and push ownership atomically
+      - name: Verify PostgreSQL locking and Progress aggregate parity
         env:
           BACKRANQ_POSTGRES_INTEGRATION: 'true'
-        run: pnpm vitest run tests/lib/postgres-locking.integration.test.ts
+          BACKRANQ_PROGRESS_SCALE_INTEGRATION: 'true'
+        run: >-
+          pnpm vitest run
+          tests/lib/postgres-locking.integration.test.ts
+          tests/lib/progress-read-postgres.integration.test.ts

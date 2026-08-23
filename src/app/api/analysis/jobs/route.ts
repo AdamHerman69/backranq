@@ -4,10 +4,15 @@ import { prisma } from '@/lib/prisma';
 import {
     analysisJobCreditsMetadata,
     analysisJobStatusFilter,
+    analysisRunToSummary,
     getAnalysisJobDurationMs,
-    getAnalysisRunSummaryForJob,
     SERVER_ANALYSIS_EXECUTION_MODE,
 } from '@/lib/services/analysisJobs';
+import type { AnalysisRun } from '@prisma/client';
+import {
+    measureRequestPhase,
+    withRequestTrace,
+} from '@/lib/performance/requestTrace';
 
 export const runtime = 'nodejs';
 const UUID_PATTERN =
@@ -26,12 +31,14 @@ type AnalysisJobApiRecord = {
     queuedReason: string | null;
     createdAt: Date;
     updatedAt: Date;
+    analysisRun: AnalysisRun | null;
 };
 
-async function analysisJobResponse(job: AnalysisJobApiRecord) {
-    const run = await getAnalysisRunSummaryForJob(job.id);
+function analysisJobResponse(job: AnalysisJobApiRecord) {
+    const { analysisRun, ...jobFields } = job;
+    const run = analysisRun ? analysisRunToSummary(analysisRun) : null;
     return {
-        ...job,
+        ...jobFields,
         executionMode: run?.executionMode ?? SERVER_ANALYSIS_EXECUTION_MODE,
         configHash: run?.configHash ?? null,
         durationMs:
@@ -46,7 +53,14 @@ async function analysisJobResponse(job: AnalysisJobApiRecord) {
 }
 
 export async function GET(req: Request) {
-    const session = await auth();
+    return withRequestTrace(
+        { route: '/api/analysis/jobs', request: req },
+        () => listAnalysisJobs(req)
+    );
+}
+
+async function listAnalysisJobs(req: Request) {
+    const session = await measureRequestPhase('auth', () => auth());
     const userId = session?.user?.id;
     if (!userId) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -76,15 +90,16 @@ export async function GET(req: Request) {
         return NextResponse.json({ jobs: [] });
     }
 
-    const jobs = await prisma.analysisJob.findMany({
-        where: {
-            userId,
-            ...(status ? { status } : {}),
-            ...(ids.length > 0 ? { id: { in: ids } } : {}),
-        },
-        orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
-        take: ids.length > 0 ? Math.max(limit, ids.length) : limit,
-        select: {
+    const jobs = await measureRequestPhase('jobs', () =>
+        prisma.analysisJob.findMany({
+            where: {
+                userId,
+                ...(status ? { status } : {}),
+                ...(ids.length > 0 ? { id: { in: ids } } : {}),
+            },
+            orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+            take: ids.length > 0 ? Math.max(limit, ids.length) : limit,
+            select: {
             id: true,
             gameId: true,
             status: true,
@@ -106,11 +121,13 @@ export async function GET(req: Request) {
                     analyzedAt: true,
                 },
             },
-        },
-    });
+            analysisRun: true,
+            },
+        })
+    );
 
     return NextResponse.json({
-        jobs: await Promise.all(jobs.map(analysisJobResponse)),
+        jobs: jobs.map(analysisJobResponse),
     });
 }
 

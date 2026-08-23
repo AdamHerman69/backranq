@@ -26,6 +26,26 @@ If you want to automatically link accounts across providers by matching email (a
 
 Server analysis is credit-backed work. Browser analysis stays free and local. Standard server analysis costs 7 credits per game; the default Thorough profile costs 10 and uses a larger adaptive confirmation frontier. Quality, exact resolved options, and price are immutable enqueue-time `AnalysisRun` provenance. If the exact reservation fails, the job is not queued.
 
+`BACKRANQ_QUEUE_REGION` is the explicit storage region for every Backranq Queue
+publisher and callback client. Production readiness requires a Vercel region code
+such as `iad1`; it must not be derived from `VERCEL_REGION`, because Function
+failover or a regional performance experiment must not fragment pending work.
+Vercel environments fail fast when this variable is missing or malformed;
+local development alone falls back to `iad1`.
+
+Core read endpoints emit `Server-Timing`, a request ID, Function/Queue region,
+cold-start state and `X-Backranq-Db-Operation-Count`. The count is intentionally
+Prisma client operations rather than SQL statements, and `db_ops_sum` is the
+sum of operation durations (parallel operations can make it exceed request wall
+time). Structured `request.performance` logs contain only fixed timing fields,
+never SQL, cookies, user IDs, FEN or PGN. Configure sampling with
+`BACKRANQ_PERFORMANCE_SAMPLE_RATE` (`0..1`) or disable them explicitly with
+`BACKRANQ_PERFORMANCE_LOGS=false`.
+
+The opt-in Progress scale gate exercises the real PostgreSQL reader with
+100,000 attempts across 1,000 positions:
+`BACKRANQ_POSTGRES_INTEGRATION=true BACKRANQ_PROGRESS_SCALE_INTEGRATION=true pnpm vitest run tests/lib/progress-read-postgres.integration.test.ts`.
+
 Required billing env:
 
 - `STRIPE_SECRET_KEY`

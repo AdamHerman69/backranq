@@ -14,3 +14,16 @@ export function shouldPollAnalysis(input: {
             input.browserRunning)
     );
 }
+
+export const IDLE_ANALYSIS_STATUS_DELAY_MS = 15_000;
+
+export function initialAnalysisStatusDelayMs(input: {
+    authenticated: boolean;
+    ownerId: string | null;
+    hasTrackedServerBatch: boolean;
+}): number | null {
+    if (!input.authenticated || !input.ownerId) return null;
+    return input.hasTrackedServerBatch
+        ? 0
+        : IDLE_ANALYSIS_STATUS_DELAY_MS;
+}

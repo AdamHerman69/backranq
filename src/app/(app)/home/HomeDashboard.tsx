@@ -1,0 +1,649 @@
+'use client';
+
+import {
+    useCallback,
+    useEffect,
+    useRef,
+    useState,
+    type ReactNode,
+} from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import {
+    AlertCircle,
+    ArrowRight,
+    CheckCircle2,
+    Clock3,
+    LineChart,
+    RefreshCw,
+    Shuffle,
+} from 'lucide-react';
+
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { SyncGamesWidget } from '@/components/sync/SyncGamesWidget';
+import {
+    automationBlockAction,
+    humanizeAutomationBlockReason,
+    isCreditOrCapBlockReason,
+} from '@/components/sync/syncClient';
+import {
+    ANALYSIS_COMPLETION_EVENT,
+    LIBRARY_CHANGED_EVENT,
+    readLastAnalysisCompletion,
+    type AnalysisCompletionSummary,
+} from '@/lib/analysis/analysisCompletion';
+import type { BackgroundAnalysisSnapshot } from '@/lib/analysis/backgroundAnalysisManager';
+import type {
+    HomeDashboardSnapshot,
+    HomeViewer,
+} from '@/lib/home/contracts';
+import {
+    deriveHomeProductState,
+    type HomeProductState,
+} from '@/lib/product/homeState';
+
+export function HomeDashboard({
+    viewer,
+    snapshot: dashboard,
+}: {
+    viewer: HomeViewer;
+    snapshot: HomeDashboardSnapshot;
+}) {
+    const router = useRouter();
+    const ownerId = viewer.id;
+    const [analysisSnapshot, setAnalysisSnapshot] =
+        useState<BackgroundAnalysisSnapshot>({
+            ownerId: null,
+            state: 'idle',
+            percent: 0,
+            label: '',
+            totalGames: 0,
+            completedGames: 0,
+            queuedGames: 0,
+            pendingUnanalyzedCount: null,
+            lastError: null,
+            lastCompletion: null,
+        });
+    const [lastCompletion, setLastCompletion] =
+        useState<AnalysisCompletionSummary | null>(() =>
+            readLastAnalysisCompletion(ownerId)
+        );
+    const refreshFrame = useRef<number | null>(null);
+    const refreshDashboard = useCallback(() => {
+        if (refreshFrame.current !== null) return;
+        refreshFrame.current = window.requestAnimationFrame(() => {
+            refreshFrame.current = null;
+            router.refresh();
+        });
+    }, [router]);
+
+    useEffect(() => {
+        let disposed = false;
+        let unsubscribe = () => {};
+        const subscribeToAnalysis = () => {
+            if (!navigator.onLine) {
+                window.addEventListener('online', subscribeToAnalysis, {
+                    once: true,
+                });
+                return;
+            }
+            void import('@/lib/analysis/backgroundAnalysisManager').then(
+                ({ backgroundAnalysis }) => {
+                    if (disposed) return;
+                    backgroundAnalysis.setOwner(ownerId);
+                    unsubscribe = backgroundAnalysis.subscribe((next) => {
+                        if (!disposed && next.ownerId === ownerId) {
+                            setAnalysisSnapshot(next);
+                        }
+                    });
+                }
+            ).catch(() => {
+                // Browser-analysis status is supplementary to the server
+                // snapshot. A failed lazy chunk must not break Home.
+            });
+        };
+        const analysisSubscriptionTimer = window.setTimeout(
+            subscribeToAnalysis,
+            1_500
+        );
+        const onCompletion = (event: Event) => {
+            const summary = (
+                event as CustomEvent<AnalysisCompletionSummary>
+            ).detail;
+            if (summary?.ownerId !== ownerId) return;
+            setLastCompletion(summary);
+            refreshDashboard();
+        };
+        const refresh = (event: Event) => {
+            const eventOwner = (
+                event as CustomEvent<{
+                    ownerId?: string;
+                    invalidateCompletion?: boolean;
+                }>
+            ).detail?.ownerId;
+            const invalidateCompletion = (
+                event as CustomEvent<{
+                    ownerId?: string;
+                    invalidateCompletion?: boolean;
+                }>
+            ).detail?.invalidateCompletion;
+            if (
+                invalidateCompletion &&
+                (!eventOwner || eventOwner === ownerId)
+            ) {
+                setLastCompletion(null);
+            }
+            if (!eventOwner || eventOwner === ownerId) refreshDashboard();
+        };
+        window.addEventListener(ANALYSIS_COMPLETION_EVENT, onCompletion);
+        window.addEventListener(LIBRARY_CHANGED_EVENT, refresh);
+        window.addEventListener('focus', refresh);
+        return () => {
+            disposed = true;
+            window.clearTimeout(analysisSubscriptionTimer);
+            window.removeEventListener('online', subscribeToAnalysis);
+            if (refreshFrame.current !== null) {
+                window.cancelAnimationFrame(refreshFrame.current);
+                refreshFrame.current = null;
+            }
+            unsubscribe();
+            window.removeEventListener(
+                ANALYSIS_COMPLETION_EVENT,
+                onCompletion
+            );
+            window.removeEventListener(LIBRARY_CHANGED_EVENT, refresh);
+            window.removeEventListener('focus', refresh);
+        };
+    }, [ownerId, refreshDashboard]);
+
+    const dashboardMatchesOwner = dashboard.ownerId === ownerId;
+    const dashboardStatus = dashboardMatchesOwner
+        ? dashboard.status
+        : 'error';
+    const trainingMomentCount = dashboardMatchesOwner
+        ? dashboard.trainingMomentCount
+        : 0;
+    const gameCount = dashboardMatchesOwner ? dashboard.gameCount : 0;
+    const duePracticeCount = dashboardMatchesOwner
+        ? dashboard.duePracticeCount
+        : 0;
+    const trainingMomentCountIsExact = dashboardMatchesOwner
+        ? dashboard.trainingMomentCountIsExact
+        : true;
+    const duePracticeCountIsExact = dashboardMatchesOwner
+        ? dashboard.duePracticeCountIsExact
+        : true;
+    const unanalyzedGameCount = dashboardMatchesOwner
+        ? dashboard.unanalyzedGameCount
+        : 0;
+    const dashboardSyncStatus = dashboardMatchesOwner
+        ? dashboard.syncStatus
+        : null;
+    const hasTrainingMoments = trainingMomentCount > 0;
+
+    const hasLinkedAccount =
+        !!dashboardSyncStatus?.linked.lichessUsername ||
+        !!dashboardSyncStatus?.linked.chesscomUsername;
+    const automationStatus = dashboardSyncStatus?.automation;
+    const rawAnalysisBlockedReason =
+        automationStatus?.backlog?.blockedReason ??
+        automationStatus?.capacity?.blockingReason ??
+        null;
+    const effectiveAnalysisBlockedReason =
+        rawAnalysisBlockedReason ??
+        ((!automationStatus || automationStatus.policy?.enabled === true) &&
+        unanalyzedGameCount > 0 &&
+        dashboardSyncStatus?.billing?.reservableGames === 0
+            ? 'credits'
+            : null);
+    const productState: HomeProductState = deriveHomeProductState({
+        loading: false,
+        error: dashboardMatchesOwner ? dashboard.error : null,
+        linkedAccountKnown: dashboardSyncStatus !== null,
+        hasLinkedAccount,
+        gameCount,
+        unanalyzedGameCount,
+        trainingMomentCount,
+        browserAnalysisRunning:
+            analysisSnapshot.ownerId === ownerId &&
+            analysisSnapshot.state === 'running',
+        serverQueued:
+            automationStatus?.backlog?.queued ??
+            dashboardSyncStatus?.analysisJobs?.queued ??
+            0,
+        serverRunning:
+            automationStatus?.backlog?.running ??
+            dashboardSyncStatus?.analysisJobs?.running ??
+            0,
+        serverFailed:
+            automationStatus?.backlog?.terminalFailed ??
+            dashboardSyncStatus?.analysisJobs?.failed ??
+            0,
+        analysisBlockedReason:
+            isCreditOrCapBlockReason(rawAnalysisBlockedReason)
+                ? humanizeAutomationBlockReason(rawAnalysisBlockedReason)
+                : (!automationStatus ||
+                      automationStatus.policy?.enabled === true) &&
+                    unanalyzedGameCount > 0 &&
+                    dashboardSyncStatus?.billing?.reservableGames === 0
+                  ? dashboardSyncStatus.billing.limitingReason ??
+                    'No server credits are currently available.'
+                  : null,
+        lastCompletion,
+    });
+
+    return (
+        <div className="mx-auto max-w-7xl space-y-5 sm:space-y-7">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+                <div className="space-y-1">
+                    <p className="editorial-label">
+                        Your chess, distilled
+                    </p>
+                    <h1 className="font-display text-4xl font-semibold leading-none tracking-[-0.035em] sm:text-5xl">
+                        Welcome back
+                        {viewer.name
+                            ? `, ${viewer.name.split(' ')[0]}`
+                            : ''}
+                    </h1>
+                    <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground sm:text-base">
+                        {dashboardStatus === 'error'
+                            ? 'Your games and positions are still here, but their latest status could not be loaded.'
+                            : duePracticeCount > 0
+                              ? `${duePracticeCount}${duePracticeCountIsExact ? '' : '+'} practice position${duePracticeCount === 1 && duePracticeCountIsExact ? ' is' : 's are'} due for review.`
+                            : hasTrainingMoments
+                            ? `${trainingMomentCount}${trainingMomentCountIsExact ? '' : '+'} practice position${trainingMomentCount === 1 && trainingMomentCountIsExact ? ' is' : 's are'} ready from ${gameCount} games.`
+                            : !trainingMomentCountIsExact
+                              ? 'Practice is still scanning a bounded part of your library. Open Practice to continue safely.'
+                            : dashboardSyncStatus === null
+                              ? 'Your library is available, but linked-account sync status is temporarily unavailable.'
+                            : gameCount > 0
+                                ? `You have ${gameCount} games. Analyze them to find personal practice positions.`
+                                : 'Sync your first games to get started.'}
+                    </p>
+                </div>
+                <div className="hidden items-center gap-2 sm:flex">
+                    <Button variant="ghost" asChild>
+                        <Link href="/games" prefetch={false}>
+                            Games
+                            <ArrowRight aria-hidden="true" />
+                        </Link>
+                    </Button>
+                </div>
+            </div>
+
+            {productState === 'no-games' ? (
+                <div className="border-y border-foreground/10 py-4">
+                    <SyncGamesWidget
+                        context="home"
+                        enableAnalyze
+                        variant="banner"
+                        syncIsPrimary
+                        initialOwnerId={ownerId}
+                        initialStatus={dashboardSyncStatus}
+                    />
+                </div>
+            ) : null}
+
+            <HomeStateCard
+                state={productState}
+                gameCount={gameCount}
+                unanalyzedGameCount={unanalyzedGameCount}
+                trainingMomentCount={trainingMomentCount}
+                trainingMomentCountIsExact={trainingMomentCountIsExact}
+                duePracticeCount={duePracticeCount}
+                duePracticeCountIsExact={duePracticeCountIsExact}
+                analysisBlockedReason={effectiveAnalysisBlockedReason}
+                error={dashboardMatchesOwner ? dashboard.error : null}
+                onRetry={refreshDashboard}
+            />
+
+            {dashboardStatus === 'ready' &&
+            productState !== 'no-linked-account' &&
+            productState !== 'no-games' ? (
+                <HomeSummary
+                    gameCount={gameCount}
+                    trainingMomentCount={trainingMomentCount}
+                    duePracticeCount={duePracticeCount}
+                />
+            ) : null}
+
+            {productState !== 'no-games' &&
+            productState !== 'no-linked-account' ? (
+                <div className="border-y border-foreground/10 py-4">
+                    <SyncGamesWidget
+                        context="home"
+                        enableAnalyze
+                        variant="banner"
+                        initialOwnerId={ownerId}
+                        initialStatus={dashboardSyncStatus}
+                    />
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+function HomeStateCard({
+    state,
+    gameCount,
+    unanalyzedGameCount,
+    trainingMomentCount,
+    trainingMomentCountIsExact,
+    duePracticeCount,
+    duePracticeCountIsExact,
+    analysisBlockedReason,
+    error,
+    onRetry,
+}: {
+    state: HomeProductState;
+    gameCount: number;
+    unanalyzedGameCount: number;
+    trainingMomentCount: number;
+    trainingMomentCountIsExact: boolean;
+    duePracticeCount: number;
+    duePracticeCountIsExact: boolean;
+    analysisBlockedReason: string | null;
+    error: string | null;
+    onRetry: () => void;
+}) {
+    if (state === 'loading') {
+        return (
+            <Card variant="subtle" aria-live="polite">
+                <CardContent className="flex items-center gap-3 py-8">
+                    <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
+                    <div>
+                        <div className="font-medium">Loading your next step</div>
+                        <div className="text-sm text-muted-foreground">
+                            Checking games, analysis and practice progress…
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
+        );
+    }
+
+    if (state === 'error') {
+        return (
+            <Card aria-live="polite">
+                <CardContent className="flex flex-wrap items-center justify-between gap-4 py-6">
+                    <div className="flex items-start gap-3">
+                        <AlertCircle className="mt-0.5 h-5 w-5 text-destructive" aria-hidden="true" />
+                        <div>
+                            <div className="font-medium">Overview unavailable</div>
+                            <div className="text-sm text-muted-foreground">
+                                {error ?? 'We could not load your latest status.'}
+                            </div>
+                        </div>
+                    </div>
+                    <Button type="button" variant="outline" onClick={onRetry}>
+                        Try again
+                    </Button>
+                </CardContent>
+            </Card>
+        );
+    }
+
+    if (state === 'no-linked-account') {
+        return (
+            <NextActionCard
+                icon={<AlertCircle className="h-5 w-5" aria-hidden="true" />}
+                title="Link a chess account"
+                description="Connect Lichess or Chess.com first. Then Backranq can import games without asking for files."
+                actionLabel="Open settings"
+                href="/settings"
+            />
+        );
+    }
+
+    if (state === 'sync-status-unavailable') {
+        return (
+            <NextActionCard
+                icon={
+                    <AlertCircle
+                        className="h-5 w-5"
+                        aria-hidden="true"
+                    />
+                }
+                title="Game source status unavailable"
+                description="We could not check your linked chess accounts. Your existing library is unchanged; retry the source status below."
+            />
+        );
+    }
+
+    if (state === 'no-games') {
+        return (
+            <NextActionCard
+                icon={<Shuffle className="h-5 w-5" aria-hidden="true" />}
+                title="Sync your first games"
+                description="Your account is linked. Use the Sync now button above to import recent games and find your first positions."
+            />
+        );
+    }
+
+    if (state === 'analysis-in-progress') {
+        return (
+            <NextActionCard
+                icon={<Clock3 className="h-5 w-5" aria-hidden="true" />}
+                title="Analysis is in progress"
+                description={`${Math.max(0, gameCount - unanalyzedGameCount)} of ${gameCount} games are analyzed. You can leave server analysis running or keep this tab open for browser analysis.`}
+                actionLabel={trainingMomentCount > 0 ? 'Practice available positions' : 'View games'}
+                href={trainingMomentCount > 0 ? '/practice' : '/games'}
+            />
+        );
+    }
+
+    if (state === 'failed') {
+        return (
+            <NextActionCard
+                icon={<AlertCircle className="h-5 w-5 text-destructive" aria-hidden="true" />}
+                title="Some games still need analysis"
+                description={`${unanalyzedGameCount} game${unanalyzedGameCount === 1 ? '' : 's'} remain. Review the analysis bar for the error and retry only the unfinished games.`}
+                actionLabel="Review games"
+                href="/games"
+            />
+        );
+    }
+
+    if (state === 'analysis-blocked') {
+        const blockedAction = automationBlockAction(analysisBlockedReason);
+        const blockedDescription =
+            analysisBlockedReason === 'credits'
+                ? 'automatic server analysis has no credits available right now'
+                : analysisBlockedReason === 'plan-cap'
+                  ? 'your plan’s monthly analysis limit has been reached'
+                  : 'automatic analysis is paused by your reserve or personal caps';
+        return (
+            <NextActionCard
+                icon={<AlertCircle className="h-5 w-5" aria-hidden="true" />}
+                title="Your games are imported"
+                description={`${unanalyzedGameCount} game${unanalyzedGameCount === 1 ? ' is' : 's are'} waiting because ${blockedDescription}. Sync will continue and your imported games are safe.`}
+                actionLabel="Analyze free in browser"
+                href="/games"
+                secondaryAction={{
+                    label: blockedAction.label,
+                    href: blockedAction.href,
+                }}
+            />
+        );
+    }
+
+    if (state === 'unanalyzed') {
+        return (
+            <NextActionCard
+                icon={<LineChart className="h-5 w-5" aria-hidden="true" />}
+                title="Analyze your imported games"
+                description={`${unanalyzedGameCount} of ${gameCount} game${gameCount === 1 ? '' : 's'} still need analysis before they can produce practice positions.`}
+                actionLabel="Choose analysis"
+                href="/games"
+            />
+        );
+    }
+
+    if (state === 'analyzed-no-candidates') {
+        if (!trainingMomentCountIsExact) {
+            return (
+                <NextActionCard
+                    icon={<Clock3 className="h-5 w-5" aria-hidden="true" />}
+                    title="Practice scan can continue"
+                    description="The bounded Home check found no ready position in its first slices. Open Practice to continue from the safe cursor; future-scheduled reviews are not counted as ready."
+                    actionLabel="Check Practice"
+                    href="/practice"
+                />
+            );
+        }
+        return (
+            <NextActionCard
+                icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
+                title="Analysis complete — no practice positions"
+                description={`All ${gameCount} games were analyzed successfully. None matched your current extraction settings; this is different from an analysis error.`}
+                actionLabel="Review position settings"
+                href="/settings"
+            />
+        );
+    }
+
+    return (
+        <NextActionCard
+            icon={<CheckCircle2 className="h-5 w-5" aria-hidden="true" />}
+            title={
+                duePracticeCount > 0
+                    ? `${duePracticeCount}${duePracticeCountIsExact ? '' : '+'} review${duePracticeCount === 1 && duePracticeCountIsExact ? '' : 's'} due`
+                    : `${trainingMomentCount}${trainingMomentCountIsExact ? '' : '+'} practice position${trainingMomentCount === 1 && trainingMomentCountIsExact ? '' : 's'} ready`
+            }
+            description={
+                duePracticeCount > 0
+                    ? 'Open the Review queue to revisit the positions scheduled for today.'
+                    : 'Open Practice and work through your personal positions for as long as you like.'
+            }
+            actionLabel={
+                duePracticeCount > 0
+                    ? 'Review due positions'
+                    : 'Practice now'
+            }
+            href={
+                duePracticeCount > 0
+                    ? '/practice?mode=review'
+                    : '/practice'
+            }
+        />
+    );
+}
+
+function NextActionCard({
+    icon,
+    title,
+    description,
+    actionLabel,
+    href,
+    secondaryAction,
+}: {
+    icon: ReactNode;
+    title: string;
+    description: string;
+    actionLabel?: string;
+    href?: string;
+    secondaryAction?: { label: string; href: string };
+}) {
+    return (
+        <Card
+            variant="plain"
+            className="group relative isolate overflow-hidden border-foreground bg-foreground text-background shadow-raised"
+        >
+            <div
+                className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-accent"
+                aria-hidden="true"
+            />
+            <CardContent className="relative flex min-h-[168px] flex-col justify-between gap-6 p-5 sm:min-h-[176px] sm:p-7 lg:flex-row lg:items-center">
+                <div className="flex max-w-2xl items-start gap-4">
+                    <div className="mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-sm bg-accent text-accent-foreground shadow-control [&_svg]:h-5 [&_svg]:w-5">
+                        {icon}
+                    </div>
+                    <div>
+                        <p className="editorial-label text-accent">
+                            Your next move
+                        </p>
+                        <h2 className="mt-2 font-display text-3xl font-semibold leading-none tracking-[-0.03em] sm:text-4xl">
+                            {title}
+                        </h2>
+                        <p className="mt-3 max-w-xl text-sm leading-relaxed text-background/65 sm:text-base">
+                            {description}
+                        </p>
+                    </div>
+                </div>
+                <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row">
+                    {actionLabel && href ? (
+                        <Button asChild size="lg" className="w-full border-accent bg-accent text-accent-foreground hover:bg-accent/90 sm:w-auto">
+                            <Link
+                                href={href}
+                                prefetch={false}
+                            >
+                                {actionLabel}
+                                <ArrowRight aria-hidden="true" />
+                            </Link>
+                        </Button>
+                    ) : null}
+                    {secondaryAction ? (
+                        <Button
+                            asChild
+                            variant="outline"
+                            size="lg"
+                            className="w-full border-background/25 bg-background/5 text-background hover:bg-background/10 hover:text-background sm:w-auto"
+                        >
+                            <Link href={secondaryAction.href} prefetch={false}>
+                                {secondaryAction.label}
+                            </Link>
+                        </Button>
+                    ) : null}
+                </div>
+            </CardContent>
+        </Card>
+    );
+}
+
+function HomeSummary({
+    gameCount,
+    trainingMomentCount,
+    duePracticeCount,
+}: {
+    gameCount: number;
+    trainingMomentCount: number;
+    duePracticeCount: number;
+}) {
+    const items = [
+        { label: 'Games', value: gameCount, href: '/games' },
+        {
+            label: 'Ready to practice',
+            value: trainingMomentCount,
+            href: '/practice',
+        },
+        {
+            label: 'Due today',
+            value: duePracticeCount,
+            href: '/practice?mode=review',
+        },
+    ];
+
+    return (
+        <section
+            aria-label="Your library at a glance"
+            className="grid grid-cols-3 gap-px overflow-hidden border-y border-foreground/15 bg-border"
+        >
+            {items.map((item) => (
+                <Link
+                    key={item.label}
+                    href={item.href}
+                    prefetch={false}
+                    className="group bg-card px-3 py-4 transition-colors duration-base hover:bg-surface-subtle sm:px-5"
+                >
+                    <span className="block text-xl font-semibold tabular-nums tracking-tight sm:text-2xl">
+                        {item.value}
+                    </span>
+                    <span className="mt-1 block text-[11px] font-medium leading-tight text-muted-foreground sm:text-xs">
+                        {item.label}
+                    </span>
+                </Link>
+            ))}
+        </section>
+    );
+}

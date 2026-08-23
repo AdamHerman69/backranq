@@ -28,7 +28,8 @@ export type GameCardData = {
     openingEco: string | null;
     openingVariation?: string | null;
     analyzedAt: string | null;
-    analysis: { whiteAccuracy?: number; blackAccuracy?: number } | null;
+    whiteAccuracy: number | null;
+    blackAccuracy: number | null;
     trainingMoments?: { id: string; decisionPly: number }[];
 };
 
@@ -110,9 +111,9 @@ export function GameCard({
 
     const accuracy =
         userIsWhite
-            ? game.analysis?.whiteAccuracy
+            ? game.whiteAccuracy
             : userIsBlack
-              ? game.analysis?.blackAccuracy
+              ? game.blackAccuracy
               : null;
 
     const trainingMoments = Array.isArray(game.trainingMoments)

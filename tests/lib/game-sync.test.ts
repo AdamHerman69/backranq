@@ -5,13 +5,18 @@ import {
     fetchHistoricalGames,
     getGameSyncActivity,
     getSyncStatus,
+    primeSyncStatusSnapshot,
+    readFreshSyncStatusSnapshot,
     requestGameSync,
     saveHistoricalGamesToLibrary,
+    syncStatusCacheTestUtils,
     unresolvedHistoryPageGameCount,
+    type SyncStatus,
 } from '@/lib/services/gameSync';
 import type { NormalizedGame } from '@/lib/types/game';
 
 afterEach(() => {
+    syncStatusCacheTestUtils.reset();
     vi.unstubAllGlobals();
     vi.useRealTimers();
 });
@@ -219,6 +224,83 @@ describe('historical game sync client', () => {
 });
 
 describe('bounded status requests', () => {
+    const status: SyncStatus = {
+        ownerId: 'user-cache',
+        inventory: { totalImported: 5, analyzed: 4, unanalyzed: 1 },
+        linked: { lichessUsername: 'Ada', chesscomUsername: null },
+        lastSync: { lichess: null, chesscom: null },
+    };
+
+    it('reuses only a fresh owner-scoped server snapshot', async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+        primeSyncStatusSnapshot(status, 1_000);
+
+        expect(readFreshSyncStatusSnapshot(status.ownerId, 30_000, 30_999))
+            .toBe(status);
+        expect(readFreshSyncStatusSnapshot('another-owner', 30_000, 2_000))
+            .toBeNull();
+        expect(readFreshSyncStatusSnapshot(status.ownerId, 30_000, 31_001))
+            .toBeNull();
+
+        primeSyncStatusSnapshot(status);
+        await expect(
+            getSyncStatus({ ownerId: status.ownerId, preferCached: true })
+        ).resolves.toBe(status);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('singleflights abortable and non-abortable reads for one owner', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse(status));
+        vi.stubGlobal('fetch', fetchMock);
+        const controller = new AbortController();
+
+        const [first, second] = await Promise.all([
+            getSyncStatus({ ownerId: status.ownerId }),
+            getSyncStatus({
+                ownerId: status.ownerId,
+                signal: controller.signal,
+            }),
+        ]);
+
+        expect(first).toEqual(status);
+        expect(second).toEqual(status);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps caller deadlines independent on a shared transport', async () => {
+        vi.useFakeTimers();
+        let resolveTransport: (response: Response) => void = () => {
+            throw new Error('Transport resolver was not initialized');
+        };
+        const fetchMock = vi.fn(
+            () =>
+                new Promise<Response>((resolve) => {
+                    resolveTransport = resolve;
+                })
+        );
+        vi.stubGlobal('fetch', fetchMock);
+
+        const short = getSyncStatus({
+            ownerId: status.ownerId,
+            timeoutMs: 5,
+        });
+        const patient = getSyncStatus({
+            ownerId: status.ownerId,
+            timeoutMs: 100,
+        });
+        const shortRejection = expect(short).rejects.toBeInstanceOf(
+            ClientRequestTimeoutError
+        );
+        await vi.advanceTimersByTimeAsync(5);
+        await shortRejection;
+        resolveTransport(jsonResponse(status));
+        await vi.advanceTimersByTimeAsync(0);
+
+        await expect(patient).resolves.toEqual(status);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it('releases callers when sync status hangs', async () => {
         vi.useFakeTimers();
         vi.stubGlobal(

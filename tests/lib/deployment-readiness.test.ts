@@ -16,6 +16,7 @@ const completeEnv = {
     STRIPE_PRICE_PLUS_MONTHLY: 'price_plus',
     STRIPE_PRICE_PRO_MONTHLY: 'price_pro',
     BACKRANQ_ADMIN_API_SECRET: 'ops-secret',
+    BACKRANQ_QUEUE_REGION: 'iad1',
     CRON_SECRET: 'cron-secret',
     SMTP2GO_API_KEY: 'smtp-key',
     SMTP2GO_WEBHOOK_SECRET: 'smtp-webhook-secret',
@@ -103,6 +104,40 @@ describe('deployment readiness', () => {
                 warnings: ['Stripe Plus and Pro price IDs must be distinct'],
             })
         );
+    });
+
+    it('requires one explicit, valid queue region in production', () => {
+        const withoutRegion: Record<string, string | undefined> = {
+            ...completeEnv,
+        };
+        delete withoutRegion.BACKRANQ_QUEUE_REGION;
+        const missing = getDeploymentReadiness(withoutRegion);
+        const malformed = getDeploymentReadiness({
+            ...completeEnv,
+            BACKRANQ_QUEUE_REGION: 'us-east',
+        });
+
+        expect(missing.checks).toContainEqual(
+            expect.objectContaining({
+                group: 'queues',
+                missing: ['BACKRANQ_QUEUE_REGION'],
+                ok: false,
+            })
+        );
+        expect(malformed.checks).toContainEqual(
+            expect.objectContaining({
+                group: 'queues',
+                warnings: [
+                    'BACKRANQ_QUEUE_REGION must be an explicit Vercel region code such as iad1 or dub1',
+                ],
+                ok: false,
+            })
+        );
+        expect(
+            getDeploymentReadiness(withoutRegion, 'local').checks.find(
+                (check) => check.group === 'queues'
+            )?.ok
+        ).toBe(true);
     });
 
     it('requires safe serverless pool settings in the production profile', () => {

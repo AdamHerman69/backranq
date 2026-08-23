@@ -118,6 +118,21 @@ export type PracticeFeedResponse = {
     appliedFilters: PracticeFilters;
 };
 
+/**
+ * Server-rendered hand-off for Practice. A regular feed starts with one prompt
+ * and a cursor immediately after it; a moment deep-link starts with the prompt
+ * only and lets the client fill the unrelated feed after the first paint.
+ */
+export type PracticeFeedInitialData = {
+    ownerId: string;
+    prompt: TrainingPromptDto | null;
+    nextCursor: string | null;
+    appliedFilters: PracticeFilters;
+    feedStarted: boolean;
+    feedHadPositions: boolean;
+    loadError: string | null;
+};
+
 export type TrainingMomentResponse = {
     ownerId: string;
     moment: TrainingPromptDto;

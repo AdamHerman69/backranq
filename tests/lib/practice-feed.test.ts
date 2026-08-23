@@ -3,12 +3,15 @@ import { describe, expect, it } from 'vitest';
 import type { TrainingPromptDto } from '@/lib/training/api';
 import {
     PRACTICE_FEED_LOW_WATER_MARK,
+    canAdoptInitialPracticeFeed,
     practiceFeedLoadErrorAfterEvent,
     practiceFeedOnlineAfterRead,
     practicePromptKey,
     isPracticeOwnerRunCurrent,
     resolvePracticeOwnerId,
     shouldPrefetchPracticeFeed,
+    shouldFillPracticeFeedAfterPaint,
+    practiceFeedPageAdoption,
     unseenPracticePrompts,
 } from '@/lib/hooks/usePracticeFeed';
 import { trainingQueueStorageKey } from '@/lib/training/offlineQueue';
@@ -82,6 +85,90 @@ describe('proactive practice feed buffering', () => {
             })
         ).toBe(false);
     });
+
+    it('fills after paint for a prompt or a bounded stale continuation and preserves exhausted feeds', () => {
+        expect(
+            shouldFillPracticeFeedAfterPaint({
+                hasPrompt: true,
+                bufferedPositions: 0,
+                feedStarted: false,
+                feedExhausted: false,
+                online: true,
+            })
+        ).toBe(true);
+        expect(
+            shouldFillPracticeFeedAfterPaint({
+                hasPrompt: true,
+                bufferedPositions: 0,
+                feedStarted: true,
+                feedExhausted: false,
+                online: true,
+            })
+        ).toBe(true);
+        expect(
+            shouldFillPracticeFeedAfterPaint({
+                hasPrompt: true,
+                bufferedPositions: 0,
+                feedStarted: true,
+                feedExhausted: true,
+                online: true,
+            })
+        ).toBe(false);
+        expect(
+            shouldFillPracticeFeedAfterPaint({
+                hasPrompt: false,
+                bufferedPositions: 0,
+                feedStarted: false,
+                feedExhausted: false,
+                online: true,
+            })
+        ).toBe(false);
+        expect(
+            shouldFillPracticeFeedAfterPaint({
+                hasPrompt: false,
+                bufferedPositions: 0,
+                feedStarted: true,
+                feedExhausted: false,
+                online: true,
+            })
+        ).toBe(true);
+    });
+
+    it('deduplicates the server-rendered prompt from a deep-link idle fill', () => {
+        const initial = prompt('moment-1');
+        const seen = new Set([practicePromptKey(initial)]);
+
+        expect(
+            unseenPracticePrompts(
+                [initial, prompt('moment-2'), prompt('moment-2')],
+                seen
+            ).map(practicePromptKey)
+        ).toEqual(['moment-2:revision-moment-2']);
+    });
+
+    it('promotes the first post-paint continuation item when the bounded server handoff has no prompt', () => {
+        const continuationPrompt = prompt('moment-after-stale-pages');
+        expect(
+            shouldFillPracticeFeedAfterPaint({
+                hasPrompt: false,
+                bufferedPositions: 0,
+                feedStarted: true,
+                feedExhausted: false,
+                online: true,
+            })
+        ).toBe(true);
+
+        expect(
+            practiceFeedPageAdoption({
+                activePrompt: null,
+                currentBuffer: [],
+                unseen: [continuationPrompt, prompt('moment-buffered')],
+            })
+        ).toEqual({
+            activate: continuationPrompt,
+            buffer: [prompt('moment-buffered')],
+        });
+    });
 });
 
 describe('practice feed read recovery', () => {
@@ -142,6 +229,41 @@ describe('practice feed read recovery', () => {
 });
 
 describe('practice owner fencing', () => {
+    it('adopts SSR state once for its owner and invalidates it after a reset or owner change', () => {
+        expect(
+            canAdoptInitialPracticeFeed({
+                initialOwnerId: 'user-a',
+                currentOwnerId: 'user-a',
+                feedRevision: 0,
+                invalidated: false,
+            })
+        ).toBe(true);
+        expect(
+            canAdoptInitialPracticeFeed({
+                initialOwnerId: 'user-a',
+                currentOwnerId: 'user-b',
+                feedRevision: 0,
+                invalidated: false,
+            })
+        ).toBe(false);
+        expect(
+            canAdoptInitialPracticeFeed({
+                initialOwnerId: 'user-a',
+                currentOwnerId: 'user-a',
+                feedRevision: 1,
+                invalidated: false,
+            })
+        ).toBe(false);
+        expect(
+            canAdoptInitialPracticeFeed({
+                initialOwnerId: 'user-a',
+                currentOwnerId: 'user-a',
+                feedRevision: 0,
+                invalidated: true,
+            })
+        ).toBe(false);
+    });
+
     it('uses the SSR owner only until the live session resolves', () => {
         expect(
             resolvePracticeOwnerId({

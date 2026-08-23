@@ -910,6 +910,8 @@ describe('PUT /api/games/[id]/analysis', () => {
             where: { id: 'game-1', pgn: ownedGame.pgn },
             data: {
                 analysis: expect.objectContaining({ gameId: validAnalysis.gameId }),
+                whiteAccuracy: validAnalysis.whiteAccuracy,
+                blackAccuracy: validAnalysis.blackAccuracy,
                 analyzedAt: expect.any(Date),
                 currentAnalysisRunId: 'run-1',
                 currentAnalysisValid: true,

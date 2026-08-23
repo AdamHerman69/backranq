@@ -139,7 +139,11 @@ export default async function PremiumInvitationPage({
                                     <span className="font-medium">{signedInEmail ?? 'an account without email'}</span>.
                                 </div>
                                 <div className="grid gap-2 sm:grid-cols-2">
-                                    <SignOutButton callbackUrl={invitePath} className="min-h-11">
+                                    <SignOutButton
+                                        ownerId={session?.user?.id}
+                                        callbackUrl={invitePath}
+                                        className="min-h-11"
+                                    >
                                         Switch account
                                     </SignOutButton>
                                     <Button asChild variant="ghost" className="min-h-11">
@@ -185,7 +189,11 @@ export default async function PremiumInvitationPage({
                                     Switch to the invited address to continue.
                                 </div>
                                 <div className="grid gap-2 sm:grid-cols-2">
-                                    <SignOutButton callbackUrl={invitePath} className="min-h-11">
+                                    <SignOutButton
+                                        ownerId={session?.user?.id}
+                                        callbackUrl={invitePath}
+                                        className="min-h-11"
+                                    >
                                         Switch account
                                     </SignOutButton>
                                     <Button asChild variant="ghost" className="min-h-11">

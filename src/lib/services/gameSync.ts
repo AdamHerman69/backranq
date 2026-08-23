@@ -13,6 +13,11 @@ export type HistoricalGameFilters = {
 
 export type SyncStatus = {
     ownerId: string;
+    inventory: {
+        totalImported: number;
+        analyzed: number;
+        unanalyzed: number;
+    };
     linked: {
         lichessUsername: string | null;
         chesscomUsername: string | null;
@@ -222,8 +227,49 @@ export type ServerAnalysisJob = {
 };
 
 export const DEFAULT_CLIENT_REQUEST_TIMEOUT_MS = 10_000;
+export const SYNC_STATUS_CACHE_TTL_MS = 30_000;
+const SYNC_STATUS_SHARED_TRANSPORT_TIMEOUT_MS = 30_000;
 
 const GAME_BULK_CHUNK_SIZE = 200;
+const MAX_SYNC_STATUS_CACHE_OWNERS = 8;
+const syncStatusSnapshots = new Map<
+    string,
+    { status: SyncStatus; observedAt: number }
+>();
+const syncStatusInFlight = new Map<string, Promise<SyncStatus>>();
+
+export function primeSyncStatusSnapshot(
+    status: SyncStatus,
+    observedAt = Date.now()
+) {
+    if (
+        !syncStatusSnapshots.has(status.ownerId) &&
+        syncStatusSnapshots.size >= MAX_SYNC_STATUS_CACHE_OWNERS
+    ) {
+        const oldestOwner = [...syncStatusSnapshots.entries()].sort(
+            (left, right) => left[1].observedAt - right[1].observedAt
+        )[0]?.[0];
+        if (oldestOwner) syncStatusSnapshots.delete(oldestOwner);
+    }
+    syncStatusSnapshots.set(status.ownerId, { status, observedAt });
+}
+
+export function readFreshSyncStatusSnapshot(
+    ownerId: string,
+    maxAgeMs = SYNC_STATUS_CACHE_TTL_MS,
+    now = Date.now()
+) {
+    const cached = syncStatusSnapshots.get(ownerId);
+    if (!cached || now - cached.observedAt > maxAgeMs) return null;
+    return cached.status;
+}
+
+export const syncStatusCacheTestUtils = {
+    reset() {
+        syncStatusSnapshots.clear();
+        syncStatusInFlight.clear();
+    },
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -315,25 +361,100 @@ export async function getSyncStatus(options: {
     ownerId?: string;
     signal?: AbortSignal;
     timeoutMs?: number;
+    preferCached?: boolean;
+    maxAgeMs?: number;
 } = {}): Promise<SyncStatus> {
-    const { response, json } = await fetchJsonWithTimeout(
-        '/api/sync/status',
-        {
-            cache: 'no-store',
-            signal: options.signal,
-        },
-        options.timeoutMs
-    );
-    if (!response.ok)
-        throw new Error(errorMessageFromJson(json, 'Failed to load sync status'));
-    if (
-        !isRecord(json) ||
-        typeof json.ownerId !== 'string' ||
-        (options.ownerId !== undefined && json.ownerId !== options.ownerId)
-    ) {
-        throw new Error('Invalid sync status owner');
+    if (options.signal?.aborted) {
+        throw callerAbortError(options.signal);
     }
-    return json as SyncStatus;
+    if (options.preferCached && options.ownerId) {
+        const cached = readFreshSyncStatusSnapshot(
+            options.ownerId,
+            options.maxAgeMs
+        );
+        if (cached) return cached;
+    }
+
+    const requestTransport = async () => {
+        const { response, json } = await fetchJsonWithTimeout(
+            '/api/sync/status',
+            {
+                cache: 'no-store',
+            },
+            SYNC_STATUS_SHARED_TRANSPORT_TIMEOUT_MS
+        );
+        if (!response.ok) {
+            throw new Error(
+                errorMessageFromJson(json, 'Failed to load sync status')
+            );
+        }
+        if (
+            !isRecord(json) ||
+            typeof json.ownerId !== 'string' ||
+            (options.ownerId !== undefined && json.ownerId !== options.ownerId)
+        ) {
+            throw new Error('Invalid sync status owner');
+        }
+        const status = json as SyncStatus;
+        primeSyncStatusSnapshot(status);
+        return status;
+    };
+
+    let transport: Promise<SyncStatus>;
+    if (!options.ownerId) {
+        transport = requestTransport();
+    } else {
+        const existing = syncStatusInFlight.get(options.ownerId);
+        if (existing) {
+            transport = existing;
+        } else {
+            const ownerId = options.ownerId;
+            const pending = requestTransport().finally(() => {
+                if (syncStatusInFlight.get(ownerId) === pending) {
+                    syncStatusInFlight.delete(ownerId);
+                }
+            });
+            syncStatusInFlight.set(ownerId, pending);
+            transport = pending;
+        }
+    }
+    return awaitSyncStatusForCaller(transport, options);
+}
+
+function callerAbortError(signal: AbortSignal) {
+    return signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('Aborted', 'AbortError');
+}
+
+function awaitSyncStatusForCaller(
+    transport: Promise<SyncStatus>,
+    options: { signal?: AbortSignal; timeoutMs?: number }
+) {
+    return new Promise<SyncStatus>((resolve, reject) => {
+        let settled = false;
+        const timeoutMs =
+            options.timeoutMs ?? DEFAULT_CLIENT_REQUEST_TIMEOUT_MS;
+        const finish = (callback: () => void) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            options.signal?.removeEventListener('abort', onAbort);
+            callback();
+        };
+        const onAbort = () =>
+            finish(() => reject(callerAbortError(options.signal!)));
+        const timeoutId = setTimeout(
+            () =>
+                finish(() => reject(new ClientRequestTimeoutError())),
+            timeoutMs
+        );
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+        transport.then(
+            (status) => finish(() => resolve(status)),
+            (error) => finish(() => reject(error))
+        );
+    });
 }
 
 export async function getGameSyncActivity(

@@ -153,6 +153,23 @@ describe('GET /api/analysis/jobs', () => {
         );
     });
 
+    it('loads analysis-run summaries in the job query instead of issuing N+1 reads', async () => {
+        const route = await importRoute();
+        prismaMock.analysisJob.findMany.mockResolvedValue([]);
+
+        const response = await route.GET(
+            new Request('http://localhost/api/analysis/jobs')
+        );
+
+        expect(response.status).toBe(200);
+        expect(prismaMock.analysisJob.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                select: expect.objectContaining({ analysisRun: true }),
+            })
+        );
+        expect(prismaMock.analysisJob.findUnique).not.toHaveBeenCalled();
+    });
+
     it.each(['abc', '1.5', '0', '201', 'Infinity'])(
         'rejects invalid limit %s before querying Prisma',
         async (limit) => {

@@ -970,7 +970,7 @@ export async function getAnalysisRunSummaryForJob(jobId: string) {
     }
 }
 
-function analysisRunToSummary(run: AnalysisRun): AnalysisRunSummary {
+export function analysisRunToSummary(run: AnalysisRun): AnalysisRunSummary {
     return {
         id: run.id,
         status: run.status,

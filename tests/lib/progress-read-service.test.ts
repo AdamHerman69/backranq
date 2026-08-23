@@ -1,228 +1,257 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-    PROGRESS_READ_LIMITS,
-    ProgressDatasetTooLargeError,
+    PROGRESS_READ_BUDGET,
+    ProgressUserNotFoundError,
     progressReadTestUtils,
 } from '@/lib/progress/readService';
+import type {
+    ProgressAttemptsSummary,
+    ProgressGamesSummary,
+    ProgressPositionsSummary,
+} from '@/lib/progress/sqlRead';
 
-describe('Progress read service query shape', () => {
-    it('loads only active current candidates and bounded terminal evidence', async () => {
-        const userFindUnique = vi.fn().mockResolvedValue({
-            chessAccountConnections: [{ provider: 'LICHESS' }],
-            billingAccount: {
-                serverCreditsBalance: 7,
-            },
-        });
-        const gameFindMany = vi.fn().mockResolvedValue([]);
-        const positionFindMany = vi.fn().mockResolvedValue([]);
-        const attemptFindMany = vi.fn().mockResolvedValue([]);
-        const asOf = new Date('2026-07-01T00:00:00.000Z');
+const emptyStates = {
+    imported: 0,
+    analyzed: 0,
+    stale: 0,
+    queued: 0,
+    running: 0,
+    failed: 0,
+    waiting: 0,
+};
 
-        await progressReadTestUtils.readProgressSnapshot(
+function gameSummary(
+    overrides: Partial<ProgressGamesSummary> = {}
+): ProgressGamesSummary {
+    return {
+        userExists: true,
+        linkedAccounts: { lichess: true, chesscom: false },
+        allGames: 0,
+        filteredHistoricalGames: 0,
+        currentStates: { ...emptyStates },
+        previousStates: { ...emptyStates },
+        operationalStates: { ...emptyStates },
+        currentByProvider: {},
+        currentByTimeClass: {},
+        waitingForCredits: {
+            creditReason: 0,
+            creditReasonOrWaiting: 0,
+        },
+        ...overrides,
+    };
+}
+
+function positionSummary(
+    overrides: Partial<ProgressPositionsSummary> = {}
+): ProgressPositionsSummary {
+    return {
+        currentEligiblePositions: 0,
+        currentEligibleGames: 0,
+        inventory: {
+            eligiblePositions: 0,
+            fresh: 0,
+            needsAnotherLook: 0,
+            persistentOriginalMoveRepetition: 0,
+        },
+        actions: {
+            needsAnotherLook: [],
+            persistentOriginalMoveRepetition: [],
+        },
+        impact: {
+            winningChance: {},
+            centipawnFallback: {},
+            unknown: 0,
+        },
+        breakdowns: {},
+        ...overrides,
+    };
+}
+
+function attemptSummary(
+    overrides: Partial<ProgressAttemptsSummary> = {}
+): ProgressAttemptsSummary {
+    return {
+        filteredHistoricalAttempts: 0,
+        filteredCurrentAttempts: 0,
+        unfilteredCurrentAttempts: 0,
+        currentByProvider: {},
+        currentByTimeClass: {},
+        currentPractice: {
+            graded: 0,
+            revealed: 0,
+            unresolved: 0,
+            solved: 0,
+            rootObserved: 0,
+            rootSolved: 0,
+            rootRepeated: 0,
+            gradeCounts: {},
+        },
+        previousPractice: { graded: 0, solved: 0 },
+        firstOutcome: {
+            positions: 0,
+            graded: 0,
+            revealed: 0,
+            solved: 0,
+            gradeCounts: {},
+        },
+        delayedRecheck: {
+            eligibleBaselines: 0,
+            observedRechecks: 0,
+            observedSolved: 0,
+        },
+        currentConfig: [],
+        previousConfig: [],
+        currentMix: {},
+        previousMix: {},
+        breakdowns: {},
+        ...overrides,
+    };
+}
+
+function reader(overrides?: {
+    games?: ProgressGamesSummary;
+    positions?: ProgressPositionsSummary;
+    attempts?: ProgressAttemptsSummary;
+}) {
+    const queryRaw = vi
+        .fn()
+        .mockResolvedValueOnce([
+            { payload: overrides?.games ?? gameSummary() },
+        ])
+        .mockResolvedValueOnce([
             {
-                user: { findUnique: userFindUnique },
-                analyzedGame: { findMany: gameFindMany },
-                trainingMoment: { findMany: positionFindMany },
-                trainingAttempt: { findMany: attemptFindMany },
-            } as never,
+                payload:
+                    overrides?.positions ?? positionSummary(),
+            },
+        ])
+        .mockResolvedValueOnce([
             {
-                userId: 'user-1',
-                scope: 90,
-                asOf,
-                filters: { providers: [], timeClasses: [] },
+                payload:
+                    overrides?.attempts ?? attemptSummary(),
             },
-            7
-        );
+        ]);
+    return {
+        db: {
+            $queryRaw: queryRaw,
+        } as never,
+        queryRaw,
+    };
+}
 
-        expect(positionFindMany).toHaveBeenCalledWith(
-            expect.objectContaining({
-                where: expect.objectContaining({
-                    userId: 'user-1',
-                    status: 'ACTIVE',
-                    archivedAt: null,
-                    currentSolutionRevisionId: { not: null },
-                    currentSolutionRevision: {
-                        is: {
-                            trainable: true,
-                            verificationStatus: 'VERIFIED',
-                            acceptanceFrontier: {
-                                path: ['status'],
-                                equals: 'STABLE',
-                            },
-                        },
-                    },
-                }),
-                select: expect.not.objectContaining({
-                    attempts: expect.anything(),
-                }),
-                take: PROGRESS_READ_LIMITS.positions + 1,
-            })
+const request = {
+    userId: '10000000-0000-4000-8000-000000000001',
+    scope: 90 as const,
+    asOf: new Date('2026-07-01T00:00:00.000Z'),
+    filters: { providers: [], timeClasses: [] },
+};
+
+describe('Progress SQL read service', () => {
+    it('uses three bounded operations and never returns source entity rows', async () => {
+        const { db, queryRaw } = reader();
+
+        const snapshot =
+            await progressReadTestUtils.readProgressSnapshot(
+                db,
+                request,
+                7
+            );
+
+        expect(queryRaw).toHaveBeenCalledTimes(3);
+        expect(queryRaw.mock.calls.length).toBeLessThanOrEqual(
+            PROGRESS_READ_BUDGET.databaseOperations
         );
-        expect(attemptFindMany).toHaveBeenCalledWith({
-            where: {
-                userId: 'user-1',
-                completedAt: {
-                    not: null,
-                    lte: asOf,
-                },
-                status: {
-                    in: ['GRADED', 'REVEALED', 'UNRESOLVED'],
-                },
-            },
-            select: expect.objectContaining({
-                trainingMomentId: true,
-                contextPhase: true,
-                contextCpLoss: true,
-                contextWinChanceLoss: true,
-                contextSourceKinds: true,
-                contextProvider: true,
-                contextTimeClass: true,
-                contextConfigHash: true,
-                contextSolutionHash: true,
-                steps: expect.objectContaining({
-                    where: { actor: 'USER' },
-                    orderBy: { stepIndex: 'asc' },
-                    take: 1,
-                }),
-            }),
-            take: PROGRESS_READ_LIMITS.attempts + 1,
+        expect(PROGRESS_READ_BUDGET).toMatchObject({
+            materializedGames: 0,
+            materializedPositions: 0,
+            materializedAttempts: 0,
+            actionsPerList: 20,
+        });
+        expect(snapshot.operational).toMatchObject({
+            linkedAccounts: { lichess: true, chesscom: false },
+            serverCreditsBalance: 7,
+            primaryState: 'NO_GAMES',
         });
 
-        const gameQuery = gameFindMany.mock.calls[0][0];
-        expect(gameQuery.take).toBe(
-            PROGRESS_READ_LIMITS.games + 1
-        );
-        expect(gameQuery.select.sourcePgnHash).toBe(true);
-        expect(gameQuery.select).not.toHaveProperty('pgn');
-        expect(
-            positionFindMany.mock.calls[0][0].select
-                .observations
-        ).toMatchObject({
-            orderBy: { createdAt: 'desc' },
-            take: PROGRESS_READ_LIMITS.observationsPerPosition,
-        });
+        const sql = queryRaw.mock.calls
+            .map(([query]) => (query as { sql: string }).sql)
+            .join('\n');
+        const attemptsSql = (
+            queryRaw.mock.calls[2]?.[0] as { sql: string }
+        ).sql;
+        expect(sql).toContain('WITH games AS MATERIALIZED');
+        expect(sql).toContain('WITH eligible AS MATERIALIZED');
+        expect(sql).toContain('WITH attempts AS MATERIALIZED');
+        expect(attemptsSql).not.toContain('attempt.*');
+        expect(attemptsSql).not.toContain('attempt."gradingEvidence"');
+        expect(attemptsSql).not.toContain('attempt."contextThemes"');
+        expect(sql).toContain('LIMIT 20');
+        expect(sql).not.toContain('LIMIT 25001');
+        expect(sql).not.toContain('LIMIT 100001');
     });
 
-    it('keeps archived Position history because attempts are read independently', async () => {
-        const completedAt = new Date(
-            '2026-06-30T00:00:00.000Z'
-        );
-        const result =
-            await progressReadTestUtils.readProgressSnapshot(
-                {
-                    user: {
-                        findUnique: vi.fn().mockResolvedValue({
-                            chessAccountConnections: [{ provider: 'LICHESS' }],
-                            billingAccount: null,
-                        }),
-                    },
-                    analyzedGame: {
-                        findMany: vi.fn().mockResolvedValue([]),
-                    },
-                    // The source Position has been archived by reanalysis
-                    // and is intentionally absent from current inventory.
-                    trainingMoment: {
-                        findMany: vi.fn().mockResolvedValue([]),
-                    },
-                    trainingAttempt: {
-                        findMany: vi.fn().mockResolvedValue([
-                            {
-                                id: 'attempt-1',
-                                trainingMomentId:
-                                    'archived-position',
-                                solutionRevisionId:
-                                    'old-revision',
-                                attemptedAt: completedAt,
-                                completedAt,
-                                userMoveUci: 'e2e4',
-                                status: 'GRADED',
-                                grade: 'BEST',
-                                contextPhase: 'OPENING',
-                                contextCpLoss: 160,
-                                contextWinChanceLoss: null,
-                                contextSourceKinds: [
-                                    'MY_MISTAKE',
-                                ],
-                                contextProvider: 'LICHESS',
-                                contextTimeClass: 'RAPID',
-                                contextConfigHash: 'config-old',
-                                contextSolutionHash:
-                                    'solution-old',
-                                steps: [
-                                    {
-                                        stepIndex: 0,
-                                        actor: 'USER',
-                                        moveUci: 'e2e4',
-                                        grade: 'BEST',
-                                    },
-                                ],
-                            },
-                        ]),
-                    },
-                } as never,
-                {
-                    userId: 'user-1',
-                    scope: 90,
-                    asOf: new Date(
-                        '2026-07-01T00:00:00.000Z'
-                    ),
-                    filters: {
-                        providers: [],
-                        timeClasses: [],
-                    },
+    it('handles million-row source volumes as aggregate counts instead of failing closed', async () => {
+        const million = 1_000_000;
+        const { db } = reader({
+            games: gameSummary({
+                allGames: million,
+                filteredHistoricalGames: million,
+                currentStates: {
+                    ...emptyStates,
+                    imported: million,
+                    analyzed: million,
                 },
+                operationalStates: {
+                    ...emptyStates,
+                    imported: million,
+                    analyzed: million,
+                },
+                currentByProvider: { LICHESS: million },
+                currentByTimeClass: { RAPID: million },
+            }),
+            positions: positionSummary({
+                currentEligiblePositions: million,
+                currentEligibleGames: million,
+                inventory: {
+                    eligiblePositions: million,
+                    fresh: million,
+                    needsAnotherLook: 0,
+                    persistentOriginalMoveRepetition: 0,
+                },
+            }),
+        });
+
+        const snapshot =
+            await progressReadTestUtils.readProgressSnapshot(
+                db,
+                request,
                 null
             );
 
-        expect(result.inventory.eligiblePositions).toBe(0);
-        expect(result.practice).toMatchObject({
-            gradedAttempts: 1,
-            fullPositionSolve: { x: 1, n: 1 },
+        expect(snapshot.coverage).toMatchObject({
+            eligiblePositions: million,
+            analysisStates: {
+                imported: million,
+                analyzed: million,
+            },
+        });
+        expect(snapshot.inventory).toMatchObject({
+            eligiblePositions: million,
+            fresh: million,
         });
     });
 
-    it('fails closed instead of returning a truncated snapshot', async () => {
-        const tooManyGames = Array.from(
-            { length: PROGRESS_READ_LIMITS.games + 1 },
-            () => ({})
-        );
+    it('fails with the user contract after the parallel aggregates settle', async () => {
+        const { db, queryRaw } = reader({
+            games: gameSummary({ userExists: false }),
+        });
 
         await expect(
             progressReadTestUtils.readProgressSnapshot(
-                {
-                    user: {
-                        findUnique: vi.fn().mockResolvedValue({
-                            chessAccountConnections: [{ provider: 'LICHESS' }],
-                            billingAccount: null,
-                        }),
-                    },
-                    analyzedGame: {
-                        findMany: vi
-                            .fn()
-                            .mockResolvedValue(tooManyGames),
-                    },
-                    trainingMoment: {
-                        findMany: vi.fn().mockResolvedValue([]),
-                    },
-                    trainingAttempt: {
-                        findMany: vi.fn().mockResolvedValue([]),
-                    },
-                } as never,
-                {
-                    userId: 'user-1',
-                    scope: 90,
-                    asOf: new Date(
-                        '2026-07-01T00:00:00.000Z'
-                    ),
-                    filters: {
-                        providers: [],
-                        timeClasses: [],
-                    },
-                },
+                db,
+                request,
                 null
             )
-        ).rejects.toEqual(
-            new ProgressDatasetTooLargeError('games')
-        );
+        ).rejects.toBeInstanceOf(ProgressUserNotFoundError);
+        expect(queryRaw).toHaveBeenCalledTimes(3);
     });
 });

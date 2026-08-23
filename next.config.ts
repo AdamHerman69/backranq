@@ -41,6 +41,19 @@ const nextConfig: NextConfig = {
                     { key: 'Service-Worker-Allowed', value: '/' },
                 ],
             },
+            ...[
+                'backranq-engine.worker.js',
+                'stockfish-18-lite-single.js',
+                'stockfish-18-lite-single.wasm',
+            ].map((asset) => ({
+                source: `/vendor/stockfish/${asset}`,
+                headers: [
+                    {
+                        key: 'Cache-Control',
+                        value: 'public, max-age=31536000, immutable',
+                    },
+                ],
+            })),
         ];
     },
 };

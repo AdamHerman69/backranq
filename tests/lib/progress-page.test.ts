@@ -19,7 +19,7 @@ vi.mock('next/navigation', () => ({
     usePathname: vi.fn(() => '/progress'),
 }));
 
-import ProgressPage from '@/app/progress/page';
+import ProgressPage from '@/app/(app)/progress/page';
 
 describe('Progress page', () => {
     beforeEach(() => {

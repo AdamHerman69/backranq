@@ -1,5 +1,8 @@
 import { prisma } from '@/lib/prisma';
-import { getEffectiveBillingAccount } from '@/lib/services/billingAccounts';
+import {
+    readEffectiveBillingSnapshot,
+    type EffectiveBillingSnapshot,
+} from '@/lib/services/billingAccounts';
 import { summarizeCreditLedgerEntries } from '@/lib/services/creditLedger';
 import {
     DEFAULT_ANALYSIS_QUALITY,
@@ -77,9 +80,12 @@ export function calculateManualServerAnalysisCapacity(args: {
 }
 
 export async function getManualServerAnalysisCapacity(
-    userId: string
+    userId: string,
+    options: { billingSnapshot?: EffectiveBillingSnapshot } = {}
 ): Promise<ManualServerAnalysisCapacity> {
-    const account = await getEffectiveBillingAccount(userId);
+    const account =
+        options.billingSnapshot ??
+        (await readEffectiveBillingSnapshot(userId));
     const [creditTotals, user] = await Promise.all([
         prisma.creditLedgerEntry.groupBy({
             by: ['type'],

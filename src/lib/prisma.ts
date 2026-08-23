@@ -1,6 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+import { measurePrismaOperation } from '@/lib/performance/requestTrace';
 
 // For serverless (Vercel), we need to limit Prisma connections to prevent
 // Supabase pool exhaustion. The connection_limit parameter in DATABASE_URL
@@ -20,14 +19,30 @@ if (
             'This can cause errors like: prepared statement "s1" already exists.'
     );
 }
-export const prisma =
-    globalForPrisma.prisma ??
-    new PrismaClient({
+function createPrismaClient() {
+    const client = new PrismaClient({
         log:
             process.env.NODE_ENV === 'development'
                 ? ['query', 'error', 'warn']
                 : ['error'],
+    }).$extends({
+        query: {
+            $allOperations({ args, query }) {
+                return measurePrismaOperation(() => query(args));
+            },
+        },
     });
+    // Query extensions intentionally remain an implementation detail. Keeping
+    // the exported PrismaClient contract avoids leaking Prisma's extension
+    // generic into the many narrow DB-client interfaces used by services.
+    return client as unknown as PrismaClient;
+}
+
+const globalForPrisma = globalThis as unknown as {
+    prisma?: PrismaClient;
+};
+
+export const prisma = globalForPrisma.prisma ?? createPrismaClient();
 
 if (process.env.NODE_ENV !== 'production') {
     globalForPrisma.prisma = prisma;

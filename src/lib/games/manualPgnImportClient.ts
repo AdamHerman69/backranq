@@ -1,7 +1,6 @@
 'use client';
 
 import { publishLibraryChanged } from '@/lib/analysis/analysisCompletion';
-import { backgroundAnalysis } from '@/lib/analysis/backgroundAnalysisManager';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 
 export type ManualPgnImportResponse = {
@@ -10,6 +9,10 @@ export type ManualPgnImportResponse = {
     createdGameIds: string[];
     duplicateGameIds: string[];
     needsAnalysisGameIds: string[];
+};
+
+export type ManualPgnImportAndAnalysisResult = ManualPgnImportResponse & {
+    analysisStart: 'not-requested' | 'not-needed' | 'started' | 'failed';
 };
 
 function isStringArray(value: unknown): value is string[] {
@@ -73,15 +76,29 @@ export async function importManualPgnGamesAndAnalyze(args: {
     pgn: string;
     playerName: string;
     analyze: boolean;
-}): Promise<ManualPgnImportResponse> {
+}): Promise<ManualPgnImportAndAnalysisResult> {
     const result = await importManualPgnGames(args);
     publishLibraryChanged(args.ownerId, { invalidateCompletion: true });
-    if (args.analyze && result.needsAnalysisGameIds.length > 0) {
+    if (!args.analyze) {
+        return { ...result, analysisStart: 'not-requested' };
+    }
+    if (result.needsAnalysisGameIds.length === 0) {
+        return { ...result, analysisStart: 'not-needed' };
+    }
+
+    try {
+        const { backgroundAnalysis } = await import(
+            '@/lib/analysis/backgroundAnalysisManager'
+        );
         backgroundAnalysis.setOwner(args.ownerId);
         backgroundAnalysis.enqueueGameDbIds(
             args.ownerId,
             result.needsAnalysisGameIds
         );
+        return { ...result, analysisStart: 'started' };
+    } catch {
+        // The import mutation already succeeded. A lazy-chunk or browser-analysis
+        // startup failure must never make the caller retry and create duplicates.
+        return { ...result, analysisStart: 'failed' };
     }
-    return result;
 }

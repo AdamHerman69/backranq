@@ -1,102 +1,30 @@
 import { NextResponse } from 'next/server';
+
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/prisma';
 import {
-    canonicalPreferences,
-} from '@/lib/preferences';
-import { getAnalysisJobCounts } from '@/lib/services/analysisJobs';
-import { getManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
-import { getAutoAnalysisStatus } from '@/lib/services/autoAnalysisBacklog';
-import {
-    chessAccountConnectionSelect,
-    linkedUsernameSnapshot,
-} from '@/lib/accounts/chessAccountConnections';
+    measureRequestPhase,
+    withRequestTrace,
+} from '@/lib/performance/requestTrace';
+import { readSyncStatusSnapshot } from '@/lib/services/syncStatusRead';
 
 export const runtime = 'nodejs';
 
-export async function GET() {
-    const session = await auth();
+export async function GET(request?: Request) {
+    return withRequestTrace(
+        { route: '/api/sync/status', request },
+        buildSyncStatusResponse
+    );
+}
+
+async function buildSyncStatusResponse() {
+    const session = await measureRequestPhase('auth', () => auth());
     const userId = session?.user?.id;
     if (!userId) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const lichessLatest = await prisma.analyzedGame.findFirst({
-        where: { userId, provider: 'LICHESS' },
-        orderBy: { playedAt: 'desc' },
-        select: { playedAt: true },
-    });
-    const chesscomLatest = await prisma.analyzedGame.findFirst({
-        where: { userId, provider: 'CHESSCOM' },
-        orderBy: { playedAt: 'desc' },
-        select: { playedAt: true },
-    });
-    const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-            preferences: true,
-            chessAccountConnections: {
-                select: chessAccountConnectionSelect,
-            },
-        },
-    });
-    const syncStates = await prisma.providerSyncState.findMany({
-        where: { userId },
-        select: {
-            provider: true,
-            lastSyncedPlayedAt: true,
-            lastAttemptAt: true,
-            lastSuccessAt: true,
-            lastError: true,
-        },
-    });
-    const jobCounts = await getAnalysisJobCounts(userId);
-    const [billing, automation] = await Promise.all([
-        getManualServerAnalysisCapacity(userId),
-        getAutoAnalysisStatus(userId),
-    ]);
-
-    const prefs = canonicalPreferences(user?.preferences ?? {});
-    const stateByProvider = Object.fromEntries(
-        syncStates.map((state) => [
-            state.provider === 'LICHESS' ? 'lichess' : 'chesscom',
-            {
-                lastSyncedPlayedAt:
-                    state.lastSyncedPlayedAt?.toISOString() ?? null,
-                lastAttemptAt: state.lastAttemptAt?.toISOString() ?? null,
-                lastSuccessAt: state.lastSuccessAt?.toISOString() ?? null,
-                lastError: state.lastError,
-            },
-        ])
+    const snapshot = await measureRequestPhase('status_snapshot', () =>
+        readSyncStatusSnapshot(userId)
     );
-
-    return NextResponse.json({
-        ownerId: userId,
-        linked: linkedUsernameSnapshot(user?.chessAccountConnections ?? []),
-        lastSync: {
-            lichess: lichessLatest?.playedAt?.toISOString() ?? null,
-            chesscom: chesscomLatest?.playedAt?.toISOString() ?? null,
-        },
-        gameAutomation: {
-            paused: prefs.gameAutomation.paused,
-            rules: prefs.gameAutomation.rules,
-            schedule: '0 3 * * *',
-            states: {
-                lichess: stateByProvider.lichess ?? null,
-                chesscom: stateByProvider.chesscom ?? null,
-            },
-        },
-        analysisJobs: {
-            queued: jobCounts.queued,
-            running: jobCounts.running,
-            failed: jobCounts.failed,
-        },
-        billing,
-        inventory: automation.inventory,
-        automation: {
-            policy: automation.policy,
-            backlog: automation.backlog,
-            capacity: automation.capacity,
-        },
-    });
+    return NextResponse.json(snapshot);
 }

@@ -83,16 +83,11 @@ describe('onboarding analytics boundary', () => {
         expect(blocked).toEqual({ allowed: false, retryAfterSeconds: 60 });
     });
 
-    it('persists the allowlisted event in the same transaction as its bucket claim', async () => {
+    it('persists the allowlisted event and bucket claim in one SQL statement', async () => {
         vi.stubEnv('ONBOARDING_RATE_LIMIT_SECRET', 'test-secret');
-        const create = vi.fn().mockResolvedValue({ id: 'stored' });
-        const queryRaw = vi.fn().mockResolvedValue([{ requestCount: 1 }]);
-        const transaction = vi.fn(async (callback) =>
-            callback({
-                $queryRaw: queryRaw,
-                onboardingAnalyticsEvent: { create },
-            })
-        );
+        const queryRaw = vi.fn().mockResolvedValue([
+            { allowed: true, inserted: true },
+        ]);
         const event = {
             eventName: 'IDENTITY_SUBMITTED' as const,
             sessionId,
@@ -103,19 +98,55 @@ describe('onboarding analytics boundary', () => {
         };
 
         const result = await recordOnboardingAnalyticsEvent(event, {
-            $transaction: transaction,
+            $queryRaw: queryRaw,
         } as never);
 
         expect(result.recorded).toBe(true);
         expect(queryRaw).toHaveBeenCalledOnce();
-        expect(create).toHaveBeenCalledWith({
-            data: expect.objectContaining({
+        const query = queryRaw.mock.calls[0]?.[0] as {
+            strings: readonly string[];
+            values: unknown[];
+        };
+        expect(query.strings.join('')).toContain(
+            'WITH "claimed" AS ('
+        );
+        expect(query.strings.join('')).toContain(
+            'INSERT INTO "OnboardingAnalyticsEvent"'
+        );
+        expect(query.values).toEqual(
+            expect.arrayContaining([
                 sessionId,
-                eventId: event.eventId,
-                onboardingRunId: runId,
-                eventName: 'IDENTITY_SUBMITTED',
-                provider: 'LICHESS',
-            }),
+                event.eventId,
+                runId,
+                'IDENTITY_SUBMITTED',
+                'LICHESS',
+            ])
+        );
+    });
+
+    it('reports duplicate and saturation outcomes without an interactive transaction', async () => {
+        vi.stubEnv('ONBOARDING_RATE_LIMIT_SECRET', 'test-secret');
+        const event = {
+            eventName: 'LANDING_VIEWED' as const,
+            sessionId,
+            eventId: '10000000-0000-4000-8000-000000000003',
+            occurredAt: now.toISOString(),
+        };
+        const duplicate = await recordOnboardingAnalyticsEvent(event, {
+            $queryRaw: vi
+                .fn()
+                .mockResolvedValue([{ allowed: true, inserted: false }]),
+        } as never);
+        const saturated = await recordOnboardingAnalyticsEvent(event, {
+            $queryRaw: vi
+                .fn()
+                .mockResolvedValue([{ allowed: false, inserted: false }]),
+        } as never);
+
+        expect(duplicate).toMatchObject({ recorded: true, duplicate: true });
+        expect(saturated).toMatchObject({
+            recorded: false,
+            rateLimited: true,
         });
     });
 });

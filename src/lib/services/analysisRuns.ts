@@ -455,6 +455,8 @@ export async function completeAnalysisRunWithGameAnalysisInTransaction(
         },
         data: {
             analysis: gameAnalysisToJson(args.analysis) as Prisma.InputJsonValue,
+            whiteAccuracy: args.analysis.whiteAccuracy ?? null,
+            blackAccuracy: args.analysis.blackAccuracy ?? null,
             analyzedAt: completedAt,
             currentAnalysisRunId: run.id,
             currentAnalysisValid: true,

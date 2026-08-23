@@ -16,7 +16,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 import manifest from '@/app/manifest';
-import PracticePage from '@/app/practice/page';
+import PracticePage from '@/app/(app)/practice/page';
 import { appNavItems } from '@/components/nav/AppNav';
 import { config as proxyConfig } from '@/proxy';
 
@@ -29,7 +29,7 @@ describe('practice route information architecture', () => {
         expect(proxyConfig.matcher).toContain('/home/:path*');
         expect(proxyConfig.matcher).toContain('/practice/:path*');
         expect(proxyConfig.matcher).not.toContain('/training/:path*');
-        expect(existsSync('src/app/practice/page.tsx')).toBe(true);
+        expect(existsSync('src/app/(app)/practice/page.tsx')).toBe(true);
         expect(existsSync('src/app/training/page.tsx')).toBe(false);
     });
 

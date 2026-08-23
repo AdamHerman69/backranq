@@ -9,7 +9,7 @@
 let enginePromise = null;
 let engine = null;
 let needsNewGameBoundary = false;
-const runtimeRevision = 'stockfish-18.0.8-bridge-v3';
+const runtimeRevision = 'stockfish-18.0.8-bridge-v4';
 let identity = {
     name: 'Stockfish 18',
     version: '18.0.8',
@@ -30,6 +30,15 @@ function ensureEngine() {
             self.location.href
         );
         workerUrl.searchParams.set('v', runtimeRevision);
+        const wasmUrl = new URL(
+            'stockfish-18-lite-single.wasm',
+            self.location.href
+        );
+        wasmUrl.searchParams.set('v', runtimeRevision);
+        // The packaged Emscripten worker reads its explicit WASM URL from the
+        // hash. Versioning both nested requests makes immutable HTTP caching
+        // safe and keeps the service-worker runtime cache internally coherent.
+        workerUrl.hash = encodeURIComponent(wasmUrl.href);
         const raw = new Worker(workerUrl);
         const listeners = new Set();
         const protocolWaiters = new Set();
