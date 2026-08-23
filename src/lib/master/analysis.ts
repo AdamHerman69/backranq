@@ -10,6 +10,7 @@ import {
     masterCandidateKey,
     rankMasterCandidate,
 } from '@/lib/master/ranking';
+import { MasterSnapshotAnalysisError } from '@/lib/master/analysisErrors';
 
 type WeeklyMasterConfig = ReturnType<typeof weeklyMasterConfig>;
 
@@ -41,7 +42,10 @@ export async function analyzeMasterSnapshot(args: {
     });
     const discovery = snapshot?.sourceGame.discoveries[0];
     if (!snapshot || !discovery) {
-        throw new Error('Master source snapshot is not attributed to this account');
+        throw new MasterSnapshotAnalysisError(
+            'Master source snapshot is not attributed to this account',
+            'INVALID_ATTRIBUTION'
+        );
     }
     const account = discovery.account;
     const normalized: NormalizedGame = {
@@ -97,7 +101,10 @@ export async function analyzeMasterSnapshot(args: {
             (item) => item.sourceGameId === snapshot.id
         );
         if (!manifest?.complete || manifest.sourcePgnHash !== snapshot.pgnHash) {
-            throw new Error('Master extraction did not produce a complete receipt');
+            throw new MasterSnapshotAnalysisError(
+                'Master extraction did not produce a complete receipt',
+                'INCOMPLETE_RECEIPT'
+            );
         }
 
         const persisted = [];

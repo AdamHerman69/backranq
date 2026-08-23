@@ -10,6 +10,7 @@ import {
 import { prisma } from '@/lib/prisma';
 import type { NormalizedGame } from '@/lib/types/game';
 import { masterContentHash } from '@/lib/master/ranking';
+import { MasterSourceProviderError } from '@/lib/master/sourceErrors';
 
 export type ImportedMasterSnapshot = Awaited<
     ReturnType<typeof persistMasterSourceSnapshot>
@@ -155,12 +156,13 @@ export async function fetchAndPersistMasterAccount(args: {
     now?: Date;
 }) {
     const now = args.now ?? new Date();
+    const fetchGames =
+        args.account.provider === 'CHESSCOM'
+            ? fetchChessComGames
+            : fetchLichessGames;
+    let result: Awaited<ReturnType<typeof fetchGames>>;
     try {
-        const fetchGames =
-            args.account.provider === 'CHESSCOM'
-                ? fetchChessComGames
-                : fetchLichessGames;
-        const result = await fetchGames({
+        result = await fetchGames({
             username: args.account.username,
             signal: AbortSignal.timeout(15_000),
             filters: {
@@ -170,30 +172,6 @@ export async function fetchAndPersistMasterAccount(args: {
                 timeClasses: ['blitz', 'rapid', 'classical'],
             },
         });
-        const snapshots: ImportedMasterSnapshot[] = [];
-        for (const game of result.games) {
-            snapshots.push(
-                await persistMasterSourceSnapshot({
-                    account: args.account,
-                    game,
-                    pipelineRunId: args.pipelineRunId,
-                    now,
-                })
-            );
-        }
-        await prisma.masterAccount.update({
-            where: { id: args.account.id },
-            data: {
-                lastFetchAt: now,
-                lastSuccessAt: now,
-                nextFetchAt: new Date(now.getTime() + 12 * 60 * 60_000),
-                etag: result.etag ?? null,
-                lastModified: result.lastModified ?? null,
-                consecutiveFailures: 0,
-                lastError: null,
-            },
-        });
-        return { fetched: result.games.length, snapshots };
     } catch (error) {
         await prisma.masterAccount.update({
             where: { id: args.account.id },
@@ -204,8 +182,35 @@ export async function fetchAndPersistMasterAccount(args: {
                 lastError: errorMessage(error),
             },
         });
-        throw error;
+        throw new MasterSourceProviderError(errorMessage(error), {
+            cause: error,
+        });
     }
+
+    const snapshots: ImportedMasterSnapshot[] = [];
+    for (const game of result.games) {
+        snapshots.push(
+            await persistMasterSourceSnapshot({
+                account: args.account,
+                game,
+                pipelineRunId: args.pipelineRunId,
+                now,
+            })
+        );
+    }
+    await prisma.masterAccount.update({
+        where: { id: args.account.id },
+        data: {
+            lastFetchAt: now,
+            lastSuccessAt: now,
+            nextFetchAt: new Date(now.getTime() + 12 * 60 * 60_000),
+            etag: result.etag ?? null,
+            lastModified: result.lastModified ?? null,
+            consecutiveFailures: 0,
+            lastError: null,
+        },
+    });
+    return { fetched: result.games.length, snapshots };
 }
 
 function errorMessage(error: unknown) {

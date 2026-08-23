@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MasterAccount } from '@prisma/client';
+import { MasterSourceProviderError } from '@/lib/master/sourceErrors';
 
 const { chessComFetchMock, lichessFetchMock, accountUpdateMock } = vi.hoisted(
     () => ({
@@ -76,5 +77,45 @@ describe('Weekly Master source importer', () => {
             expect.objectContaining({ username: 'DrNykterstein' })
         );
         expect(chessComFetchMock).not.toHaveBeenCalled();
+    });
+
+    it('types an upstream provider failure only after recording it', async () => {
+        chessComFetchMock.mockRejectedValue(new Error('provider unavailable'));
+
+        const error = await fetchAndPersistMasterAccount({
+            account: account('CHESSCOM'),
+            pipelineRunId: 'run-3',
+            since: new Date('2026-07-15T00:00:00.000Z'),
+            maxGames: 12,
+            now: new Date('2026-08-06T00:00:00.000Z'),
+        }).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(MasterSourceProviderError);
+        expect(accountUpdateMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({
+                    consecutiveFailures: { increment: 1 },
+                    lastError: 'provider unavailable',
+                }),
+            })
+        );
+    });
+
+    it('does not disguise a database failure while recording provider health', async () => {
+        chessComFetchMock.mockRejectedValue(new Error('provider unavailable'));
+        accountUpdateMock.mockRejectedValue(
+            new Error('database connection unavailable')
+        );
+
+        const error = await fetchAndPersistMasterAccount({
+            account: account('CHESSCOM'),
+            pipelineRunId: 'run-4',
+            since: new Date('2026-07-15T00:00:00.000Z'),
+            maxGames: 12,
+            now: new Date('2026-08-06T00:00:00.000Z'),
+        }).catch((caught: unknown) => caught);
+
+        expect(error).toEqual(new Error('database connection unavailable'));
+        expect(error).not.toBeInstanceOf(MasterSourceProviderError);
     });
 });

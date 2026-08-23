@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ServerStockfishClient } from '@/lib/analysis/serverStockfishClient';
 import type { ServerStockfishRuntime } from '@/lib/analysis/serverStockfishRuntime';
+import { ExactPvUnavailableError } from '@/lib/analysis/serverStockfishErrors';
 
 const clients: ServerStockfishClient[] = [];
 
@@ -233,13 +234,18 @@ describe('ServerStockfishClient integration', () => {
         });
         clients.push(client);
 
-        await expect(
-            client.analyzeMultiPv({
+        const error = await client
+            .analyzeMultiPv({
                 fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
                 nodes: 1_000,
                 multiPv: 5,
             })
-        ).rejects.toThrow('Engine returned no exact PV');
+            .catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(ExactPvUnavailableError);
+        expect(error).toEqual(
+            expect.objectContaining({ message: 'Engine returned no exact PV' })
+        );
     });
 
     it('marks a partial MultiPV depth bucket as incomplete', async () => {

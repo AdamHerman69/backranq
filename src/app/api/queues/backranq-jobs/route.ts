@@ -4,6 +4,7 @@ import {
 } from '@/lib/queues/backranq';
 import { processBackranqQueueMessage } from '@/lib/services/backranqQueueProcessor';
 import { normalizeError } from '@/lib/services/analysisOutbox';
+import { isWeeklyMasterTerminalError } from '@/lib/master/pipelineErrors';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -36,10 +37,14 @@ export const POST = handleBackranqQueueCallback<BackranqQueueMessage>(
                 })
             );
         } catch (error) {
-            console.error(
+            const terminal = isWeeklyMasterTerminalError(error);
+            const log = terminal ? console.warn : console.error;
+            log(
                 JSON.stringify({
-                    level: 'error',
-                    event: 'queue.processing.failed',
+                    level: terminal ? 'warn' : 'error',
+                    event: terminal
+                        ? 'queue.processing.terminal'
+                        : 'queue.processing.failed',
                     ...context,
                     durationMs: Date.now() - startedAt,
                     error: normalizeError(error),
@@ -55,9 +60,12 @@ export const POST = handleBackranqQueueCallback<BackranqQueueMessage>(
 );
 
 export function backranqQueueRetry(
-    _error: unknown,
+    error: unknown,
     metadata: { deliveryCount: number }
 ) {
+    if (isWeeklyMasterTerminalError(error)) {
+        return { acknowledge: true as const };
+    }
     return {
         afterSeconds: Math.min(300, 2 ** metadata.deliveryCount * 10),
     };
