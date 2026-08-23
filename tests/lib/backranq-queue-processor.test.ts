@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { WeeklyMasterTerminalError } from '@/lib/master/pipelineErrors';
 
 const analyzeGameJobMock = vi.fn();
 const dispatchQueuedAnalysisJobsMock = vi.fn();
@@ -206,6 +207,19 @@ describe('Backranq analysis queue processor', () => {
         });
 
         expect(processWeeklyMasterRunMock).toHaveBeenCalledWith('master-run-1');
+    });
+
+    it('preserves an explicit terminal Weekly Master disposition for the callback', async () => {
+        const processor = await importProcessor();
+        const terminal = new WeeklyMasterTerminalError('attempts exhausted');
+        processWeeklyMasterRunMock.mockRejectedValue(terminal);
+
+        await expect(
+            processor.processBackranqQueueMessage({
+                type: 'weekly-master-run',
+                runId: 'master-run-1',
+            })
+        ).rejects.toBe(terminal);
     });
 
     it('wakes bounded delivery immediately after maintenance records notifications', async () => {

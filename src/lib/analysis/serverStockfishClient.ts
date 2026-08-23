@@ -14,6 +14,7 @@ import {
     createStockfish18LiteEngine,
     type ServerStockfishRuntime,
 } from '@/lib/analysis/serverStockfishRuntime';
+import { ExactPvUnavailableError } from '@/lib/analysis/serverStockfishErrors';
 
 type StockfishInstance = ServerStockfishRuntime;
 
@@ -641,7 +642,7 @@ export class ServerStockfishClient implements StockfishEngine {
             if (lines.length === 0) {
                 const terminalFallback = exactMateInOneFallback(job);
                 if (!terminalFallback) {
-                    job.reject(new Error('Engine returned no exact PV'));
+                    job.reject(new ExactPvUnavailableError());
                 } else {
                     job.resolve({
                         fen: job.fen,
