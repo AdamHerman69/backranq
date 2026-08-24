@@ -39,7 +39,7 @@ Object.assign(childEnv, {
     DATABASE_URL: 'postgresql://backranq:backranq@127.0.0.1:9/backranq_smoke',
     DIRECT_URL: 'postgresql://backranq:backranq@127.0.0.1:9/backranq_smoke',
     BACKRANQ_QUEUE_SMOKE_MODE: 'true',
-    BACKRANQ_QUEUE_REGION: 'iad1',
+    BACKRANQ_QUEUE_REGION: 'dub1',
     BACKRANQ_QUEUE_SMOKE_BASE_URL: `http://127.0.0.1:${queueAddress.port}`,
     BACKRANQ_DISABLE_VERCEL_QUEUE: 'false',
 });
@@ -71,7 +71,7 @@ try {
                 'ce-vqsmessageid': 'runtime-smoke-message',
                 'ce-vqsreceipthandle': 'runtime-smoke-receipt',
                 'ce-vqsdeliverycount': '1',
-                'ce-vqsregion': 'iad1',
+                'ce-vqsregion': 'dub1',
             },
             body: JSON.stringify({ type: 'runtime-smoke' }),
             signal: AbortSignal.timeout(30_000),

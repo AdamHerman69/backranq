@@ -64,12 +64,16 @@ export async function stageAnalysisOutboxMessage(args: {
 
 export async function recoverExpiredAnalysisOutboxLeases(args: {
     now?: Date;
+    analysisJobIds?: string[];
+    batchIds?: string[];
 } = {}) {
     const now = args.now ?? new Date();
+    const scope = outboxScopeWhere(args);
     return prisma.analysisOutbox.updateMany({
         where: {
             status: 'LEASED',
             OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
+            ...scope,
         },
         data: {
             status: 'PENDING',
@@ -84,16 +88,31 @@ export async function flushAnalysisOutbox(args: {
     now?: Date;
     leaseMs?: number;
     publish?: typeof publishBackranqQueueMessage;
+    analysisJobIds?: string[];
+    batchIds?: string[];
 } = {}) {
     const now = args.now ?? new Date();
     const limit = boundedLimit(args.limit);
     const publish = args.publish ?? publishBackranqQueueMessage;
-    await recoverExpiredAnalysisOutboxLeases({ now });
+    if (limit === 0) return emptyFlushResult();
+    const scoped = args.analysisJobIds !== undefined || args.batchIds !== undefined;
+    const analysisJobIds = uniqueIds(args.analysisJobIds);
+    const batchIds = uniqueIds(args.batchIds);
+    if (scoped && analysisJobIds.length === 0 && batchIds.length === 0) {
+        return emptyFlushResult();
+    }
+    await recoverExpiredAnalysisOutboxLeases({
+        now,
+        ...(scoped ? { analysisJobIds, batchIds } : {}),
+    });
 
     const claimed = await claimDueOutboxRows({
         now,
         limit,
         leaseMs: args.leaseMs ?? DEFAULT_ANALYSIS_OUTBOX_LEASE_MS,
+        scoped,
+        analysisJobIds,
+        batchIds,
     });
     const items: FlushAnalysisOutboxItem[] = [];
 
@@ -227,12 +246,36 @@ async function claimDueOutboxRows(args: {
     now: Date;
     limit: number;
     leaseMs: number;
+    scoped: boolean;
+    analysisJobIds: string[];
+    batchIds: string[];
 }) {
     if (args.limit <= 0) return [];
     const leaseToken = randomUUID();
     const lockedUntil = new Date(
         args.now.getTime() + Math.max(1_000, args.leaseMs)
     );
+    const scopeSql = args.scoped
+        ? Prisma.sql`AND (${Prisma.join(
+              [
+                  args.analysisJobIds.length > 0
+                      ? Prisma.sql`"analysisJobId" IN (${Prisma.join(
+                            args.analysisJobIds.map(
+                                (id) => Prisma.sql`CAST(${id} AS uuid)`
+                            )
+                        )})`
+                      : null,
+                  args.batchIds.length > 0
+                      ? Prisma.sql`"batchId" IN (${Prisma.join(
+                            args.batchIds.map(
+                                (id) => Prisma.sql`CAST(${id} AS uuid)`
+                            )
+                        )})`
+                      : null,
+              ].filter((part): part is Prisma.Sql => part !== null),
+              ' OR '
+          )})`
+        : Prisma.empty;
     return prisma.$transaction((tx) =>
         tx.$queryRaw<ClaimedOutboxRow[]>(Prisma.sql`
             WITH candidates AS (
@@ -240,6 +283,7 @@ async function claimDueOutboxRows(args: {
                 FROM "AnalysisOutbox"
                 WHERE "status" = 'PENDING'::"AnalysisOutboxStatus"
                   AND "availableAt" <= ${args.now}
+                  ${scopeSql}
                 ORDER BY "availableAt" ASC, "createdAt" ASC, "id" ASC
                 LIMIT ${args.limit}
                 FOR UPDATE SKIP LOCKED
@@ -257,6 +301,37 @@ async function claimDueOutboxRows(args: {
                       outbox."attempts", outbox."leaseToken"
         `)
     );
+}
+
+function uniqueIds(ids: string[] | undefined) {
+    return Array.from(new Set((ids ?? []).filter(Boolean)));
+}
+
+function outboxScopeWhere(args: {
+    analysisJobIds?: string[];
+    batchIds?: string[];
+}) {
+    const scoped = args.analysisJobIds !== undefined || args.batchIds !== undefined;
+    if (!scoped) return {};
+    const clauses: Prisma.AnalysisOutboxWhereInput[] = [];
+    const analysisJobIds = uniqueIds(args.analysisJobIds);
+    const batchIds = uniqueIds(args.batchIds);
+    if (analysisJobIds.length > 0) {
+        clauses.push({ analysisJobId: { in: analysisJobIds } });
+    }
+    if (batchIds.length > 0) clauses.push({ batchId: { in: batchIds } });
+    return { AND: [{ OR: clauses }] };
+}
+
+function emptyFlushResult() {
+    return {
+        claimed: 0,
+        published: 0,
+        pending: 0,
+        failed: 0,
+        ambiguous: 0,
+        items: [] as FlushAnalysisOutboxItem[],
+    };
 }
 
 async function cancelDisabledOutboxWork(

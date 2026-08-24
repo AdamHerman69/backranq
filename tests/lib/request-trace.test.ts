@@ -14,7 +14,7 @@ describe('request performance trace', () => {
 
     it('adds bounded timing metadata without request contents', async () => {
         vi.stubEnv('VERCEL_REGION', 'dub1');
-        vi.stubEnv('BACKRANQ_QUEUE_REGION', 'iad1');
+        vi.stubEnv('BACKRANQ_QUEUE_REGION', 'dub1');
 
         const response = await withRequestTrace(
             {
@@ -37,7 +37,7 @@ describe('request performance trace', () => {
             'dub1::safe-request-id'
         );
         expect(response.headers.get('x-backranq-function-region')).toBe('dub1');
-        expect(response.headers.get('x-backranq-queue-region')).toBe('iad1');
+        expect(response.headers.get('x-backranq-queue-region')).toBe('dub1');
         expect(response.headers.get('x-backranq-db-operation-count')).toBe('1');
         expect(await response.json()).toEqual({ ok: true });
     });

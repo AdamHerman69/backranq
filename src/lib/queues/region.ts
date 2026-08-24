@@ -1,6 +1,6 @@
 import type { VercelRegion } from '@vercel/queue';
 
-export const DEFAULT_BACKRANQ_QUEUE_REGION: VercelRegion = 'iad1';
+export const DEFAULT_BACKRANQ_QUEUE_REGION: VercelRegion = 'dub1';
 const VERCEL_REGION_CODE = /^[a-z]{3}\d$/;
 
 export function isVercelRegionCode(value: string): value is VercelRegion {
@@ -19,9 +19,20 @@ export function backranqQueueRegion(
 ): VercelRegion {
     const raw = env.BACKRANQ_QUEUE_REGION?.trim();
     const configured = configuredBackranqQueueRegion(env);
+    const runtimeRegion = env.VERCEL_REGION?.trim().toLowerCase();
     if (raw && !configured) {
         throw new Error(
             'BACKRANQ_QUEUE_REGION must be an explicit Vercel region code such as iad1 or dub1'
+        );
+    }
+    if (runtimeRegion && !isVercelRegionCode(runtimeRegion)) {
+        throw new Error(
+            'VERCEL_REGION must be an explicit Vercel region code'
+        );
+    }
+    if (configured && runtimeRegion && configured !== runtimeRegion) {
+        throw new Error(
+            `BACKRANQ_QUEUE_REGION (${configured}) must match VERCEL_REGION (${runtimeRegion})`
         );
     }
     if (configured) return configured;

@@ -55,6 +55,50 @@ describe('analysis outbox publisher', () => {
         refreshAnalysisBatchAggregateMock.mockResolvedValue({ remaining: 0 });
     });
 
+    it('does no database work for an explicitly empty scoped flush', async () => {
+        const outbox = await importOutbox();
+
+        await expect(
+            outbox.flushAnalysisOutbox({ analysisJobIds: [] })
+        ).resolves.toMatchObject({ claimed: 0, published: 0, items: [] });
+        expect(prismaMock.analysisOutbox.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('claims only the requested durable analysis job outbox', async () => {
+        const outbox = await importOutbox();
+        const jobId = '11111111-1111-4111-8111-111111111111';
+        prismaMock.$queryRaw.mockResolvedValue([]);
+
+        await outbox.flushAnalysisOutbox({ analysisJobIds: [jobId] });
+
+        expect(prismaMock.analysisOutbox.updateMany).toHaveBeenCalledWith({
+            where: {
+                status: 'LEASED',
+                OR: [
+                    { lockedUntil: null },
+                    { lockedUntil: { lte: expect.any(Date) } },
+                ],
+                AND: [
+                    {
+                        OR: [{ analysisJobId: { in: [jobId] } }],
+                    },
+                ],
+            },
+            data: {
+                status: 'PENDING',
+                leaseToken: null,
+                lockedUntil: null,
+            },
+        });
+        const query = prismaMock.$queryRaw.mock.calls[0]?.[0] as {
+            text?: string;
+            values?: unknown[];
+        };
+        expect(query.text).toContain('"analysisJobId" IN');
+        expect(query.values).toContain(jobId);
+    });
+
     it('returns a rejected publish to pending state with bounded backoff', async () => {
         const outbox = await importOutbox();
         prismaMock.$queryRaw.mockResolvedValue([claimedRow()]);

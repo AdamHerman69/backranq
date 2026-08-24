@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["dub1"],
   "crons": [
     {
       "path": "/api/cron/sync-games",
@@ -15,7 +16,7 @@
     },
     {
       "path": "/api/cron/analysis-maintenance",
-      "schedule": "7 3 * * *"
+      "schedule": "*/5 * * * *"
     }
   ],
   "functions": {

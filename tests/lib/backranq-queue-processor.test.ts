@@ -19,7 +19,6 @@ const processPracticeDueNotificationPageMock = vi.fn();
 const processPracticeDueSweepPageMock = vi.fn();
 const flushAnalysisOutboxMock = vi.fn();
 const processAnalysisBatchPageMock = vi.fn();
-const runAnalysisMaintenanceHeartbeatMock = vi.fn();
 
 class StaleAnalysisDeliveryError extends Error {}
 
@@ -44,10 +43,6 @@ async function importProcessor() {
     }));
     vi.doMock('@/lib/services/analysisBatches', () => ({
         processAnalysisBatchPage: processAnalysisBatchPageMock,
-    }));
-    vi.doMock('@/lib/services/analysisMaintenance', () => ({
-        runAnalysisMaintenanceHeartbeat:
-            runAnalysisMaintenanceHeartbeatMock,
     }));
     vi.doMock('@/lib/services/autoAnalysisBacklog', () => ({
         dispatchAutoAnalysisPolicySweep:
@@ -110,10 +105,6 @@ describe('Backranq analysis queue processor', () => {
             failed: 0,
             ambiguous: 0,
             items: [],
-        });
-        runAnalysisMaintenanceHeartbeatMock.mockResolvedValue({
-            skipped: null,
-            nextHeartbeat: { queued: true, messageId: 'heartbeat-2' },
         });
     });
 
@@ -187,7 +178,11 @@ describe('Backranq analysis queue processor', () => {
 
         expect(processAnalysisBatchPageMock).toHaveBeenCalledWith('batch-1');
         expect(dispatchQueuedAnalysisJobsMock).toHaveBeenCalledOnce();
-        expect(flushAnalysisOutboxMock).toHaveBeenCalledOnce();
+        expect(flushAnalysisOutboxMock).toHaveBeenCalledWith({
+            analysisJobIds: ['job-1'],
+            batchIds: ['batch-1'],
+            limit: 2,
+        });
         expect(result).toMatchObject({
             batch: { batchId: 'batch-1', queued: 2 },
             dispatch: { claimedJobIds: ['job-1'] },
@@ -274,7 +269,7 @@ describe('Backranq analysis queue processor', () => {
             dispatchToken: 'delivery-1',
         });
 
-        expect(flushAnalysisOutboxMock).toHaveBeenCalledOnce();
+        expect(flushAnalysisOutboxMock).not.toHaveBeenCalled();
     });
 
     it('checks for an idempotent auto-analysis continuation after each delivery', async () => {
@@ -336,7 +331,7 @@ describe('Backranq analysis queue processor', () => {
                 retryAt: lockedUntil,
             },
         });
-        expect(flushAnalysisOutboxMock).toHaveBeenCalledOnce();
+        expect(flushAnalysisOutboxMock).not.toHaveBeenCalled();
     });
 
     it('stages and flushes recovered work on a legacy dispatch wakeup', async () => {
@@ -357,20 +352,6 @@ describe('Backranq analysis queue processor', () => {
         });
 
         expect(flushAnalysisOutboxMock).toHaveBeenCalledOnce();
-    });
-
-    it('runs and reschedules the durable maintenance heartbeat', async () => {
-        const processor = await importProcessor();
-
-        const result = await processor.processBackranqQueueMessage({
-            type: 'analysis-maintenance',
-            requestedAt: '2026-08-12T12:00:00.000Z',
-        });
-
-        expect(runAnalysisMaintenanceHeartbeatMock).toHaveBeenCalledOnce();
-        expect(result).toMatchObject({
-            nextHeartbeat: { queued: true, messageId: 'heartbeat-2' },
-        });
     });
 
     it('processes a durable per-user auto-analysis reconciliation wakeup', async () => {

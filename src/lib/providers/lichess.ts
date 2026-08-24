@@ -406,6 +406,7 @@ export async function fetchLichessGamesBatch(args: {
     maxPages?: number;
     pageSize?: number;
     firstSyncMaxGames?: number;
+    maxGames?: number;
     resumeBoundaryIds?: string[];
     signal?: AbortSignal;
 }): Promise<ProviderBatchFetchResult> {
@@ -425,6 +426,7 @@ export async function fetchLichessGamesBatch(args: {
     let currentUntil = args.until;
     let currentBoundaryIds = [...(args.resumeBoundaryIds ?? [])];
     let complete = false;
+    let capped = false;
     let etag: string | null | undefined;
     let lastModified: string | null | undefined;
 
@@ -457,25 +459,35 @@ export async function fetchLichessGamesBatch(args: {
             seenSourceIds.add(id);
             newSourceIds += 1;
         }
-        if (
-            args.firstSyncMaxGames &&
-            dedupeGames(games).length >= args.firstSyncMaxGames
-        ) {
+        const oldestSeenAt = page.oldestSeenAt;
+        const pageComplete =
+            page.rawCount < pageSize ||
+            !oldestSeenAt ||
+            Boolean(
+                args.since &&
+                    new Date(oldestSeenAt).getTime() <
+                        new Date(args.since).getTime()
+            );
+        const fetchedGames = dedupeGames(games).length;
+        if (args.firstSyncMaxGames && fetchedGames >= args.firstSyncMaxGames) {
             complete = true;
             break;
         }
-        if (
-            page.rawCount < pageSize ||
-            !page.oldestSeenAt ||
-            (args.since &&
-                new Date(page.oldestSeenAt).getTime() <
-                    new Date(args.since).getTime())
-        ) {
+        if (args.maxGames && fetchedGames >= args.maxGames) {
+            if (pageComplete && fetchedGames <= args.maxGames) complete = true;
+            else capped = true;
+            break;
+        }
+        if (pageComplete) {
             complete = true;
             break;
         }
 
-        const oldestMs = new Date(page.oldestSeenAt).getTime();
+        if (!oldestSeenAt) {
+            complete = true;
+            break;
+        }
+        const oldestMs = new Date(oldestSeenAt).getTime();
         const currentUntilMs = new Date(currentUntil).getTime();
         if (!Number.isFinite(oldestMs) || !Number.isFinite(currentUntilMs)) {
             complete = true;
@@ -512,11 +524,37 @@ export async function fetchLichessGamesBatch(args: {
         currentUntil = nextUntil;
     }
 
+    const limit = args.firstSyncMaxGames ?? args.maxGames;
+    const limited = takeRecentWithTimestampBoundary(games, limit);
+    if (capped && limited.length > 0) {
+        const boundary = limited.at(-1)!.playedAt;
+        const boundaryIds = limited
+            .filter((game) => game.playedAt === boundary)
+            .map((game) =>
+                game.id.startsWith('lichess:')
+                    ? game.id.slice('lichess:'.length)
+                    : game.id
+            );
+        return {
+            games: limited,
+            complete: false,
+            nextUntil: boundary,
+            nextBoundaryIds:
+                boundary === args.until
+                    ? Array.from(
+                          new Set([
+                              ...(args.resumeBoundaryIds ?? []),
+                              ...boundaryIds,
+                          ])
+                      )
+                    : boundaryIds,
+            etag,
+            lastModified,
+        };
+    }
+
     return {
-        games: takeRecentWithTimestampBoundary(
-            games,
-            args.firstSyncMaxGames
-        ),
+        games: limited,
         complete,
         nextUntil: complete ? null : currentUntil,
         nextBoundaryIds: complete ? undefined : currentBoundaryIds,

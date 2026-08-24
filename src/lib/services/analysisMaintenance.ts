@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
-import { publishBackranqQueueMessage } from '@/lib/queues/backranq';
 import {
     reconcileAnalysisBatchCompletions,
     recoverAnalysisBatchPlanOutbox,
@@ -15,16 +14,6 @@ import {
 
 const MAINTENANCE_KEY = 'analysis-maintenance';
 const MAINTENANCE_LEASE_MS = 2 * 60_000;
-export const ANALYSIS_MAINTENANCE_INTERVAL_SECONDS = 60;
-
-export async function runAnalysisMaintenanceHeartbeat(args: {
-    now?: Date;
-} = {}) {
-    const now = args.now ?? new Date();
-    const maintenance = await runAnalysisMaintenanceCycle({ now });
-    const nextHeartbeat = await scheduleNextAnalysisMaintenance({ now });
-    return { ...maintenance, nextHeartbeat };
-}
 
 export async function runAnalysisMaintenanceCycle(args: {
     now?: Date;
@@ -36,65 +25,23 @@ export async function runAnalysisMaintenanceCycle(args: {
         return { skipped: 'already-running' as const };
     }
 
-    try {
-        const batchPlanRecovery = await recoverAnalysisBatchPlanOutbox();
-        const recovery = await recoverExpiredAnalysisJobs({ now });
-        const dispatch = await dispatchQueuedAnalysisJobs({ now });
-        const batches = await reconcileAnalysisBatchCompletions();
-        const settlements = await reconcileAnalysisCreditSettlements();
-        const outbox = await flushAnalysisOutbox({ now });
-        return {
-            skipped: null,
-            batchPlanRecovery,
-            recovery,
-            dispatch,
-            batches,
-            settlements,
-            outbox,
-        };
-    } finally {
-        await prisma.analysisMaintenanceLease
-            .updateMany({
-                where: { key: MAINTENANCE_KEY, leaseToken },
-                data: { lockedUntil: new Date() },
-            })
-            .catch((error) => {
-                console.error(
-                    '[analysis maintenance] lease release failed',
-                    error
-                );
-            });
-    }
-}
-
-export async function scheduleNextAnalysisMaintenance(args: {
-    now?: Date;
-} = {}) {
-    const now = args.now ?? new Date();
-    const scheduledAt = new Date(
-        now.getTime() + ANALYSIS_MAINTENANCE_INTERVAL_SECONDS * 1_000
-    );
-    const bucket = Math.floor(scheduledAt.getTime() / 60_000);
-    const result = await publishBackranqQueueMessage(
-        {
-            type: 'analysis-maintenance',
-            requestedAt: scheduledAt.toISOString(),
-        },
-        {
-            idempotencyKey: `analysis-maintenance:${bucket}`,
-            delaySeconds: ANALYSIS_MAINTENANCE_INTERVAL_SECONDS,
-            retentionSeconds: 24 * 60 * 60,
-        }
-    );
-    if (!result.queued) {
-        throw new Error('Failed to schedule the next analysis maintenance', {
-            cause: result.error ?? result.unavailableReason,
-        });
-    }
+    // The lease expires before the next scheduled cycle. Leaving it to expire
+    // avoids a second unconditional write while still fencing duplicate cron
+    // delivery and recovering automatically after a hard crash.
+    const batchPlanRecovery = await recoverAnalysisBatchPlanOutbox();
+    const recovery = await recoverExpiredAnalysisJobs({ now });
+    const dispatch = await dispatchQueuedAnalysisJobs({ now });
+    const batches = await reconcileAnalysisBatchCompletions();
+    const settlements = await reconcileAnalysisCreditSettlements();
+    const outbox = await flushAnalysisOutbox({ now });
     return {
-        queued: true as const,
-        messageId: result.messageId,
-        scheduledAt: scheduledAt.toISOString(),
+        skipped: null,
+        batchPlanRecovery,
+        recovery,
+        dispatch,
+        batches,
+        settlements,
+        outbox,
     };
 }
 
