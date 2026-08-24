@@ -19,10 +19,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     session: { strategy: 'database' },
     callbacks: {
         session({ session, user }) {
-            if (session.user) {
-                session.user.id = user.id;
-            }
-            return session;
+            // Auth.js passes the complete AdapterSession to this callback for
+            // database-backed sessions. Never return that object directly:
+            // it contains the bearer sessionToken and internal user fields.
+            return {
+                expires: new Date(session.expires).toISOString(),
+                user: {
+                    id: user.id,
+                    name: user.name ?? null,
+                    email: user.email ?? null,
+                    image: user.image ?? null,
+                },
+            };
         },
     },
     ...authConfig,
