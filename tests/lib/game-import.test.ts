@@ -54,13 +54,11 @@ describe('game import provenance and PGN invalidation', () => {
         prismaMock.trainingMoment.updateMany.mockResolvedValue({
             count: 1,
         });
+        prismaMock.analyzedGame.findMany.mockResolvedValue([]);
+        prismaMock.analyzedGame.createMany.mockResolvedValue({ count: 1 });
     });
 
     it('snapshots provider identity, side, exact clock, and source hash on create', async () => {
-        prismaMock.analyzedGame.findUnique.mockResolvedValue(null);
-        prismaMock.analyzedGame.create.mockResolvedValue({
-            id: 'db-game-1',
-        });
         const { saveNormalizedGamesForUser } =
             await importGameImport();
 
@@ -73,34 +71,37 @@ describe('game import provenance and PGN invalidation', () => {
             saved: 1,
             created: 1,
             updated: 0,
-            newGameDbIds: ['db-game-1'],
+            newGameDbIds: [expect.any(String)],
         });
-        expect(prismaMock.analyzedGame.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({
-                sourcePgnHash: hashSourcePgn(originalPgn),
-                sourceUsername: 'Ada',
-                sourceAccountId: 'lichess-account-1',
-                userSide: 'WHITE',
-                timeControlRaw: '600+5',
-                timeControlInitialSeconds: 600,
-                timeControlIncrementSeconds: 5,
-            }),
-            select: { id: true },
+        expect(prismaMock.analyzedGame.createMany).toHaveBeenCalledWith({
+            data: [
+                expect.objectContaining({
+                    id: expect.any(String),
+                    sourcePgnHash: hashSourcePgn(originalPgn),
+                    sourceUsername: 'Ada',
+                    sourceAccountId: 'lichess-account-1',
+                    userSide: 'WHITE',
+                    timeControlRaw: '600+5',
+                    timeControlInitialSeconds: 600,
+                    timeControlIncrementSeconds: 5,
+                }),
+            ],
+            skipDuplicates: true,
         });
     });
 
-    it('does not invalidate Positions when the stored PGN is unchanged', async () => {
-        prismaMock.analyzedGame.findUnique.mockResolvedValue({
+    it('performs no write when the stored provider snapshot is unchanged', async () => {
+        prismaMock.analyzedGame.findMany.mockResolvedValue([{
             id: 'db-game-1',
+            provider: 'LICHESS',
+            externalId: 'game-1',
+            url: null,
             pgn: originalPgn,
             sourcePgnHash: hashSourcePgn(originalPgn),
             sourceUsername: 'Ada',
             sourceAccountId: 'lichess-account-1',
             userSide: 'WHITE',
-        });
-        prismaMock.analyzedGame.updateMany.mockResolvedValue({
-            count: 1,
-        });
+        }]);
         const { saveNormalizedGamesForUser } =
             await importGameImport();
 
@@ -109,32 +110,26 @@ describe('game import provenance and PGN invalidation', () => {
             games: [game()],
         });
 
-        expect(
-            prismaMock.analyzedGame.updateMany
-        ).toHaveBeenCalledWith(
-            expect.objectContaining({
-                data: expect.not.objectContaining({
-                    currentAnalysisRunId: null,
-                }),
-            })
-        );
+        expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+        expect(prismaMock.analyzedGame.createMany).not.toHaveBeenCalled();
         expect(
             prismaMock.trainingMoment.updateMany
         ).not.toHaveBeenCalled();
     });
 
     it('atomically clears analysis provenance and invalidates Positions for a changed PGN', async () => {
-        prismaMock.analyzedGame.findUnique.mockResolvedValue({
+        prismaMock.analyzedGame.findMany.mockResolvedValue([{
             id: 'db-game-1',
+            provider: 'LICHESS',
+            externalId: 'game-1',
+            url: null,
             pgn: originalPgn,
             sourcePgnHash: hashSourcePgn(originalPgn),
             sourceUsername: 'Ada',
             sourceAccountId: 'lichess-account-1',
             userSide: 'WHITE',
-        });
-        prismaMock.analyzedGame.updateMany.mockResolvedValue({
-            count: 1,
-        });
+        }]);
+        prismaMock.$queryRaw.mockResolvedValue([{ id: 'db-game-1' }]);
         const { saveNormalizedGamesForUser } =
             await importGameImport();
 
@@ -148,28 +143,25 @@ describe('game import provenance and PGN invalidation', () => {
             created: 0,
             updated: 1,
         });
-        expect(
-            prismaMock.analyzedGame.updateMany
-        ).toHaveBeenCalledWith({
-            where: {
-                id: 'db-game-1',
-                userId: 'user-1',
-                pgn: originalPgn,
-                sourcePgnHash: hashSourcePgn(originalPgn),
-            },
-            data: expect.objectContaining({
-                pgn: correctedPgn,
-                sourcePgnHash: hashSourcePgn(correctedPgn),
-                analysis: {},
-                analyzedAt: null,
-                currentAnalysisRunId: null,
-            }),
-        });
+        const update = prismaMock.$queryRaw.mock.calls[0]?.[0] as {
+            text?: string;
+            values?: unknown[];
+        };
+        expect(update.text).toContain('UPDATE "AnalyzedGame"');
+        expect(update.text).toContain('"currentAnalysisValid" = FALSE');
+        expect(update.values).toEqual(
+            expect.arrayContaining([
+                'db-game-1',
+                originalPgn,
+                correctedPgn,
+                hashSourcePgn(correctedPgn),
+            ])
+        );
         expect(
             prismaMock.trainingMoment.updateMany
         ).toHaveBeenCalledWith({
             where: {
-                gameId: 'db-game-1',
+                gameId: { in: ['db-game-1'] },
                 userId: 'user-1',
                 archivedAt: null,
             },
@@ -178,23 +170,24 @@ describe('game import provenance and PGN invalidation', () => {
                 archivedAt: expect.any(Date),
             },
         });
-        expect(
-            prismaMock.analyzedGame.updateMany.mock.invocationCallOrder[0]
-        ).toBeLessThan(
+        expect(prismaMock.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
             prismaMock.trainingMoment.updateMany.mock
                 .invocationCallOrder[0]!
         );
     });
 
     it('rejects a duplicate replay from the opposite side without mutating the snapshot', async () => {
-        prismaMock.analyzedGame.findUnique.mockResolvedValue({
+        prismaMock.analyzedGame.findMany.mockResolvedValue([{
             id: 'db-game-1',
+            provider: 'LICHESS',
+            externalId: 'game-1',
+            url: null,
             pgn: originalPgn,
             sourcePgnHash: hashSourcePgn(originalPgn),
             sourceUsername: 'Ada',
             sourceAccountId: 'lichess-account-1',
             userSide: 'WHITE',
-        });
+        }]);
         const oppositePerspective = game();
         oppositePerspective.provenance = {
             ...oppositePerspective.provenance!,
@@ -212,20 +205,22 @@ describe('game import provenance and PGN invalidation', () => {
             saved: 0,
             errors: [{ code: 'PROVENANCE_CONFLICT' }],
         });
-        expect(prismaMock.analyzedGame.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
         expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 
     it('keeps the frozen perspective when an account is unlinked and relinked', async () => {
-        prismaMock.analyzedGame.findUnique.mockResolvedValue({
+        prismaMock.analyzedGame.findMany.mockResolvedValue([{
             id: 'db-game-1',
+            provider: 'LICHESS',
+            externalId: 'game-1',
+            url: null,
             pgn: originalPgn,
             sourcePgnHash: hashSourcePgn(originalPgn),
             sourceUsername: 'Ada',
             sourceAccountId: 'lichess-account-1',
             userSide: 'WHITE',
-        });
-        prismaMock.analyzedGame.updateMany.mockResolvedValue({ count: 1 });
+        }]);
         const replayAfterRelink = game();
         // A durable source account can be disconnected and recreated. The game
         // snapshot remains authoritative and is never derived from that row.
@@ -235,26 +230,21 @@ describe('game import provenance and PGN invalidation', () => {
             games: [replayAfterRelink],
         });
 
-        expect(prismaMock.analyzedGame.updateMany).toHaveBeenCalledWith(
-            expect.objectContaining({
-                data: expect.not.objectContaining({
-                    sourceUsername: expect.anything(),
-                    sourceAccountId: expect.anything(),
-                    userSide: expect.anything(),
-                }),
-            })
-        );
+        expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
     });
 
     it('does not rewrite a completed Coach snapshot for the same session identity', async () => {
-        prismaMock.analyzedGame.findUnique.mockResolvedValue({
+        prismaMock.analyzedGame.findMany.mockResolvedValue([{
             id: 'db-coach-1',
+            provider: 'BACKRANQ_COACH',
+            externalId: 'session-hash',
+            url: null,
             pgn: originalPgn,
             sourcePgnHash: hashSourcePgn(originalPgn),
             sourceUsername: 'Ada',
             sourceAccountId: null,
             userSide: 'WHITE',
-        });
+        }]);
         const coachGame: NormalizedGame = {
             ...game(correctedPgn),
             id: 'backranq_coach:session-hash',
@@ -274,6 +264,43 @@ describe('game import provenance and PGN invalidation', () => {
         expect(result.errors).toMatchObject([
             { code: 'SOURCE_SNAPSHOT_CONFLICT' },
         ]);
-        expect(prismaMock.analyzedGame.updateMany).not.toHaveBeenCalled();
+        expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('replays a large unchanged batch with one read and zero writes', async () => {
+        const games = Array.from({ length: 200 }, (_, index) => ({
+            ...game(),
+            id: `lichess:game-${index}`,
+        }));
+        prismaMock.analyzedGame.findMany.mockResolvedValue(
+            games.map((item, index) => ({
+                id: `db-game-${index}`,
+                provider: 'LICHESS',
+                externalId: `game-${index}`,
+                url: null,
+                pgn: item.pgn,
+                sourcePgnHash: hashSourcePgn(item.pgn),
+                sourceUsername: 'Ada',
+                sourceAccountId: 'lichess-account-1',
+                userSide: 'WHITE',
+            }))
+        );
+        const { saveNormalizedGamesForUser } = await importGameImport();
+
+        const result = await saveNormalizedGamesForUser({
+            userId: 'user-1',
+            games,
+        });
+
+        expect(result).toMatchObject({
+            saved: 200,
+            created: 0,
+            updated: 0,
+            errors: [],
+        });
+        expect(prismaMock.analyzedGame.findMany).toHaveBeenCalledOnce();
+        expect(prismaMock.analyzedGame.createMany).not.toHaveBeenCalled();
+        expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 });

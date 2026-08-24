@@ -38,6 +38,7 @@ function syncState(overrides: Record<string, unknown> = {}) {
         cursorSincePlayedAt: null,
         cursorUntilPlayedAt: null,
         cursorWindowEnd: null,
+        cursorBoundaryIds: [],
         etag: null,
         lastModified: null,
         ...overrides,
@@ -93,7 +94,7 @@ function syncUser(
 describe('reliable provider auto-sync', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        prismaMock.providerSyncState.upsert.mockResolvedValue(syncState());
+        prismaMock.providerSyncState.findUnique.mockResolvedValue(syncState());
         prismaMock.providerSyncState.update.mockImplementation(
             async (args: unknown) => {
                 const data = (args as { data?: Record<string, unknown> }).data;
@@ -101,6 +102,7 @@ describe('reliable provider auto-sync', () => {
             }
         );
         prismaMock.providerSyncState.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.syncJob.updateMany.mockResolvedValue({ count: 1 });
         prismaMock.$transaction.mockImplementation(
             async (callback: unknown) =>
                 (
@@ -145,7 +147,7 @@ describe('reliable provider auto-sync', () => {
     });
 
     it('resets cursors and conditional metadata when provider identity changes', async () => {
-        prismaMock.providerSyncState.upsert.mockResolvedValue(
+        prismaMock.providerSyncState.findUnique.mockResolvedValue(
             syncState({
                 providerUsernameNormalized: 'old-ada',
                 cursorSincePlayedAt: new Date('2026-06-01T00:00:00.000Z'),
@@ -218,7 +220,8 @@ describe('reliable provider auto-sync', () => {
         expect(result).toMatchObject({
             saved: 0,
             complete: false,
-            error: 'Saved 0/1 games; 1 failed',
+            error: 'Rejected 1/1 provider games: save failed',
+            retryable: false,
         });
         expect(prismaMock.providerSyncState.updateMany).toHaveBeenLastCalledWith({
             where: expect.objectContaining({
@@ -226,20 +229,19 @@ describe('reliable provider auto-sync', () => {
                 providerUsernameNormalized: 'ada',
             }),
             data: expect.objectContaining({
-                cursorSincePlayedAt: new Date('2026-06-30T00:00:00.000Z'),
-                cursorUntilPlayedAt: new Date('2026-07-10T00:00:00.000Z'),
-                cursorWindowEnd: new Date('2026-07-10T00:00:00.000Z'),
+                lastError: expect.stringContaining('Rejected 1/1'),
             }),
         });
     });
 
     it('resumes a bounded interval from its durable cursor and completes the original window', async () => {
-        prismaMock.providerSyncState.upsert.mockResolvedValue(
+        prismaMock.providerSyncState.findUnique.mockResolvedValue(
             syncState({
                 lastSyncedPlayedAt: new Date('2026-06-01T00:00:00.000Z'),
                 cursorSincePlayedAt: new Date('2026-05-31T23:58:00.000Z'),
                 cursorUntilPlayedAt: new Date('2026-06-15T00:00:00.000Z'),
                 cursorWindowEnd: new Date('2026-07-01T00:00:00.000Z'),
+                cursorBoundaryIds: ['boundary-game'],
             })
         );
         const { syncUserProvider } = await importAutoSync();
@@ -256,6 +258,8 @@ describe('reliable provider auto-sync', () => {
                 since: '2026-05-31T23:58:00.000Z',
                 until: '2026-06-15T00:00:00.000Z',
                 firstSyncMaxGames: undefined,
+                maxGames: 200,
+                resumeBoundaryIds: ['boundary-game'],
             })
         );
         expect(result.complete).toBe(true);
@@ -307,7 +311,7 @@ describe('reliable provider auto-sync', () => {
             classical: 'IGNORE',
             unknown: 'IGNORE',
         };
-        prismaMock.providerSyncState.upsert.mockResolvedValue(
+        prismaMock.providerSyncState.findUnique.mockResolvedValue(
             syncState({ importPolicyHash: 'v1:lichess:rapid' })
         );
         const { syncUserProvider } = await importAutoSync();
@@ -371,6 +375,7 @@ describe('reliable provider auto-sync', () => {
             userId: 'user-1',
             games: [],
             client: prismaMock,
+            failOnError: true,
         });
         expect(requestAutoAnalysisWakeupMock).toHaveBeenCalledWith(
             'user-1',
@@ -386,7 +391,7 @@ describe('reliable provider auto-sync', () => {
     });
 
     it('replays the previous Chess.com archive month for late-visible games', async () => {
-        prismaMock.providerSyncState.upsert.mockResolvedValue(
+        prismaMock.providerSyncState.findUnique.mockResolvedValue(
             syncState({
                 provider: 'CHESSCOM',
                 importPolicyHash:
@@ -502,6 +507,7 @@ describe('reliable provider auto-sync', () => {
             userId: 'user-1',
             games: [item],
             client: prismaMock,
+            failOnError: true,
         });
         expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
     });
@@ -509,6 +515,20 @@ describe('reliable provider auto-sync', () => {
     it('casts UUID lock parameters without weakening the identity or worker lease fences', async () => {
         const userId = '11111111-1111-4111-8111-111111111111';
         const jobId = '22222222-2222-4222-8222-222222222222';
+        const item = game('atomic-progress');
+        fetchLichessGamesBatchMock.mockResolvedValue({
+            games: [item],
+            complete: true,
+            nextUntil: null,
+        });
+        saveNormalizedGamesForUserMock.mockResolvedValue({
+            saved: 1,
+            created: 1,
+            updated: 0,
+            ids: { [item.id]: 'game-db-atomic-progress' },
+            newGameDbIds: ['game-db-atomic-progress'],
+            errors: [],
+        });
         prismaMock.$queryRaw
             .mockResolvedValueOnce([{ username: 'Ada' }])
             .mockResolvedValueOnce([
@@ -562,9 +582,55 @@ describe('reliable provider auto-sync', () => {
         });
         expect(saveNormalizedGamesForUserMock).toHaveBeenCalledWith({
             userId,
-            games: [],
+            games: [item],
             client: prismaMock,
+            failOnError: true,
         });
+        expect(prismaMock.syncJob.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: jobId,
+                status: 'RUNNING',
+                leaseToken: 'current-worker-token',
+            },
+            data: {
+                fetchedCount: { increment: 1 },
+                savedCount: { increment: 1 },
+                createdCount: { increment: 1 },
+                updatedCount: { increment: 0 },
+                queuedAnalysisCount: { increment: 0 },
+            },
+        });
+    });
+
+    it('does not write zero-valued job progress for an empty provider batch', async () => {
+        prismaMock.$queryRaw
+            .mockResolvedValueOnce([{ username: 'Ada' }])
+            .mockResolvedValueOnce([
+                {
+                    status: 'RUNNING',
+                    leaseToken: 'current-worker-token',
+                },
+            ]);
+        const { syncUserProvider } = await importAutoSync();
+
+        const result = await syncUserProvider({
+                user: syncUser('Ada'),
+                provider: 'LICHESS',
+                prefs: (await import('@/lib/preferences')).defaultPreferences(),
+                force: true,
+                jobLease: {
+                    jobId: '22222222-2222-4222-8222-222222222222',
+                    leaseToken: 'current-worker-token',
+                },
+                now: new Date('2026-07-10T00:00:00.000Z'),
+            });
+        expect(result).toMatchObject({
+            fetched: 0,
+            saved: 0,
+            complete: true,
+        });
+
+        expect(prismaMock.syncJob.updateMany).not.toHaveBeenCalled();
     });
 
     it('rejects a stale worker lease before saving games or advancing the cursor', async () => {
@@ -696,7 +762,7 @@ describe('reliable provider auto-sync', () => {
                 accounts: [],
             },
         ]);
-        prismaMock.providerSyncState.upsert
+        prismaMock.providerSyncState.findUnique
             .mockResolvedValueOnce(syncState())
             .mockResolvedValueOnce(
                 syncState({

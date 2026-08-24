@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
 
-const publishMock = vi.fn();
 const recoverMock = vi.fn();
 const dispatchMock = vi.fn();
 const flushMock = vi.fn();
@@ -12,9 +11,6 @@ const batchCompletionsMock = vi.fn();
 async function importMaintenance() {
     vi.resetModules();
     mockPrismaModule();
-    vi.doMock('@/lib/queues/backranq', () => ({
-        publishBackranqQueueMessage: publishMock,
-    }));
     vi.doMock('@/lib/services/analysisScheduler', () => ({
         recoverExpiredAnalysisJobs: recoverMock,
         dispatchQueuedAnalysisJobs: dispatchMock,
@@ -32,7 +28,7 @@ async function importMaintenance() {
     return import('@/lib/services/analysisMaintenance');
 }
 
-describe('analysis maintenance heartbeat', () => {
+describe('analysis maintenance cycle', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         prismaMock.$queryRaw.mockImplementation(async (query: unknown) => {
@@ -41,60 +37,42 @@ describe('analysis maintenance heartbeat', () => {
             )?.[0];
             return [{ leaseToken: token }];
         });
-        prismaMock.analysisMaintenanceLease.updateMany.mockResolvedValue({
-            count: 1,
-        });
         recoverMock.mockResolvedValue({ requeued: 0, failed: 0 });
         dispatchMock.mockResolvedValue({ claimedJobIds: [] });
         settlementsMock.mockResolvedValue({ scanned: 0, errors: [] });
         flushMock.mockResolvedValue({ claimed: 0, published: 0 });
         batchPlanRecoveryMock.mockResolvedValue({ scanned: 0, recovered: 0 });
         batchCompletionsMock.mockResolvedValue({ scanned: 0, completed: 0 });
-        publishMock.mockResolvedValue({ queued: true, messageId: 'heartbeat-2' });
     });
 
-    it('recovers durable work and schedules the next minute with a stable key', async () => {
+    it('recovers durable work once without publishing another heartbeat', async () => {
         const maintenance = await importMaintenance();
-        const now = new Date('2026-08-12T12:00:00.000Z');
-
-        const result = await maintenance.runAnalysisMaintenanceHeartbeat({ now });
+        const result = await maintenance.runAnalysisMaintenanceCycle({
+            now: new Date('2026-08-12T12:00:00.000Z'),
+        });
 
         expect(result).toMatchObject({
             skipped: null,
-            nextHeartbeat: {
-                queued: true,
-                messageId: 'heartbeat-2',
-                scheduledAt: '2026-08-12T12:01:00.000Z',
-            },
+            recovery: { requeued: 0 },
+            dispatch: { claimedJobIds: [] },
+            outbox: { claimed: 0 },
         });
-        expect(publishMock).toHaveBeenCalledWith(
-            {
-                type: 'analysis-maintenance',
-                requestedAt: '2026-08-12T12:01:00.000Z',
-            },
-            {
-                idempotencyKey: `analysis-maintenance:${Math.floor(
-                    Date.parse('2026-08-12T12:01:00.000Z') / 60_000
-                )}`,
-                delaySeconds: 60,
-                retentionSeconds: 86_400,
-            }
-        );
+        expect(recoverMock).toHaveBeenCalledOnce();
+        expect(dispatchMock).toHaveBeenCalledOnce();
+        expect(flushMock).toHaveBeenCalledOnce();
+        expect(prismaMock.analysisMaintenanceLease.updateMany).not.toHaveBeenCalled();
     });
 
-    it('throws so Queue retries when the next heartbeat cannot be published', async () => {
+    it('skips all durable work when another cycle owns the lease', async () => {
+        prismaMock.$queryRaw.mockResolvedValue([]);
         const maintenance = await importMaintenance();
-        publishMock.mockResolvedValue({
-            queued: false,
-            messageId: null,
-            unavailableReason: 'publish-failed',
-            error: new Error('queue unavailable'),
-        });
 
         await expect(
-            maintenance.runAnalysisMaintenanceHeartbeat({
+            maintenance.runAnalysisMaintenanceCycle({
                 now: new Date('2026-08-12T12:00:00.000Z'),
             })
-        ).rejects.toThrow('Failed to schedule the next analysis maintenance');
+        ).resolves.toEqual({ skipped: 'already-running' });
+        expect(recoverMock).not.toHaveBeenCalled();
+        expect(prismaMock.analysisMaintenanceLease.updateMany).not.toHaveBeenCalled();
     });
 });

@@ -481,6 +481,7 @@ export async function fetchChessComGamesBatch(args: {
     rated?: boolean;
     maxArchives?: number;
     firstSyncMaxGames?: number;
+    maxGames?: number;
     signal?: AbortSignal;
 }): Promise<ProviderBatchFetchResult> {
     const index = await fetchArchiveIndex(args.username, args.signal);
@@ -494,8 +495,10 @@ export async function fetchChessComGamesBatch(args: {
         Math.min(Math.trunc(args.maxArchives ?? DEFAULT_MAX_ARCHIVES), 24)
     );
     const selected = archives.slice(0, maxArchives);
+    const processed: string[] = [];
     const games: NormalizedGame[] = [];
     for (const archive of selected) {
+        processed.push(archive);
         games.push(
             ...(await fetchArchiveGames({
                 archive,
@@ -510,8 +513,9 @@ export async function fetchChessComGamesBatch(args: {
             }))
         );
         if (
-            args.firstSyncMaxGames &&
-            dedupeGames(games).length >= args.firstSyncMaxGames
+            (args.firstSyncMaxGames ?? args.maxGames) &&
+            dedupeGames(games).length >=
+                (args.firstSyncMaxGames ?? args.maxGames ?? Number.MAX_SAFE_INTEGER)
         ) {
             break;
         }
@@ -530,12 +534,18 @@ export async function fetchChessComGamesBatch(args: {
         };
     }
 
-    const complete = selected.length >= archives.length;
-    const oldestMonth = selected.at(-1)
-        ? archiveMonth(selected.at(-1) as string)
+    const sorted = dedupeGames(games);
+    const limited = takeRecentWithTimestampBoundary(sorted, args.maxGames);
+    const truncatedInsideArchive = limited.length < sorted.length;
+    const complete =
+        !truncatedInsideArchive && processed.length >= archives.length;
+    const oldestMonth = processed.at(-1)
+        ? archiveMonth(processed.at(-1) as string)
         : null;
     const nextUntil =
-        !complete && oldestMonth
+        truncatedInsideArchive && limited.at(-1)
+            ? previousMillisecond(limited.at(-1)!.playedAt)
+            : !complete && oldestMonth
             ? previousMillisecond(
                   new Date(
                       Date.UTC(oldestMonth.year, oldestMonth.month - 1, 1)
@@ -544,7 +554,7 @@ export async function fetchChessComGamesBatch(args: {
             : null;
 
     return {
-        games: dedupeGames(games),
+        games: limited,
         complete,
         nextUntil,
         etag: index.etag,

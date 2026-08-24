@@ -57,7 +57,7 @@ describe('GET /api/admin/readiness', () => {
         vi.stubEnv('STRIPE_PRICE_PLUS_MONTHLY', 'price_plus');
         vi.stubEnv('STRIPE_PRICE_PRO_MONTHLY', 'price_pro');
         vi.stubEnv('CRON_SECRET', 'cron-secret');
-        vi.stubEnv('BACKRANQ_QUEUE_REGION', 'iad1');
+        vi.stubEnv('BACKRANQ_QUEUE_REGION', 'dub1');
         vi.stubEnv('SMTP2GO_API_KEY', 'smtp-key');
         vi.stubEnv('SMTP2GO_WEBHOOK_SECRET', 'smtp-webhook-secret');
         vi.stubEnv('BACKRANQ_EMAIL_FROM', 'Backranq <notifications@example.com>');

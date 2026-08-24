@@ -223,6 +223,58 @@ describe('provider pagination', () => {
         expect(second.complete).toBe(true);
     });
 
+    it('caps a Lichess sync batch and resumes without skipping the boundary', async () => {
+        const newest = Date.parse('2026-07-10T00:00:00.000Z');
+        vi.mocked(fetch)
+            .mockResolvedValueOnce(
+                response(
+                    [
+                        lichessJson('bounded-1', newest),
+                        lichessJson('bounded-2', newest - 1_000),
+                        lichessJson('bounded-3', newest - 2_000),
+                    ].join('\n')
+                )
+            )
+            .mockResolvedValueOnce(
+                response(
+                    [
+                        lichessJson('bounded-2', newest - 1_000),
+                        lichessJson('bounded-3', newest - 2_000),
+                    ].join('\n')
+                )
+            );
+
+        const first = await fetchLichessGamesBatch({
+            username: 'Ada',
+            until: '2026-07-11T00:00:00.000Z',
+            maxGames: 2,
+            pageSize: 3,
+            maxPages: 1,
+        });
+        const second = await fetchLichessGamesBatch({
+            username: 'Ada',
+            until: first.nextUntil as string,
+            resumeBoundaryIds: first.nextBoundaryIds,
+            maxGames: 2,
+            pageSize: 3,
+            maxPages: 1,
+        });
+
+        expect(first).toMatchObject({
+            complete: false,
+            nextUntil: new Date(newest - 1_000).toISOString(),
+            nextBoundaryIds: ['bounded-2'],
+        });
+        expect(first.games.map((item) => item.id)).toEqual([
+            'lichess:bounded-1',
+            'lichess:bounded-2',
+        ]);
+        expect(second.games.map((item) => item.id)).toEqual([
+            'lichess:bounded-3',
+        ]);
+        expect(second.complete).toBe(true);
+    });
+
     it.each([401, 403])(
         'retries stale Lichess OAuth status %s exactly once without credentials',
         async (status) => {
@@ -379,6 +431,53 @@ describe('provider pagination', () => {
         expect(second.games.map((game) => game.id)).toEqual([
             'chesscom:old-match',
         ]);
+    });
+
+    it('caps and resumes inside a dense Chess.com archive', async () => {
+        const archive =
+            'https://api.chess.com/pub/player/ada/games/2026/07';
+        const played = [
+            '2026-07-10T00:00:00.000Z',
+            '2026-07-09T00:00:00.000Z',
+            '2026-07-08T00:00:00.000Z',
+        ];
+        const payload = {
+            games: played.map((playedAt, index) => ({
+                uuid: `dense-${index + 1}`,
+                end_time: Date.parse(playedAt) / 1_000,
+                time_class: 'rapid',
+                rated: true,
+                pgn: '[Result "1-0"]\n\n1. e4 e5 1-0',
+                white: { username: 'Ada' },
+                black: { username: 'Bob' },
+            })),
+        };
+        vi.mocked(fetch)
+            .mockResolvedValueOnce(response({ archives: [archive] }))
+            .mockResolvedValueOnce(response(payload))
+            .mockResolvedValueOnce(response({ archives: [archive] }))
+            .mockResolvedValueOnce(response(payload));
+
+        const first = await fetchChessComGamesBatch({
+            username: 'Ada',
+            until: '2026-07-31T23:59:59.999Z',
+            maxGames: 2,
+        });
+        const second = await fetchChessComGamesBatch({
+            username: 'Ada',
+            until: first.nextUntil as string,
+            maxGames: 2,
+        });
+
+        expect(first.games.map((item) => item.id)).toEqual([
+            'chesscom:dense-1',
+            'chesscom:dense-2',
+        ]);
+        expect(first.complete).toBe(false);
+        expect(second.games.map((item) => item.id)).toEqual([
+            'chesscom:dense-3',
+        ]);
+        expect(second.complete).toBe(true);
     });
 
     it('rejects malformed Chess.com archive JSON instead of treating it as empty', async () => {

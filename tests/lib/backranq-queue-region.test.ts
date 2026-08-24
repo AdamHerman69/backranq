@@ -6,18 +6,17 @@ import {
 } from '@/lib/queues/region';
 
 describe('Backranq Queue region', () => {
-    it('uses only the explicit queue setting, not the Function region', () => {
-        expect(
+    it('requires Queue and Function execution to stay in one region', () => {
+        expect(() =>
             backranqQueueRegion({
                 BACKRANQ_QUEUE_REGION: 'dub1',
                 VERCEL_REGION: 'iad1',
             })
-        ).toBe('dub1');
+        ).toThrow('must match VERCEL_REGION');
         expect(
-            backranqQueueRegion({
-                VERCEL_REGION: 'dub1',
-            })
-        ).toBe('iad1');
+            backranqQueueRegion({ BACKRANQ_QUEUE_REGION: 'dub1' })
+        ).toBe('dub1');
+        expect(backranqQueueRegion({})).toBe('dub1');
     });
 
     it('fails fast when a Vercel environment has no explicit queue region', () => {

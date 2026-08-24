@@ -24,7 +24,6 @@ import {
     processPracticeDueNotificationPage,
     processPracticeDueSweepPage,
 } from '@/lib/training/practiceDueSweep';
-import { runAnalysisMaintenanceHeartbeat } from '@/lib/services/analysisMaintenance';
 
 export async function processBackranqQueueMessage(message: BackranqQueueMessage) {
     if (message.type === 'runtime-smoke') {
@@ -109,16 +108,20 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
     }
     if (message.type === 'sync-job') {
         const sync = await processSyncJob(message.jobId);
-        const dispatch = await dispatchQueuedAnalysisJobs();
-        const outbox = await flushAnalysisOutbox();
-        const notificationDispatch = await safeNotificationDispatch();
-        return { sync, dispatch, outbox, notificationDispatch };
+        const notificationDispatch =
+            sync.disposition === 'SUCCEEDED' ||
+            sync.disposition === 'FAILED'
+                ? await safeNotificationDispatch()
+                : null;
+        return { sync, notificationDispatch };
     }
     if (message.type === 'reconcile-auto-analysis') {
         const reconciliation = await reconcileAndDispatchAutoAnalysisBacklog(message.userId, {
             cursor: message.cursor,
         });
-        const outbox = await flushAnalysisOutbox();
+        const outbox = await flushClaimedAnalysisOutbox(
+            reconciliation.dispatch?.claimedJobIds ?? []
+        );
         return { ...reconciliation, outbox };
     }
     if (message.type === 'reconcile-auto-analysis-sweep') {
@@ -132,13 +135,14 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
         const outbox = await flushAnalysisOutbox();
         return { dispatch, outbox };
     }
-    if (message.type === 'analysis-maintenance') {
-        return runAnalysisMaintenanceHeartbeat();
-    }
     if (message.type === 'analysis-batch') {
         const batch = await processAnalysisBatchPage(message.batchId);
         const dispatch = await dispatchQueuedAnalysisJobs();
-        const outbox = await flushAnalysisOutbox();
+        const outbox = await flushAnalysisOutbox({
+            analysisJobIds: dispatch.claimedJobIds,
+            batchIds: [message.batchId],
+            limit: Math.max(1, dispatch.claimedJobIds.length + 1),
+        });
         return { batch, dispatch, outbox };
     }
     if (message.type === 'analysis-job') {
@@ -165,7 +169,9 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
         // Completing one delivery frees per-user capacity. Always dispatch the
         // next ready job so a batch drains without another HTTP or cron trigger.
         const dispatch = await dispatchQueuedAnalysisJobs();
-        const outbox = await flushAnalysisOutbox();
+        const outbox = await flushClaimedAnalysisOutbox(
+            dispatch.claimedJobIds
+        );
         const autoAnalysisContinuation =
             await requestAutoAnalysisContinuationAfterTerminalJob(
                 message.jobId
@@ -180,6 +186,14 @@ export async function processBackranqQueueMessage(message: BackranqQueueMessage)
         };
     }
     throw new Error('Unknown queue message');
+}
+
+function flushClaimedAnalysisOutbox(jobIds: string[]) {
+    if (jobIds.length === 0) return Promise.resolve(null);
+    return flushAnalysisOutbox({
+        analysisJobIds: jobIds,
+        limit: jobIds.length,
+    });
 }
 
 async function safeNotificationDispatch() {

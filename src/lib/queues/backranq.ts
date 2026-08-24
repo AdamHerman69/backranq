@@ -28,7 +28,6 @@ export type BackranqQueueMessage =
           cursor?: string;
       }
     | { type: 'dispatch-analysis'; requestedAt: string }
-    | { type: 'analysis-maintenance'; requestedAt: string }
     | { type: 'analysis-batch'; batchId: string }
     | { type: 'analysis-job'; jobId: string; dispatchToken: string }
     | { type: 'weekly-master-run'; runId: string }

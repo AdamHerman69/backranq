@@ -202,7 +202,11 @@ export async function POST(req: Request) {
         }
         return NextResponse.json({
             created: saved.created,
-            duplicates: saved.updated + (games.length - distinct.size),
+            // Every successfully parsed input that did not create a row is a
+            // duplicate from the API consumer's perspective. Unchanged
+            // replays intentionally perform no UPDATE, so the persistence
+            // write count is not a valid duplicate count.
+            duplicates: games.length - saved.created,
             createdGameIds: [...createdSet],
             duplicateGameIds: [...duplicateGameIds],
             needsAnalysisGameIds: [...createdSet],

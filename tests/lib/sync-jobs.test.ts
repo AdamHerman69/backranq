@@ -6,6 +6,8 @@ type SyncJobsModule = typeof import('@/lib/services/syncJobs');
 
 const publishBackranqQueueMessageMock = vi.fn();
 const syncUserProviderMock = vi.fn();
+const recordSyncCompletedMock = vi.fn();
+const recordSyncFailedMock = vi.fn();
 
 async function importSyncJobs(): Promise<SyncJobsModule> {
     vi.resetModules();
@@ -16,6 +18,10 @@ async function importSyncJobs(): Promise<SyncJobsModule> {
     vi.doMock('@/lib/services/autoSync', () => ({
         StaleSyncJobLeaseError: class StaleSyncJobLeaseError extends Error {},
         syncUserProvider: syncUserProviderMock,
+    }));
+    vi.doMock('@/lib/notifications/service', () => ({
+        recordSyncCompleted: recordSyncCompletedMock,
+        recordSyncFailed: recordSyncFailedMock,
     }));
     return import('@/lib/services/syncJobs');
 }
@@ -70,6 +76,16 @@ function linkedConnections(
 describe('sync job planning', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        prismaMock.$transaction.mockImplementation(
+            async (callback: unknown) =>
+                (
+                    callback as (
+                        tx: typeof prismaMock
+                    ) => Promise<unknown>
+                )(prismaMock)
+        );
+        recordSyncCompletedMock.mockResolvedValue(null);
+        recordSyncFailedMock.mockResolvedValue(null);
     });
 
     it('plans one queued job per enabled linked provider', async () => {
@@ -428,7 +444,7 @@ describe('sync job planning', () => {
         );
     });
 
-    it('durably schedules and publishes a delayed retry with cumulative counts', async () => {
+    it('durably schedules a retry without counting the failed attempt twice', async () => {
         const now = new Date('2026-07-05T12:00:00.000Z');
         const retryAt = new Date('2026-07-05T12:01:00.000Z');
         const updatedAt = new Date('2026-07-05T12:00:00.100Z');
@@ -477,7 +493,7 @@ describe('sync job planning', () => {
         });
         const { processSyncJob } = await importSyncJobs();
 
-        await processSyncJob('sync-job-1', { now });
+        await processSyncJob('sync-job-1', { now, clock: () => now });
 
         expect(prismaMock.syncJob.updateMany).toHaveBeenCalledWith({
             where: {
@@ -489,15 +505,73 @@ describe('sync job planning', () => {
                 status: 'QUEUED',
                 scheduledFor: retryAt,
                 leaseToken: null,
-                fetchedCount: { increment: 4 },
-                savedCount: { increment: 3 },
-                createdCount: { increment: 3 },
             }),
         });
+        const retryData = prismaMock.syncJob.updateMany.mock.calls
+            .map((call) => (call[0] as { data?: Record<string, unknown> }).data)
+            .find((data) => data?.status === 'QUEUED');
+        expect(retryData).not.toHaveProperty('fetchedCount');
+        expect(retryData).not.toHaveProperty('savedCount');
+        expect(retryData).not.toHaveProperty('createdCount');
         expect(publishBackranqQueueMessageMock).toHaveBeenCalledWith(
             { type: 'sync-job', jobId: 'sync-job-1' },
             expect.objectContaining({ delaySeconds: 60 })
         );
+    });
+
+    it('acknowledges a duplicate delivery after the job is already terminal', async () => {
+        const now = new Date('2026-07-05T12:00:00.000Z');
+        prismaMock.syncJob.updateMany.mockResolvedValue({ count: 0 });
+        prismaMock.syncJob.findUnique.mockResolvedValue({
+            provider: 'LICHESS',
+            status: 'SUCCEEDED',
+            scheduledFor: now,
+            lockedUntil: null,
+        });
+        const { processSyncJob } = await importSyncJobs();
+
+        const result = await processSyncJob('sync-job-1', { now });
+
+        expect(result).toEqual({
+            jobId: 'sync-job-1',
+            provider: 'LICHESS',
+            disposition: 'IGNORED',
+            terminalStatus: 'SUCCEEDED',
+            result: null,
+        });
+        expect(syncUserProviderMock).not.toHaveBeenCalled();
+    });
+
+    it('acknowledges a delivery whose durable job was deleted', async () => {
+        prismaMock.syncJob.updateMany.mockResolvedValue({ count: 0 });
+        prismaMock.syncJob.findUnique.mockResolvedValue(null);
+        const { processSyncJob } = await importSyncJobs();
+
+        await expect(processSyncJob('missing-job')).resolves.toMatchObject({
+            disposition: 'IGNORED',
+            terminalStatus: 'MISSING',
+        });
+        expect(syncUserProviderMock).not.toHaveBeenCalled();
+    });
+
+    it('defers an early redelivery until the active lease can expire', async () => {
+        const now = new Date('2026-07-05T12:00:00.000Z');
+        prismaMock.syncJob.updateMany.mockResolvedValue({ count: 0 });
+        prismaMock.syncJob.findUnique.mockResolvedValue({
+            provider: 'LICHESS',
+            status: 'RUNNING',
+            scheduledFor: now,
+            lockedUntil: new Date('2026-07-05T12:10:00.000Z'),
+        });
+        const { processSyncJob } = await importSyncJobs();
+
+        await expect(
+            processSyncJob('sync-job-1', { now })
+        ).rejects.toMatchObject({
+            name: 'SyncJobDeliveryDeferredError',
+            retryAfterSeconds: 600,
+        });
+        expect(syncUserProviderMock).not.toHaveBeenCalled();
     });
 
     it('continues an incomplete successful batch on the same durable job', async () => {
@@ -547,7 +621,7 @@ describe('sync job planning', () => {
         });
         const { processSyncJob } = await importSyncJobs();
 
-        await processSyncJob('sync-job-1', { now });
+        await processSyncJob('sync-job-1', { now, clock: () => now });
 
         expect(prismaMock.syncJob.updateMany).toHaveBeenCalledWith({
             where: {
@@ -560,14 +634,115 @@ describe('sync job planning', () => {
                 scheduledFor: now,
                 attempts: 0,
                 leaseToken: null,
-                fetchedCount: { increment: 200 },
-                createdCount: { increment: 180 },
             }),
         });
+        const continuationData = prismaMock.syncJob.updateMany.mock.calls
+            .map((call) => (call[0] as { data?: Record<string, unknown> }).data)
+            .find((data) => data?.status === 'QUEUED');
+        expect(continuationData).not.toHaveProperty('fetchedCount');
+        expect(continuationData).not.toHaveProperty('savedCount');
+        expect(continuationData).not.toHaveProperty('createdCount');
+        expect(continuationData).not.toHaveProperty('updatedCount');
         expect(publishBackranqQueueMessageMock).toHaveBeenCalledWith(
             { type: 'sync-job', jobId: 'sync-job-1' },
             expect.objectContaining({ delaySeconds: 0 })
         );
+    });
+
+    it('records real completion time instead of reusing the claim timestamp', async () => {
+        const now = new Date('2026-07-05T12:00:00.000Z');
+        const finishedAt = new Date('2026-07-05T12:00:42.000Z');
+        prismaMock.syncJob.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.syncJob.findUnique.mockResolvedValueOnce({
+            id: 'sync-job-1',
+            userId: 'user-1',
+            provider: 'LICHESS',
+            attempts: 1,
+            createdCount: 0,
+            user: {
+                id: 'user-1',
+                preferences: {},
+                chessAccountConnections: linkedConnections('Ada', null),
+                accounts: [],
+            },
+        });
+        syncUserProviderMock.mockResolvedValue({
+            provider: 'LICHESS',
+            username: 'Ada',
+            fetched: 1,
+            saved: 1,
+            created: 1,
+            updated: 0,
+            importedGameIds: ['game-1'],
+            queuedAnalysis: 0,
+            analysisErrors: 0,
+            complete: true,
+            skipped: false,
+        });
+        const { processSyncJob } = await importSyncJobs();
+
+        const result = await processSyncJob('sync-job-1', {
+            now,
+            clock: () => finishedAt,
+        });
+
+        expect(result.disposition).toBe('SUCCEEDED');
+        expect(prismaMock.syncJob.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({
+                    status: 'SUCCEEDED',
+                    completedAt: finishedAt,
+                }),
+            })
+        );
+    });
+
+    it('fails a rejected provider snapshot once without retry writes', async () => {
+        const now = new Date('2026-07-05T12:00:00.000Z');
+        prismaMock.syncJob.updateMany.mockResolvedValue({ count: 1 });
+        prismaMock.syncJob.findUnique.mockResolvedValueOnce({
+            id: 'sync-job-1',
+            userId: 'user-1',
+            provider: 'LICHESS',
+            attempts: 1,
+            createdCount: 0,
+            user: {
+                id: 'user-1',
+                preferences: {},
+                chessAccountConnections: linkedConnections('Ada', null),
+                accounts: [],
+            },
+        });
+        syncUserProviderMock.mockResolvedValue({
+            provider: 'LICHESS',
+            username: 'Ada',
+            fetched: 1,
+            saved: 0,
+            created: 0,
+            updated: 0,
+            importedGameIds: [],
+            queuedAnalysis: 0,
+            analysisErrors: 0,
+            complete: false,
+            skipped: false,
+            retryable: false,
+            error: 'Rejected immutable provider snapshot',
+        });
+        const { processSyncJob } = await importSyncJobs();
+
+        const result = await processSyncJob('sync-job-1', {
+            now,
+            clock: () => now,
+        });
+
+        expect(result.disposition).toBe('FAILED');
+        expect(publishBackranqQueueMessageMock).not.toHaveBeenCalled();
+        expect(recordSyncFailedMock).toHaveBeenCalledOnce();
+        const terminalData = prismaMock.syncJob.updateMany.mock.calls
+            .map((call) => (call[0] as { data?: Record<string, unknown> }).data)
+            .find((data) => data?.status === 'FAILED');
+        expect(terminalData).not.toHaveProperty('fetchedCount');
+        expect(terminalData).not.toHaveProperty('savedCount');
     });
 
     it('does not let a stale worker complete a job after its lease is replaced', async () => {
@@ -602,7 +777,7 @@ describe('sync job planning', () => {
         });
         const { processSyncJob } = await importSyncJobs();
 
-        const result = await processSyncJob('sync-job-1', { now });
+        const result = await processSyncJob('sync-job-1', { now, clock: () => now });
 
         expect(result.result).toMatchObject({
             skipped: true,

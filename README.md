@@ -28,10 +28,11 @@ Server analysis is credit-backed work. Browser analysis stays free and local. St
 
 `BACKRANQ_QUEUE_REGION` is the explicit storage region for every Backranq Queue
 publisher and callback client. Production readiness requires a Vercel region code
-such as `iad1`; it must not be derived from `VERCEL_REGION`, because Function
-failover or a regional performance experiment must not fragment pending work.
+such as `dub1`; it must match the Function region, because Queue messages cannot
+cross regions and a mismatch would strand pending work.
 Vercel environments fail fast when this variable is missing or malformed;
-local development alone falls back to `iad1`.
+local development alone falls back to `dub1`. Backranq keeps Functions and Queues
+in Dublin next to the production Supabase region.
 
 Core read endpoints emit `Server-Timing`, a request ID, Function/Queue region,
 cold-start state and `X-Backranq-Db-Operation-Count`. The count is intentionally

@@ -16,7 +16,7 @@ const completeEnv = {
     STRIPE_PRICE_PLUS_MONTHLY: 'price_plus',
     STRIPE_PRICE_PRO_MONTHLY: 'price_pro',
     BACKRANQ_ADMIN_API_SECRET: 'ops-secret',
-    BACKRANQ_QUEUE_REGION: 'iad1',
+    BACKRANQ_QUEUE_REGION: 'dub1',
     CRON_SECRET: 'cron-secret',
     SMTP2GO_API_KEY: 'smtp-key',
     SMTP2GO_WEBHOOK_SECRET: 'smtp-webhook-secret',

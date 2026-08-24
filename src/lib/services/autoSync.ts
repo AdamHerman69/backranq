@@ -19,8 +19,11 @@ import {
 
 const DEFAULT_LOOKBACK_DAYS = 90;
 const FIRST_SYNC_MAX_GAMES = 100;
+const PROVIDER_SYNC_MAX_GAMES = 200;
 const LICHESS_CURSOR_OVERLAP_MS = 24 * 60 * 60 * 1_000;
-const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 5 * 60 * 1_000;
+// The Queue callback and Vercel Function both have a five-minute hard budget.
+// Keep one minute for persistence, durable job disposition and retry publish.
+const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 4 * 60 * 1_000;
 
 export type SyncProviderResult = {
     provider: SyncProvider;
@@ -36,6 +39,7 @@ export type SyncProviderResult = {
     skipped: boolean;
     identityChanged?: boolean;
     policyChanged?: boolean;
+    retryable?: boolean;
     error?: string;
 };
 
@@ -52,6 +56,7 @@ type SyncState = {
     cursorSincePlayedAt: Date | null;
     cursorUntilPlayedAt: Date | null;
     cursorWindowEnd: Date | null;
+    cursorBoundaryIds: string[];
     etag: string | null;
     lastModified: string | null;
 };
@@ -61,6 +66,7 @@ type SyncWindow = {
     until: Date;
     windowEnd: Date;
     firstSync: boolean;
+    boundaryIds: string[];
 };
 
 class ProviderIdentityChangedError extends Error {
@@ -74,6 +80,13 @@ class ProviderSyncPolicyChangedError extends Error {
     constructor() {
         super('Automatic import rules changed while sync was running');
         this.name = 'ProviderSyncPolicyChangedError';
+    }
+}
+
+class ProviderImportRejectedError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'ProviderImportRejectedError';
     }
 }
 
@@ -155,6 +168,7 @@ function syncWindow(
             until: state.cursorUntilPlayedAt,
             windowEnd: state.cursorWindowEnd,
             firstSync: false,
+            boundaryIds: state.cursorBoundaryIds,
         };
     }
     if (state.lastSyncedPlayedAt) {
@@ -167,6 +181,7 @@ function syncWindow(
             until: now,
             windowEnd: now,
             firstSync: false,
+            boundaryIds: [],
         };
     }
     return {
@@ -174,6 +189,7 @@ function syncWindow(
         until: now,
         windowEnd: now,
         firstSync: true,
+        boundaryIds: [],
     };
 }
 
@@ -185,22 +201,40 @@ async function prepareSyncState(args: {
     importPolicyHash: string;
     now: Date;
 }): Promise<SyncState> {
-    let state = (await prisma.providerSyncState.upsert({
-        where: {
-            userId_provider: {
-                userId: args.userId,
-                provider: args.provider,
-            },
-        },
-        create: {
+    const where = {
+        userId_provider: {
             userId: args.userId,
             provider: args.provider,
-            providerUsernameNormalized: args.usernameNormalized,
-            importPolicyHash: args.importPolicyHash,
-            lastAttemptAt: args.now,
         },
-        update: { lastAttemptAt: args.now },
-    })) as SyncState;
+    };
+    let state = (await prisma.providerSyncState.findUnique({ where })) as
+        | SyncState
+        | null;
+    if (!state) {
+        try {
+            state = (await prisma.providerSyncState.create({
+                data: {
+                    userId: args.userId,
+                    provider: args.provider,
+                    providerUsernameNormalized: args.usernameNormalized,
+                    importPolicyHash: args.importPolicyHash,
+                },
+            })) as SyncState;
+        } catch (error) {
+            if (
+                !(
+                    error instanceof Prisma.PrismaClientKnownRequestError &&
+                    error.code === 'P2002'
+                )
+            ) {
+                throw error;
+            }
+            state = (await prisma.providerSyncState.findUnique({ where })) as
+                | SyncState
+                | null;
+            if (!state) throw error;
+        }
+    }
 
     // A null identity is an unlinked/new provider state. Linking it, or
     // replacing a known identity, starts a fresh provider history window.
@@ -222,6 +256,7 @@ async function prepareSyncState(args: {
                 cursorSincePlayedAt: null,
                 cursorUntilPlayedAt: null,
                 cursorWindowEnd: null,
+                cursorBoundaryIds: [],
                 etag: null,
                 lastModified: null,
                 lastSuccessAt: null,
@@ -237,6 +272,7 @@ async function prepareSyncState(args: {
             cursorSincePlayedAt: null,
             cursorUntilPlayedAt: null,
             cursorWindowEnd: null,
+            cursorBoundaryIds: [],
             etag: null,
             lastModified: null,
         };
@@ -260,6 +296,7 @@ async function prepareSyncState(args: {
                 cursorSincePlayedAt: null,
                 cursorUntilPlayedAt: null,
                 cursorWindowEnd: null,
+                cursorBoundaryIds: [],
                 etag: null,
                 lastModified: null,
                 lastSuccessAt: null,
@@ -275,6 +312,7 @@ async function prepareSyncState(args: {
             cursorSincePlayedAt: null,
             cursorUntilPlayedAt: null,
             cursorWindowEnd: null,
+            cursorBoundaryIds: [],
             etag: null,
             lastModified: null,
         };
@@ -290,6 +328,7 @@ async function prepareSyncState(args: {
                 cursorSincePlayedAt: null,
                 cursorUntilPlayedAt: null,
                 cursorWindowEnd: null,
+                cursorBoundaryIds: [],
                 etag: null,
                 lastModified: null,
                 lastSuccessAt: null,
@@ -304,6 +343,7 @@ async function prepareSyncState(args: {
             cursorSincePlayedAt: null,
             cursorUntilPlayedAt: null,
             cursorWindowEnd: null,
+            cursorBoundaryIds: [],
             etag: null,
             lastModified: null,
         };
@@ -428,6 +468,9 @@ async function fetchProviderBatch(args: {
         firstSyncMaxGames: args.window.firstSync
             ? FIRST_SYNC_MAX_GAMES
             : undefined,
+        maxGames: args.window.firstSync
+            ? undefined
+            : PROVIDER_SYNC_MAX_GAMES,
         timeClasses: args.timeClasses,
     };
     const controller = new AbortController();
@@ -440,6 +483,7 @@ async function fetchProviderBatch(args: {
             ? fetchLichessGamesBatch({
                   ...common,
                   accessToken: args.lichessAccessToken,
+                  resumeBoundaryIds: args.window.boundaryIds,
                   signal: controller.signal,
               })
             : fetchChessComGamesBatch({
@@ -591,17 +635,19 @@ export async function syncUserProvider(args: {
                     userId: args.user.id,
                     games: fetched.games,
                     client: tx,
+                    failOnError: true,
                 });
+                if (saved.errors.length > 0) {
+                    throw new ProviderImportRejectedError(
+                        `Rejected ${saved.errors.length}/${fetched.games.length} provider games: ${saved.errors[0]?.error ?? 'invalid game snapshot'}`
+                    );
+                }
 
-                const saveIncomplete = saved.errors.length > 0;
-                const complete = fetched.complete && !saveIncomplete;
+                const complete = fetched.complete;
                 const nextCursor =
-                    !saveIncomplete && !fetched.complete && fetched.nextUntil
+                    !fetched.complete && fetched.nextUntil
                         ? new Date(fetched.nextUntil)
                         : window.until;
-                const saveError = saveIncomplete
-                    ? `Saved ${saved.saved}/${fetched.games.length} games; ${saved.errors.length} failed`
-                    : null;
 
                 const advanced = await tx.providerSyncState.updateMany({
                     where: {
@@ -610,8 +656,9 @@ export async function syncUserProvider(args: {
                         importPolicyHash,
                     },
                     data: {
-                        ...(!saveIncomplete ? { lastSuccessAt: now } : {}),
-                        lastError: saveError,
+                        lastAttemptAt: now,
+                        lastSuccessAt: now,
+                        lastError: null,
                         etag: fetched.etag ?? preparedState.etag,
                         lastModified:
                             fetched.lastModified ??
@@ -622,22 +669,53 @@ export async function syncUserProvider(args: {
                                   cursorSincePlayedAt: null,
                                   cursorUntilPlayedAt: null,
                                   cursorWindowEnd: null,
+                                  cursorBoundaryIds: [],
                               }
                             : {
                                   cursorSincePlayedAt: window.since,
                                   cursorUntilPlayedAt: nextCursor,
                                   cursorWindowEnd: window.windowEnd,
+                                  cursorBoundaryIds:
+                                      fetched.nextBoundaryIds ?? [],
                               }),
                     },
                 });
                 if (advanced.count !== 1) {
                     throw new ProviderSyncPolicyChangedError();
                 }
-                return { saved, complete, saveError };
+                if (
+                    args.jobLease &&
+                    (fetchedCount > 0 ||
+                        saved.saved > 0 ||
+                        saved.created > 0 ||
+                        saved.updated > 0 ||
+                        queuedAnalysis > 0)
+                ) {
+                    const progress = await tx.syncJob.updateMany({
+                        where: {
+                            id: args.jobLease.jobId,
+                            status: 'RUNNING',
+                            leaseToken: args.jobLease.leaseToken,
+                        },
+                        data: {
+                            fetchedCount: { increment: fetchedCount },
+                            savedCount: { increment: saved.saved },
+                            createdCount: { increment: saved.created },
+                            updatedCount: { increment: saved.updated },
+                            queuedAnalysisCount: {
+                                increment: queuedAnalysis,
+                            },
+                        },
+                    });
+                    if (progress.count !== 1) {
+                        throw new StaleSyncJobLeaseError();
+                    }
+                }
+                return { saved, complete };
             },
             { maxWait: 10_000, timeout: 60_000 }
         );
-        const { saved, complete, saveError } = persisted;
+        const { saved, complete } = persisted;
         savedCount = saved.saved;
         createdCount = saved.created;
         updatedCount = saved.updated;
@@ -666,7 +744,6 @@ export async function syncUserProvider(args: {
             analysisErrors,
             complete,
             skipped: false,
-            ...(saveError ? { error: saveError } : {}),
         };
     } catch (error) {
         if (error instanceof StaleSyncJobLeaseError) throw error;
@@ -682,7 +759,10 @@ export async function syncUserProvider(args: {
                         usernameNormalized,
                         importPolicyHash,
                     }),
-                    data: { lastError: message.slice(0, 2_000) },
+                    data: {
+                        lastAttemptAt: now,
+                        lastError: message.slice(0, 2_000),
+                    },
                 });
             } catch {
                 // The original sync error is more useful than a secondary
@@ -706,6 +786,9 @@ export async function syncUserProvider(args: {
                 : {}),
             ...(error instanceof ProviderSyncPolicyChangedError
                 ? { policyChanged: true }
+                : {}),
+            ...(error instanceof ProviderImportRejectedError
+                ? { retryable: false }
                 : {}),
             error: message,
         };

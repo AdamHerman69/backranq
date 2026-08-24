@@ -847,6 +847,7 @@ model ProviderSyncState {
   cursorSincePlayedAt        DateTime?
   cursorUntilPlayedAt        DateTime?
   cursorWindowEnd            DateTime?
+  cursorBoundaryIds          String[]     @default([])
   lastAttemptAt              DateTime?
   lastSuccessAt              DateTime?
   lastError                  String?      @db.Text

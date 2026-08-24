@@ -132,6 +132,30 @@ describe('POST /api/games/import', () => {
         );
     });
 
+    it('counts an unchanged replay as a duplicate without requiring a database update', async () => {
+        saveMock.mockResolvedValue({
+            saved: 1,
+            created: 0,
+            updated: 0,
+            ids: { game: 'db-game-1' },
+            newGameDbIds: [],
+            errors: [],
+        });
+        const route = await importRoute();
+        const response = await route.POST(
+            request({ pgn: PGN, playerName: 'Ada' })
+        );
+
+        expect(response.status).toBe(200);
+        expect(await readJson(response)).toEqual({
+            created: 0,
+            duplicates: 1,
+            createdGameIds: [],
+            duplicateGameIds: ['db-game-1'],
+            needsAnalysisGameIds: [],
+        });
+    });
+
     it('returns the typed immutable perspective conflict', async () => {
         saveMock.mockResolvedValue({
             saved: 0,

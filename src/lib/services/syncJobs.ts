@@ -21,9 +21,9 @@ import {
     usernameForProvider,
     type ChessAccountConnectionSnapshot,
 } from '@/lib/accounts/chessAccountConnections';
+import { SyncJobDeliveryDeferredError } from '@/lib/services/syncJobErrors';
 
 const SYNC_JOB_LEASE_MS = 10 * 60 * 1_000;
-const SYNC_JOB_HEARTBEAT_MS = 60 * 1_000;
 const SYNC_JOB_MAX_ATTEMPTS = 5;
 const SYNC_RETRY_BACKOFF_BASE_MS = 60_000;
 const SYNC_RETRY_BACKOFF_MAX_MS = 30 * 60_000;
@@ -92,11 +92,29 @@ export type PlanSyncJobsResult = {
     providers: PlannedSyncJob[];
 };
 
-export type ProcessSyncJobResult = {
+type ProcessedSyncJobResult = {
     jobId: string;
     provider: SyncProvider;
+    disposition:
+        | 'SUCCEEDED'
+        | 'CONTINUATION'
+        | 'RETRY_SCHEDULED'
+        | 'FAILED'
+        | 'STALE';
     result: SyncProviderResult;
 };
+
+type IgnoredSyncJobDeliveryResult = {
+    jobId: string;
+    provider: SyncProvider | null;
+    disposition: 'IGNORED';
+    terminalStatus: 'MISSING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+    result: null;
+};
+
+export type ProcessSyncJobResult =
+    | ProcessedSyncJobResult
+    | IgnoredSyncJobDeliveryResult;
 
 export type DispatchSyncJobsResult = PlanSyncJobsResult & {
     published: Array<{
@@ -430,10 +448,11 @@ export async function processDueSyncJobs(args: {
 
 export async function processSyncJob(
     jobId: string,
-    args: { now?: Date } = {}
+    args: { now?: Date; clock?: () => Date } = {}
 ): Promise<ProcessSyncJobResult> {
-    const now = args.now ?? new Date();
-    const lockedUntil = new Date(now.getTime() + SYNC_JOB_LEASE_MS);
+    const startedAt = args.now ?? new Date();
+    const currentTime = args.clock ?? (() => new Date());
+    const lockedUntil = new Date(startedAt.getTime() + SYNC_JOB_LEASE_MS);
     const leaseToken = randomUUID();
     const claim = await prisma.syncJob.updateMany({
         where: {
@@ -441,19 +460,25 @@ export async function processSyncJob(
             OR: [
                 {
                     status: 'QUEUED',
-                    scheduledFor: { lte: now },
-                    OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
+                    scheduledFor: { lte: startedAt },
+                    OR: [
+                        { lockedUntil: null },
+                        { lockedUntil: { lte: startedAt } },
+                    ],
                 },
                 {
                     status: 'RUNNING',
-                    OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
+                    OR: [
+                        { lockedUntil: null },
+                        { lockedUntil: { lte: startedAt } },
+                    ],
                 },
             ],
         },
         data: {
             status: 'RUNNING',
             attempts: { increment: 1 },
-            startedAt: now,
+            startedAt,
             completedAt: null,
             lockedUntil,
             leaseToken,
@@ -461,7 +486,45 @@ export async function processSyncJob(
         },
     });
     if (claim.count !== 1) {
-        throw new Error('Sync job is not available to process');
+        const unavailable = await prisma.syncJob.findUnique({
+            where: { id: jobId },
+            select: {
+                provider: true,
+                status: true,
+                scheduledFor: true,
+                lockedUntil: true,
+            },
+        });
+        if (!unavailable) {
+            return {
+                jobId,
+                provider: null,
+                disposition: 'IGNORED',
+                terminalStatus: 'MISSING',
+                result: null,
+            };
+        }
+        if (
+            unavailable.status === 'SUCCEEDED' ||
+            unavailable.status === 'FAILED' ||
+            unavailable.status === 'CANCELLED'
+        ) {
+            return {
+                jobId,
+                provider: unavailable.provider,
+                disposition: 'IGNORED',
+                terminalStatus: unavailable.status,
+                result: null,
+            };
+        }
+        const retryAt =
+            unavailable.status === 'QUEUED'
+                ? unavailable.scheduledFor
+                : unavailable.lockedUntil;
+        const retryAfterSeconds = retryAt
+            ? (retryAt.getTime() - startedAt.getTime()) / 1_000
+            : 1;
+        throw new SyncJobDeliveryDeferredError(jobId, retryAfterSeconds);
     }
 
     const job = await prisma.syncJob.findUnique({
@@ -485,7 +548,6 @@ export async function processSyncJob(
     });
     if (!job) throw new Error('Sync job not found');
 
-    const heartbeat = startSyncJobHeartbeat(job.id, leaseToken);
     try {
         const prefs = canonicalPreferences(job.user.preferences ?? {});
         const result = await syncUserProvider({
@@ -500,19 +562,20 @@ export async function processSyncJob(
             },
         });
         if (result.error) {
+            const finishedAt = currentTime();
             const retried = await retryOrFailSyncJob({
                 job,
                 leaseToken,
                 error: result.error,
-                now,
-                result,
+                now: finishedAt,
+                terminal: result.retryable === false,
                 immediate:
                     result.identityChanged === true ||
                     result.policyChanged === true,
             });
             if (retried.stale) return staleProcessResult(job);
             if (retried.status === 'QUEUED') {
-                await publishSyncJobWakeup(job.id, now);
+                await publishSyncJobWakeup(job.id, finishedAt);
             } else {
                 await recordSyncFailed({
                     userId: job.userId,
@@ -523,9 +586,18 @@ export async function processSyncJob(
                     console.error('[notifications] sync failure event was not recorded', notificationError);
                 });
             }
-            return { jobId: job.id, provider: job.provider, result };
+            return {
+                jobId: job.id,
+                provider: job.provider,
+                disposition:
+                    retried.status === 'QUEUED'
+                        ? 'RETRY_SCHEDULED'
+                        : 'FAILED',
+                result,
+            };
         }
         if (!result.complete) {
+            const finishedAt = currentTime();
             const continued = await prisma.syncJob.updateMany({
                 where: {
                     id: job.id,
@@ -534,26 +606,25 @@ export async function processSyncJob(
                 },
                 data: {
                     status: 'QUEUED',
-                    scheduledFor: now,
+                    scheduledFor: finishedAt,
                     attempts: 0,
                     startedAt: null,
                     completedAt: null,
                     lockedUntil: null,
                     leaseToken: null,
                     lastError: null,
-                    fetchedCount: { increment: result.fetched },
-                    savedCount: { increment: result.saved },
-                    createdCount: { increment: result.created },
-                    updatedCount: { increment: result.updated },
-                    queuedAnalysisCount: {
-                        increment: result.queuedAnalysis,
-                    },
                 },
             });
             if (continued.count !== 1) return staleProcessResult(job);
-            await publishSyncJobWakeup(job.id, now);
-            return { jobId: job.id, provider: job.provider, result };
+            await publishSyncJobWakeup(job.id, finishedAt);
+            return {
+                jobId: job.id,
+                provider: job.provider,
+                disposition: 'CONTINUATION',
+                result,
+            };
         }
+        const finishedAt = currentTime();
         const completed = await prisma.$transaction(async (tx) => {
             const updated = await tx.syncJob.updateMany({
                 where: {
@@ -563,17 +634,10 @@ export async function processSyncJob(
                 },
                 data: {
                     status: 'SUCCEEDED',
-                    completedAt: now,
+                    completedAt: finishedAt,
                     lockedUntil: null,
                     leaseToken: null,
                     lastError: null,
-                    fetchedCount: { increment: result.fetched },
-                    savedCount: { increment: result.saved },
-                    createdCount: { increment: result.created },
-                    updatedCount: { increment: result.updated },
-                    queuedAnalysisCount: {
-                        increment: result.queuedAnalysis,
-                    },
                 },
             });
             if (updated.count === 1) {
@@ -590,20 +654,26 @@ export async function processSyncJob(
             return updated;
         });
         if (completed.count !== 1) return staleProcessResult(job);
-        return { jobId: job.id, provider: job.provider, result };
+        return {
+            jobId: job.id,
+            provider: job.provider,
+            disposition: 'SUCCEEDED',
+            result,
+        };
     } catch (error) {
         if (error instanceof StaleSyncJobLeaseError) {
             return staleProcessResult(job);
         }
+        const finishedAt = currentTime();
         const retried = await retryOrFailSyncJob({
             job,
             leaseToken,
             error,
-            now,
+            now: finishedAt,
         });
         if (retried.stale) return staleProcessResult(job);
         if (retried.status === 'QUEUED') {
-            await publishSyncJobWakeup(job.id, now);
+            await publishSyncJobWakeup(job.id, finishedAt);
         } else {
             await recordSyncFailed({
                 userId: job.userId,
@@ -617,6 +687,10 @@ export async function processSyncJob(
         return {
             jobId: job.id,
             provider: job.provider,
+            disposition:
+                retried.status === 'QUEUED'
+                    ? 'RETRY_SCHEDULED'
+                    : 'FAILED',
             result: {
                 provider: job.provider,
                 username: providerUsername(job.provider, job.user) ?? '',
@@ -632,42 +706,7 @@ export async function processSyncJob(
                 error: errorMessage(error),
             },
         };
-    } finally {
-        await heartbeat.stop();
     }
-}
-
-function startSyncJobHeartbeat(jobId: string, leaseToken: string) {
-    let stopped = false;
-    let inFlight: Promise<unknown> = Promise.resolve();
-    const timer = setInterval(() => {
-        if (stopped) return;
-        inFlight = prisma.syncJob
-            .updateMany({
-                where: {
-                    id: jobId,
-                    status: 'RUNNING',
-                    leaseToken,
-                },
-                data: {
-                    lockedUntil: new Date(Date.now() + SYNC_JOB_LEASE_MS),
-                },
-            })
-            .catch(() => {
-                // The transaction-level lease fence remains authoritative. A
-                // transient heartbeat failure must not grant this worker
-                // ownership or mutate the job through an unfenced fallback.
-            });
-    }, SYNC_JOB_HEARTBEAT_MS);
-    timer.unref?.();
-
-    return {
-        async stop() {
-            stopped = true;
-            clearInterval(timer);
-            await inFlight;
-        },
-    };
 }
 
 function staleProcessResult(job: {
@@ -678,6 +717,7 @@ function staleProcessResult(job: {
     return {
         jobId: job.id,
         provider: job.provider,
+        disposition: 'STALE',
         result: {
             provider: job.provider,
             username: providerUsername(job.provider, job.user) ?? '',
@@ -942,22 +982,11 @@ async function retryOrFailSyncJob(args: {
     leaseToken: string;
     error: unknown;
     now: Date;
-    result?: SyncProviderResult;
     immediate?: boolean;
+    terminal?: boolean;
 }) {
     const lastError = errorMessage(args.error).slice(0, 2_000);
-    const countUpdates = args.result
-        ? {
-              fetchedCount: { increment: args.result.fetched },
-              savedCount: { increment: args.result.saved },
-              createdCount: { increment: args.result.created },
-              updatedCount: { increment: args.result.updated },
-              queuedAnalysisCount: {
-                  increment: args.result.queuedAnalysis,
-              },
-          }
-        : {};
-    if (args.job.attempts < SYNC_JOB_MAX_ATTEMPTS) {
+    if (!args.terminal && args.job.attempts < SYNC_JOB_MAX_ATTEMPTS) {
         const update = await prisma.syncJob.updateMany({
             where: {
                 id: args.job.id,
@@ -977,7 +1006,6 @@ async function retryOrFailSyncJob(args: {
                 lockedUntil: null,
                 leaseToken: null,
                 lastError,
-                ...countUpdates,
             },
         });
         return {
@@ -998,7 +1026,6 @@ async function retryOrFailSyncJob(args: {
             lockedUntil: null,
             leaseToken: null,
             lastError,
-            ...countUpdates,
         },
     });
     return {

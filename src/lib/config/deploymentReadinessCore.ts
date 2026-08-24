@@ -24,6 +24,7 @@ export type ReadinessProfile = 'production' | 'local';
 export type VercelReadinessConfiguration = {
     hasCron: boolean;
     queueTopic: string | null;
+    functionRegions: string[];
 };
 
 export type RuntimeReadinessOptions = {
@@ -58,6 +59,7 @@ export function evaluateDeploymentReadiness({
 
 export function readVercelReadinessConfiguration(json: {
     crons?: Array<{ path?: string }>;
+    regions?: string[];
     functions?: Record<
         string,
         { experimentalTriggers?: Array<{ topic?: string }> }
@@ -70,6 +72,9 @@ export function readVercelReadinessConfiguration(json: {
     return {
         hasCron: (json.crons ?? []).some((cron) => Boolean(cron.path?.trim())),
         queueTopic: trigger?.topic?.trim() ?? null,
+        functionRegions: Array.from(
+            new Set((json.regions ?? []).map((region) => region.trim()).filter(Boolean))
+        ),
     };
 }
 
@@ -189,9 +194,24 @@ function queueReadiness(
     if (profile === 'production' && env.BACKRANQ_QUEUE_SMOKE_MODE === 'true') {
         warnings.push('Queue smoke mode must not be enabled in production');
     }
-    if (configuredRegion && !/^[a-z]{3}\d$/.test(configuredRegion)) {
+    const configuredRegionIsValid =
+        configuredRegion != null && /^[a-z]{3}\d$/.test(configuredRegion);
+    if (configuredRegion && !configuredRegionIsValid) {
         warnings.push(
             'BACKRANQ_QUEUE_REGION must be an explicit Vercel region code such as iad1 or dub1'
+        );
+    }
+    if (vercel.functionRegions.length !== 1) {
+        warnings.push(
+            'vercel.json must configure exactly one Function region for regional Queue delivery'
+        );
+    } else if (
+        configuredRegionIsValid &&
+        configuredRegion &&
+        configuredRegion !== vercel.functionRegions[0]
+    ) {
+        warnings.push(
+            `BACKRANQ_QUEUE_REGION (${configuredRegion}) must match the Function region (${vercel.functionRegions[0]})`
         );
     }
     return check('queues', true, missing, warnings);
