@@ -16,7 +16,7 @@
     },
     {
       "path": "/api/cron/analysis-maintenance",
-      "schedule": "*/5 * * * *"
+      "schedule": "7 3 * * *"
     }
   ],
   "functions": {
