@@ -5,7 +5,7 @@ import type {
     GameAnalysis,
     MoveClassification,
 } from '@/lib/analysis/classification';
-import { gameSourceToUi } from '@/lib/api/games';
+import { gameSourceToUi } from '@/lib/games/dbMappings';
 import {
     AnalysisConfigHashMismatchError,
     createAndCompleteLocalAnalysisRun,

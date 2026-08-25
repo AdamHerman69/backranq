@@ -17,9 +17,12 @@ import { PageHeader } from '@/components/app/PageHeader';
 import { AnalysisDefaultsCard } from '@/components/settings/AnalysisDefaultsCard';
 import { GameAutomationSettingsCard } from '@/components/settings/AutoSyncSettingsCard';
 import { BillingSettingsCard } from '@/components/settings/BillingSettingsCard';
-import { getOrCreateDefaultBillingAccount } from '@/lib/services/billingAccounts';
+import { readEffectiveBillingSnapshot } from '@/lib/services/billingAccounts';
 import { PracticeDefaultsCard } from '@/components/settings/PracticeDefaultsCard';
 import { NotificationSettingsCard } from '@/components/settings/NotificationSettingsCard';
+import { preferenceDto } from '@/lib/notifications/contracts';
+import { canonicalPreferences } from '@/lib/preferences';
+import { readSyncStatusSnapshot } from '@/lib/services/syncStatusRead';
 import { presentBillingAccount } from '@/lib/billing/presentation';
 import {
     chessAccountConnectionSelect,
@@ -47,19 +50,35 @@ export default async function SettingsPage() {
     const userId = session?.user?.id;
     if (!userId) redirect('/login?callbackUrl=/settings');
 
-    const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-            id: true,
-            email: true,
-            name: true,
-            image: true,
-            chessAccountConnections: {
-                select: chessAccountConnectionSelect,
+    const now = new Date();
+    const [user, billingAccount] = await Promise.all([
+        prisma.user.findUnique({
+            where: { id: userId },
+            select: {
+                id: true,
+                email: true,
+                name: true,
+                image: true,
+                preferences: true,
+                notificationPreference: true,
+                chessAccountConnections: {
+                    select: chessAccountConnectionSelect,
+                },
             },
-        },
-    });
+        }),
+        readEffectiveBillingSnapshot(userId, { now }),
+    ]);
     if (!user) redirect('/login?callbackUrl=/settings');
+
+    const preferences = canonicalPreferences(user.preferences);
+    const syncStatus = await readSyncStatusSnapshot(userId, {
+        now,
+        user: {
+            preferences: user.preferences,
+            chessAccountConnections: user.chessAccountConnections,
+        },
+        billingSnapshot: billingAccount,
+    });
 
     const initialUser: UserProfile = {
         id: user.id,
@@ -68,7 +87,6 @@ export default async function SettingsPage() {
         image: user.image,
         ...linkedUsernameSnapshot(user.chessAccountConnections),
     };
-    const billingAccount = await getOrCreateDefaultBillingAccount(userId);
     const billingPresentation = presentBillingAccount({
         plan: billingAccount.plan,
         planSource: billingAccount.planSource,
@@ -137,7 +155,11 @@ export default async function SettingsPage() {
             >
                 <div className="space-y-4">
                     <ProfileForm initialUser={initialUser} />
-                    <GameAutomationSettingsCard ownerId={initialUser.id} />
+                    <GameAutomationSettingsCard
+                        ownerId={initialUser.id}
+                        initialPreferences={preferences}
+                        initialStatus={syncStatus}
+                    />
                 </div>
             </SettingsSection>
 
@@ -148,8 +170,14 @@ export default async function SettingsPage() {
                 description="Set the defaults you want every practice and analysis session to start with."
             >
                 <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
-                    <PracticeDefaultsCard ownerId={initialUser.id} />
-                    <AnalysisDefaultsCard ownerId={initialUser.id} />
+                    <PracticeDefaultsCard
+                        ownerId={initialUser.id}
+                        initialPreferences={preferences}
+                    />
+                    <AnalysisDefaultsCard
+                        ownerId={initialUser.id}
+                        initialPreferences={preferences}
+                    />
                 </div>
             </SettingsSection>
 
@@ -159,7 +187,15 @@ export default async function SettingsPage() {
                 title="Notifications"
                 description="Keep only the updates that help you return at the right moment."
             >
-                <NotificationSettingsCard ownerId={initialUser.id} />
+                <NotificationSettingsCard
+                    ownerId={initialUser.id}
+                    initialPreferences={preferenceDto(
+                        user.notificationPreference
+                    )}
+                    vapidPublicKey={
+                        process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null
+                    }
+                />
             </SettingsSection>
 
             <SettingsSection

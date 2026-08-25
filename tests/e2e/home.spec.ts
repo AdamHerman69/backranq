@@ -232,25 +232,14 @@ test('Home summary links the server-owned library snapshot', async ({ page }) =>
     ).toHaveAttribute('href', '/practice');
 });
 
-test('public root stays a marketing landing for signed-in visitors', async ({
+test('public root sends signed-in visitors directly to Home', async ({
     page,
 }) => {
     await page.goto('/');
 
-    await expect(
-        page.getByRole('heading', {
-            level: 1,
-            name: /Stop solving random puzzles.*Practice your decisions/i,
-        })
-    ).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Open app' }).first()).toHaveAttribute(
-        'href',
-        '/home'
-    );
-    await expect(page.getByText(/Welcome back/)).toHaveCount(0);
-    await expect(
-        page.getByRole('button', { name: 'Sync now' })
-    ).toHaveCount(0);
+    await expect(page).toHaveURL(/\/home$/);
+    await expect(page.getByRole('button', { name: 'Sync now' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Backranq home' })).toBeVisible();
 });
 
 test.describe('signed-out IA', () => {

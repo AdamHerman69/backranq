@@ -14,6 +14,7 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
+import { schedulePostInteractiveTask } from '@/lib/browser/postInteractive';
 
 export type NotificationItem = {
     id: string;
@@ -34,10 +35,12 @@ export type NotificationInboxState = {
 };
 
 type InboxAction =
-    | { type: 'RESET'; enabled: boolean }
+    | { type: 'RESET' }
     | { type: 'LOAD_START' }
+    | { type: 'LOAD_CANCELLED' }
     | { type: 'LOAD_FAILED' }
     | { type: 'LOADED'; items: NotificationItem[]; unreadCount: number }
+    | { type: 'COUNT_LOADED'; unreadCount: number }
     | { type: 'MARK_ONE'; id: string; now: string }
     | { type: 'MARK_ALL'; now: string }
     | { type: 'WRITE_DONE' }
@@ -49,9 +52,11 @@ export function notificationInboxReducer(
 ): NotificationInboxState {
     switch (action.type) {
         case 'RESET':
-            return initialInboxState(action.enabled);
+            return initialInboxState();
         case 'LOAD_START':
             return { ...state, loading: true };
+        case 'LOAD_CANCELLED':
+            return { ...state, loading: false };
         case 'LOAD_FAILED':
             return { ...state, loading: false, loadError: true };
         case 'LOADED':
@@ -62,6 +67,8 @@ export function notificationInboxReducer(
                 loading: false,
                 loadError: false,
             };
+        case 'COUNT_LOADED':
+            return { ...state, unreadCount: action.unreadCount };
         case 'MARK_ONE': {
             const target = state.items.find((item) => item.id === action.id);
             if (!target || target.readAt) return state;
@@ -99,11 +106,11 @@ export function notificationInboxReducer(
     }
 }
 
-function initialInboxState(enabled: boolean): NotificationInboxState {
+function initialInboxState(): NotificationInboxState {
     return {
         items: [],
         unreadCount: 0,
-        loading: enabled,
+        loading: false,
         loadError: false,
         writeError: null,
         writePending: false,
@@ -123,10 +130,14 @@ export function NotificationBell({ ownerId }: { ownerId: string | null }) {
     ownerRef.current = ownerId;
     const loadGenerationRef = React.useRef(0);
     const loadControllerRef = React.useRef<AbortController | null>(null);
+    const summaryGenerationRef = React.useRef(0);
+    const summaryControllerRef = React.useRef<AbortController | null>(null);
     const writeControllerRef = React.useRef<AbortController | null>(null);
 
     const load = React.useCallback(async () => {
         if (!ownerId) return;
+        summaryGenerationRef.current += 1;
+        summaryControllerRef.current?.abort();
         const generation = ++loadGenerationRef.current;
         loadControllerRef.current?.abort();
         const controller = new AbortController();
@@ -174,28 +185,81 @@ export function NotificationBell({ ownerId }: { ownerId: string | null }) {
         }
     }, [ownerId]);
 
+    const loadSummary = React.useCallback(async () => {
+        if (!ownerId || loadControllerRef.current) return;
+        const generation = ++summaryGenerationRef.current;
+        summaryControllerRef.current?.abort();
+        const controller = new AbortController();
+        summaryControllerRef.current = controller;
+        try {
+            const response = await fetch('/api/notifications?summary=1', {
+                cache: 'no-store',
+                signal: controller.signal,
+            });
+            const payload = (await response.json().catch(() => ({}))) as {
+                ownerId?: string;
+                unreadCount?: number;
+            };
+            if (!response.ok || payload.ownerId !== ownerId) return;
+            if (
+                controller.signal.aborted ||
+                generation !== summaryGenerationRef.current ||
+                ownerRef.current !== ownerId
+            ) {
+                return;
+            }
+            dispatch({
+                type: 'COUNT_LOADED',
+                unreadCount: payload.unreadCount ?? 0,
+            });
+        } catch {
+            // The badge is supplementary. The full inbox reports errors when
+            // the user explicitly opens it.
+        } finally {
+            if (summaryControllerRef.current === controller) {
+                summaryControllerRef.current = null;
+            }
+        }
+    }, [ownerId]);
+
     React.useEffect(() => {
         loadGenerationRef.current += 1;
         loadControllerRef.current?.abort();
+        summaryGenerationRef.current += 1;
+        summaryControllerRef.current?.abort();
         writeControllerRef.current?.abort();
-        dispatch({ type: 'RESET', enabled: Boolean(ownerId) });
+        dispatch({ type: 'RESET' });
         setOpen(false);
         if (!ownerId) return;
-        void load();
+        const cancelInitialSummary = schedulePostInteractiveTask(
+            loadSummary,
+            { minimumDelayMs: 500, requireFastConnection: true }
+        );
         const timer = window.setInterval(() => {
-            if (document.visibilityState === 'visible') void load();
+            if (document.visibilityState === 'visible') void loadSummary();
         }, 60_000);
         return () => {
+            cancelInitialSummary();
             window.clearInterval(timer);
             loadGenerationRef.current += 1;
             loadControllerRef.current?.abort();
+            summaryGenerationRef.current += 1;
+            summaryControllerRef.current?.abort();
             writeControllerRef.current?.abort();
         };
-    }, [ownerId, load]);
+    }, [ownerId, loadSummary]);
 
     async function write(action: 'mark-read' | 'mark-all-read', id?: string) {
-        if (!ownerId || stateRef.current.writePending) return;
-        const snapshot = stateRef.current;
+        if (
+            !ownerId ||
+            writeControllerRef.current ||
+            stateRef.current.writePending ||
+            (action === 'mark-read' &&
+                (!id || stateRef.current.items.find((item) => item.id === id)?.readAt))
+        ) {
+            return;
+        }
+        const snapshot = { ...stateRef.current, loading: false };
         const now = new Date().toISOString();
         dispatch(
             action === 'mark-read' && id
@@ -204,6 +268,9 @@ export function NotificationBell({ ownerId }: { ownerId: string | null }) {
         );
         loadGenerationRef.current += 1;
         loadControllerRef.current?.abort();
+        dispatch({ type: 'LOAD_CANCELLED' });
+        summaryGenerationRef.current += 1;
+        summaryControllerRef.current?.abort();
         const controller = new AbortController();
         writeControllerRef.current = controller;
         try {
@@ -226,7 +293,6 @@ export function NotificationBell({ ownerId }: { ownerId: string | null }) {
             }
             if (ownerRef.current !== ownerId) return;
             dispatch({ type: 'WRITE_DONE' });
-            void load();
         } catch (error) {
             if (
                 controller.signal.aborted ||

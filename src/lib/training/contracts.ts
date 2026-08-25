@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { GameSource } from '@/lib/types/game';
 import {
     canonicalMoveAssessmentEvidence,
@@ -198,40 +197,17 @@ export type TrainingMomentCandidate = {
     solution: SolutionRevisionInput;
 };
 
-function requiredCanonicalPart(value: string, field: string): string {
+export function requiredCanonicalPart(value: string, field: string): string {
     const normalized = value.trim().toLowerCase();
     if (!normalized) throw new Error(`${field} is required`);
     return normalized;
 }
 
-function nonNegativeSafeInteger(value: number, field: string): number {
+export function nonNegativeSafeInteger(value: number, field: string): number {
     if (!Number.isSafeInteger(value) || value < 0) {
         throw new Error(`${field} must be a non-negative safe integer`);
     }
     return value;
-}
-
-/**
- * Stable identity for one user decision in one exact source-game revision.
- * Avoid/punish are intentionally absent: they are mergeable metadata on the
- * same decision rather than competing identities.
- */
-export function trainingMomentKey(identity: TrainingMomentIdentity): string {
-    const canonical = stableCanonicalStringify({
-        decisionPly: nonNegativeSafeInteger(
-            identity.decisionPly,
-            'decisionPly'
-        ),
-        gameId: requiredCanonicalPart(identity.gameId, 'gameId'),
-        sourcePgnHash: requiredCanonicalPart(
-            identity.sourcePgnHash,
-            'sourcePgnHash'
-        ),
-        version: TRAINING_MOMENT_KEY_VERSION,
-    });
-    return createHash('sha256')
-        .update(`backranq-training-moment\u0000${canonical}`)
-        .digest('hex');
 }
 
 const sourceKindOrder = new Map(
@@ -323,18 +299,12 @@ export function stableCanonicalStringify(value: unknown): string {
     return JSON.stringify(canonicalize(value));
 }
 
-export function hashCanonicalTrainingValue(value: unknown): string {
-    return createHash('sha256')
-        .update(stableCanonicalStringify(value))
-        .digest('hex');
-}
-
 /**
- * Hash only grading-relevant solution semantics. Engine provenance and
+ * Canonicalize only grading-relevant solution semantics. Engine provenance and
  * verification evidence may produce a new immutable revision without making
  * an otherwise equivalent solution appear different.
  */
-export function solutionSemanticsHash(
+export function canonicalSolutionSemantics(
     input: Pick<
         SolutionRevisionInput,
         | 'verificationStatus'
@@ -353,9 +323,9 @@ export function solutionSemanticsHash(
         | 'targetOutcome'
         | 'gradingPolicy'
     >
-): string {
+): unknown {
     const normalizeUci = (move: string) => move.trim().toLowerCase();
-    return hashCanonicalTrainingValue({
+    return {
         version: 1,
         verificationStatus: input.verificationStatus,
         solutionShape: input.solutionShape,
@@ -395,5 +365,5 @@ export function solutionSemanticsHash(
         playedMoveScore: input.playedMoveScore,
         targetOutcome: input.targetOutcome,
         gradingPolicy: input.gradingPolicy,
-    });
+    };
 }

@@ -15,6 +15,10 @@ test('a stale inbox load cannot resurrect notifications after mark-all', async (
     page,
 }) => {
     let reads = 0;
+    let signalSecondRead!: () => void;
+    const secondReadStarted = new Promise<void>((resolve) => {
+        signalSecondRead = resolve;
+    });
     let releaseStale!: () => void;
     const staleReleased = new Promise<void>((resolve) => {
         releaseStale = resolve;
@@ -22,23 +26,30 @@ test('a stale inbox load cannot resurrect notifications after mark-all', async (
     await page.route('**/api/notifications?limit=10', async (route) => {
         reads += 1;
         const current = reads;
-        if (current === 2) await staleReleased;
+        if (current === 2) {
+            signalSecondRead();
+            await staleReleased;
+        }
         try {
             await route.fulfill({
                 status: 200,
                 contentType: 'application/json',
                 body: JSON.stringify({
                     ownerId: E2E_USER.id,
-                    notifications:
-                        current >= 3
-                            ? [{ ...notification, readAt: new Date().toISOString() }]
-                            : [notification],
-                    unreadCount: current >= 3 ? 0 : 1,
+                    notifications: [notification],
+                    unreadCount: 1,
                 }),
             });
         } catch {
             // The successful write aborts the stale read generation.
         }
+    });
+    await page.route('**/api/notifications?summary=1', async (route) => {
+        await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ ownerId: E2E_USER.id, unreadCount: 1 }),
+        });
     });
     await page.route('**/api/notifications', async (route) => {
         if (route.request().method() !== 'POST') {
@@ -61,11 +72,18 @@ test('a stale inbox load cannot resurrect notifications after mark-all', async (
     });
     await expect(trigger).toBeVisible();
     await trigger.click();
+    const menu = page.getByRole('menu', { name: /^Notifications/ });
+    await expect(page.getByText(notification.title)).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+    await trigger.click();
+    await expect(menu).toBeVisible();
+    await secondReadStarted;
     await page.getByRole('button', { name: 'Mark all read' }).click();
     releaseStale();
 
     await expect(
-        page.getByRole('menu', { name: 'Notifications' })
+        menu
     ).toBeVisible();
     await expect(
         page.getByRole('button', { name: /Notifications, 1 unread/ })
@@ -75,6 +93,13 @@ test('a stale inbox load cannot resurrect notifications after mark-all', async (
 test('a failed notification write restores unread state and reports the error', async ({
     page,
 }) => {
+    await page.route('**/api/notifications?summary=1', async (route) => {
+        await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ ownerId: E2E_USER.id, unreadCount: 1 }),
+        });
+    });
     await page.route('**/api/notifications?limit=10', async (route) => {
         await route.fulfill({
             status: 200,
@@ -103,6 +128,7 @@ test('a failed notification write restores unread state and reports the error', 
         name: 'Notifications, 1 unread',
     });
     await trigger.click();
+    await expect(page.getByText(notification.title)).toBeVisible();
     await page.getByRole('button', { name: 'Mark all read' }).click();
 
     const menu = page.getByRole('menu', { name: /^Notifications/ });

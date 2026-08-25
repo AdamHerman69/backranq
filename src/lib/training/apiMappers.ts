@@ -14,7 +14,7 @@ import type {
     TrainingLessonKind,
     TrainingSourceKind,
 } from '@/lib/training/contracts';
-import { gameSourceToUi } from '@/lib/api/games';
+import { gameSourceToUi } from '@/lib/games/dbMappings';
 import type { GameSource } from '@prisma/client';
 
 export function toTrainingPromptDto(row: {

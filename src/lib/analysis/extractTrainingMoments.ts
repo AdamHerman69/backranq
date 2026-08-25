@@ -41,7 +41,11 @@ import type {
     TrainingMomentCandidate,
     TrainingSourceKind,
 } from '@/lib/training/contracts';
-import { solutionSemanticsHash } from '@/lib/training/contracts';
+import {
+    canonicalSolutionSemantics,
+    stableCanonicalStringify as stableTrainingStringify,
+} from '@/lib/training/contracts';
+import { sha256Hex } from '@/lib/crypto/sha256';
 import { normalizeGradingPolicy } from '@/lib/training/config';
 import { acceptanceFrontierFromMultiPv } from '@/lib/training/acceptanceFrontier';
 import {
@@ -1805,16 +1809,6 @@ function stableCanonicalStringify(value: unknown): string {
     return JSON.stringify(canonicalize(value));
 }
 
-async function sha256Hex(value: string): Promise<string> {
-    const digest = await globalThis.crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(value)
-    );
-    return Array.from(new Uint8Array(digest))
-        .map((byte) => byte.toString(16).padStart(2, '0'))
-        .join('');
-}
-
 async function sourcePgnHash(pgn: string): Promise<string> {
     const normalized = pgn.replace(/\r\n?/g, '\n').trim();
     return sha256Hex(`backranq-source-pgn\u0000${normalized}`);
@@ -2100,7 +2094,9 @@ function shallowAssessments(args: {
 async function solutionHash(
     input: Omit<SolutionRevisionInput, 'solutionHash' | 'evidence' | 'generatorVersion' | 'configHash'>
 ): Promise<string> {
-    return solutionSemanticsHash(input);
+    return sha256Hex(
+        stableTrainingStringify(canonicalSolutionSemantics(input))
+    );
 }
 
 const SOURCE_KIND_ORDER: readonly TrainingSourceKind[] = [

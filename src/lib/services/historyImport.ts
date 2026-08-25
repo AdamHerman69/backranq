@@ -6,11 +6,8 @@ import {
 } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 
-import {
-    normalizedGameToDb,
-    parseExternalId,
-    syncProviderToDb,
-} from '@/lib/api/games';
+import { normalizedGameToDb } from '@/lib/api/games';
+import { parseExternalId, syncProviderToDb } from '@/lib/games/dbMappings';
 import { isRecord, isStrictIsoInstant } from '@/lib/api/validation';
 import { isValidSourcePgn } from '@/lib/chess/pgn';
 import { normalizeChessUsername } from '@/lib/games/outcome';

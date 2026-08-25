@@ -17,7 +17,7 @@ export type AutoAnalysisGameCandidate = {
     result?: string | null;
     timeClass: TimeClass | TimeControlKey;
     rated?: boolean | null;
-    pgn?: string | null;
+    plyCount: number;
     whiteName?: string | null;
     blackName?: string | null;
     sourceUsername?: string | null;
@@ -48,7 +48,7 @@ export function evaluateAutoAnalysisEligibility(args: {
     const provider = providerKey(args.game.provider);
     if (!provider) return ineligible(rules, 'unsupported-source');
     const timeControl = timeControlKey(args.game.timeClass);
-    const plies = countPgnPlies(args.game.pgn ?? '');
+    const plies = args.game.plyCount;
     const perspective = perspectiveResult(args.game);
 
     if (!rules.enabled) return ineligible(rules, 'disabled');
@@ -181,20 +181,6 @@ function autoAnalysisPriority(args: {
     if (args.scope === 'all') priority -= 5;
     priority += Math.min(10, Math.floor(args.plies / 20));
     return priority;
-}
-
-export function countPgnPlies(pgn: string) {
-    const moves = pgn
-        .replace(/\[[^\]]*\]/g, ' ')
-        .replace(/\{[^}]*\}/g, ' ')
-        .replace(/\([^)]*\)/g, ' ')
-        .replace(/\$\d+/g, ' ')
-        .split(/\s+/)
-        .filter(Boolean)
-        .filter((token) => !/^\d+\.(\.\.)?$/.test(token))
-        .filter((token) => !/^(1-0|0-1|1\/2-1\/2|\*)$/.test(token))
-        .filter((token) => token !== '...');
-    return moves.length;
 }
 
 function providerKey(provider: GameSource | ProviderKey): ProviderKey | null {

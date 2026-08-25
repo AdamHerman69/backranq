@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 import { AppNav } from "@/components/nav/AppNav";
 import { MobileBottomNav } from "@/components/nav/MobileBottomNav";
+import { schedulePostInteractiveTask } from "@/lib/browser/postInteractive";
 import { cn } from "@/lib/utils";
 
 function DeferredBackgroundAnalysisBar() {
@@ -12,18 +13,7 @@ function DeferredBackgroundAnalysisBar() {
 
   React.useEffect(() => {
     let disposed = false;
-    const idleWindow = window as typeof window & {
-      requestIdleCallback?: (
-        callback: () => void,
-        options?: { timeout: number }
-      ) => number;
-      cancelIdleCallback?: (handle: number) => void;
-    };
     const load = () => {
-      if (!navigator.onLine) {
-        window.addEventListener("online", load, { once: true });
-        return;
-      }
       void import("@/components/analysis/BackgroundAnalysisBar")
         .then((module) => {
           if (!disposed) {
@@ -35,20 +25,13 @@ function DeferredBackgroundAnalysisBar() {
           // example while the device goes offline) must not replace the page.
         });
     };
-    let idleHandle: number | null = null;
-    let timeoutHandle: number | null = null;
-    if (idleWindow.requestIdleCallback) {
-      idleHandle = idleWindow.requestIdleCallback(load, {
-        timeout: 1_500,
-      });
-    } else {
-      timeoutHandle = window.setTimeout(load, 1_500);
-    }
+    const cancelScheduledLoad = schedulePostInteractiveTask(load, {
+      minimumDelayMs: 1_500,
+      requireFastConnection: true,
+    });
     return () => {
       disposed = true;
-      window.removeEventListener("online", load);
-      if (idleHandle !== null) idleWindow.cancelIdleCallback?.(idleHandle);
-      if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
+      cancelScheduledLoad();
     };
   }, []);
 

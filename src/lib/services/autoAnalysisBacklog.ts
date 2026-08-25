@@ -124,7 +124,7 @@ type Candidate = {
         | 'CLASSICAL'
         | 'UNKNOWN';
     rated: boolean | null;
-    pgn: string;
+    plyCount: number;
     whiteName: string;
     blackName: string;
     sourceUsername: string;
@@ -144,7 +144,7 @@ const CANDIDATE_SELECT = {
     result: true,
     timeClass: true,
     rated: true,
-    pgn: true,
+    plyCount: true,
     whiteName: true,
     blackName: true,
     sourceUsername: true,
@@ -1029,6 +1029,7 @@ function metadataEligibilityWhere(args: {
     return {
         OR: providerBranches,
         ...(args.policy.ratedOnly ? { rated: true } : {}),
+        plyCount: { gte: args.policy.minPlies },
     };
 }
 

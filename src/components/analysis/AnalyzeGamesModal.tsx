@@ -12,7 +12,7 @@ import {
   type OwnerRunToken,
 } from "@/lib/auth/ownerRun";
 
-import { gameSourceToUi, timeClassToUi } from "@/lib/api/games";
+import { gameSourceToUi, timeClassToUi } from "@/lib/games/dbMappings";
 import { backgroundAnalysis } from "@/lib/analysis/backgroundAnalysisManager";
 import { getSyncStatus, type SyncStatus } from "@/lib/services/gameSync";
 import type { GameSource, TimeClass } from "@prisma/client";

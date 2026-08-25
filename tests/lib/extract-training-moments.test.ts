@@ -15,7 +15,7 @@ import type {
     TablebaseEvidence,
     TablebaseProvider,
 } from '@/lib/analysis/tablebase';
-import { solutionSemanticsHash } from '@/lib/training/contracts';
+import { solutionSemanticsHash } from '@/lib/training/contractHashes.server';
 import { validateTrainingMomentCandidates } from '@/lib/training/candidateValidation';
 import type { NormalizedGame } from '@/lib/types/game';
 

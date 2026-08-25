@@ -39,7 +39,7 @@ test('connection changes refresh automation source status', async ({
     });
 
     await page.goto('/settings');
-    await expect(page.getByText('@old-user')).toBeVisible();
+    await expect(page.getByText(`@${E2E_USER.username}`).first()).toBeVisible();
     const automationPause = page.getByRole('checkbox', {
         name: 'Pause all game automation',
     });
@@ -170,23 +170,13 @@ test('a stale username validation cannot overwrite newer input', async ({
     await expect(account.getByText('Valid', { exact: true })).toHaveCount(0);
 });
 
-test('automation refuses settings returned for another owner', async ({
+test('settings hydrate automation without a client preference read', async ({
     page,
 }) => {
+    let preferenceReads = 0;
     await page.route('**/api/user/preferences', async (route) => {
-        if (route.request().method() !== 'GET') {
-            await route.continue();
-            return;
-        }
-        const response = await route.fetch();
-        const body = (await response.json()) as Record<string, unknown>;
-        await route.fulfill({
-            response,
-            json: {
-                ...body,
-                ownerId: 'different-owner',
-            },
-        });
+        if (route.request().method() === 'GET') preferenceReads += 1;
+        await route.continue();
     });
 
     await page.goto('/settings');
@@ -196,30 +186,25 @@ test('automation refuses settings returned for another owner', async ({
     });
     await expect(chessSources).toHaveCount(1);
     await expect(
-        chessSources.getByText('Automation settings unavailable')
-    ).toBeVisible();
-    await expect(
-        chessSources.getByText(/different account/)
-    ).toBeVisible();
-    await expect(
-        chessSources.getByRole('button', { name: 'Try again' })
+        chessSources.getByRole('checkbox', {
+            name: 'Pause all game automation',
+        })
     ).toBeEnabled();
+    expect(preferenceReads).toBe(0);
 });
 
-test('practice and analysis defaults refuse settings returned for another owner', async ({
+test('training and notification defaults paint from the server snapshot', async ({
     page,
 }) => {
+    let preferenceReads = 0;
+    let notificationReads = 0;
     await page.route('**/api/user/preferences', async (route) => {
-        if (route.request().method() !== 'GET') {
-            await route.continue();
-            return;
-        }
-        const response = await route.fetch();
-        const body = (await response.json()) as Record<string, unknown>;
-        await route.fulfill({
-            response,
-            json: { ...body, ownerId: 'different-owner' },
-        });
+        if (route.request().method() === 'GET') preferenceReads += 1;
+        await route.continue();
+    });
+    await page.route('**/api/notifications/preferences', async (route) => {
+        if (route.request().method() === 'GET') notificationReads += 1;
+        await route.continue();
     });
 
     await page.goto('/settings');
@@ -230,14 +215,19 @@ test('practice and analysis defaults refuse settings returned for another owner'
     await expect(training).toHaveCount(1);
     const practice = training.locator('#practice-defaults');
     const analysis = training.locator('#analysis-defaults');
-    await expect(practice).toContainText('different account');
-    await expect(analysis).toContainText('different account');
+    await expect(practice).toContainText('Saved');
+    await expect(analysis).toContainText('Saved');
     await expect(
         practice.getByRole('button', { name: 'Save default' })
     ).toBeDisabled();
     await expect(
         analysis.getByRole('button', { name: 'Save', exact: true })
     ).toBeDisabled();
+    await expect(
+        page.getByRole('heading', { name: 'Notification rhythm' })
+    ).toBeVisible();
+    expect(preferenceReads).toBe(0);
+    expect(notificationReads).toBe(0);
 });
 
 test('linked-account updates reject a server owner mismatch', async ({

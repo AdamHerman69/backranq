@@ -39,7 +39,13 @@ export function analysisDefaultsEqual(
   );
 }
 
-export function AnalysisDefaultsCard({ ownerId: initialOwnerId }: { ownerId: string }) {
+export function AnalysisDefaultsCard({
+  ownerId: initialOwnerId,
+  initialPreferences,
+}: {
+  ownerId: string;
+  initialPreferences: PreferencesSchema;
+}) {
   const { data: session, status: sessionStatus } = useSession();
   const activeOwnerId = resolveSessionOwnerId({
     sessionStatus,
@@ -48,19 +54,15 @@ export function AnalysisDefaultsCard({ ownerId: initialOwnerId }: { ownerId: str
   });
   const ownerEpochRef = React.useRef<OwnerEpoch>({ ownerId: null, generation: 0 });
   ownerEpochRef.current = advanceOwnerEpoch(ownerEpochRef.current, activeOwnerId);
-  const loadControllerRef = React.useRef<AbortController | null>(null);
   const mutationControllerRef = React.useRef<AbortController | null>(null);
-  const loadGenerationRef = React.useRef(0);
   const mutationGenerationRef = React.useRef(0);
-  const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [analysisDefaults, setAnalysisDefaults] = React.useState<AnalysisDefaults>(
-    () => pickAnalysisDefaults(defaultPreferences())
+    () => pickAnalysisDefaults(initialPreferences)
   );
-  const [savedDefaults, setSavedDefaults] =
-    React.useState<AnalysisDefaults | null>(null);
-  const [loadedOwnerId, setLoadedOwnerId] = React.useState<string | null>(null);
+  const [savedDefaults, setSavedDefaults] = React.useState<AnalysisDefaults | null>(
+    () => pickAnalysisDefaults(initialPreferences)
+  );
   const valid = analysisDefaultsAreValid(analysisDefaults);
   const dirty =
     savedDefaults !== null &&
@@ -68,89 +70,29 @@ export function AnalysisDefaultsCard({ ownerId: initialOwnerId }: { ownerId: str
   const canSave =
     valid &&
     dirty &&
-    !loading &&
     !busy &&
-    loadError === null &&
-    activeOwnerId === initialOwnerId &&
-    loadedOwnerId === initialOwnerId;
-
-  const load = React.useCallback(async () => {
-    const run = captureOwnerRun(ownerEpochRef.current);
-    const generation = loadGenerationRef.current + 1;
-    loadGenerationRef.current = generation;
-    loadControllerRef.current?.abort();
-    mutationGenerationRef.current += 1;
-    mutationControllerRef.current?.abort();
-    mutationControllerRef.current = null;
-    setLoadedOwnerId(null);
-    setSavedDefaults(null);
-    setLoading(true);
-    setBusy(false);
-    setLoadError(null);
-    if (!run || run.ownerId !== initialOwnerId) {
-      setLoadError("Your signed-in account changed. Reload Settings to continue.");
-      setLoading(false);
-      return;
-    }
-    const controller = new AbortController();
-    loadControllerRef.current = controller;
-    const isCurrent = () =>
-      !controller.signal.aborted &&
-      isOwnerRunGenerationCurrent({
-        run,
-        epoch: ownerEpochRef.current,
-        generation,
-        currentGeneration: loadGenerationRef.current,
-      });
-    try {
-      const res = await fetch("/api/user/preferences", {
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const json = (await res.json().catch(() => ({}))) as {
-        ownerId?: string;
-        preferences?: PreferencesSchema;
-        error?: string;
-      };
-      if (!res.ok) throw new Error(json?.error ?? "Failed to load preferences");
-      if (!json.preferences) throw new Error("Missing preferences");
-      if (!isCurrent()) return;
-      if (json.ownerId !== run.ownerId) {
-        throw new Error("The server returned analysis settings for a different account.");
-      }
-      const loaded = pickAnalysisDefaults(json.preferences);
-      setAnalysisDefaults(loaded);
-      setSavedDefaults(loaded);
-      setLoadedOwnerId(run.ownerId);
-    } catch (error) {
-      if (!isCurrent()) return;
-      setSavedDefaults(null);
-      setLoadError(
-        error instanceof Error ? error.message : "Failed to load preferences",
-      );
-    } finally {
-      if (loadControllerRef.current === controller) {
-        loadControllerRef.current = null;
-      }
-      if (isCurrent()) setLoading(false);
-    }
-  }, [initialOwnerId]);
+    activeOwnerId === initialOwnerId;
 
   React.useEffect(() => {
-    void load();
-    return () => {
-      loadGenerationRef.current += 1;
+    if (activeOwnerId !== initialOwnerId) {
       mutationGenerationRef.current += 1;
-      loadControllerRef.current?.abort();
+      mutationControllerRef.current?.abort();
+      mutationControllerRef.current = null;
+      setBusy(false);
+    }
+  }, [activeOwnerId, initialOwnerId]);
+
+  React.useEffect(() => {
+    return () => {
+      mutationGenerationRef.current += 1;
       mutationControllerRef.current?.abort();
     };
-  }, [activeOwnerId, load]);
+  }, []);
 
-  const ownerReady =
-    activeOwnerId === initialOwnerId && loadedOwnerId === initialOwnerId;
+  const ownerReady = activeOwnerId === initialOwnerId;
 
   function resetToAppDefaults() {
-    if (savedDefaults === null || loading || busy) return;
+    if (savedDefaults === null || busy) return;
     setAnalysisDefaults(pickAnalysisDefaults(defaultPreferences()));
     toast.message("Reset to app defaults.");
   }
@@ -158,7 +100,7 @@ export function AnalysisDefaultsCard({ ownerId: initialOwnerId }: { ownerId: str
   async function save() {
     if (!canSave) return;
     const run = captureOwnerRun(ownerEpochRef.current);
-    if (!run || run.ownerId !== loadedOwnerId) return;
+    if (!run || run.ownerId !== initialOwnerId) return;
     mutationControllerRef.current?.abort();
     const controller = new AbortController();
     mutationControllerRef.current = controller;
@@ -166,7 +108,7 @@ export function AnalysisDefaultsCard({ ownerId: initialOwnerId }: { ownerId: str
     mutationGenerationRef.current = generation;
     const isCurrent = () =>
       !controller.signal.aborted &&
-      loadedOwnerId === run.ownerId &&
+      initialOwnerId === run.ownerId &&
       isOwnerRunGenerationCurrent({
         run,
         epoch: ownerEpochRef.current,
@@ -238,34 +180,8 @@ export function AnalysisDefaultsCard({ ownerId: initialOwnerId }: { ownerId: str
         <AnalysisDefaultsFields
           value={analysisDefaults}
           onChange={setAnalysisDefaults}
-          disabled={busy || loading || loadError !== null || !ownerReady}
+          disabled={busy || !ownerReady}
         />
-        {loading ? (
-          <InlineStatus tone="info" live>
-            Loading your current analysis defaults…
-          </InlineStatus>
-        ) : null}
-        {loadError ? (
-          <InlineStatus tone="danger">
-            <div>
-              <p>
-                We could not load your saved analysis defaults. Nothing can be
-                changed until they are loaded.
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">{loadError}</p>
-              <Button
-                className="mt-3"
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void load()}
-                disabled={loading || busy}
-              >
-                Retry
-              </Button>
-            </div>
-          </InlineStatus>
-        ) : null}
         {!valid ? (
           <InlineStatus tone="danger">
             Open Advanced analysis and correct the highlighted value before
@@ -274,7 +190,7 @@ export function AnalysisDefaultsCard({ ownerId: initialOwnerId }: { ownerId: str
         ) : null}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/70 pt-4">
           <p className="text-xs text-muted-foreground" role="status">
-            {!loading && !loadError && savedDefaults !== null && !dirty
+            {savedDefaults !== null && !dirty
               ? "Saved"
               : "Changes apply to future analysis."}
           </p>
@@ -283,7 +199,7 @@ export function AnalysisDefaultsCard({ ownerId: initialOwnerId }: { ownerId: str
             type="button"
             variant="ghost"
             onClick={resetToAppDefaults}
-            disabled={busy || loading || savedDefaults === null}
+            disabled={busy || savedDefaults === null}
           >
             Reset
           </Button>

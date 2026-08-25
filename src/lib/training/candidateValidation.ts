@@ -13,7 +13,6 @@ import {
     TRAINING_LESSON_KINDS,
     TRAINING_SOURCE_KINDS,
     VERIFICATION_STATUSES,
-    solutionSemanticsHash,
     stableCanonicalStringify,
     type AcceptanceFrontier,
     type GradingPolicyV3,
@@ -22,6 +21,7 @@ import {
     type SolutionRevisionInput,
     type TrainingMomentCandidate,
 } from '@/lib/training/contracts';
+import { solutionSemanticsHash } from '@/lib/training/contractHashes.server';
 import {
     appendAssessmentHistory,
     assessmentPositionKey,

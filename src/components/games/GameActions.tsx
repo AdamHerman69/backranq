@@ -16,7 +16,6 @@ import {
 import type { NormalizedGame } from '@/lib/types/game';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import { StockfishClient } from '@/lib/analysis/stockfishClient';
-import { extractTrainingMomentsFromGames } from '@/lib/analysis/extractTrainingMoments';
 import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
 import { AnalysisProgress, type AnalysisProgressState } from '@/components/analysis/AnalysisProgress';
 import { Button } from '@/components/ui/button';
@@ -180,6 +179,9 @@ export function GameActions({
         setBrowserReviewOpen(false);
         setBusy(true);
         try {
+            const extractionModulePromise = import(
+                '@/lib/analysis/extractTrainingMoments'
+            );
             let analysisDefaults = pickAnalysisDefaults(defaultPreferences());
             const preferencesResponse = await fetch('/api/user/preferences', {
                 cache: 'no-store',
@@ -207,6 +209,9 @@ export function GameActions({
                 }
             }
 
+            const { extractTrainingMomentsFromGames } =
+                await extractionModulePromise;
+            if (!isCurrent()) return;
             const res = await extractTrainingMomentsFromGames({
                 games: [normalizedGame],
                 selectedGameIds: new Set([normalizedGame.id]),

@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import {
-    ArrowRight,
     BrainCircuit,
     CloudCog,
     EyeOff,
@@ -12,7 +11,6 @@ import {
 import { SignInButton } from '@/components/auth/SignInButton';
 import { DualOnboardingHero } from '@/components/landing/DualOnboardingHero';
 import { Button } from '@/components/ui/button';
-import { auth } from '@/lib/auth';
 import { AUTH_PROVIDER_UI } from '@/lib/auth/config';
 
 export const metadata: Metadata = {
@@ -21,10 +19,7 @@ export const metadata: Metadata = {
         'Turn your own chess games into focused, spoiler-free practice positions.',
 };
 
-export default async function LandingPage() {
-    const session = await auth();
-    const isSignedIn = Boolean(session?.user?.id);
-
+export default function LandingPage() {
     return (
         <div className="min-h-dvh">
             <header className="sticky top-0 z-50 border-b border-foreground/10 bg-background/[0.9] backdrop-blur-xl">
@@ -42,22 +37,16 @@ export default async function LandingPage() {
                         </span>
                         Backranq
                     </Link>
-                    {isSignedIn ? (
-                        <Button asChild size="sm">
-                            <Link href="/home">Open app</Link>
-                        </Button>
-                    ) : (
-                        <Button asChild variant="outline" size="sm">
-                            <Link href="/login?callbackUrl=%2Fhome">
-                                Sign in
-                            </Link>
-                        </Button>
-                    )}
+                    <Button asChild variant="outline" size="sm">
+                        <Link href="/login?callbackUrl=%2Fhome">
+                            Sign in
+                        </Link>
+                    </Button>
                 </div>
             </header>
 
             <main className="space-y-16 pb-16 sm:space-y-24 sm:pb-24">
-                <DualOnboardingHero isSignedIn={isSignedIn} />
+                <DualOnboardingHero isSignedIn={false} />
 
                 <section
                     className="app-container"
@@ -174,7 +163,7 @@ export default async function LandingPage() {
                         reached.
                     </p>
                     <div className="mt-7">
-                        <LandingActions isSignedIn={isSignedIn} />
+                        <LandingActions />
                     </div>
                     </div>
                 </section>
@@ -212,27 +201,14 @@ export default async function LandingPage() {
 }
 
 function LandingActions({
-    isSignedIn,
     size = 'default',
 }: {
-    isSignedIn: boolean;
     size?: 'default' | 'large';
 }) {
     const className =
         size === 'large'
             ? 'h-12 px-8 text-base font-semibold'
             : 'h-11 px-6 font-semibold';
-
-    if (isSignedIn) {
-        return (
-            <Button asChild className={className}>
-                <Link href="/home">
-                    Open app
-                    <ArrowRight aria-hidden="true" />
-                </Link>
-            </Button>
-        );
-    }
 
     const enabledProviders = AUTH_PROVIDER_UI.filter(
         (provider) => provider.enabled

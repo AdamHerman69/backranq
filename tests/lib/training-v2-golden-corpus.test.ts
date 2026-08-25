@@ -11,10 +11,8 @@ import type {
     StockfishEngine,
 } from '@/lib/analysis/stockfishClient';
 import { hashSourcePgn } from '@/lib/chess/pgn';
-import {
-    trainingMomentKey,
-    type TrainingMomentCandidate,
-} from '@/lib/training/contracts';
+import type { TrainingMomentCandidate } from '@/lib/training/contracts';
+import { trainingMomentKey } from '@/lib/training/contractHashes.server';
 import type { NormalizedGame } from '@/lib/types/game';
 
 type Cost = {

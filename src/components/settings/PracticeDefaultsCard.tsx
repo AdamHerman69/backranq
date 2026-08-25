@@ -5,8 +5,6 @@ import { Target } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSession } from 'next-auth/react';
 
-import { Button } from '@/components/ui/button';
-import { InlineStatus } from '@/components/ui/async-state';
 import { LoadingButton } from '@/components/ui/loading-button';
 import {
     Card,
@@ -22,11 +20,7 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
-import {
-    defaultPreferences,
-    type PreferencesSchema,
-    type TrainingSessionMix,
-} from '@/lib/preferences';
+import { type PreferencesSchema, type TrainingSessionMix } from '@/lib/preferences';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 import {
     advanceOwnerEpoch,
@@ -63,8 +57,10 @@ export function canSavePracticeMix({
 
 export function PracticeDefaultsCard({
     ownerId: initialOwnerId,
+    initialPreferences,
 }: {
     ownerId: string;
+    initialPreferences: PreferencesSchema;
 }) {
     const { data: session, status: sessionStatus } = useSession();
     const activeOwnerId = resolveSessionOwnerId({
@@ -80,111 +76,38 @@ export function PracticeDefaultsCard({
         ownerEpochRef.current,
         activeOwnerId
     );
-    const loadControllerRef = React.useRef<AbortController | null>(null);
     const mutationControllerRef = React.useRef<AbortController | null>(null);
-    const loadGenerationRef = React.useRef(0);
     const mutationGenerationRef = React.useRef(0);
-    const [loading, setLoading] = React.useState(true);
     const [busy, setBusy] = React.useState(false);
-    const [loadError, setLoadError] = React.useState<string | null>(null);
     const [mix, setMix] = React.useState<TrainingSessionMix>(
-        defaultPreferences().trainingSessionMix
+        initialPreferences.trainingSessionMix
     );
-    const [savedMix, setSavedMix] =
-        React.useState<TrainingSessionMix | null>(null);
-    const [loadedOwnerId, setLoadedOwnerId] = React.useState<string | null>(
-        null
+    const [savedMix, setSavedMix] = React.useState<TrainingSessionMix | null>(
+        initialPreferences.trainingSessionMix
     );
-
-    const load = React.useCallback(async () => {
-        const run = captureOwnerRun(ownerEpochRef.current);
-        const generation = loadGenerationRef.current + 1;
-        loadGenerationRef.current = generation;
-        loadControllerRef.current?.abort();
-        mutationGenerationRef.current += 1;
-        mutationControllerRef.current?.abort();
-        mutationControllerRef.current = null;
-        setLoadedOwnerId(null);
-        setSavedMix(null);
-        setLoading(true);
-        setBusy(false);
-        setLoadError(null);
-        if (!run || run.ownerId !== initialOwnerId) {
-            setLoadError(
-                'Your signed-in account changed. Reload Settings to continue.'
-            );
-            setLoading(false);
-            return;
-        }
-        const controller = new AbortController();
-        loadControllerRef.current = controller;
-        const isCurrent = () =>
-            !controller.signal.aborted &&
-            isOwnerRunGenerationCurrent({
-                run,
-                epoch: ownerEpochRef.current,
-                generation,
-                currentGeneration: loadGenerationRef.current,
-            });
-        try {
-            const response = await fetch('/api/user/preferences', {
-                cache: 'no-store',
-                signal: controller.signal,
-            });
-            const body = (await response.json().catch(() => ({}))) as {
-                ownerId?: string;
-                preferences?: PreferencesSchema;
-                error?: string;
-            };
-            if (!response.ok || !body.preferences) {
-                throw new Error(
-                    body.error ?? 'Failed to load practice settings'
-                );
-            }
-            if (!isCurrent()) return;
-            if (body.ownerId !== run.ownerId) {
-                throw new Error(
-                    'The server returned practice settings for a different account.'
-                );
-            }
-
-            const loadedMix = body.preferences.trainingSessionMix;
-            setMix(loadedMix);
-            setSavedMix(loadedMix);
-            setLoadedOwnerId(run.ownerId);
-        } catch (error) {
-            if (!isCurrent()) return;
-            setSavedMix(null);
-            setLoadError(
-                error instanceof Error
-                    ? error.message
-                    : 'Failed to load practice settings'
-            );
-        } finally {
-            if (loadControllerRef.current === controller) {
-                loadControllerRef.current = null;
-            }
-            if (isCurrent()) setLoading(false);
-        }
-    }, [initialOwnerId]);
 
     React.useEffect(() => {
-        void load();
-        return () => {
-            loadGenerationRef.current += 1;
+        if (activeOwnerId !== initialOwnerId) {
             mutationGenerationRef.current += 1;
-            loadControllerRef.current?.abort();
+            mutationControllerRef.current?.abort();
+            mutationControllerRef.current = null;
+            setBusy(false);
+        }
+    }, [activeOwnerId, initialOwnerId]);
+
+    React.useEffect(() => {
+        return () => {
+            mutationGenerationRef.current += 1;
             mutationControllerRef.current?.abort();
         };
-    }, [activeOwnerId, load]);
+    }, []);
 
-    const ownerReady =
-        activeOwnerId === initialOwnerId && loadedOwnerId === initialOwnerId;
+    const ownerReady = activeOwnerId === initialOwnerId;
 
     const canSave = canSavePracticeMix({
         busy,
-        loadError,
-        loading,
+        loadError: null,
+        loading: false,
         mix,
         ownerReady,
         savedMix,
@@ -193,7 +116,7 @@ export function PracticeDefaultsCard({
     async function save() {
         if (!canSave) return;
         const run = captureOwnerRun(ownerEpochRef.current);
-        if (!run || run.ownerId !== loadedOwnerId) return;
+        if (!run || run.ownerId !== initialOwnerId) return;
         mutationControllerRef.current?.abort();
         const controller = new AbortController();
         mutationControllerRef.current = controller;
@@ -201,7 +124,7 @@ export function PracticeDefaultsCard({
         mutationGenerationRef.current = generation;
         const isCurrent = () =>
             !controller.signal.aborted &&
-            loadedOwnerId === run.ownerId &&
+            initialOwnerId === run.ownerId &&
             isOwnerRunGenerationCurrent({
                 run,
                 epoch: ownerEpochRef.current,
@@ -286,7 +209,7 @@ export function PracticeDefaultsCard({
                             setMix(value as TrainingSessionMix)
                         }
                         disabled={
-                            loading || busy || loadError !== null || !ownerReady
+                            busy || !ownerReady
                         }
                     >
                         <SelectTrigger aria-label="Default position mix">
@@ -305,40 +228,12 @@ export function PracticeDefaultsCard({
                         </SelectContent>
                     </Select>
                 </label>
-                {loading ? (
-                    <InlineStatus tone="info" live>
-                        Loading your current position mix…
-                    </InlineStatus>
-                ) : null}
-                {loadError ? (
-                    <InlineStatus tone="danger">
-                        <div>
-                            <p>
-                            We could not load your current default. Nothing can
-                            be saved until it is loaded.
-                            </p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                                {loadError}
-                            </p>
-                            <Button
-                                className="mt-3"
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => void load()}
-                                disabled={loading || busy}
-                            >
-                                Retry
-                            </Button>
-                        </div>
-                    </InlineStatus>
-                ) : null}
                 <div className="flex items-center justify-between gap-3 border-t border-border/70 pt-4">
                     <p
                         className="text-xs text-muted-foreground"
                         role="status"
                     >
-                        {!loading && !loadError && savedMix !== null && mix === savedMix
+                        {savedMix !== null && mix === savedMix
                             ? 'Saved'
                             : 'Changes apply to your next session.'}
                     </p>

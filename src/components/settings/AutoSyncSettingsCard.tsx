@@ -15,7 +15,6 @@ import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import {
     ErrorState,
     InlineStatus,
-    LoadingState,
 } from '@/components/ui/async-state';
 import {
     CHESS_CONNECTIONS_CHANGED_EVENT,
@@ -289,8 +288,12 @@ function ProviderStatus({
 
 export function GameAutomationSettingsCard({
     ownerId: serverOwnerId,
+    initialPreferences,
+    initialStatus,
 }: {
     ownerId: string;
+    initialPreferences: PreferencesSchema;
+    initialStatus: AutomationSyncStatus;
 }) {
     const { data: session, status: sessionStatus } = useSession();
     const activeOwnerId =
@@ -305,14 +308,18 @@ export function GameAutomationSettingsCard({
     );
     const ownerReady =
         sessionStatus === 'authenticated' && activeOwnerId === serverOwnerId;
-    const [loading, setLoading] = React.useState(true);
     const [saving, setSaving] = React.useState(false);
     const [loadError, setLoadError] = React.useState<string | null>(null);
-    const [status, setStatus] = React.useState<AutomationSyncStatus | null>(null);
-    const [draft, setDraft] = React.useState<AutomationDraft | null>(null);
-    const [saved, setSaved] = React.useState<AutomationDraft | null>(null);
+    const [status, setStatus] = React.useState<AutomationSyncStatus | null>(
+        initialStatus
+    );
+    const [draft, setDraft] = React.useState<AutomationDraft | null>(() =>
+        automationDraftFromPreferences(initialPreferences)
+    );
+    const [saved, setSaved] = React.useState<AutomationDraft | null>(() =>
+        automationDraftFromPreferences(initialPreferences)
+    );
     const [enableConfirmOpen, setEnableConfirmOpen] = React.useState(false);
-    const requestIdRef = React.useRef(0);
     const statusRequestIdRef = React.useRef(0);
     const saveRequestIdRef = React.useRef(0);
 
@@ -322,48 +329,6 @@ export function GameAutomationSettingsCard({
             isOwnerRunCurrent(run, ownerEpochRef.current),
         [serverOwnerId]
     );
-
-    const load = React.useCallback(async () => {
-        const run = captureOwnerRun(ownerEpochRef.current);
-        if (!run || !runIsCurrent(run)) return;
-        const requestId = ++requestIdRef.current;
-        setLoading(true);
-        setLoadError(null);
-        try {
-            const response = await fetch('/api/user/preferences', {
-                cache: 'no-store',
-            });
-            const body = (await response.json().catch(() => ({}))) as {
-                ownerId?: string;
-                preferences?: PreferencesSchema;
-                error?: string;
-            };
-            if (!response.ok || !body.preferences || body.ownerId !== run.ownerId) {
-                throw new Error(
-                    body.ownerId && body.ownerId !== run.ownerId
-                        ? 'The server returned settings for a different account. Reload Settings.'
-                        : body.error ?? 'Could not load automation preferences'
-                );
-            }
-            if (requestId !== requestIdRef.current || !runIsCurrent(run)) return;
-            const next = automationDraftFromPreferences(body.preferences);
-            setDraft(next);
-            setSaved(next);
-        } catch (error) {
-            if (requestId !== requestIdRef.current || !runIsCurrent(run)) return;
-            setDraft(null);
-            setSaved(null);
-            setLoadError(
-                error instanceof Error
-                    ? error.message
-                    : 'Could not load automation preferences'
-            );
-        } finally {
-            if (requestId === requestIdRef.current && runIsCurrent(run)) {
-                setLoading(false);
-            }
-        }
-    }, [runIsCurrent]);
 
     const refreshConnectionStatus = React.useCallback(async () => {
         const run = captureOwnerRun(ownerEpochRef.current);
@@ -390,16 +355,11 @@ export function GameAutomationSettingsCard({
     }, [runIsCurrent]);
 
     React.useEffect(() => {
-        requestIdRef.current += 1;
         statusRequestIdRef.current += 1;
         saveRequestIdRef.current += 1;
-        setDraft(null);
-        setSaved(null);
-        setStatus(null);
         setSaving(false);
         setEnableConfirmOpen(false);
         if (!ownerReady) {
-            setLoading(sessionStatus === 'loading');
             setLoadError(
                 sessionStatus === 'loading'
                     ? null
@@ -407,15 +367,14 @@ export function GameAutomationSettingsCard({
             );
             return;
         }
-        void Promise.all([load(), refreshConnectionStatus()]);
+        setLoadError(null);
         const reload = () => void refreshConnectionStatus();
         window.addEventListener(CHESS_CONNECTIONS_CHANGED_EVENT, reload);
         return () => {
-            requestIdRef.current += 1;
             statusRequestIdRef.current += 1;
             window.removeEventListener(CHESS_CONNECTIONS_CHANGED_EVENT, reload);
         };
-    }, [load, ownerReady, refreshConnectionStatus, sessionStatus]);
+    }, [ownerReady, refreshConnectionStatus, sessionStatus]);
 
     function updateDraft(
         updater: (current: AutomationDraft) => AutomationDraft
@@ -499,31 +458,11 @@ export function GameAutomationSettingsCard({
         void persistSave();
     }
 
-    if (loading) {
-        return (
-            <LoadingState
-                title="Loading game automation"
-                description="Checking your linked sources and saved import rules."
-                className="min-h-44"
-            />
-        );
-    }
-
     if (!draft || loadError) {
         return (
             <ErrorState
                 title="Automation settings unavailable"
                 description={loadError ?? 'Your saved settings were not changed.'}
-                action={
-                    <Button
-                        type="button"
-                        variant="outline"
-                        disabled={!ownerReady}
-                        onClick={() => void load()}
-                    >
-                        Try again
-                    </Button>
-                }
             />
         );
     }

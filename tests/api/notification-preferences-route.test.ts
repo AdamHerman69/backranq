@@ -36,6 +36,7 @@ describe('/api/notifications/preferences owner contract', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         setMockUserId('user-1');
+        prismaMock.notificationPreference.findUnique.mockResolvedValue(preference);
         prismaMock.notificationPreference.upsert.mockResolvedValue(preference);
         prismaMock.notificationPreference.update.mockResolvedValue(preference);
         prismaMock.notificationDelivery.updateMany.mockResolvedValue({ count: 0 });
@@ -53,6 +54,10 @@ describe('/api/notifications/preferences owner contract', () => {
             ownerId: 'user-1',
             preferences: { timezone: 'Europe/Prague' },
         });
+        expect(prismaMock.notificationPreference.findUnique).toHaveBeenCalledWith({
+            where: { userId: 'user-1' },
+        });
+        expect(prismaMock.notificationPreference.upsert).not.toHaveBeenCalled();
     });
 
     it('rejects a stale owner before parsing or writing preferences', async () => {
@@ -67,10 +72,29 @@ describe('/api/notifications/preferences owner contract', () => {
 
         expect(response.status).toBe(409);
         expect(prismaMock.$transaction).not.toHaveBeenCalled();
-        expect(prismaMock.notificationPreference.update).not.toHaveBeenCalled();
+        expect(prismaMock.notificationPreference.upsert).not.toHaveBeenCalled();
     });
 
     it('returns the owner after a fenced preference write', async () => {
+        const route = await importRoute();
+        const response = await route.PATCH(
+            createJsonRequest(
+                'http://localhost/api/notifications/preferences',
+                { timezone: 'Europe/Prague' },
+                { headers: { 'X-Backranq-Owner-Id': 'user-1' }, method: 'PATCH' }
+            )
+        );
+
+        expect(response.status).toBe(200);
+        await expect(readJson(response)).resolves.toMatchObject({
+            ownerId: 'user-1',
+            preferences: { timezone: 'Europe/Prague' },
+        });
+        expect(prismaMock.$transaction).not.toHaveBeenCalled();
+        expect(prismaMock.notificationPreference.upsert).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps preference disables and pending-delivery cancellation atomic', async () => {
         const route = await importRoute();
         const response = await route.PATCH(
             createJsonRequest(
@@ -81,9 +105,16 @@ describe('/api/notifications/preferences owner contract', () => {
         );
 
         expect(response.status).toBe(200);
-        await expect(readJson(response)).resolves.toMatchObject({
-            ownerId: 'user-1',
-            preferences: { timezone: 'Europe/Prague' },
-        });
+        expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+        expect(prismaMock.notificationPreference.upsert).toHaveBeenCalledTimes(1);
+        expect(prismaMock.notificationDelivery.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    userId: 'user-1',
+                    channel: 'EMAIL',
+                }),
+                data: expect.objectContaining({ status: 'CANCELLED' }),
+            })
+        );
     });
 });

@@ -22,6 +22,12 @@ export async function GET(req: Request) {
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const url = new URL(req.url);
+    if (url.searchParams.get('summary') === '1') {
+        const unreadCount = await prisma.notification.count({
+            where: { userId, readAt: null, archivedAt: null },
+        });
+        return NextResponse.json({ ownerId: userId, unreadCount });
+    }
     const rawLimit = url.searchParams.get('limit');
     const limit = rawLimit === null ? NOTIFICATION_PAGE_SIZE : Number(rawLimit);
     if (

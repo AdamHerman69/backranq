@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { syncProviderToDb } from '@/lib/api/games';
+import { syncProviderToDb } from '@/lib/games/dbMappings';
 import { isRecord, stringArrayValue } from '@/lib/api/validation';
 
 export const runtime = 'nodejs';

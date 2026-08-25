@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { gameSourceToDb, timeClassToDb } from '@/lib/api/games';
+import { gameSourceToDb, timeClassToDb } from '@/lib/games/dbMappings';
 import {
     isStrictIsoDate,
     isStrictIsoInstant,

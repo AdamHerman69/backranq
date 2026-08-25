@@ -5,6 +5,7 @@ import {
     useEffect,
     useRef,
     useState,
+    type ComponentProps,
     type ReactNode,
 } from 'react';
 import Link from 'next/link';
@@ -42,6 +43,38 @@ import {
     deriveHomeProductState,
     type HomeProductState,
 } from '@/lib/product/homeState';
+import { schedulePostInteractiveTask } from '@/lib/browser/postInteractive';
+
+const intentPrefetchedHomeRoutes = new Set<string>();
+
+function IntentPrefetchLink(props: ComponentProps<typeof Link>) {
+    const router = useRouter();
+    const href = typeof props.href === 'string' ? props.href : null;
+    const prefetchOnIntent = () => {
+        if (!href || intentPrefetchedHomeRoutes.has(href)) return;
+        intentPrefetchedHomeRoutes.add(href);
+        router.prefetch(href);
+    };
+
+    return (
+        <Link
+            {...props}
+            prefetch={false}
+            onFocus={(event) => {
+                props.onFocus?.(event);
+                prefetchOnIntent();
+            }}
+            onPointerEnter={(event) => {
+                props.onPointerEnter?.(event);
+                prefetchOnIntent();
+            }}
+            onTouchStart={(event) => {
+                props.onTouchStart?.(event);
+                prefetchOnIntent();
+            }}
+        />
+    );
+}
 
 export function HomeDashboard({
     viewer,
@@ -103,9 +136,9 @@ export function HomeDashboard({
                 // snapshot. A failed lazy chunk must not break Home.
             });
         };
-        const analysisSubscriptionTimer = window.setTimeout(
+        const cancelAnalysisSubscription = schedulePostInteractiveTask(
             subscribeToAnalysis,
-            1_500
+            { minimumDelayMs: 1_000, requireFastConnection: true }
         );
         const onCompletion = (event: Event) => {
             const summary = (
@@ -141,7 +174,7 @@ export function HomeDashboard({
         window.addEventListener('focus', refresh);
         return () => {
             disposed = true;
-            window.clearTimeout(analysisSubscriptionTimer);
+            cancelAnalysisSubscription();
             window.removeEventListener('online', subscribeToAnalysis);
             if (refreshFrame.current !== null) {
                 window.cancelAnimationFrame(refreshFrame.current);
@@ -181,6 +214,21 @@ export function HomeDashboard({
         ? dashboard.syncStatus
         : null;
     const hasTrainingMoments = trainingMomentCount > 0;
+    const passivePracticeHref =
+        duePracticeCount > 0
+            ? '/practice?mode=review'
+            : trainingMomentCount > 0 || !trainingMomentCountIsExact
+              ? '/practice'
+              : null;
+
+    useEffect(() => {
+        if (!passivePracticeHref) return;
+        return schedulePostInteractiveTask(() => {
+            if (intentPrefetchedHomeRoutes.has(passivePracticeHref)) return;
+            intentPrefetchedHomeRoutes.add(passivePracticeHref);
+            router.prefetch(passivePracticeHref);
+        }, { requireFastConnection: true });
+    }, [passivePracticeHref, router]);
 
     const hasLinkedAccount =
         !!dashboardSyncStatus?.linked.lichessUsername ||
@@ -574,13 +622,12 @@ function NextActionCard({
                 <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row">
                     {actionLabel && href ? (
                         <Button asChild size="lg" className="w-full border-accent bg-accent text-accent-foreground hover:bg-accent/90 sm:w-auto">
-                            <Link
+                            <IntentPrefetchLink
                                 href={href}
-                                prefetch={false}
                             >
                                 {actionLabel}
                                 <ArrowRight aria-hidden="true" />
-                            </Link>
+                            </IntentPrefetchLink>
                         </Button>
                     ) : null}
                     {secondaryAction ? (
@@ -590,9 +637,9 @@ function NextActionCard({
                             size="lg"
                             className="w-full border-background/25 bg-background/5 text-background hover:bg-background/10 hover:text-background sm:w-auto"
                         >
-                            <Link href={secondaryAction.href} prefetch={false}>
+                            <IntentPrefetchLink href={secondaryAction.href}>
                                 {secondaryAction.label}
-                            </Link>
+                            </IntentPrefetchLink>
                         </Button>
                     ) : null}
                 </div>
@@ -630,10 +677,9 @@ function HomeSummary({
             className="grid grid-cols-3 gap-px overflow-hidden border-y border-foreground/15 bg-border"
         >
             {items.map((item) => (
-                <Link
+                <IntentPrefetchLink
                     key={item.label}
                     href={item.href}
-                    prefetch={false}
                     className="group bg-card px-3 py-4 transition-colors duration-base hover:bg-surface-subtle sm:px-5"
                 >
                     <span className="block text-xl font-semibold tabular-nums tracking-tight sm:text-2xl">
@@ -642,7 +688,7 @@ function HomeSummary({
                     <span className="mt-1 block text-[11px] font-medium leading-tight text-muted-foreground sm:text-xs">
                         {item.label}
                     </span>
-                </Link>
+                </IntentPrefetchLink>
             ))}
         </section>
     );

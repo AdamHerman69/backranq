@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { NextResponse } from 'next/server';
 
-import { parseExternalId } from '@/lib/api/games';
+import { parseExternalId } from '@/lib/games/dbMappings';
 import { boundedJsonBody, isRecord } from '@/lib/api/validation';
 import { auth } from '@/lib/auth';
 import { expectedOwnerId } from '@/lib/auth/ownerContract';

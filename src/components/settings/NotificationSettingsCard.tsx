@@ -12,12 +12,11 @@ import {
     type OwnerEpoch,
     type OwnerRunToken,
 } from '@/lib/auth/ownerRun';
-import { ErrorState, InlineStatus } from '@/components/ui/async-state';
+import { InlineStatus } from '@/components/ui/async-state';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { ListSkeleton } from '@/components/ui/loading-patterns';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export type NotificationSettingsPreferences = {
@@ -135,7 +134,15 @@ export async function disableWebPushForOwner({
     return preferencePayload.preferences;
 }
 
-export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId: string }) {
+export function NotificationSettingsCard({
+    ownerId: initialOwnerId,
+    initialPreferences,
+    vapidPublicKey,
+}: {
+    ownerId: string;
+    initialPreferences: NotificationSettingsPreferences;
+    vapidPublicKey: string | null;
+}) {
     const { data: session, status: sessionStatus } = useSession();
     const liveOwnerId = session?.user?.id ?? null;
     const ownerId = resolveNotificationSettingsOwnerId({
@@ -145,88 +152,32 @@ export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId:
     });
     const ownerEpochRef = React.useRef<OwnerEpoch>({ ownerId: null, generation: 0 });
     ownerEpochRef.current = advanceOwnerEpoch(ownerEpochRef.current, ownerId);
-    const loadControllerRef = React.useRef<AbortController | null>(null);
     const mutationControllerRef = React.useRef<AbortController | null>(null);
-    const loadGenerationRef = React.useRef(0);
     const mutationGenerationRef = React.useRef(0);
-    const [preferences, setPreferences] = React.useState<Preferences | null>(null);
-    const [loadedOwnerId, setLoadedOwnerId] = React.useState<string | null>(null);
-    const [vapidPublicKey, setVapidPublicKey] = React.useState<string | null>(null);
+    const [preferences, setPreferences] = React.useState<Preferences>(initialPreferences);
+    const savedPreferencesRef = React.useRef<Preferences>(initialPreferences);
     const [saving, setSaving] = React.useState(false);
-    const [loadError, setLoadError] = React.useState<string | null>(null);
-
-    const load = React.useCallback(async () => {
-        const run = captureOwnerRun(ownerEpochRef.current);
-        const generation = ++loadGenerationRef.current;
-        loadControllerRef.current?.abort();
-        setLoadedOwnerId(null);
-        setPreferences(null);
-        setVapidPublicKey(null);
-        setSaving(false);
-        setLoadError(null);
-        if (!run) {
-            setLoadError('Your session changed. Reload Settings to continue.');
-            return;
-        }
-        const controller = new AbortController();
-        loadControllerRef.current = controller;
-        const isCurrent = () =>
-            !controller.signal.aborted &&
-            isNotificationSettingsRunCurrent({
-                run,
-                epoch: ownerEpochRef.current,
-                generation,
-                currentGeneration: loadGenerationRef.current,
-            });
-        try {
-            const response = await fetch('/api/notifications/preferences', {
-                cache: 'no-store',
-                signal: controller.signal,
-            });
-            if (!response.ok) {
-                throw new Error('Could not load notification settings');
-            }
-            const payload = (await response.json()) as {
-                ownerId?: string;
-                preferences: Preferences;
-                vapidPublicKey: string | null;
-            };
-            if (!isCurrent()) return;
-            if (payload.ownerId !== run.ownerId) {
-                throw new Error('The server returned notification settings for a different account.');
-            }
-            setPreferences(payload.preferences);
-            setVapidPublicKey(payload.vapidPublicKey);
-            setLoadedOwnerId(run.ownerId);
-        } catch (error) {
-            if (!isCurrent()) return;
-            const message =
-                error instanceof Error
-                    ? error.message
-                    : 'Could not load settings';
-            setPreferences(null);
-            setLoadError(message);
-            toast.error(message);
-        } finally {
-            if (loadControllerRef.current === controller) {
-                loadControllerRef.current = null;
-            }
-        }
-    }, []);
 
     React.useEffect(() => {
-        void load();
+        if (ownerId !== initialOwnerId) {
+            mutationGenerationRef.current += 1;
+            mutationControllerRef.current?.abort();
+            mutationControllerRef.current = null;
+            setSaving(false);
+        }
+    }, [initialOwnerId, ownerId]);
+
+    React.useEffect(() => {
         return () => {
-            loadControllerRef.current?.abort();
             mutationControllerRef.current?.abort();
         };
-    }, [load, ownerId]);
+    }, []);
 
-    const ownerReady = Boolean(ownerId && loadedOwnerId === ownerId);
+    const ownerReady = ownerId === initialOwnerId;
 
     async function save(patch: Partial<Preferences>) {
         const run = captureOwnerRun(ownerEpochRef.current);
-        if (!preferences || !run || loadedOwnerId !== run.ownerId) return;
+        if (!run || initialOwnerId !== run.ownerId) return;
         const generation = ++mutationGenerationRef.current;
         mutationControllerRef.current?.abort();
         const controller = new AbortController();
@@ -239,8 +190,8 @@ export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId:
                 generation,
                 currentGeneration: mutationGenerationRef.current,
             }) &&
-            loadedOwnerId === run.ownerId;
-        const previous = preferences;
+            initialOwnerId === run.ownerId;
+        const previous = savedPreferencesRef.current;
         setPreferences((current) => current ? { ...current, ...patch } : current);
         setSaving(true);
         try {
@@ -263,6 +214,7 @@ export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId:
             if (payload.ownerId !== run.ownerId) {
                 throw new Error('The server saved notification settings for a different account.');
             }
+            savedPreferencesRef.current = payload.preferences;
             setPreferences(payload.preferences);
         } catch (error) {
             if (!isCurrent()) return;
@@ -278,7 +230,7 @@ export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId:
 
     async function togglePush(enabled: boolean) {
         const run = captureOwnerRun(ownerEpochRef.current);
-        if (!preferences || !run || loadedOwnerId !== run.ownerId) return;
+        if (!run || initialOwnerId !== run.ownerId) return;
         const generation = ++mutationGenerationRef.current;
         mutationControllerRef.current?.abort();
         const controller = new AbortController();
@@ -291,7 +243,7 @@ export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId:
                 generation,
                 currentGeneration: mutationGenerationRef.current,
             }) &&
-            loadedOwnerId === run.ownerId;
+            initialOwnerId === run.ownerId;
         const ownerHeaders = { [EXPECTED_OWNER_HEADER]: run.ownerId };
         setSaving(true);
         try {
@@ -306,6 +258,7 @@ export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId:
                         : null,
             });
             if (nextPreferences && isCurrent()) {
+                savedPreferencesRef.current = nextPreferences;
                 setPreferences(nextPreferences);
                 toast.success('Web Push disabled.');
             }
@@ -344,7 +297,11 @@ export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId:
         if (!response.ok || payload.ownerId !== run.ownerId) {
             throw new Error(payload.error ?? 'Could not enable Web Push.');
         }
-        setPreferences((current) => current ? { ...current, pushEnabled: true } : current);
+        savedPreferencesRef.current = {
+            ...savedPreferencesRef.current,
+            pushEnabled: true,
+        };
+        setPreferences((current) => ({ ...current, pushEnabled: true }));
         toast.success('Web Push enabled.');
         } catch (error) {
             if (!isCurrent()) return;
@@ -376,23 +333,7 @@ export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId:
                 ) : null}
             </CardHeader>
             <CardContent className="space-y-6 pt-5">
-                {loadError ? (
-                    <ErrorState
-                        title="Notifications unavailable"
-                        description={loadError}
-                        action={
-                            <Button type="button" variant="outline" onClick={() => void load()}>
-                                Try again
-                            </Button>
-                        }
-                        className="border-0"
-                    />
-                ) : !preferences ? (
-                    <div role="status" aria-label="Loading notification settings">
-                        <ListSkeleton rows={3} />
-                    </div>
-                ) : (
-                    <>
+                <>
                         {preferences.emailSuppressedAt ? (
                             <InlineStatus tone="danger">
                                 Email delivery is paused after a bounce or spam complaint. Contact support to restore it.
@@ -471,8 +412,7 @@ export function NotificationSettingsCard({ ownerId: initialOwnerId }: { ownerId:
                                 {preferences.pushEnabled ? 'Disable' : 'Enable'}
                             </Button>
                         </div>
-                    </>
-                )}
+                </>
             </CardContent>
         </Card>
     );

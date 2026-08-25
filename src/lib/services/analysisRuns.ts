@@ -8,7 +8,8 @@ import type {
 } from '@prisma/client';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainingMoments';
-import { gameAnalysisToJson, gameSourceToUi } from '@/lib/api/games';
+import { gameAnalysisToJson } from '@/lib/api/games';
+import { gameSourceToUi } from '@/lib/games/dbMappings';
 import {
     replaceTrainingMomentsInTransaction,
     type ReplaceTrainingMomentsResult,

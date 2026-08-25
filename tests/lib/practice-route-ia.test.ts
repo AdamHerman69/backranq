@@ -26,6 +26,7 @@ describe('practice route information architecture', () => {
     });
 
     it('protects Home and Practice without retaining the legacy route', () => {
+        expect(proxyConfig.matcher).toContain('/');
         expect(proxyConfig.matcher).toContain('/home/:path*');
         expect(proxyConfig.matcher).toContain('/practice/:path*');
         expect(proxyConfig.matcher).not.toContain('/training/:path*');

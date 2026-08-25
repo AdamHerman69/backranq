@@ -3,14 +3,16 @@ import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainin
 import { hashSourcePgn } from '@/lib/chess/pgn';
 import {
     mergeTrainingMomentMetadata,
-    solutionSemanticsHash,
     stableCanonicalStringify,
-    trainingMomentKey,
     type PovScore,
     type SolutionRevisionInput,
     type TrainingLessonKind,
     type TrainingSourceKind,
 } from '@/lib/training/contracts';
+import {
+    solutionSemanticsHash,
+    trainingMomentKey,
+} from '@/lib/training/contractHashes.server';
 
 export type TrainingMomentTransactionClient = Pick<
     Prisma.TransactionClient,

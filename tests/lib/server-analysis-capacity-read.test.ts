@@ -58,6 +58,7 @@ describe('manual server-analysis capacity read', () => {
             plan: 'PLUS' as const,
             planSource: 'STRIPE' as const,
             stripePlan: 'PLUS' as const,
+            stripeCustomerId: 'cus_test',
             stripeSubscriptionStatus: 'active',
             stripeCurrentPeriodStart: new Date('2026-08-01T00:00:00Z'),
             stripeCurrentPeriodEnd: new Date('2026-09-01T00:00:00Z'),

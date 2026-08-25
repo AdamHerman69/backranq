@@ -53,6 +53,24 @@ describe('compact sync status reader', () => {
         ).toMatchObject({ OR: [{ id: { in: [] } }] });
     });
 
+    it('keeps draws in the status predicate for the all-results policy', () => {
+        const preferences = defaultPreferences();
+        preferences.gameAutomation.rules.lichess.rapid = 'AUTO_ANALYZE';
+        preferences.gameAutomation.analysis.resultScope = 'all';
+        const policy = {
+            ...resolveAutoAnalysisPolicy(preferences),
+            enabled: true,
+        };
+
+        expect(
+            syncStatusReadTestUtils.candidateMetadataWhere(policy).OR
+        ).toContainEqual({
+            provider: 'LICHESS',
+            timeClass: { in: ['RAPID'] },
+            result: '1/2-1/2',
+        });
+    });
+
     it('assembles the full snapshot within seven route-owned client operations', async () => {
         const calls: string[] = [];
         const operation = <T>(name: string, value: T) =>

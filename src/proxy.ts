@@ -12,6 +12,14 @@ export async function proxy(req: NextRequest) {
         req.cookies.has('next-auth.session-token') ||
         req.cookies.has('__Secure-next-auth.session-token');
 
+    if (req.nextUrl.pathname === '/') {
+        if (!hasSessionCookie) return NextResponse.next();
+        const homeUrl = req.nextUrl.clone();
+        homeUrl.pathname = '/home';
+        homeUrl.search = '';
+        return NextResponse.redirect(homeUrl);
+    }
+
     if (hasSessionCookie) return NextResponse.next();
 
     const url = req.nextUrl.clone();
@@ -25,6 +33,7 @@ export async function proxy(req: NextRequest) {
 
 export const config = {
     matcher: [
+        '/',
         '/home/:path*',
         '/progress/:path*',
         '/games/:path*',

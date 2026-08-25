@@ -21,6 +21,17 @@ export function isValidSourcePgn(sourcePgn: string): boolean {
     }
 }
 
+/** Number of half-moves in the source movetext, excluding annotations. */
+export function countSourcePgnPlies(sourcePgn: string): number {
+    try {
+        const chess = new Chess();
+        chess.loadPgn(sourcePgn, { strict: false });
+        return chess.history().length;
+    } catch {
+        return 0;
+    }
+}
+
 /**
  * Returns the exact FEN before every source-game ply, followed by the final
  * position. This preserves clocks because they are relevant to draw rules.

@@ -6,10 +6,10 @@ import {
     hashAnalysisConfig,
 } from '@/lib/services/analysisRuns';
 import {
-    solutionSemanticsHash,
     type SolutionRevisionInput,
     type TrainingMomentCandidate,
 } from '@/lib/training/contracts';
+import { solutionSemanticsHash } from '@/lib/training/contractHashes.server';
 import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
 import { analysisDefaultsToExtractOptions } from '@/lib/preferences';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';

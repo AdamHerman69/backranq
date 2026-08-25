@@ -790,6 +790,7 @@ model AnalyzedGame {
   externalId                  String
   url                         String?
   pgn                         String       @db.Text
+  plyCount                    Int
   sourcePgnHash               String
   sourceUsername              String
   sourceAccountId             String?

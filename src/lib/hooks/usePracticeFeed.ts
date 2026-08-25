@@ -43,9 +43,10 @@ import {
 } from '@/lib/training/practiceFeedCoordinator';
 import { recordPracticeExposureEvent } from '@/lib/training/exposureClient';
 import { recordProgressEvent } from '@/lib/progress/analyticsClient';
+import { schedulePostInteractiveTask } from '@/lib/browser/postInteractive';
 
-export const PRACTICE_FEED_BATCH_SIZE = 12;
-export const PRACTICE_FEED_LOW_WATER_MARK = 4;
+export const PRACTICE_FEED_BATCH_SIZE = 4;
+export const PRACTICE_FEED_LOW_WATER_MARK = 2;
 
 export function practicePromptKey(prompt: TrainingPromptDto): string {
     return `${prompt.id}:${prompt.solutionRevisionId}`;
@@ -951,26 +952,14 @@ export function usePracticeFeed({
         setBackgroundFillReady(false);
         if (!ownerId) return;
 
-        let idleId: number | null = null;
-        let timeoutId: number | null = null;
-        const frameId = window.requestAnimationFrame(() => {
-            if (typeof window.requestIdleCallback === 'function') {
-                idleId = window.requestIdleCallback(
-                    () => setBackgroundFillReady(true),
-                    { timeout: 500 }
-                );
-                return;
-            }
-            timeoutId = window.setTimeout(
-                () => setBackgroundFillReady(true),
-                0
-            );
+        const cancelScheduledFill = schedulePostInteractiveTask(() => {
+            setBackgroundFillReady(true);
+        }, {
+            requireFastConnection: true,
         });
 
         return () => {
-            window.cancelAnimationFrame(frameId);
-            if (idleId !== null) window.cancelIdleCallback(idleId);
-            if (timeoutId !== null) window.clearTimeout(timeoutId);
+            cancelScheduledFill();
         };
     }, [feedRequest.revision, initialMomentId, ownerId]);
 

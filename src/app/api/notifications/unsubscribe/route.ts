@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { verifyUnsubscribeToken } from '@/lib/notifications/tokens';
-import { getOrCreateNotificationPreference } from '@/lib/notifications/service';
 
 export const runtime = 'nodejs';
 
@@ -9,41 +8,52 @@ async function unsubscribe(req: Request) {
     const token = new URL(req.url).searchParams.get('token') ?? '';
     const userId = verifyUnsubscribeToken(token);
     if (!userId) return null;
-    await getOrCreateNotificationPreference(userId);
-    await prisma.notificationPreference.update({
-        where: { userId },
-        data: {
-            emailPracticeReady: false,
-            emailAnalysisFailed: false,
-            emailSyncSummary: false,
-            emailWeeklyProgress: false,
-            emailProductNews: false,
-            optionalEmailsUnsubscribedAt: new Date(),
-        },
-    });
-    await prisma.notificationDelivery.updateMany({
-        where: {
-            userId,
-            status: { in: ['PENDING', 'QUEUED'] },
-            notification: {
-                type: {
-                    in: [
-                        'PRACTICE_READY',
-                        'PRACTICE_DUE',
-                        'ANALYSIS_FAILED',
-                        'SYNC_FAILED',
-                        'NEW_GAMES_SYNCED',
-                        'WEEKLY_PROGRESS',
-                        'PRODUCT_NEWS',
-                    ],
+    const unsubscribedAt = new Date();
+    await prisma.$transaction(async (tx) => {
+        await tx.notificationPreference.upsert({
+            where: { userId },
+            create: {
+                userId,
+                emailPracticeReady: false,
+                emailAnalysisFailed: false,
+                emailSyncSummary: false,
+                emailWeeklyProgress: false,
+                emailProductNews: false,
+                optionalEmailsUnsubscribedAt: unsubscribedAt,
+            },
+            update: {
+                emailPracticeReady: false,
+                emailAnalysisFailed: false,
+                emailSyncSummary: false,
+                emailWeeklyProgress: false,
+                emailProductNews: false,
+                optionalEmailsUnsubscribedAt: unsubscribedAt,
+            },
+        });
+        await tx.notificationDelivery.updateMany({
+            where: {
+                userId,
+                status: { in: ['PENDING', 'QUEUED'] },
+                notification: {
+                    type: {
+                        in: [
+                            'PRACTICE_READY',
+                            'PRACTICE_DUE',
+                            'ANALYSIS_FAILED',
+                            'SYNC_FAILED',
+                            'NEW_GAMES_SYNCED',
+                            'WEEKLY_PROGRESS',
+                            'PRODUCT_NEWS',
+                        ],
+                    },
                 },
             },
-        },
-        data: {
-            status: 'CANCELLED',
-            dispatchToken: null,
-            lockedUntil: null,
-        },
+            data: {
+                status: 'CANCELLED',
+                dispatchToken: null,
+                lockedUntil: null,
+            },
+        });
     });
     return userId;
 }

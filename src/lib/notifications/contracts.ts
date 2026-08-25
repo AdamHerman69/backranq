@@ -88,8 +88,25 @@ export function notificationDto(notification: Notification): NotificationDto {
 }
 
 export function preferenceDto(
-    preference: NotificationPreference
+    preference: NotificationPreference | null
 ): NotificationPreferenceDto {
+    if (!preference) {
+        return {
+            emailPracticeReady: true,
+            emailAnalysisFailed: false,
+            emailSyncSummary: false,
+            emailBilling: true,
+            emailWeeklyProgress: false,
+            emailProductNews: false,
+            pushEnabled: false,
+            syncDigestFrequency: 'OFF',
+            timezone: 'UTC',
+            digestHour: 9,
+            productNewsConsentedAt: null,
+            optionalEmailsUnsubscribedAt: null,
+            emailSuppressedAt: null,
+        };
+    }
     return {
         emailPracticeReady: preference.emailPracticeReady,
         emailAnalysisFailed: preference.emailAnalysisFailed,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    countSourcePgnPlies,
     hashSourcePgn,
     isValidSourcePgn,
     sourcePgnPositionFens,
@@ -15,6 +16,15 @@ describe('source PGN safety helpers', () => {
     it('rejects malformed movetext before any data mutation', () => {
         expect(isValidSourcePgn('[Event "Test"]\n\n1. e5 *')).toBe(false);
         expect(isValidSourcePgn('[Event "Test"]\n\n1. e4 *')).toBe(true);
+    });
+
+    it('counts parsed plies instead of comment or annotation tokens', () => {
+        expect(
+            countSourcePgnPlies(
+                '[Event "Test"]\n\n1. e4 {clock note with words} e5 $1 2. Nf3 (2. Bc4) Nc6 *'
+            )
+        ).toBe(4);
+        expect(countSourcePgnPlies('[Event "Test"]\n\n1. e5 *')).toBe(0);
     });
 
     it('anchors every ply to an exact source position including clocks', () => {

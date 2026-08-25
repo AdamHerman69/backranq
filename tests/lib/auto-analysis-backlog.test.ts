@@ -89,6 +89,7 @@ function billingSnapshot(serverCreditsBalance: number) {
         plan: stored.plan,
         planSource: stored.planSource,
         stripePlan: stored.stripePlan,
+        stripeCustomerId: stored.stripeCustomerId,
         stripeSubscriptionStatus: stored.stripeSubscriptionStatus,
         stripeCurrentPeriodStart: stored.stripeCurrentPeriodStart,
         stripeCurrentPeriodEnd: stored.stripeCurrentPeriodEnd,
@@ -130,7 +131,7 @@ function candidate() {
         result: '0-1',
         timeClass: 'RAPID',
         rated: true,
-        pgn: '1. e4 e5 0-1',
+        plyCount: 2,
         whiteName: 'Ada',
         blackName: 'Bob',
         sourceUsername: 'Ada',
@@ -550,16 +551,13 @@ describe('auto-analysis backlog', () => {
         const shortGames = Array.from({ length: 2_001 }, (_, index) => ({
             ...candidate(),
             id: `short-${String(index).padStart(4, '0')}`,
-            pgn: '1. e4 *',
+            plyCount: 1,
         }));
         const olderEligible = {
             ...candidate(),
             id: 'older-eligible',
             playedAt: new Date('2026-07-19T12:00:00Z'),
-            pgn:
-                '1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 ' +
-                '5. O-O Be7 6. Re1 b5 7. Bb3 d6 8. c3 O-O ' +
-                '9. h3 Nb8 10. d4 Nbd7 0-1',
+            plyCount: 20,
         };
         prismaMock.user.findUnique.mockResolvedValue({
             preferences: enabledPreferences({ minPlies: 20 }),

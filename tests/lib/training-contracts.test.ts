@@ -1,17 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-    hashCanonicalTrainingValue,
     mergeTrainingMomentMetadata,
-    solutionSemanticsHash,
     stableCanonicalStringify,
-    trainingMomentKey,
 } from '@/lib/training/contracts';
+import {
+    hashCanonicalTrainingValue,
+    solutionSemanticsHash,
+    trainingMomentKey,
+} from '@/lib/training/contractHashes.server';
 import {
     normalizeGradingPolicy,
     resolveTrainingConfig,
-    trainingConfigHash,
 } from '@/lib/training/config';
+import { trainingConfigHash } from '@/lib/training/configHash.server';
 
 describe('training moment contracts', () => {
     it('creates a canonical moment key from game, PGN revision and decision ply', () => {

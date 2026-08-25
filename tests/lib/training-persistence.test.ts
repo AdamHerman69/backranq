@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-    solutionSemanticsHash,
     type SolutionRevisionInput,
     type TrainingMomentCandidate,
 } from '@/lib/training/contracts';
+import { solutionSemanticsHash } from '@/lib/training/contractHashes.server';
 import { normalizeGradingPolicy } from '@/lib/training/config';
 import {
     persistTrainingMomentsInTransaction,

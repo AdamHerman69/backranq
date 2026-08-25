@@ -27,6 +27,43 @@ function state(): NotificationInboxState {
 }
 
 describe('notification inbox state', () => {
+    it('updates the passive unread badge without loading inbox rows', () => {
+        const next = notificationInboxReducer(state(), {
+            type: 'COUNT_LOADED',
+            unreadCount: 7,
+        });
+
+        expect(next.unreadCount).toBe(7);
+        expect(next.items).toEqual([unread]);
+        expect(next.loading).toBe(false);
+    });
+
+    it('does not let a passive count complete an active inbox load', () => {
+        const loading = notificationInboxReducer(state(), {
+            type: 'LOAD_START',
+        });
+        const next = notificationInboxReducer(loading, {
+            type: 'COUNT_LOADED',
+            unreadCount: 7,
+        });
+
+        expect(next.unreadCount).toBe(7);
+        expect(next.items).toEqual([unread]);
+        expect(next.loading).toBe(true);
+    });
+
+    it('clears a superseded inbox load before an optimistic write', () => {
+        const loading = notificationInboxReducer(state(), {
+            type: 'LOAD_START',
+        });
+        const next = notificationInboxReducer(loading, {
+            type: 'LOAD_CANCELLED',
+        });
+
+        expect(next.loading).toBe(false);
+        expect(next.items).toEqual([unread]);
+    });
+
     it('marks one unread item exactly once', () => {
         const first = notificationInboxReducer(state(), {
             type: 'MARK_ONE',

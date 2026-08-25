@@ -18,7 +18,7 @@ import {
     type SyncProvider,
     type SyncStatus,
 } from '@/lib/services/gameSync';
-import { parseExternalId } from '@/lib/api/games';
+import { parseExternalId } from '@/lib/games/dbMappings';
 import { MultiSelect, type MultiSelectOption } from '@/components/ui/multi-select';
 import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import {

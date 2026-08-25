@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import type { Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
 import { boundedJsonBody, isRecord } from '@/lib/api/validation';
-import { getOrCreateNotificationPreference } from '@/lib/notifications/service';
 import { preferenceDto } from '@/lib/notifications/contracts';
 import { prisma } from '@/lib/prisma';
 import {
@@ -20,12 +19,25 @@ const BOOLEAN_KEYS = [
     'emailWeeklyProgress',
     'pushEnabled',
 ] as const;
+type PreferenceWriteData = Partial<
+    Pick<
+        Prisma.NotificationPreferenceUncheckedCreateInput,
+        | (typeof BOOLEAN_KEYS)[number]
+        | 'emailProductNews'
+        | 'productNewsConsentedAt'
+        | 'syncDigestFrequency'
+        | 'timezone'
+        | 'digestHour'
+    >
+>;
 
 export async function GET() {
     const session = await auth();
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const preference = await getOrCreateNotificationPreference(userId);
+    const preference = await prisma.notificationPreference.findUnique({
+        where: { userId },
+    });
     return NextResponse.json({
         ownerId: userId,
         preferences: preferenceDto(preference),
@@ -64,7 +76,7 @@ export async function PATCH(req: Request) {
     if (unknown) {
         return NextResponse.json({ error: `Unknown preference: ${unknown}` }, { status: 400 });
     }
-    const data: Prisma.NotificationPreferenceUpdateInput = {};
+    const data: PreferenceWriteData = {};
     for (const key of BOOLEAN_KEYS) {
         if (key in parsed.value) {
             if (typeof parsed.value[key] !== 'boolean') {
@@ -101,23 +113,31 @@ export async function PATCH(req: Request) {
     if (Object.keys(data).length === 0) {
         return NextResponse.json({ error: 'No preferences supplied' }, { status: 400 });
     }
-    const preference = await prisma.$transaction(async (tx) => {
-        await getOrCreateNotificationPreference(userId, tx);
-        const updated = await tx.notificationPreference.update({
-            where: { userId },
-            data: {
-                ...data,
-                optionalEmailsUnsubscribedAt:
-                    data.emailPracticeReady === true ||
-                    data.emailAnalysisFailed === true ||
-                    data.emailProductNews === true ||
-                    data.emailWeeklyProgress === true ||
-                    data.emailSyncSummary === true
-                        ? null
-                        : undefined,
-            },
-        });
-        const cancelledEmailTypes = disabledEmailTypes(value);
+    const upsertArgs = {
+        where: { userId },
+        create: {
+            userId,
+            ...data,
+        },
+        update: {
+            ...data,
+            optionalEmailsUnsubscribedAt:
+                data.emailPracticeReady === true ||
+                data.emailAnalysisFailed === true ||
+                data.emailProductNews === true ||
+                data.emailWeeklyProgress === true ||
+                data.emailSyncSummary === true
+                    ? null
+                    : undefined,
+        },
+    } satisfies Prisma.NotificationPreferenceUpsertArgs;
+    const cancelledEmailTypes = disabledEmailTypes(value);
+    const shouldCancelPush = value.pushEnabled === false;
+    const preference =
+        cancelledEmailTypes.length === 0 && !shouldCancelPush
+            ? await prisma.notificationPreference.upsert(upsertArgs)
+            : await prisma.$transaction(async (tx) => {
+        const updated = await tx.notificationPreference.upsert(upsertArgs);
         if (cancelledEmailTypes.length > 0) {
             await tx.notificationDelivery.updateMany({
                 where: {
@@ -133,7 +153,7 @@ export async function PATCH(req: Request) {
                 },
             });
         }
-        if (value.pushEnabled === false) {
+        if (shouldCancelPush) {
             await tx.notificationDelivery.updateMany({
                 where: {
                     userId,

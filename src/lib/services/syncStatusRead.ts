@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import {
     chessAccountConnectionSelect,
     linkedUsernameSnapshot,
+    type ChessAccountConnectionSnapshot,
 } from '@/lib/accounts/chessAccountConnections';
 import { calculateManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 import { prisma } from '@/lib/prisma';
@@ -21,7 +22,10 @@ import {
     type AutoAnalysisCapacity,
     type AutoAnalysisStatus,
 } from '@/lib/services/autoAnalysisBacklog';
-import { readEffectiveBillingSnapshot } from '@/lib/services/billingAccounts';
+import {
+    readEffectiveBillingSnapshot,
+    type EffectiveBillingSnapshot,
+} from '@/lib/services/billingAccounts';
 import type { SyncStatus } from '@/lib/services/gameSync';
 
 const STATUS_CANDIDATE_SCAN_LIMIT = 250;
@@ -62,7 +66,7 @@ type StatusCandidate = {
     result: string | null;
     timeClass: TimeClass;
     rated: boolean | null;
-    pgn: string;
+    plyCount: number;
     whiteName: string;
     blackName: string;
     sourceUsername: string;
@@ -76,22 +80,34 @@ export type SyncStatusSnapshot = SyncStatus & {
     automation: AutoAnalysisStatus;
 };
 
+export type SyncStatusUserSnapshot = {
+    preferences: Prisma.JsonValue;
+    chessAccountConnections: ChessAccountConnectionSnapshot[];
+};
+
 export async function readSyncStatusSnapshot(
     userId: string,
-    options: { now?: Date; db?: SyncStatusReadClient } = {}
+    options: {
+        now?: Date;
+        db?: SyncStatusReadClient;
+        user?: SyncStatusUserSnapshot | null;
+        billingSnapshot?: EffectiveBillingSnapshot;
+    } = {}
 ): Promise<SyncStatusSnapshot> {
     const now = options.now ?? new Date();
     const db = options.db ?? prisma;
     const [user, syncStates, billingSnapshot] = await Promise.all([
-        db.user.findUnique({
-            where: { id: userId },
-            select: {
-                preferences: true,
-                chessAccountConnections: {
-                    select: chessAccountConnectionSelect,
-                },
-            },
-        }),
+        options.user !== undefined
+            ? Promise.resolve(options.user)
+            : db.user.findUnique({
+                  where: { id: userId },
+                  select: {
+                      preferences: true,
+                      chessAccountConnections: {
+                          select: chessAccountConnectionSelect,
+                      },
+                  },
+              }),
         db.providerSyncState.findMany({
             where: { userId },
             select: {
@@ -102,7 +118,9 @@ export async function readSyncStatusSnapshot(
                 lastError: true,
             },
         }),
-        readEffectiveBillingSnapshot(userId, { now, db }),
+        options.billingSnapshot
+            ? Promise.resolve(options.billingSnapshot)
+            : readEffectiveBillingSnapshot(userId, { now, db }),
     ]);
 
     const preferences = canonicalPreferences(user?.preferences ?? {});
@@ -356,7 +374,7 @@ async function readStatusCandidates(args: {
             result: true,
             timeClass: true,
             rated: true,
-            pgn: true,
+            plyCount: true,
             whiteName: true,
             blackName: true,
             sourceUsername: true,
@@ -420,7 +438,10 @@ function candidateMetadataWhere(
                 result: '1-0',
             },
         ];
-        if (policy.resultScope === 'draws') {
+        if (
+            policy.resultScope === 'draws' ||
+            policy.resultScope === 'all'
+        ) {
             resultBranches.push({
                 provider,
                 timeClass: { in: timeClasses },
@@ -447,6 +468,7 @@ function candidateMetadataWhere(
     }
     return {
         ...(policy.ratedOnly ? { rated: true } : {}),
+        plyCount: { gte: policy.minPlies },
         OR: branches.length > 0 ? branches : [{ id: { in: [] } }],
     };
 }

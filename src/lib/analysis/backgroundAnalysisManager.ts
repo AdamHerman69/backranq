@@ -3,7 +3,7 @@ import type { GameAnalysis } from '@/lib/analysis/classification';
 import type { StockfishClient } from '@/lib/analysis/stockfishClient';
 import type { LichessTablebaseClient } from '@/lib/analysis/tablebase';
 import type { TrainingMomentExtractionOptions } from '@/lib/analysis/extractTrainingMoments';
-import { gameSourceToUi, timeClassToUi } from '@/lib/api/games';
+import { gameSourceToUi, timeClassToUi } from '@/lib/games/dbMappings';
 import type { GameSource, TimeClass } from '@prisma/client';
 import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 import type {

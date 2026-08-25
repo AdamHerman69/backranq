@@ -1,6 +1,5 @@
 import {
     TRAINING_CONTRACT_VERSION,
-    hashCanonicalTrainingValue,
     type GradingPolicyV3,
 } from './contracts';
 
@@ -246,10 +245,4 @@ export function resolveTrainingConfig(
             gradingTolerance
         ),
     };
-}
-
-export function trainingConfigHash(
-    config: TrainingConfigInput | ResolvedTrainingConfig
-): string {
-    return hashCanonicalTrainingValue(resolveTrainingConfig(config));
 }

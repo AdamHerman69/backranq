@@ -6,7 +6,7 @@ import {
     parseExternalId,
     syncProviderToUi,
     timeClassToDb,
-} from '@/lib/api/games';
+} from '@/lib/games/dbMappings';
 import { prisma } from '@/lib/prisma';
 import type { NormalizedGame } from '@/lib/types/game';
 import { masterContentHash } from '@/lib/master/ranking';

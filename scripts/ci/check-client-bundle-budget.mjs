@@ -33,6 +33,24 @@ const routeBudgets = [
             'server/app/(app)/practice/page_client-reference-manifest.js',
         gzipBudgetBytes: 250 * 1024,
     },
+    {
+        route: '/games/[id]',
+        manifest:
+            'server/app/(app)/games/[id]/page_client-reference-manifest.js',
+        gzipBudgetBytes: 225 * 1024,
+    },
+    {
+        route: '/play',
+        manifest:
+            'server/app/(app)/play/page_client-reference-manifest.js',
+        gzipBudgetBytes: 240 * 1024,
+    },
+    {
+        route: '/settings',
+        manifest:
+            'server/app/(app)/settings/page_client-reference-manifest.js',
+        gzipBudgetBytes: 180 * 1024,
+    },
 ];
 
 const failures = [];

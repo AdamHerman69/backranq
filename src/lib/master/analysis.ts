@@ -4,7 +4,7 @@ import { ServerStockfishClient } from '@/lib/analysis/serverStockfishClient';
 import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
 import { prisma } from '@/lib/prisma';
 import type { NormalizedGame } from '@/lib/types/game';
-import { timeClassToUi } from '@/lib/api/games';
+import { timeClassToUi } from '@/lib/games/dbMappings';
 import type { weeklyMasterConfig } from '@/lib/master/config';
 import {
     masterCandidateKey,

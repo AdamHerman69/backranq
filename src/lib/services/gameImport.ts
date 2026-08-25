@@ -2,11 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import type { NormalizedGame } from '@/lib/types/game';
 import { prisma } from '@/lib/prisma';
-import {
-    normalizedGameToDb,
-    parseExternalId,
-    gameSourceToDb,
-} from '@/lib/api/games';
+import { normalizedGameToDb } from '@/lib/api/games';
+import { gameSourceToDb, parseExternalId } from '@/lib/games/dbMappings';
 
 export type SaveNormalizedGamesResult = {
     saved: number;
@@ -266,6 +263,7 @@ async function updateChangedPgns(
         UPDATE "AnalyzedGame" AS game
         SET "url" = input."url",
             "pgn" = input."pgn",
+            "plyCount" = input."plyCount",
             "sourcePgnHash" = input."sourcePgnHash",
             "playedAt" = input."playedAt",
             "timeClass" = input."timeClass",
@@ -296,6 +294,7 @@ async function updateChangedPgns(
                     CAST(${existing.sourcePgnHash} AS text),
                     CAST(${group.data.url} AS text),
                     CAST(${group.data.pgn} AS text),
+                    CAST(${group.data.plyCount} AS integer),
                     CAST(${group.data.sourcePgnHash} AS text),
                     CAST(${group.data.playedAt} AS timestamp(3)),
                     CAST(${group.data.timeClass} AS "TimeClass"),
@@ -316,7 +315,7 @@ async function updateChangedPgns(
             `)
         )}) AS input(
             "id", "userId", "oldPgn", "oldSourcePgnHash", "url", "pgn",
-            "sourcePgnHash", "playedAt", "timeClass", "timeControlRaw",
+            "plyCount", "sourcePgnHash", "playedAt", "timeClass", "timeControlRaw",
             "timeControlInitialSeconds", "timeControlIncrementSeconds", "rated",
             "result", "termination", "whiteName", "whiteRating", "blackName",
             "blackRating", "openingEco", "openingName", "openingVariation"

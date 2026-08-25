@@ -59,6 +59,7 @@ async function seedProgressFixture() {
             provider: 'LICHESS',
             externalId: 'progress-game',
             pgn: '1. e4 e5 2. Nf3 Nc6 *',
+            plyCount: 4,
             sourcePgnHash,
             sourceUsername: 'progress-reader',
             userSide: 'WHITE',

@@ -66,6 +66,29 @@ describe('/api/notifications', () => {
         });
     });
 
+    it('loads only the unread count for the passive bell summary', async () => {
+        prismaMock.notification.count.mockResolvedValue(4);
+        const route = await importRoute();
+
+        const response = await route.GET(
+            new Request('http://localhost/api/notifications?summary=1')
+        );
+
+        expect(response.status).toBe(200);
+        expect(prismaMock.notification.count).toHaveBeenCalledWith({
+            where: {
+                userId: 'user-1',
+                readAt: null,
+                archivedAt: null,
+            },
+        });
+        expect(prismaMock.notification.findMany).not.toHaveBeenCalled();
+        await expect(readJson(response)).resolves.toEqual({
+            ownerId: 'user-1',
+            unreadCount: 4,
+        });
+    });
+
     it.each(['1.5', 'Infinity', '0', '101'])(
         'rejects an invalid page limit (%s) before querying Prisma',
         async (limit) => {

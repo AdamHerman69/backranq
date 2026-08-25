@@ -62,6 +62,7 @@ export type EffectiveBillingSnapshot = Readonly<{
     planSource: BillingPlanSource;
     stripePlan: BillingPlan;
     stripeSubscriptionStatus: string | null;
+    stripeCustomerId: string | null;
     stripeCurrentPeriodStart: Date | null;
     stripeCurrentPeriodEnd: Date | null;
     serverCreditsBalance: number;
@@ -220,6 +221,7 @@ export async function readEffectiveBillingSnapshot(
         planSource: projected.data.planSource,
         stripePlan: account?.stripePlan ?? 'FREE',
         stripeSubscriptionStatus: account?.stripeSubscriptionStatus ?? null,
+        stripeCustomerId: account?.stripeCustomerId ?? null,
         stripeCurrentPeriodStart: account?.stripeCurrentPeriodStart ?? null,
         stripeCurrentPeriodEnd: account?.stripeCurrentPeriodEnd ?? null,
         serverCreditsBalance: projected.data.serverCreditsBalance,

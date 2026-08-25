@@ -7,7 +7,7 @@ import type { FullConfig } from '@playwright/test';
 import { Chess } from 'chess.js';
 
 import { assertSafeE2eDatabaseConfig } from '../../scripts/lib/e2e-database-safety.mjs';
-import { hashSourcePgn } from '../../src/lib/chess/pgn';
+import { countSourcePgnPlies, hashSourcePgn } from '../../src/lib/chess/pgn';
 import { assessmentPositionKey } from '../../src/lib/training/assessmentIdentity';
 import {
     E2E_AUTH_STATE_PATH,
@@ -499,6 +499,7 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                 externalId: 'backranq-e2e-standard',
                 url: 'https://lichess.org/backranq-e2e-standard',
                 pgn: STANDARD_PGN,
+                plyCount: countSourcePgnPlies(STANDARD_PGN),
                 sourcePgnHash: STANDARD_SOURCE_PGN_HASH,
                 sourceUsername: E2E_USER.username,
                 userSide: 'WHITE',
@@ -584,6 +585,7 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                 externalId: 'backranq-e2e-promotion',
                 url: 'https://www.chess.com/game/live/backranq-e2e-promotion',
                 pgn: PROMOTION_PGN,
+                plyCount: countSourcePgnPlies(PROMOTION_PGN),
                 sourcePgnHash: PROMOTION_SOURCE_PGN_HASH,
                 sourceUsername: E2E_USER.username,
                 userSide: 'BLACK',
