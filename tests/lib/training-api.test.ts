@@ -804,6 +804,7 @@ describe('canonical training API boundary', () => {
         expect(
             parseRecordTrainingAttemptRequest({
                 kind: 'RECORD',
+                completedAt: '2026-07-30T08:00:00.000Z',
                 clientAttemptId:
                     '33333333-3333-4333-8333-333333333333',
                 solutionRevisionId:
@@ -826,6 +827,7 @@ describe('canonical training API boundary', () => {
             })
         ).toEqual({
             kind: 'RECORD',
+            completedAt: '2026-07-30T08:00:00.000Z',
             clientAttemptId:
                 '33333333-3333-4333-8333-333333333333',
             solutionRevisionId:
@@ -849,6 +851,7 @@ describe('canonical training API boundary', () => {
         expect(
             parseRecordTrainingAttemptRequest({
                 kind: 'RECORD',
+                completedAt: '2026-07-30T08:00:00.000Z',
                 clientAttemptId:
                     '33333333-3333-4333-8333-333333333333',
                 solutionRevisionId:
@@ -870,6 +873,7 @@ describe('canonical training API boundary', () => {
         expect(
             parseRecordTrainingAttemptRequest({
                 kind: 'RECORD',
+                completedAt: '2026-07-30T08:00:00.000Z',
                 clientAttemptId:
                     '33333333-3333-4333-8333-333333333333',
                 solutionRevisionId:
@@ -879,6 +883,7 @@ describe('canonical training API boundary', () => {
             })
         ).toEqual({
             kind: 'RECORD',
+            completedAt: '2026-07-30T08:00:00.000Z',
             clientAttemptId:
                 '33333333-3333-4333-8333-333333333333',
             solutionRevisionId:

@@ -156,6 +156,7 @@ describe('canonical training routes', () => {
             attemptRoute.POST(
                 createJsonRequest('http://localhost', {
                     kind: 'RECORD',
+                    completedAt: '2026-07-30T08:00:00.000Z',
                     clientAttemptId,
                     solutionRevisionId: revisionId,
                     status: 'REVEALED',
@@ -357,6 +358,7 @@ describe('canonical training routes', () => {
         const response = await route.POST(
             createJsonRequest('http://localhost', {
                 kind: 'RECORD',
+                completedAt: '2026-07-30T08:00:00.000Z',
                 clientAttemptId,
                 solutionRevisionId: revisionId,
                 status: 'GRADED',
@@ -386,6 +388,7 @@ describe('canonical training routes', () => {
                 'http://localhost',
                 {
                     kind: 'RECORD',
+                    completedAt: '2026-07-30T08:00:00.000Z',
                     clientAttemptId,
                     solutionRevisionId: revisionId,
                     status: 'REVEALED',

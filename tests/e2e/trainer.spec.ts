@@ -611,7 +611,7 @@ test.describe('authenticated personal decision practice', () => {
         ).toBeVisible();
         const storedState = await page.evaluate((ownerId) => {
             const raw = window.localStorage.getItem(
-                `backranq:training-attempts:v3:${ownerId}`
+                `backranq:training-attempts:v4:${ownerId}`
             );
             return raw ? JSON.parse(raw)[0]?.state : null;
         }, E2E_USER.id);
@@ -664,7 +664,7 @@ test.describe('authenticated personal decision practice', () => {
         expect(
             await page.evaluate((ownerId) =>
                 window.localStorage.getItem(
-                    `backranq:training-attempts:v3:${ownerId}`
+                    `backranq:training-attempts:v4:${ownerId}`
                 ), E2E_USER.id)
         ).toBeNull();
     });

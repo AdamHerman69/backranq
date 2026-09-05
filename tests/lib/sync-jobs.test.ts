@@ -574,7 +574,55 @@ describe('sync job planning', () => {
         expect(syncUserProviderMock).not.toHaveBeenCalled();
     });
 
-    it('continues an incomplete successful batch on the same durable job', async () => {
+    it('does not fail the fifth attempt while its worker lease remains active', async () => {
+        const now = new Date('2026-07-05T12:00:00.000Z');
+        prismaMock.syncJob.updateMany.mockResolvedValue({ count: 0 });
+        prismaMock.syncJob.findUnique.mockResolvedValue({
+            provider: 'LICHESS',
+            userId: 'user-1',
+            status: 'RUNNING',
+            attempts: 5,
+            leaseToken: 'active-lease',
+            scheduledFor: now,
+            lockedUntil: new Date('2026-07-05T12:10:00.000Z'),
+        });
+        const { processSyncJob } = await importSyncJobs();
+
+        await expect(processSyncJob('sync-job-1', { now })).rejects.toMatchObject({
+            name: 'SyncJobDeliveryDeferredError',
+            retryAfterSeconds: 600,
+        });
+
+        expect(syncUserProviderMock).not.toHaveBeenCalled();
+        expect(recordSyncFailedMock).not.toHaveBeenCalled();
+        expect(prismaMock.syncJob.updateMany).toHaveBeenCalledOnce();
+    });
+
+    it('defers an exhausted delivery if recovery replaced its lease before failure committed', async () => {
+        const now = new Date('2026-07-05T12:00:00.000Z');
+        prismaMock.syncJob.updateMany.mockResolvedValue({ count: 0 });
+        prismaMock.syncJob.findUnique.mockResolvedValue({
+            provider: 'LICHESS',
+            userId: 'user-1',
+            status: 'RUNNING',
+            attempts: 5,
+            leaseToken: 'superseded-lease',
+            scheduledFor: now,
+            lockedUntil: new Date(0),
+        });
+        const { processSyncJob } = await importSyncJobs();
+
+        await expect(processSyncJob('sync-job-1', { now })).rejects.toMatchObject({
+            name: 'SyncJobDeliveryDeferredError',
+            retryAfterSeconds: 1,
+        });
+
+        expect(syncUserProviderMock).not.toHaveBeenCalled();
+        expect(recordSyncFailedMock).not.toHaveBeenCalled();
+        expect(prismaMock.syncJob.updateMany).toHaveBeenCalledTimes(2);
+    });
+
+    it('continues an incomplete batch on its fifth attempt with a fresh retry budget', async () => {
         const now = new Date('2026-07-05T12:00:00.000Z');
         const updatedAt = new Date('2026-07-05T12:00:00.100Z');
         prismaMock.syncJob.updateMany.mockResolvedValue({ count: 1 });
@@ -583,7 +631,7 @@ describe('sync job planning', () => {
                 id: 'sync-job-1',
                 userId: 'user-1',
                 provider: 'LICHESS',
-                attempts: 1,
+                attempts: 5,
                 user: {
                     id: 'user-1',
                     preferences: {},

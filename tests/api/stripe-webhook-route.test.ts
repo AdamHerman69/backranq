@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type Stripe from 'stripe';
 import { readJson } from '../helpers/route';
 import { mockPrismaModule, prismaMock } from '../helpers/route-mocks';
 
@@ -34,6 +35,16 @@ async function importRoute(): Promise<WebhookRouteModule> {
             dispatchPendingNotificationDeliveriesMock,
     }));
     return import('@/app/api/stripe/webhook/route');
+}
+
+function subscriptionInvoice(subscription: string | Stripe.Subscription) {
+    return {
+        parent: {
+            type: 'subscription_details',
+            quote_details: null,
+            subscription_details: { subscription, metadata: {} },
+        },
+    } satisfies Pick<Stripe.Invoice, 'parent'>;
 }
 
 function webhookRequest(body = '{}', signature = 'sig_test') {
@@ -128,31 +139,60 @@ describe('POST /api/stripe/webhook', () => {
         expect(applyStripeCheckoutSessionMock).not.toHaveBeenCalled();
     });
 
-    it('syncs invoice events through the subscription object', async () => {
-        const subscription = { id: 'sub_1', status: 'active' };
-        constructEventMock.mockReturnValue({
-            id: 'evt_invoice_1',
-            created: 1_800_000_000,
-            type: 'invoice.paid',
-            data: { object: { subscription: 'sub_1' } },
-        });
-        subscriptionsRetrieveMock.mockResolvedValue(subscription);
-        const route = await importRoute();
+    it.each(['sub_1', { id: 'sub_1' } as Stripe.Subscription])(
+        'syncs invoice events through subscription reference %j',
+        async (reference) => {
+            const subscription = { id: 'sub_1', status: 'active' };
+            constructEventMock.mockReturnValue({
+                id: 'evt_invoice_1',
+                created: 1_800_000_000,
+                type: 'invoice.paid',
+                data: { object: subscriptionInvoice(reference) },
+            });
+            subscriptionsRetrieveMock.mockResolvedValue(subscription);
+            const route = await importRoute();
 
-        const response = await route.POST(webhookRequest());
+            const response = await route.POST(webhookRequest());
 
-        expect(response.status).toBe(200);
-        expect(subscriptionsRetrieveMock).toHaveBeenCalledWith('sub_1', {
-            expand: ['items.data.price'],
-        });
-        expect(applyStripeSubscriptionMock).toHaveBeenCalledWith(
-            subscription,
-            {
-                eventId: 'evt_invoice_1',
-                eventCreatedAt: new Date(1_800_000_000_000),
-            }
-        );
-    });
+            expect(response.status).toBe(200);
+            expect(subscriptionsRetrieveMock).toHaveBeenCalledWith('sub_1', {
+                expand: ['items.data.price'],
+            });
+            expect(applyStripeSubscriptionMock).toHaveBeenCalledWith(
+                subscription,
+                {
+                    eventId: 'evt_invoice_1',
+                    eventCreatedAt: new Date(1_800_000_000_000),
+                }
+            );
+        }
+    );
+
+    it.each([
+        null,
+        {
+            type: 'quote_details',
+            quote_details: { quote: 'qt_1' },
+            subscription_details: null,
+        },
+    ] satisfies Stripe.Invoice['parent'][])(
+        'ignores invoices without a subscription parent: %j',
+        async (parent) => {
+            constructEventMock.mockReturnValue({
+                id: 'evt_one_off_invoice',
+                created: 1_800_000_000,
+                type: 'invoice.paid',
+                data: { object: { parent } },
+            });
+            const route = await importRoute();
+
+            const response = await route.POST(webhookRequest());
+
+            expect(response.status).toBe(200);
+            expect(subscriptionsRetrieveMock).not.toHaveBeenCalled();
+            expect(applyStripeSubscriptionMock).not.toHaveBeenCalled();
+        }
+    );
 
     it('notifies only when the current payment failure was applied', async () => {
         const subscription = { id: 'sub_1', status: 'past_due' };
@@ -160,7 +200,7 @@ describe('POST /api/stripe/webhook', () => {
             id: 'evt_payment_failed',
             created: 1_800_000_000,
             type: 'invoice.payment_failed',
-            data: { object: { subscription: 'sub_1' } },
+            data: { object: subscriptionInvoice('sub_1') },
         });
         subscriptionsRetrieveMock.mockResolvedValue(subscription);
         applyStripeSubscriptionMock.mockResolvedValue({
@@ -207,7 +247,7 @@ describe('POST /api/stripe/webhook', () => {
             id: 'evt_old_payment_failed',
             created: 1_700_000_000,
             type: 'invoice.payment_failed',
-            data: { object: { subscription: 'sub_1' } },
+            data: { object: subscriptionInvoice('sub_1') },
         });
         subscriptionsRetrieveMock.mockResolvedValue({
             id: 'sub_1',

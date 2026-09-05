@@ -114,5 +114,6 @@ jobs:
         run: >-
           pnpm vitest run
           tests/lib/postgres-locking.integration.test.ts
+          tests/lib/job-lifecycle-postgres.integration.test.ts
           tests/lib/game-import-postgres.integration.test.ts
           tests/lib/progress-read-postgres.integration.test.ts

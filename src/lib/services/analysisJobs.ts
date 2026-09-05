@@ -523,7 +523,7 @@ export async function markAnalysisJobFailed(
             await tx.analysisRun.updateMany({
                 where: {
                     id: job.analysisRunId,
-                    status: 'RUNNING',
+                    status: { in: ['QUEUED', 'RUNNING'] },
                 },
                 data: {
                     status: 'FAILED',
@@ -893,66 +893,51 @@ function analysisRunProvenancePayload(args: {
 
 export async function transitionAnalysisRunForJob(args: {
     jobId: string;
-    status: AnalysisJobStatus;
+    analysisRunId: string;
+    fence: AnalysisDispatchFence;
+    status: 'RUNNING';
     config?: ServerAnalysisConfig;
     startedAt?: Date | null;
-    completedAt?: Date | null;
-    error?: unknown;
-    result?: Prisma.InputJsonObject;
 }) {
-    const run = await getAnalysisRunSummaryForJob(args.jobId);
-    if (!run) return null;
-    if (
-        args.config &&
-        (args.config.analysisQuality !== run.analysisQuality ||
-            args.config.creditCost !== run.creditCost)
-    ) {
-        throw new Error('Analysis run configuration cannot change quality or price');
-    }
+    return prisma.$transaction(async (tx) => {
+        // Lock the job before reading its run. Recovery and re-enqueue also
+        // update this row, so they cannot replace ownership during transition.
+        const owned = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+            SELECT "id" FROM "AnalysisJob"
+            WHERE "id" = ${args.jobId}::uuid
+              AND "analysisRunId" = ${args.analysisRunId}::uuid
+              AND "status" = 'RUNNING'
+              AND "lockedAt" = ${args.fence.lockedAt}
+              AND "dispatchedCount" = ${args.fence.dispatchedCount}
+              AND "lockedUntil" > ${new Date()}
+            FOR UPDATE
+        `);
+        if (owned.length !== 1) return null;
 
-    const startedAt = args.startedAt ?? run.startedAt;
-    const completedAt =
-        args.status === 'SUCCEEDED' || args.status === 'FAILED'
-            ? (args.completedAt ?? new Date())
-            : args.completedAt;
-    const durationMs =
-        startedAt && completedAt
-            ? Math.max(0, completedAt.getTime() - startedAt.getTime())
-            : null;
-    const lastError =
-        args.error == null
-            ? args.status === 'SUCCEEDED'
-                ? null
-                : undefined
-            : args.error instanceof Error
-              ? args.error.message.slice(0, 2_000)
-              : String(args.error).slice(0, 2_000);
-
-    try {
-        const updated = await prisma.analysisRun.update({
-            where: { id: run.id },
-            data: pruneUndefined({
-                status: analysisJobStatusToRunStatus(args.status),
-                startedAt:
-                    args.status === 'RUNNING'
-                        ? (startedAt ?? new Date())
-                        : undefined,
-                completedAt,
-                durationMs,
-                consumedCredits:
-                    args.status === 'SUCCEEDED'
-                        ? run.consumedCredits
-                        : null,
-                lastError,
-            }),
+        const run = await tx.analysisRun.findFirst({
+            where: { id: args.analysisRunId, status: 'QUEUED' },
         });
-
-        void args.result;
+        if (!run) return null;
+        if (
+            args.config &&
+            (args.config.analysisQuality !== run.analysisQuality ||
+                args.config.creditCost !== run.creditCost)
+        ) {
+            throw new Error('Analysis run configuration cannot change quality or price');
+        }
+        const updated = await tx.analysisRun.update({
+            where: { id: run.id, status: 'QUEUED' },
+            data: {
+                status: 'RUNNING',
+                startedAt: args.startedAt ?? run.startedAt ?? new Date(),
+                completedAt: null,
+                durationMs: null,
+                consumedCredits: null,
+                lastError: null,
+            },
+        });
         return analysisRunToSummary(updated);
-    } catch (error) {
-        warnAnalysisRunUnavailable(error);
-        return null;
-    }
+    });
 }
 
 export async function getAnalysisRunSummaryForJob(jobId: string) {
@@ -1020,12 +1005,6 @@ function isTransactionWriteConflict(error: unknown) {
 
 function hashJson(value: Prisma.InputJsonValue) {
     return hashAnalysisConfig(value);
-}
-
-function pruneUndefined<T extends Record<string, unknown>>(value: T) {
-    return Object.fromEntries(
-        Object.entries(value).filter(([, entry]) => entry !== undefined)
-    ) as T;
 }
 
 function analysisJobStatusToRunStatus(

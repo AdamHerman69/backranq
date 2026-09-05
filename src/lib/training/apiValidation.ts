@@ -18,6 +18,7 @@ import {
     type TrainingSourceKind,
 } from '@/lib/training/contracts';
 import { isPovScore } from '@/lib/training/apiMappers';
+import { parseTrainingCompletionTime } from '@/lib/training/completionTime';
 
 export const MAX_TRAINING_API_BODY_BYTES = 65_536;
 export const MAX_TRAINING_ATTEMPT_TIME_MS = 24 * 60 * 60 * 1_000;
@@ -231,13 +232,15 @@ function parseTimeSpentMs(value: unknown): number | null | 'INVALID' {
 }
 
 export function parseRecordTrainingAttemptRequest(
-    value: unknown
+    value: unknown,
+    receivedAt = new Date()
 ): RecordTrainingAttemptRequest | null {
     if (
         !isObject(value) ||
         value.kind !== 'RECORD' ||
         !hasOnlyKeys(value, [
             'kind',
+            'completedAt',
             'clientAttemptId',
             'solutionRevisionId',
             'status',
@@ -253,11 +256,13 @@ export function parseRecordTrainingAttemptRequest(
         typeof value.clientAttemptId === 'string'
             ? value.clientAttemptId.trim().toLowerCase()
             : '';
+    const completedAt = parseTrainingCompletionTime(value.completedAt, receivedAt);
     const solutionRevisionId =
         typeof value.solutionRevisionId === 'string'
             ? value.solutionRevisionId.trim().toLowerCase()
             : '';
     if (
+        !completedAt ||
         !isTrainingApiUuid(clientAttemptId) ||
         !isTrainingApiUuid(solutionRevisionId) ||
         (value.status !== 'GRADED' &&
@@ -293,6 +298,7 @@ export function parseRecordTrainingAttemptRequest(
     }
     return {
         kind: 'RECORD',
+        completedAt: completedAt.toISOString(),
         clientAttemptId,
         solutionRevisionId,
         status: value.status,

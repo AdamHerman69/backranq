@@ -17,7 +17,9 @@ export function appUrl() {
     return (
         process.env.BACKRANQ_APP_URL ??
         process.env.NEXTAUTH_URL ??
-        process.env.VERCEL_PROJECT_PRODUCTION_URL ??
+        (process.env.VERCEL_PROJECT_PRODUCTION_URL
+            ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+            : undefined) ??
         'http://localhost:3000'
     ).replace(/\/$/, '');
 }

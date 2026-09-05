@@ -12,11 +12,12 @@ import {
 import { TrainingClientError } from '@/lib/training/client';
 
 const queued: QueuedTrainingAttempt = {
-    version: 3,
+    version: 4,
     ownerId: 'owner-a',
     momentId: 'moment-a',
     request: {
         kind: 'RECORD',
+        completedAt: '2026-07-30T08:00:00.000Z',
         clientAttemptId: 'client-a',
         solutionRevisionId: 'revision-a',
         status: 'GRADED',
@@ -58,7 +59,8 @@ describe('canonical training offline queue', () => {
             parseTrainingAttemptQueue(
                 JSON.stringify([
                     queued,
-                    { ...queued, version: 2 },
+                    { ...queued, version: 3 },
+                    { ...queued, request: { ...queued.request, completedAt: undefined } },
                     { ...queued, request: { kind: 'START' } },
                 ])
             )

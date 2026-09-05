@@ -21,7 +21,11 @@ composite progress score, peer comparison, or a speed score.
 - Default scope: the last 90 days.
 - Alternate scopes: 28 days and all retained data.
 - Game-derived metrics use the source game's `playedAt`.
-- Practice-derived metrics use the terminal attempt's `completedAt`.
+- Practice-derived metrics use the terminal attempt's `completedAt`. The client
+  records this immutable UTC timestamp when the attempt finishes and preserves
+  it through durable offline replay. The server validates it (allowing five
+  minutes of clock skew); `attemptedAt` records server receipt separately. A
+  delayed replay must not move a newer review schedule or `lastTrainedAt` backward.
 - A finite trend compares the selected window with the immediately preceding
   equal-length half-open window.
 - Provider and coarse time-class filters apply to both source-game and joined

@@ -260,8 +260,9 @@ async function syncSubscriptionFromInvoice(
     }
 ) {
     const subscriptionId =
-        (invoice as unknown as { subscription?: string | { id: string } | null })
-            .subscription ?? null;
+        invoice.parent?.type === 'subscription_details'
+            ? invoice.parent.subscription_details?.subscription
+            : null;
     if (!subscriptionId) return null;
     const id =
         typeof subscriptionId === 'string' ? subscriptionId : subscriptionId.id;

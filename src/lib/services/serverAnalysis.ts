@@ -94,14 +94,14 @@ export async function analyzeGameJob(
         const { options, config } = resolvedConfig;
         const transitionedRun = await transitionAnalysisRunForJob({
             jobId: job.id,
+            analysisRunId: run.id,
+            fence,
             status: 'RUNNING',
             config,
             startedAt: running.startedAt,
         });
         if (!transitionedRun) {
-            throw new Error(
-                'Analysis run provenance could not transition to running'
-            );
+            throw new StaleAnalysisDeliveryError(job.id);
         }
         engine = new ServerStockfishClient();
 

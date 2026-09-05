@@ -720,9 +720,8 @@ describe('analysis run snapshot integrity', () => {
             creditCost: 10,
             lastError: null,
         };
-        prismaMock.analysisJob.findUnique.mockResolvedValue({
-            analysisRun: run,
-        });
+        prismaMock.$queryRaw.mockResolvedValue([{ id: 'job-1' }]);
+        prismaMock.analysisRun.findFirst.mockResolvedValue(run);
         prismaMock.analysisRun.update.mockResolvedValue({
             ...run,
             status: 'RUNNING',
@@ -732,6 +731,8 @@ describe('analysis run snapshot integrity', () => {
         const config = service.serverAnalysisConfigFromPreferences({}).config;
         await service.transitionAnalysisRunForJob({
             jobId: 'job-1',
+            analysisRunId: 'run-1',
+            fence: { lockedAt: new Date(), dispatchedCount: 1 },
             status: 'RUNNING',
             config,
             // Guard against a stale JavaScript caller trying to rewrite provenance.
@@ -739,7 +740,7 @@ describe('analysis run snapshot integrity', () => {
         } as Parameters<typeof service.transitionAnalysisRunForJob>[0]);
 
         expect(prismaMock.analysisRun.update).toHaveBeenCalledWith({
-            where: { id: 'run-1' },
+            where: { id: 'run-1', status: 'QUEUED' },
             data: expect.not.objectContaining({
                 queuedReason: expect.anything(),
                 configSnapshot: expect.anything(),

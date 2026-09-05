@@ -33,6 +33,7 @@ async function unsubscribe(req: Request) {
         await tx.notificationDelivery.updateMany({
             where: {
                 userId,
+                channel: 'EMAIL',
                 status: { in: ['PENDING', 'QUEUED'] },
                 notification: {
                     type: {

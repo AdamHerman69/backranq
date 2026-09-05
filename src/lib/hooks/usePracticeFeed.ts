@@ -28,6 +28,7 @@ import {
     parseTrainingAttemptQueue,
     reconcileTrainingAttemptFlush,
     trainingQueueStorageKey,
+    TRAINING_QUEUE_VERSION,
     type QueuedTrainingAttempt,
     type TrainingWriteFailure,
 } from '@/lib/training/offlineQueue';
@@ -338,6 +339,9 @@ export function usePracticeFeed({
     const flushInFlightRef = useRef(false);
     const flushControllerRef = useRef<AbortController | null>(null);
     const attemptWriteControllersRef = useRef(new Set<AbortController>());
+    const directAttemptWritesRef = useRef(new Set<string>());
+    const flushQueueRef = useRef<() => Promise<void>>(async () => {});
+    const directRetryRequestedRef = useRef(false);
     const ownerIdRef = useRef(ownerId);
     ownerIdRef.current = ownerId;
     const advanceInFlightRef = useRef(false);
@@ -1013,6 +1017,7 @@ export function usePracticeFeed({
     useEffect(() => {
         flushControllerRef.current?.abort();
         flushInFlightRef.current = false;
+        directRetryRequestedRef.current = false;
         setHistoryError(null);
         if (!ownerId) {
             setQueuedCount(0);
@@ -1029,10 +1034,10 @@ export function usePracticeFeed({
             request: RecordTrainingAttemptRequest,
             failure?: TrainingWriteFailure
         ) => {
-            if (!ownerId || ownerIdRef.current !== ownerId) return;
+            if (!ownerId || ownerIdRef.current !== ownerId) return null;
             const attemptedAt = failure ? new Date().toISOString() : null;
             const entry: QueuedTrainingAttempt = {
-                version: 3,
+                version: TRAINING_QUEUE_VERSION,
                 ownerId,
                 momentId,
                 request,
@@ -1056,6 +1061,11 @@ export function usePracticeFeed({
             );
             if (stored && writeQueue(ownerId, next)) {
                 applyOutboxState(next);
+                return next.find(
+                    (candidate) =>
+                        candidate.request.clientAttemptId ===
+                        request.clientAttemptId
+                ) ?? null;
             } else {
                 setHistoryError(
                     stored
@@ -1063,8 +1073,33 @@ export function usePracticeFeed({
                         : 'Local history storage is full. Resolve an earlier unsaved result before continuing.'
                 );
             }
+            return null;
         },
         [applyOutboxState, ownerId]
+    );
+
+    const settleQueuedRecord = useCallback(
+        (entry: QueuedTrainingAttempt, failure?: TrainingWriteFailure) => {
+            if (ownerIdRef.current !== entry.ownerId) return;
+            const next = reconcileTrainingAttemptFlush(
+                [entry],
+                failure
+                    ? [failedTrainingAttempt(
+                          entry,
+                          failure,
+                          new Date().toISOString()
+                      )]
+                    : [],
+                readQueue(entry.ownerId)
+            );
+            if (!writeQueue(entry.ownerId, next)) {
+                setHistoryError(
+                    'Practice history changed, but local queue cleanup failed.'
+                );
+            }
+            applyOutboxState(next);
+        },
+        [applyOutboxState]
     );
 
     const persistRecord = useCallback(
@@ -1076,12 +1111,14 @@ export function usePracticeFeed({
             if (!requestOwnerId || ownerIdRef.current !== requestOwnerId) {
                 return null;
             }
-            if (!online) {
-                queueRecord(momentId, request);
-                return null;
-            }
+            // Persist before starting I/O: navigation and owner changes abort
+            // requests, but must not erase a result that already finished.
+            const queuedEntry = queueRecord(momentId, request);
+            if (!online) return null;
             const controller = new AbortController();
+            let retryAfterDirectFailure = false;
             attemptWriteControllersRef.current.add(controller);
+            directAttemptWritesRef.current.add(request.clientAttemptId);
             try {
                 const recorded = await recordTrainingAttempt(
                     requestOwnerId,
@@ -1095,6 +1132,8 @@ export function usePracticeFeed({
                 ) {
                     return null;
                 }
+                if (queuedEntry) settleQueuedRecord(queuedEntry);
+                else setHistoryError(null);
                 return recorded.attemptId;
             } catch (caught) {
                 if (
@@ -1109,14 +1148,28 @@ export function usePracticeFeed({
                     caught,
                     navigatorIsOnline()
                 );
-                queueRecord(momentId, request, failure);
+                if (queuedEntry) settleQueuedRecord(queuedEntry, failure);
+                else queueRecord(momentId, request, failure);
                 if (failure.offline) setOnline(false);
+                retryAfterDirectFailure =
+                    failure.disposition === 'RETRY' && !failure.offline;
                 return null;
             } finally {
                 attemptWriteControllersRef.current.delete(controller);
+                directAttemptWritesRef.current.delete(request.clientAttemptId);
+                // Enqueueing now precedes the direct request, so a retryable
+                // failure may leave queuedCount unchanged. Start one outbox
+                // pass explicitly; failed flushes do not schedule themselves.
+                if (
+                    retryAfterDirectFailure &&
+                    ownerIdRef.current === requestOwnerId
+                ) {
+                    directRetryRequestedRef.current = true;
+                    void flushQueueRef.current();
+                }
             }
         },
-        [online, ownerId, queueRecord]
+        [online, ownerId, queueRecord, settleQueuedRecord]
     );
 
     completionSinkRef.current = (completion) => {
@@ -1142,6 +1195,7 @@ export function usePracticeFeed({
             return;
         }
         flushInFlightRef.current = true;
+        directRetryRequestedRef.current = false;
         const controller = new AbortController();
         flushControllerRef.current?.abort();
         flushControllerRef.current = controller;
@@ -1150,7 +1204,10 @@ export function usePracticeFeed({
             const remainingEntries: QueuedTrainingAttempt[] = [];
             for (let index = 0; index < queued.length; index += 1) {
                 const entry = queued[index]!;
-                if (entry.state === 'NEEDS_ATTENTION') {
+                if (
+                    entry.state === 'NEEDS_ATTENTION' ||
+                    directAttemptWritesRef.current.has(entry.request.clientAttemptId)
+                ) {
                     remainingEntries.push(entry);
                     continue;
                 }
@@ -1215,9 +1272,17 @@ export function usePracticeFeed({
             if (flushControllerRef.current === controller) {
                 flushControllerRef.current = null;
                 flushInFlightRef.current = false;
+                if (
+                    directRetryRequestedRef.current &&
+                    ownerIdRef.current === ownerId &&
+                    online
+                ) {
+                    void flushQueueRef.current();
+                }
             }
         }
     }, [applyOutboxState, online, ownerId]);
+    flushQueueRef.current = flushQueue;
 
     useEffect(() => {
         if (online && queuedCount > 0) void flushQueue();

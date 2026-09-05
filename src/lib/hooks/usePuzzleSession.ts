@@ -405,6 +405,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                 terminalReason: 'MOVE_SUBMITTED',
                 request: {
                     kind: 'RECORD',
+                    completedAt: new Date().toISOString(),
                     clientAttemptId: clientAttemptIdRef.current,
                     solutionRevisionId: activePrompt.solutionRevisionId,
                     status: 'GRADED',
@@ -645,6 +646,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
             terminalReason: 'REVEALED',
             request: {
                 kind: 'RECORD',
+                completedAt: new Date().toISOString(),
                 clientAttemptId,
                 solutionRevisionId: activePrompt.solutionRevisionId,
                 status: 'REVEALED',

@@ -205,6 +205,7 @@ function continuationRevisionFixture() {
 function gradedRequest(): RecordTrainingAttemptRequest {
     return {
         kind: 'RECORD',
+        completedAt: '2026-07-30T08:00:00.000Z',
         clientAttemptId,
         solutionRevisionId: revisionId,
         status: 'GRADED',
@@ -512,7 +513,7 @@ describe('client-graded training attempt recording', () => {
         vi.clearAllMocks();
     });
 
-    it('persists a completed local result without invoking an engine', async () => {
+    it('preserves offline completion time separately from server receipt time', async () => {
         const { db, tx, created } = dependencies();
         const response = await recordTrainingAttempt({
             userId: 'user-1',
@@ -520,7 +521,7 @@ describe('client-graded training attempt recording', () => {
             request: gradedRequest(),
             dependencies: {
                 db: db as never,
-                now: () => new Date('2026-07-30T08:00:00.000Z'),
+                now: () => new Date('2026-08-05T08:00:00.000Z'),
             },
         });
 
@@ -549,6 +550,8 @@ describe('client-graded training attempt recording', () => {
                 gradingSource: 'PRECOMPUTED',
                 userMoveUci: 'e2e4',
                 clientPayloadHash: expect.any(String),
+                completedAt: new Date('2026-07-30T08:00:00.000Z'),
+                attemptedAt: new Date('2026-08-05T08:00:00.000Z'),
                 gradingEvidence: expect.objectContaining({
                     serverVerified: true,
                 }),
@@ -585,6 +588,7 @@ describe('client-graded training attempt recording', () => {
                 status: 'GRADED',
                 grade: 'BEST',
                 reason: 'GRADED',
+                occurredAt: new Date('2026-07-30T08:00:00.000Z'),
             }),
         });
         expect(tx.practiceReviewState.upsert).toHaveBeenCalledWith(
@@ -593,6 +597,8 @@ describe('client-graded training attempt recording', () => {
                     solutionHash: 'solution-hash-1',
                     configHash: 'config-hash-1',
                     successes: 1,
+                    lastReviewedAt: new Date('2026-07-30T08:00:00.000Z'),
+                    nextDueAt: new Date('2026-07-31T08:00:00.000Z'),
                 }),
             })
         );
@@ -601,6 +607,7 @@ describe('client-graded training attempt recording', () => {
                 attemptId: created.id,
                 outcome: 'SUCCESS',
                 grade: 'BEST',
+                occurredAt: new Date('2026-07-30T08:00:00.000Z'),
             }),
         });
     });
@@ -612,6 +619,7 @@ describe('client-graded training attempt recording', () => {
             momentId,
             request: {
                 kind: 'RECORD',
+                completedAt: '2026-07-30T08:00:00.000Z',
                 clientAttemptId,
                 solutionRevisionId: revisionId,
                 status: 'REVEALED',
@@ -663,6 +671,7 @@ describe('client-graded training attempt recording', () => {
                 momentId,
                 request: {
                     kind: 'RECORD',
+                    completedAt: '2026-07-30T08:00:00.000Z',
                     clientAttemptId,
                     solutionRevisionId: revisionId,
                     status: 'REVEALED',
@@ -954,6 +963,20 @@ describe('client-graded training attempt recording', () => {
             code: 'IDEMPOTENCY_CONFLICT',
             status: 409,
         });
+        await expect(
+            recordTrainingAttempt({
+                userId: 'user-1',
+                momentId,
+                request: {
+                    ...gradedRequest(),
+                    completedAt: '2026-07-29T08:00:00.000Z',
+                },
+                dependencies: { db: db as never },
+            })
+        ).rejects.toMatchObject({
+            code: 'IDEMPOTENCY_CONFLICT',
+            status: 409,
+        });
     });
 
     it('serializes distinct attempts and preserves the newer schedule when timestamps arrive out of order', async () => {
@@ -962,11 +985,13 @@ describe('client-graded training attempt recording', () => {
         const olderAt = new Date('2026-08-03T12:00:00.000Z');
         const newerRequest = {
             ...gradedRequest(),
+            completedAt: newerAt.toISOString(),
             clientAttemptId:
                 '44444444-4444-4444-8444-444444444444',
         };
         const olderRequest = {
             ...gradedRequest(),
+            completedAt: olderAt.toISOString(),
             clientAttemptId:
                 '55555555-5555-4555-8555-555555555555',
         };
@@ -977,7 +1002,7 @@ describe('client-graded training attempt recording', () => {
             request: newerRequest,
             dependencies: {
                 db: harness.db as never,
-                now: () => newerAt,
+                now: () => new Date('2026-08-05T12:00:00.000Z'),
             },
         });
         await harness.firstLockAcquired.promise;
@@ -987,7 +1012,7 @@ describe('client-graded training attempt recording', () => {
             request: olderRequest,
             dependencies: {
                 db: harness.db as never,
-                now: () => olderAt,
+                now: () => new Date('2026-08-05T12:00:00.000Z'),
             },
         });
         await harness.secondLockWaiting.promise;

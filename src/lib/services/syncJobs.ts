@@ -457,6 +457,7 @@ export async function processSyncJob(
     const claim = await prisma.syncJob.updateMany({
         where: {
             id: jobId,
+            attempts: { lt: SYNC_JOB_MAX_ATTEMPTS },
             OR: [
                 {
                     status: 'QUEUED',
@@ -490,6 +491,9 @@ export async function processSyncJob(
             where: { id: jobId },
             select: {
                 provider: true,
+                userId: true,
+                attempts: true,
+                leaseToken: true,
                 status: true,
                 scheduledFor: true,
                 lockedUntil: true,
@@ -515,6 +519,59 @@ export async function processSyncJob(
                 disposition: 'IGNORED',
                 terminalStatus: unavailable.status,
                 result: null,
+            };
+        }
+        if (
+            unavailable.attempts >= SYNC_JOB_MAX_ATTEMPTS &&
+            (!unavailable.lockedUntil || unavailable.lockedUntil <= startedAt) &&
+            (unavailable.status === 'RUNNING' || unavailable.scheduledFor <= startedAt)
+        ) {
+            const error = 'Sync job lease expired after maximum attempts';
+            const failed = await prisma.syncJob.updateMany({
+                where: {
+                    id: jobId,
+                    status: unavailable.status,
+                    attempts: unavailable.attempts,
+                    leaseToken: unavailable.leaseToken,
+                    OR: [{ lockedUntil: null }, { lockedUntil: { lte: startedAt } }],
+                },
+                data: {
+                    status: 'FAILED',
+                    lockedUntil: null,
+                    leaseToken: null,
+                    completedAt: startedAt,
+                    lastError: error,
+                },
+            });
+            if (failed.count !== 1) {
+                throw new SyncJobDeliveryDeferredError(jobId, 1);
+            }
+            await recordSyncFailed({
+                userId: unavailable.userId,
+                jobId,
+                provider: unavailable.provider,
+                error,
+            }).catch((notificationError) => {
+                console.error('[notifications] sync failure event was not recorded', notificationError);
+            });
+            return {
+                jobId,
+                provider: unavailable.provider,
+                disposition: 'FAILED',
+                result: {
+                    provider: unavailable.provider,
+                    username: '',
+                    fetched: 0,
+                    saved: 0,
+                    created: 0,
+                    updated: 0,
+                    importedGameIds: [],
+                    queuedAnalysis: 0,
+                    analysisErrors: 0,
+                    complete: false,
+                    skipped: false,
+                    error,
+                },
             };
         }
         const retryAt =

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { Chess } from 'chess.js';
 import { Prisma, type PrismaClient } from '@prisma/client';
+import { parseTrainingCompletionTime } from '@/lib/training/completionTime';
 
 import type {
     RecordTrainingAttemptRequest,
@@ -632,6 +633,8 @@ export async function recordTrainingAttempt(args: {
 }): Promise<RecordTrainingAttemptResponse> {
     const db = args.dependencies.db;
     const now = args.dependencies.now?.() ?? new Date();
+    const completedAt = parseTrainingCompletionTime(args.request.completedAt, now);
+    if (!completedAt) invalidAttempt('Training completion time is invalid');
     const clientPayloadHash = trainingAttemptPayloadHash(args);
     const existing = await db.trainingAttempt.findUnique({
         where: {
@@ -758,7 +761,8 @@ export async function recordTrainingAttempt(args: {
                             : Math.round(comparison.recoveredCp),
                     recoveredWinChance:
                         comparison?.recoveredWinChance ?? null,
-                    completedAt: now,
+                    completedAt,
+                    attemptedAt: now,
                     ...attemptContext(
                         moment,
                         revision
@@ -792,10 +796,10 @@ export async function recordTrainingAttempt(args: {
                     status: 'ACTIVE',
                     OR: [
                         { lastTrainedAt: null },
-                        { lastTrainedAt: { lt: now } },
+                        { lastTrainedAt: { lt: completedAt } },
                     ],
                 },
-                data: { lastTrainedAt: now },
+                data: { lastTrainedAt: completedAt },
             });
             await appendAttemptStatusEvent({
                 tx,
@@ -806,7 +810,7 @@ export async function recordTrainingAttempt(args: {
                     args.request.status === 'GRADED'
                         ? canonical.grade
                         : null,
-                occurredAt: now,
+                occurredAt: completedAt,
             });
             await recordReviewEvidence({
                 tx,
@@ -822,7 +826,7 @@ export async function recordTrainingAttempt(args: {
                         ? canonical.grade ?? undefined
                         : undefined,
                 revealed: args.request.status === 'REVEALED',
-                occurredAt: now,
+                occurredAt: completedAt,
             });
             return created;
         });

@@ -151,6 +151,8 @@ export type RecordedTrainingAttemptStepDto = {
 
 export type RecordTrainingAttemptRequest = {
     kind: 'RECORD';
+    /** Terminal client event time, preserved unchanged through offline replay. */
+    completedAt: string;
     clientAttemptId: string;
     solutionRevisionId: string;
     status: 'GRADED' | 'REVEALED';

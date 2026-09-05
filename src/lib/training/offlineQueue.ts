@@ -1,7 +1,8 @@
 import type { RecordTrainingAttemptRequest } from '@/lib/training/api';
 import { TrainingClientError } from '@/lib/training/client';
+import { parseTrainingCompletionTime } from '@/lib/training/completionTime';
 
-export const TRAINING_QUEUE_VERSION = 3 as const;
+export const TRAINING_QUEUE_VERSION = 4 as const;
 export const TRAINING_QUEUE_MAX_ENTRIES = 100;
 
 export type TrainingAttemptOutboxError = {
@@ -36,6 +37,7 @@ function isAttemptRequest(value: unknown): value is RecordTrainingAttemptRequest
     if (!isRecord(value)) return false;
     return (
         value.kind === 'RECORD' &&
+        parseTrainingCompletionTime(value.completedAt) !== null &&
         typeof value.clientAttemptId === 'string' &&
         typeof value.solutionRevisionId === 'string' &&
         (value.status === 'GRADED' || value.status === 'REVEALED') &&
