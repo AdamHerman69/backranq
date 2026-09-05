@@ -105,7 +105,50 @@ describe('authoritative accepted-move frontier', () => {
         ).toBe('UNSTABLE');
     });
 
-    it('rejects publication when confirmation changes membership or tier', () => {
+    it('keeps confirmation stable when equally graded accepted moves change rank', () => {
+        const first = acceptanceFrontierFromMultiPv({
+            lines: lines([0, 20, 160]),
+            requestedMultiPv: 3,
+            policy,
+        });
+        const reordered = lines([0, 20, 160]);
+        reordered[0]!.pvUci = ['b2b3'];
+        reordered[1]!.pvUci = ['a2a3'];
+        const confirmation = acceptanceFrontierFromMultiPv({
+            lines: reordered,
+            requestedMultiPv: 3,
+            policy,
+        });
+
+        expect(first.status).toBe('STABLE');
+        expect(confirmation.status).toBe('STABLE');
+        expect(confirmAcceptanceFrontier(first, confirmation)).toEqual(
+            confirmation
+        );
+    });
+
+    it('rejects publication when confirmation changes accepted membership', () => {
+        const first = acceptanceFrontierFromMultiPv({
+            lines: lines([0, 20, 160]),
+            requestedMultiPv: 3,
+            policy,
+        });
+        const changed = lines([0, 20, 160]);
+        changed[1]!.pvUci = ['h2h3'];
+        const confirmation = acceptanceFrontierFromMultiPv({
+            lines: changed,
+            requestedMultiPv: 3,
+            policy,
+        });
+
+        expect(first.status).toBe('STABLE');
+        expect(confirmation.status).toBe('STABLE');
+        expect(confirmAcceptanceFrontier(first, confirmation).status).toBe(
+            'OPEN'
+        );
+    });
+
+    it('rejects publication when confirmation changes a move tier', () => {
         const first = acceptanceFrontierFromMultiPv({
             lines: lines([0, 40, 90, 150]),
             requestedMultiPv: 4,

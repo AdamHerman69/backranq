@@ -1,5 +1,5 @@
 import { Chess } from 'chess.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
     extractTrainingMomentsFromGames,
     tacticalMoveFacts,
@@ -134,6 +134,98 @@ const baseOptions: TrainingMomentExtractionOptions = {
 };
 
 describe('canonical training-moment extraction v2', () => {
+    it.each(['white', 'black'] as const)(
+        'scouts only the imported %s decisions without confirming or fabricating moments',
+        async (userSide) => {
+            const source = game({
+                id: 'landing-scout',
+                pgn: '1. e4 e5 2. Nf3 Nc6 *',
+                white: userSide === 'white' ? 'adam' : 'opponent',
+                black: userSide === 'black' ? 'adam' : 'opponent',
+                userSide,
+            });
+            const confirm = vi.fn(() => {
+                throw new Error('Scout must not confirm candidates');
+            });
+            const engine = new FixtureEngine(({ fen }) => {
+                const chess = new Chess(fen);
+                const move = chess.moves({ verbose: true })[0]!;
+                const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+                return result({
+                    fen, bestMove: uci, pv: [uci],
+                    cp: chess.turn() === 'w' ? 200 : 0,
+                });
+            }, confirm);
+            const plies: number[] = [];
+            const output = await extractTrainingMomentsFromGames({
+                games: [source], selectedGameIds: new Set([source.id]), engine,
+                stopAfterFirstVerified: true,
+                landingSearch: {
+                    mode: 'SCOUT',
+                    onCandidate: ({ decisionPly }) => plies.push(decisionPly),
+                },
+                options: baseOptions,
+            });
+
+            expect(new Set(plies)).toEqual(new Set(userSide === 'white' ? [0, 2] : [1, 3]));
+            expect(confirm).not.toHaveBeenCalled();
+            expect(output.moments).toEqual([]);
+            expect(output.manifests).toEqual([]);
+            expect(output.checkpoint).toBeUndefined();
+        }
+    );
+
+    it('verifies only the selected landing decision and never reports a partial game as complete', async () => {
+        const source = game({ id: 'landing-target', pgn: '1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 *' });
+        const targetBoard = new Chess();
+        targetBoard.loadPgn('1. e4 e5 *');
+        const targetFen = targetBoard.fen();
+        const confirmedFens: string[] = [];
+        const scannedFens: string[] = [];
+        const engine = new FixtureEngine(({ fen }) => {
+            scannedFens.push(fen);
+            const chess = new Chess(fen);
+            const move = chess.moves({ verbose: true })[0]!;
+            const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+            return result({ fen, bestMove: uci, pv: [uci], cp: chess.turn() === 'w' ? 200 : 0 });
+        }, ({ fen }) => {
+            confirmedFens.push(fen);
+            return multi(fen, new Chess(fen).moves({ verbose: true }).slice(0, 3).map((move, index) => ({
+                move: `${move.from}${move.to}${move.promotion ?? ''}`,
+                cp: 200 - index * 200,
+            })));
+        });
+        const output = await extractTrainingMomentsFromGames({
+            games: [source], selectedGameIds: new Set([source.id]), engine,
+            stopAfterFirstVerified: true,
+            landingSearch: { mode: 'VERIFY', decisionPly: 2 },
+            options: baseOptions,
+        });
+        expect(confirmedFens).toEqual([targetFen]);
+        expect(output.moments.map((moment) => moment.decisionPly)).toEqual([2]);
+        expect(output.manifests).toEqual([]);
+        const laterBoard = new Chess();
+        laterBoard.loadPgn('1. e4 e5 2. Nf3 Nc6 *');
+        expect(scannedFens).not.toContain(laterBoard.fen());
+    });
+
+    it('rejects landing selection combined with complete or resumable extraction', async () => {
+        const source = game({ id: 'landing-scope', pgn: '1. e4 *' });
+        const args = {
+            games: [source], selectedGameIds: new Set([source.id]),
+            engine: {} as StockfishEngine,
+            landingSearch: { mode: 'VERIFY' as const, decisionPly: 0 },
+        };
+        await expect(extractTrainingMomentsFromGames(args)).rejects.toThrow('non-resumable partial game');
+        await expect(extractTrainingMomentsFromGames({
+            ...args, stopAfterFirstVerified: true, shouldYield: () => true,
+        })).rejects.toThrow('non-resumable partial game');
+        await expect(extractTrainingMomentsFromGames({
+            ...args, games: [source, { ...source, id: 'another' }],
+            selectedGameIds: new Set([source.id, 'another']), stopAfterFirstVerified: true,
+        })).rejects.toThrow('non-resumable partial game');
+    });
+
     it('resumes a single-game extraction from a persisted ply checkpoint', async () => {
         const source = game({
             id: 'resumable-game',

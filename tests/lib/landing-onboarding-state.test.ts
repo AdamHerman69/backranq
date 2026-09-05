@@ -19,47 +19,57 @@ function initial() {
     return {
         activePuzzle: WARMUP_PUZZLE,
         masterTerminal: false,
+        activePuzzleInteracted: false,
         personal: { status: 'IDLE' as const },
         handoff: 'HIDDEN' as const,
     };
 }
 
 describe('landing dual-onboarding state', () => {
-    it('stores a ready personal puzzle without interrupting the active puzzle', () => {
+    it('shows the personal puzzle immediately when the introduction is untouched', () => {
         const searching = landingOnboardingReducer(initial(), {
-            type: 'SEARCH_STARTED',
-            runId: 'run-current',
-            identity,
+            type: 'SEARCH_STARTED', runId: 'run-current', identity,
         });
         const ready = landingOnboardingReducer(searching, {
-            type: 'PERSONAL_READY',
-            runId: 'run-current',
-            puzzle: personalPuzzle,
+            type: 'PERSONAL_READY', runId: 'run-current', puzzle: personalPuzzle,
         });
-
-        expect(ready.activePuzzle.id).toBe(WARMUP_PUZZLE.id);
-        expect(ready.handoff).toBe('ARMED');
+        expect(ready.activePuzzle.id).toBe(personalPuzzle.id);
+        expect(ready.handoff).toBe('HIDDEN');
         expect(ready.personal.status).toBe('READY');
     });
 
-    it('offers the handoff only at terminal, then swaps on explicit acceptance', () => {
+    it('offers an immediate switch without interrupting a started puzzle', () => {
         let state = landingOnboardingReducer(initial(), {
-            type: 'SEARCH_STARTED',
-            runId: 'run-current',
-            identity,
+            type: 'SEARCH_STARTED', runId: 'run-current', identity,
         });
         state = landingOnboardingReducer(state, {
-            type: 'PERSONAL_READY',
-            runId: 'run-current',
-            puzzle: personalPuzzle,
+            type: 'PUZZLE_INTERACTED', puzzleId: WARMUP_PUZZLE.id,
         });
-        state = landingOnboardingReducer(state, { type: 'MASTER_TERMINAL' });
-        expect(state.handoff).toBe('OFFERED');
+        state = landingOnboardingReducer(state, {
+            type: 'PERSONAL_READY', runId: 'run-current', puzzle: personalPuzzle,
+        });
         expect(state.activePuzzle.id).toBe(WARMUP_PUZZLE.id);
-
+        expect(state.masterTerminal).toBe(false);
+        expect(state.handoff).toBe('OFFERED');
         state = landingOnboardingReducer(state, { type: 'ACCEPT_HANDOFF' });
         expect(state.activePuzzle.id).toBe(personalPuzzle.id);
+        expect(state.activePuzzleInteracted).toBe(false);
         expect(state.handoff).toBe('HIDDEN');
+    });
+
+    it('keeps the switch available while reviewing a finished introduction', () => {
+        let state = landingOnboardingReducer(initial(), {
+            type: 'SEARCH_STARTED', runId: 'run-current', identity,
+        });
+        state = landingOnboardingReducer(state, {
+            type: 'PUZZLE_INTERACTED', puzzleId: WARMUP_PUZZLE.id,
+        });
+        state = landingOnboardingReducer(state, { type: 'MASTER_TERMINAL' });
+        state = landingOnboardingReducer(state, {
+            type: 'PERSONAL_READY', runId: 'run-current', puzzle: personalPuzzle,
+        });
+        expect(state.activePuzzle.id).toBe(WARMUP_PUZZLE.id);
+        expect(state.handoff).toBe('OFFERED');
     });
 
     it('ignores results from an obsolete search run', () => {
@@ -81,26 +91,26 @@ describe('landing dual-onboarding state', () => {
         expect(unchanged).toBe(state);
     });
 
-    it('keeps a ready personal puzzle armed when the master puzzle arrives late', () => {
+    it('does not replace the displayed personal puzzle with a late master response', () => {
         let state = landingOnboardingReducer(initial(), {
-            type: 'SEARCH_STARTED',
-            runId: 'run-current',
-            identity,
+            type: 'SEARCH_STARTED', runId: 'run-current', identity,
         });
         state = landingOnboardingReducer(state, {
-            type: 'PERSONAL_READY',
-            runId: 'run-current',
-            puzzle: personalPuzzle,
+            type: 'PERSONAL_READY', runId: 'run-current', puzzle: personalPuzzle,
         });
-
-        state = landingOnboardingReducer(state, {
-            type: 'RESET_MASTER',
-            puzzle: { ...WARMUP_PUZZLE, id: 'master:late' },
+        const unchanged = landingOnboardingReducer(state, {
+            type: 'RESET_MASTER', puzzle: { ...WARMUP_PUZZLE, id: 'master:late' },
         });
-        state = landingOnboardingReducer(state, { type: 'MASTER_TERMINAL' });
+        expect(unchanged).toBe(state);
+    });
 
-        expect(state.activePuzzle.id).toBe('master:late');
-        expect(state.handoff).toBe('OFFERED');
+    it('does not replace a started warm-up with a late master response', () => {
+        const state = landingOnboardingReducer(initial(), {
+            type: 'PUZZLE_INTERACTED', puzzleId: WARMUP_PUZZLE.id,
+        });
+        expect(landingOnboardingReducer(state, {
+            type: 'RESET_MASTER', puzzle: { ...WARMUP_PUZZLE, id: 'master:late' },
+        })).toBe(state);
     });
 
     it('does not interrupt a personal puzzle when a second scan finishes', () => {
@@ -130,7 +140,7 @@ describe('landing dual-onboarding state', () => {
         });
 
         expect(state.activePuzzle.id).toBe(firstPersonalId);
-        expect(state.handoff).toBe('ARMED');
+        expect(state.handoff).toBe('OFFERED');
 
         state = landingOnboardingReducer(state, { type: 'MASTER_TERMINAL' });
         expect(state.handoff).toBe('OFFERED');

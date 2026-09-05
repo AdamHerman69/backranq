@@ -37,8 +37,9 @@ export type PersonalSearchState =
 export type LandingOnboardingState = {
     activePuzzle: LandingPuzzleDto;
     masterTerminal: boolean;
+    activePuzzleInteracted: boolean;
     personal: PersonalSearchState;
-    handoff: 'HIDDEN' | 'ARMED' | 'OFFERED';
+    handoff: 'HIDDEN' | 'OFFERED';
 };
 
 export type LandingOnboardingEvent =
@@ -60,6 +61,7 @@ export type LandingOnboardingEvent =
           reason: OnboardingSearchError;
           retryable: boolean;
       }
+    | { type: 'PUZZLE_INTERACTED'; puzzleId: string }
     | { type: 'MASTER_TERMINAL' }
     | { type: 'ACCEPT_HANDOFF' }
     | { type: 'RESET_MASTER'; puzzle: LandingPuzzleDto };
@@ -95,23 +97,28 @@ export function landingOnboardingReducer(
                     progress: event.progress,
                 },
             };
-        case 'PERSONAL_READY':
+        case 'PERSONAL_READY': {
             if (
                 state.personal.status === 'IDLE' ||
                 state.personal.runId !== event.runId
             ) {
                 return state;
             }
+            const showImmediately =
+                !state.activePuzzleInteracted &&
+                state.activePuzzle.context.kind !== 'PERSONAL';
             return {
                 ...state,
+                activePuzzle: showImmediately ? event.puzzle : state.activePuzzle,
                 personal: {
                     status: 'READY',
                     runId: event.runId,
                     identity: state.personal.identity,
                     puzzle: event.puzzle,
                 },
-                handoff: state.masterTerminal ? 'OFFERED' : 'ARMED',
+                handoff: showImmediately ? 'HIDDEN' : 'OFFERED',
             };
+        }
         case 'SEARCH_EMPTY':
             if (
                 state.personal.status === 'IDLE' ||
@@ -147,27 +154,33 @@ export function landingOnboardingReducer(
                 },
                 handoff: 'HIDDEN',
             };
+        case 'PUZZLE_INTERACTED':
+            if (event.puzzleId !== state.activePuzzle.id) return state;
+            return { ...state, activePuzzleInteracted: true };
         case 'MASTER_TERMINAL':
             return {
                 ...state,
                 masterTerminal: true,
-                handoff: state.handoff === 'ARMED' ? 'OFFERED' : state.handoff,
             };
         case 'ACCEPT_HANDOFF':
             if (state.personal.status !== 'READY') return state;
             return {
                 ...state,
                 activePuzzle: state.personal.puzzle,
+                activePuzzleInteracted: false,
                 masterTerminal: false,
                 handoff: 'HIDDEN',
             };
         case 'RESET_MASTER':
+            if (state.activePuzzleInteracted || state.activePuzzle.context.kind === 'PERSONAL') {
+                return state;
+            }
             return {
                 ...state,
                 activePuzzle: event.puzzle,
                 masterTerminal: false,
                 handoff:
-                    state.personal.status === 'READY' ? 'ARMED' : 'HIDDEN',
+                    state.personal.status === 'READY' ? 'OFFERED' : 'HIDDEN',
             };
     }
 }

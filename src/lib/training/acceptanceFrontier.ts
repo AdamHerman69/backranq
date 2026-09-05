@@ -189,12 +189,16 @@ export function confirmAcceptanceFrontier(
     first: AcceptanceFrontier,
     confirmation: AcceptanceFrontier
 ): AcceptanceFrontier {
+    const confirmedTiers = new Map(
+        confirmation.moves.map((move) => [move.moveUci, move.tier])
+    );
     const sameMoves =
         first.moves.length === confirmation.moves.length &&
+        confirmedTiers.size === confirmation.moves.length &&
+        new Set(first.moves.map((move) => move.moveUci)).size ===
+            first.moves.length &&
         first.moves.every(
-            (move, index) =>
-                move.moveUci === confirmation.moves[index]?.moveUci &&
-                move.tier === confirmation.moves[index]?.tier
+            (move) => confirmedTiers.get(move.moveUci) === move.tier
         );
     if (
         first.status !== 'STABLE' ||

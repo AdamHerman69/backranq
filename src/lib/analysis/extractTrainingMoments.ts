@@ -16,6 +16,7 @@ import {
     lichessMoveAccuracyFromCps,
 } from '@/lib/analysis/classification';
 import {
+    type EvaluationLoss,
     evaluationLoss,
     isWithinEvaluationLoss,
     negateScore,
@@ -143,6 +144,18 @@ export function isLandingReadyTrainingMoment(
         moment.solution.bestLineUci.length > 0
     );
 }
+
+export type LandingDecisionCandidate = {
+    decisionPly: number;
+    loss: EvaluationLoss;
+};
+
+type LandingSearch =
+    | {
+          mode: 'SCOUT';
+          onCandidate: (candidate: LandingDecisionCandidate) => void;
+      }
+    | { mode: 'VERIFY'; decisionPly: number };
 
 /**
  * Authoritative training-moment extraction result.
@@ -2599,8 +2612,35 @@ export async function extractTrainingMomentsFromGames(args: {
      * candidate is built. Canonical full-game extraction leaves this disabled.
      */
     stopAfterFirstVerified?: boolean;
+    /** Partial landing search; never produces full-game completion evidence. */
+    landingSearch?: LandingSearch;
 }): Promise<TrainingMomentExtractionResult> {
     if (args.signal?.aborted) throw new Error('Analysis aborted');
+    const selected = args.games.filter((g) => args.selectedGameIds.has(g.id));
+    const landingSearch = args.landingSearch;
+    if (
+        landingSearch &&
+        (!args.stopAfterFirstVerified ||
+            selected.length !== 1 ||
+            args.checkpoint ||
+            args.shouldYield ||
+            (landingSearch.mode === 'VERIFY' &&
+                (!Number.isInteger(landingSearch.decisionPly) ||
+                    landingSearch.decisionPly < 0)))
+    ) {
+        throw new Error('Landing search requires one non-resumable partial game');
+    }
+    const selectLandingDecision = (
+        decisionPly: number,
+        loss: EvaluationLoss
+    ) => {
+        if (!landingSearch) return true;
+        if (landingSearch.mode === 'SCOUT') {
+            landingSearch.onCandidate({ decisionPly, loss });
+            return false;
+        }
+        return decisionPly === landingSearch.decisionPly;
+    };
     const opts = resolveOptions(args.options);
     let engineIdentity: Awaited<
         ReturnType<NonNullable<StockfishEngine['getIdentity']>>
@@ -2627,7 +2667,6 @@ export async function extractTrainingMomentsFromGames(args: {
         string,
         Promise<ContinuationVerificationResult>
     >();
-    const selected = args.games.filter((g) => args.selectedGameIds.has(g.id));
     if ((args.checkpoint || args.shouldYield) && selected.length !== 1) {
         throw new Error(
             'Resumable extraction requires exactly one selected game'
@@ -2744,6 +2783,12 @@ export async function extractTrainingMomentsFromGames(args: {
 
         for (let ply = startPly; ply < plyCount; ply++) {
             if (args.signal?.aborted) throw new Error('Analysis aborted');
+            if (
+                landingSearch?.mode === 'VERIFY' &&
+                ply > landingSearch.decisionPly
+            ) {
+                break;
+            }
             if (ply > startPly && args.shouldYield?.()) {
                 return {
                     moments,
@@ -3030,7 +3075,8 @@ export async function extractTrainingMomentsFromGames(args: {
                 isUserMove &&
                 hasDecision &&
                 isMeaningfulMistake &&
-                !lookaheadOwnedUserDecisionPlies.has(ply)
+                !lookaheadOwnedUserDecisionPlies.has(ply) &&
+                selectLandingDecision(ply, moveLoss)
             ) {
                 {
                     // Themes describe the lesson; they never decide whether a
@@ -3345,7 +3391,9 @@ export async function extractTrainingMomentsFromGames(args: {
             if (
                 isOpponentMove &&
                 hasDecision &&
-                isMeaningfulMistake // opponent made a meaningful error
+                isMeaningfulMistake && // opponent made a meaningful error
+                (landingSearch?.mode !== 'VERIFY' ||
+                    ply + 1 === landingSearch.decisionPly)
             ) {
                 // Now we need to check: did the user punish it?
                 // Look at the NEXT move (user's response) and see if they found the best move
@@ -3394,7 +3442,11 @@ export async function extractTrainingMomentsFromGames(args: {
                                 }
                             );
 
-                        if (!userPunished && userResponseAssessment) {
+                        if (
+                            !userPunished &&
+                            userResponseAssessment &&
+                            selectLandingDecision(nextPly, userResponseAssessment.loss)
+                        ) {
                             {
                                 const hasTacticalTheme = pvContainsTactic(
                                     fenAfter,
@@ -3808,6 +3860,7 @@ export async function extractTrainingMomentsFromGames(args: {
         }
 
         const scannedPlies = replay.history().length;
+        if (landingSearch) continue;
         const replayComplete = scannedPlies === plyCount;
         const extractionComplete =
             replayComplete && extractionErrors.length === 0;
@@ -3948,7 +4001,7 @@ export async function extractTrainingMomentsFromGames(args: {
 
     return {
         moments,
-        manifests,
+        manifests: landingSearch ? [] : manifests,
         configSnapshot,
         configHash,
         analysis: opts.returnAnalysis ? analysisMap : undefined,

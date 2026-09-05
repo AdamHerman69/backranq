@@ -64,7 +64,7 @@ function errorCopy(reason: OnboardingSearchError) {
         case 'PROVIDER_UNAVAILABLE':
             return 'That provider is temporarily unavailable. The puzzle on the board still works.';
         case 'ENGINE_UNAVAILABLE':
-            return 'Analysis could not start in this browser. The puzzle on the board still works.';
+            return 'We could not finish analysis in this browser. Try again; the puzzle on the board still works.';
         case 'OFFLINE':
             return 'You appear to be offline. Reconnect and try again when you are ready.';
         case 'INVALID_USERNAME':
@@ -75,7 +75,9 @@ function errorCopy(reason: OnboardingSearchError) {
 }
 
 function analysisPercent(progress: OnboardingAnalysisProgress) {
-    const gameShare = 100 / Math.max(1, progress.gameCount);
+    if (progress.phase === 'ENGINE_STARTING') return 0;
+    if (progress.phase === 'CONFIRMING') return 90;
+    const gameShare = 80 / Math.max(1, progress.gameCount);
     const withinGame = progress.plyCount
         ? Math.min(1, progress.ply / progress.plyCount)
         : 0;
@@ -89,6 +91,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
     const [state, dispatch] = useReducer(landingOnboardingReducer, {
         activePuzzle: WARMUP_PUZZLE,
         masterTerminal: false,
+        activePuzzleInteracted: false,
         personal: { status: 'IDLE' },
         handoff: 'HIDDEN',
     });
@@ -98,12 +101,12 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
     const [validationError, setValidationError] = useState<string | null>(null);
     const abortRef = useRef<AbortController | null>(null);
     const engineRef = useRef<StockfishClient | null>(null);
-    const introAttemptStartedRef = useRef(false);
     const terminalStateRef = useRef(false);
     const startedPuzzleIdsRef = useRef(new Set<string>());
     const mountedRef = useRef(true);
     const sessionIdRef = useRef<string | null>(null);
     const milestonesRef = useRef(new Set<number>());
+    const presentationEventsRef = useRef(new Set<string>());
 
     const emit = useCallback(
         (
@@ -132,12 +135,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
         emit('LANDING_VIEWED');
         void fetchCurrentMasterPuzzle().then((puzzle) => {
             if (!mountedRef.current) return;
-            if (!introAttemptStartedRef.current) {
-                dispatch({ type: 'RESET_MASTER', puzzle });
-                if (puzzle.context.kind === 'MASTER') {
-                    emit('MASTER_PUZZLE_SHOWN');
-                }
-            }
+            dispatch({ type: 'RESET_MASTER', puzzle });
         });
         return () => {
             mountedRef.current = false;
@@ -145,6 +143,30 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
             engineRef.current?.terminate?.();
         };
     }, [emit]);
+
+    useEffect(() => {
+        if (state.activePuzzle.context.kind === 'MASTER') {
+            const key = `master:${state.activePuzzle.id}`;
+            if (!presentationEventsRef.current.has(key)) {
+                presentationEventsRef.current.add(key);
+                emit('MASTER_PUZZLE_SHOWN');
+            }
+        }
+        const personal = state.personal;
+        if (personal.status !== 'READY') return;
+        const isShown = state.activePuzzle.id === personal.puzzle.id;
+        const eventName = isShown
+            ? 'PERSONAL_PUZZLE_SHOWN'
+            : 'PERSONAL_READY_NOTICE_SHOWN';
+        const key = `${personal.runId}:${eventName}`;
+        if (presentationEventsRef.current.has(key)) return;
+        presentationEventsRef.current.add(key);
+        emit(eventName, {
+            runId: personal.runId,
+            provider: personal.identity.provider,
+            masterState: state.masterTerminal ? 'TERMINAL' : 'SOLVING',
+        });
+    }, [emit, state.activePuzzle, state.masterTerminal, state.personal]);
 
     const reportProgress = useCallback(
         (runId: string, progress: OnboardingAnalysisProgress) => {
@@ -256,11 +278,6 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                 durationMs: Math.round(performance.now() - startedAt),
                 masterState: terminalStateRef.current ? 'TERMINAL' : 'SOLVING',
             });
-            emit('PERSONAL_READY_NOTICE_SHOWN', {
-                runId,
-                provider,
-                masterState: terminalStateRef.current ? 'TERMINAL' : 'SOLVING',
-            });
         } catch (error) {
             if (controller.signal.aborted) return;
             const reason =
@@ -311,16 +328,18 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                 <WorkingStatus
                     title={
                         personal.progress.phase === 'CONFIRMING'
-                            ? 'Verifying a promising decision'
-                            : 'Scanning your recent games'
+                            ? 'Preparing your personal position'
+                            : 'Reviewing your recent games'
                     }
-                    detail={`Game ${personal.progress.gameIndex + 1} of ${personal.progress.gameCount}. Your position will wait here when it is ready.`}
+                    detail={personal.progress.phase === 'CONFIRMING'
+                        ? 'Checking the strongest opportunities for a clear, reliable exercise.'
+                        : `Game ${personal.progress.gameIndex + 1} of ${personal.progress.gameCount}. Looking for the decisions worth revisiting.`}
                     progress={percent}
                 />
             );
         }
         if (personal.status === 'READY') {
-            if (state.activePuzzle.context.kind === 'PERSONAL') {
+            if (state.activePuzzle.id === personal.puzzle.id) {
                 return (
                     <ReadyStatus>
                         This position came from one of your public games.
@@ -331,7 +350,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                 <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.07] p-4 shadow-sm" aria-live="polite">
                     <div className="flex gap-3 text-sm font-medium text-emerald-900 dark:text-emerald-100">
                         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                        <p>Your personal position is ready. This puzzle will not be interrupted.</p>
+                        <p>Your personal position is ready. Switch now, or finish this puzzle first.</p>
                     </div>
                     <div className="mt-3">
                         {state.handoff === 'OFFERED' ? (
@@ -343,15 +362,11 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                                     emit('PERSONAL_HANDOFF_CLICKED', {
                                         runId: personal.runId,
                                         provider: personal.identity.provider,
-                                        masterState: 'TERMINAL',
-                                    });
-                                    emit('PERSONAL_PUZZLE_SHOWN', {
-                                        runId: personal.runId,
-                                        provider: personal.identity.provider,
+                                        masterState: state.masterTerminal ? 'TERMINAL' : 'SOLVING',
                                     });
                                 }}
                             >
-                                Now solve a position you actually played
+                                Solve my position
                                 <ArrowRight aria-hidden="true" />
                             </Button>
                         ) : null}
@@ -365,7 +380,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                     text={
                         personal.reason === 'NO_GAMES'
                             ? 'No recent public games were found. Play a game or try another profile.'
-                            : 'We did not find a clear, verified training position in these games. That is better than inventing a blunder.'
+                            : 'We found no position with a clear, verified answer in these games. This does not mean every move was correct.'
                     }
                 />
             );
@@ -397,7 +412,15 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                     </p>
                 </div>
 
-                <div className="min-w-0 border-y border-foreground/15 bg-card/40 py-3 sm:rounded-xl sm:border sm:p-5 sm:shadow-raised lg:col-start-2 lg:row-span-2 lg:row-start-1">
+                <div
+                    className="min-w-0 border-y border-foreground/15 bg-card/40 py-3 sm:rounded-xl sm:border sm:p-5 sm:shadow-raised lg:col-start-2 lg:row-span-2 lg:row-start-1"
+                    onPointerDownCapture={() => dispatch({
+                        type: 'PUZZLE_INTERACTED', puzzleId: state.activePuzzle.id,
+                    })}
+                    onKeyDownCapture={() => dispatch({
+                        type: 'PUZZLE_INTERACTED', puzzleId: state.activePuzzle.id,
+                    })}
+                >
                     <PublicPuzzlePlayer
                         key={state.activePuzzle.id}
                         puzzle={state.activePuzzle}
@@ -407,7 +430,6 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                             if (startedPuzzleIdsRef.current.has(active.id)) return;
                             startedPuzzleIdsRef.current.add(active.id);
                             if (active.context.kind !== 'PERSONAL') {
-                                introAttemptStartedRef.current = true;
                                 if (active.context.kind === 'MASTER') {
                                     emit('MASTER_ATTEMPT_STARTED', {
                                         puzzleKind: 'MASTER',
