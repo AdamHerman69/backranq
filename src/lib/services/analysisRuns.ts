@@ -1,3 +1,4 @@
+import { isCompleteExtractionManifest } from '@/lib/analysis/extractionManifest';
 import { createHash } from 'node:crypto';
 import type {
     AnalysisExecutionMode,
@@ -246,6 +247,7 @@ function assertCompleteExtractionManifest(args: {
 }) {
     const manifest = args.manifest;
     if (
+        !isCompleteExtractionManifest(manifest) ||
         manifest.version !== 1 ||
         manifest.complete !== true ||
         manifest.sourceGameId !== args.gameId ||

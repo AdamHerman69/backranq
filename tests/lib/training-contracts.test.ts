@@ -1,3 +1,4 @@
+import { fixtureSolution } from '../helpers/extractionEvidence';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -111,7 +112,7 @@ describe('training moment contracts', () => {
     });
 
     it('hashes equivalent solution semantics independently of accepted-move order', () => {
-        const base = {
+        const base = fixtureSolution({
             verificationStatus: 'VERIFIED' as const,
             solutionShape: 'MULTIPLE' as const,
             gradingStrategy: 'DYNAMIC' as const,
@@ -190,7 +191,7 @@ describe('training moment contracts', () => {
             playedMoveScore: null,
             targetOutcome: { preserve: 'DRAW' },
             gradingPolicy: normalizeGradingPolicy(undefined),
-        };
+        });
 
         expect(solutionSemanticsHash(base)).toBe(
             solutionSemanticsHash({
@@ -258,7 +259,7 @@ describe('training moment contracts', () => {
                             ? {
                                   ...assessment,
                                   evidence: {
-                                      ...assessment.evidence,
+                                      ...(assessment.evidence as Record<string, unknown>),
                                       bestGapCp: 21,
                                       bestGapWinChance: 0.04,
                                       recoveredCp: 90,
@@ -279,7 +280,7 @@ describe('training moment contracts', () => {
                             ? {
                                   ...assessment,
                                   evidence: {
-                                      ...assessment.evidence,
+                                      ...(assessment.evidence as Record<string, unknown>),
                                       evaluation: {
                                           source: 'ENGINE',
                                           score: {
@@ -313,7 +314,7 @@ describe('training config normalization', () => {
             gradingTolerance: 'PRACTICAL',
             gradingPolicy: {
                 pov: 'TRAINING_SIDE',
-                unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
+                unknownMove: 'EVALUATE',
                 matePolicy: 'EXACT',
                 tablebasePolicy: 'EXACT',
             },

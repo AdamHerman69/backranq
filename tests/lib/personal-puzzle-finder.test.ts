@@ -1,3 +1,4 @@
+import { fixtureSolution } from '../helpers/extractionEvidence';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { StockfishEngine } from '@/lib/analysis/stockfishClient';
@@ -43,7 +44,7 @@ function candidate(sourceGameId: string): TrainingMomentCandidate {
         sourceKinds: ['MISSED_OPPORTUNITY'],
         lessonKinds: ['CONVERT_ADVANTAGE'],
         themes: ['mate'],
-        solution: {
+        solution: fixtureSolution({
             verificationStatus: 'VERIFIED',
             solutionShape: 'UNIQUE',
             gradingStrategy: 'PRECOMPUTED',
@@ -103,7 +104,7 @@ function candidate(sourceGameId: string): TrainingMomentCandidate {
             evidence: { kind: 'TEST' },
             generatorVersion: 'test',
             configHash: 'test-config',
-        },
+        }),
     };
 }
 

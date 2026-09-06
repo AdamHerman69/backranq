@@ -653,7 +653,7 @@ describe('analysis job state transitions', () => {
                 blackMoveAccuracies: [],
                 extractionErrors: [],
                 decisionReceipts: [],
-                lookaheadOwnedUserDecisionPlies: [],
+                scanEvidence: [],
             },
         });
 

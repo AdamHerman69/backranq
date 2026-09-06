@@ -6,6 +6,9 @@ import { parseTrainingCompletionTime } from '@/lib/training/completionTime';
 
 import type {
     RecordTrainingAttemptRequest,
+    EnrichTrainingAttemptRequest,
+    EnrichTrainingAttemptResponse,
+    TrainingClientMoveEvidence,
     RecordTrainingAttemptResponse,
     RecordedTrainingAttemptStepDto,
     TrainingApiErrorCode,
@@ -13,16 +16,19 @@ import type {
     TrainingGradingManifestDto,
     TrainingSolutionTreeNodeDto,
 } from '@/lib/training/api';
+import { metricsFromMatchedOutcomeEvidence } from '@/lib/training/gradingEvidence';
+import { gradeTrainingMove } from '@/lib/training/grader';
 import type { AttemptGrade } from '@/lib/training/contracts';
 import { toTrainingPromptDto } from '@/lib/training/apiMappers';
 import {
     aggregateTrainingGrade,
     gradeKnownLocalMove,
+    type LocalMoveEvaluation,
 } from '@/lib/training/localGrading';
 
 type TrainingWriteDb = Pick<
     PrismaClient,
-    '$transaction' | 'trainingMoment' | 'trainingAttempt'
+    '$transaction' | 'trainingMoment' | 'trainingAttempt' | 'solutionRevision' | 'trainingAttemptAssessmentRevision'
 >;
 
 const attemptMomentSelect = {
@@ -51,6 +57,10 @@ const attemptMomentSelect = {
     },
     currentSolutionRevision: {
         select: {
+            decision: true,
+            answerCoverage: true,
+            continuation: true,
+            originalDecision: true,
             trainable: true,
             verificationStatus: true,
             acceptanceFrontier: true,
@@ -65,6 +75,9 @@ const attemptMomentSelect = {
             solutionTree: true,
             moveAssessments: {
                 select: {
+                    positionKey: true,
+                    referenceId: true,
+                    tierStable: true,
                     decisionIndex: true,
                     fen: true,
                     moveUci: true,
@@ -90,13 +103,14 @@ function attemptContext(
     moment: AttemptMoment,
     revision: NonNullable<AttemptMoment['currentSolutionRevision']>
 ) {
+    const original = revision.originalDecision as Record<string, unknown>;
     return {
-        contextPhase: moment.phase,
-        contextCpLoss: moment.cpLoss,
-        contextWinChanceLoss: moment.winChanceLoss,
-        contextSourceKinds: moment.sourceKinds,
-        contextLessonKinds: moment.lessonKinds,
-        contextThemes: moment.themes,
+        contextPhase: original.phase as typeof moment.phase,
+        contextCpLoss: original.cpLoss as number | null,
+        contextWinChanceLoss: original.winChanceLoss as number | null,
+        contextSourceKinds: original.sourceKinds as typeof moment.sourceKinds,
+        contextLessonKinds: original.lessonKinds as typeof moment.lessonKinds,
+        contextThemes: original.themes as string[],
         contextThemeTaxonomyVersion:
             PRACTICE_THEME_TAXONOMY_VERSION,
         contextProvider: moment.game.provider,
@@ -149,14 +163,11 @@ async function lockPracticeReviewStream(args: {
             FROM "TrainingMoment"
             WHERE "id" = ${args.trainingMomentId}::uuid
               AND "userId" = ${args.userId}::uuid
-              AND "status" = 'ACTIVE'
-              AND "archivedAt" IS NULL
             FOR UPDATE
         ) AS moment
     `;
     if (
-        rows[0]?.currentSolutionRevisionId !==
-        args.expectedSolutionRevisionId
+        !rows[0]
     ) {
         throw new TrainingAttemptError(
             'Training solution changed; reload the position',
@@ -164,6 +175,7 @@ async function lockPracticeReviewStream(args: {
             409
         );
     }
+    return rows[0].currentSolutionRevisionId;
 }
 
 async function appendAttemptStatusEvent(args: {
@@ -380,14 +392,14 @@ function applyUci(fen: string, moveUci: string): string | null {
 type CanonicalRecordedStep = {
     request: RecordedTrainingAttemptStepDto;
     grade: AttemptGrade | null;
-    source: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE' | null;
+    source: 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE' | null;
     comparison: TrainingComparisonDto | null;
     evidence: unknown;
 };
 
 type CanonicalAttempt = {
     grade: AttemptGrade | null;
-    gradingSource: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE' | null;
+    gradingSource: 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE' | null;
     comparison: TrainingComparisonDto | null;
     steps: CanonicalRecordedStep[];
 };
@@ -411,11 +423,11 @@ function canonicalSelectedBranch(node: TrainingSolutionTreeNodeDto) {
 
 function aggregateCanonicalGradingSource(
     steps: readonly CanonicalRecordedStep[]
-): 'PRECOMPUTED' | 'TABLEBASE' | null {
+): 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE' | null {
     const userSources = steps.flatMap((step) =>
         step.request.actor === 'USER' && step.source ? [step.source] : []
     );
-    return userSources.includes('TABLEBASE')
+    return userSources.includes('CLIENT_EVALUATED') ? 'CLIENT_EVALUATED' : userSources.includes('TABLEBASE')
         ? 'TABLEBASE'
         : userSources.includes('PRECOMPUTED')
           ? 'PRECOMPUTED'
@@ -481,19 +493,18 @@ function canonicalizeRecordedLine(
                 400
             );
         }
-        if (step.actor === 'USER') {
-            const evaluation = gradeKnownLocalMove({
-                manifest,
-                node,
-                moveUci: step.moveUci,
-            });
+        if (step.actor === 'USER' && revealed && index === request.steps.length - 1 && step.grade === undefined && step.source === undefined && !step.comparison && !step.clientEvidence) {
+            canonicalSteps.push({ request: step, grade: null, source: null, comparison: null, evidence: { kind: 'UNRESOLVED_LOCAL_REVIEW', serverVerified: false } });
+            node = null;
+        } else if (step.actor === 'USER') {
+            const evaluation: LocalMoveEvaluation | null = step.source === 'CLIENT_EVALUATED'
+                ? clientEvaluation(manifest, node, step.moveUci, step.clientEvidence)
+                : gradeKnownLocalMove({ manifest, node, moveUci: step.moveUci });
             if (!evaluation || evaluation.result.status !== 'GRADED') {
                 invalidAttempt('Recorded move has no verified grading evidence');
             }
             if (
-                evaluation.source === 'DYNAMIC' ||
                 step.grade !== evaluation.result.grade ||
-                step.source === 'DYNAMIC' ||
                 (step.source !== undefined &&
                     step.source !== evaluation.source)
             ) {
@@ -514,11 +525,11 @@ function canonicalizeRecordedLine(
                     normalizeUci(candidate.moveUci) ===
                     normalizeUci(step.moveUci)
             );
-            node = branch?.child ?? null;
+            node = evaluation.result.accepted && manifest.continuation.gradedContinuationReady ? branch?.child ?? null : null;
             if (!node && index !== request.steps.length - 1) {
                 invalidAttempt('A rejected move cannot have a continuation');
             }
-        } else if (step.grade || step.source || step.comparison) {
+        } else if (step.grade || step.source || step.comparison || step.clientEvidence) {
             invalidAttempt('Engine continuation steps cannot carry a grade');
         } else {
             const branch = canonicalSelectedBranch(node);
@@ -555,9 +566,8 @@ function canonicalizeRecordedLine(
         aggregateCanonicalGradingSource(canonicalSteps);
     if (
         request.steps.at(-1)?.actor !== 'USER' ||
-        (node !== null && node.role !== 'TERMINAL') ||
+        (node !== null && (node.role === 'USER' || (node.role === 'OPPONENT' && canonicalSelectedBranch(node)?.child.role === 'USER'))) ||
         request.grade !== grade ||
-        request.gradingSource === 'DYNAMIC' ||
         (request.gradingSource !== undefined &&
             request.gradingSource !== canonicalGradingSource)
     ) {
@@ -659,8 +669,6 @@ export async function recordTrainingAttempt(args: {
         where: {
             id: args.momentId,
             userId: args.userId,
-            status: 'ACTIVE',
-            archivedAt: null,
         },
         select: attemptMomentSelect,
     });
@@ -671,27 +679,16 @@ export async function recordTrainingAttempt(args: {
             404
         );
     }
-    const revision = moment.currentSolutionRevision;
-    if (
-        moment.currentSolutionRevisionId !==
-        args.request.solutionRevisionId
-    ) {
-        throw new TrainingAttemptError(
-            'Training solution changed; reload the position',
-            'STALE_REVISION',
-            409
-        );
+    let historical = moment.currentSolutionRevisionId !== args.request.solutionRevisionId;
+    if (historical) {
+        const requested = await db.solutionRevision.findFirst({ where: { id: args.request.solutionRevisionId, momentId: args.momentId }, select: attemptMomentSelect.currentSolutionRevision.select });
+        if (!requested) throw new TrainingAttemptError('Training revision not found', 'NOT_FOUND', 404);
+        moment.currentSolutionRevision = requested;
+        moment.currentSolutionRevisionId = args.request.solutionRevisionId;
     }
-    if (
-        !revision.trainable ||
-        revision.verificationStatus !== 'VERIFIED' ||
-        !hasStableAcceptanceFrontier(revision.acceptanceFrontier)
-    ) {
-        throw new TrainingAttemptError(
-            'Training moment is not currently trainable',
-            'NOT_FOUND',
-            404
-        );
+    const revision = moment.currentSolutionRevision;
+    if (!revision.trainable || revision.verificationStatus !== 'VERIFIED') {
+        throw new TrainingAttemptError('Training revision is not trainable', 'NOT_FOUND', 404);
     }
 
     let manifest: TrainingGradingManifestDto;
@@ -717,13 +714,14 @@ export async function recordTrainingAttempt(args: {
 
     try {
         const attempt = await db.$transaction(async (tx) => {
-            await lockPracticeReviewStream({
+            const lockedRevisionId = await lockPracticeReviewStream({
                 tx,
                 userId: args.userId,
                 trainingMomentId: args.momentId,
                 expectedSolutionRevisionId:
                     args.request.solutionRevisionId,
             });
+            historical = historical || lockedRevisionId !== args.request.solutionRevisionId;
             const created = await tx.trainingAttempt.create({
                 data: {
                     trainingMomentId: args.momentId,
@@ -742,7 +740,9 @@ export async function recordTrainingAttempt(args: {
                     gradingSource:
                         canonical.gradingSource,
                     gradingEvidence: json({
-                        serverVerified: true,
+                        serverVerified: canonical.grade != null && canonical.gradingSource !== 'CLIENT_EVALUATED',
+                        trust: canonical.grade == null ? 'UNASSESSED' : canonical.gradingSource === 'CLIENT_EVALUATED' ? 'CLIENT_EVALUATED' : 'CANONICAL',
+                        historicalRevision: historical,
                         version: 1,
                         submittedScoreAfter:
                             comparison?.submittedScoreAfter ?? null,
@@ -780,7 +780,7 @@ export async function recordTrainingAttempt(args: {
                         moveUci: normalizeUci(step.request.moveUci),
                         grade: step.grade,
                         evidence: json({
-                            serverVerified: true,
+                            serverVerified: step.request.actor === 'ENGINE' || (step.grade != null && step.source !== 'CLIENT_EVALUATED'),
                             source: step.source,
                             comparison: step.comparison,
                             evidence: step.evidence,
@@ -794,6 +794,7 @@ export async function recordTrainingAttempt(args: {
                     id: args.momentId,
                     userId: args.userId,
                     status: 'ACTIVE',
+                    currentSolutionRevisionId: args.request.solutionRevisionId,
                     OR: [
                         { lastTrainedAt: null },
                         { lastTrainedAt: { lt: completedAt } },
@@ -854,12 +855,60 @@ export async function recordTrainingAttempt(args: {
     }
 }
 
-function hasStableAcceptanceFrontier(value: unknown) {
-    return (
-        value !== null &&
-        typeof value === 'object' &&
-        !Array.isArray(value) &&
-        'status' in value &&
-        value.status === 'STABLE'
-    );
+function clientEvaluation(manifest: TrainingGradingManifestDto, node: TrainingSolutionTreeNodeDto, moveUci: string, evidence?: TrainingClientMoveEvidence) {
+    const coverage = node.answerCoverage ?? manifest.answerCoverage;
+    if (!evidence || evidence.contextId !== node.contextId || evidence.referenceId !== coverage.referenceId || evidence.policyVersion !== manifest.gradingPolicy.version || evidence.metrics.moveUci !== normalizeUci(moveUci) || evidence.metrics.originalMoveUci !== (node.ply === 0 ? manifest.originalMoveUci : '')) invalidAttempt('Client evidence does not match this decision context');
+    const reference = evidence.localReference;
+    const canonicalBestMove = node.branches.find(branch => branch.best)?.moveUci ?? node.selectedMoveUci ?? node.acceptedMovesUci[0];
+    if (!reference || reference.id === coverage.referenceId || reference.canonicalBestMoveUci !== canonicalBestMove || !applyUci(node.fen, reference.bestMoveUci)) invalidAttempt('Client local reference does not bind to the served revision');
+    const referenceCheck = metricsFromMatchedOutcomeEvidence({ moveUci: canonicalBestMove, originalMoveUci: '', trainingSide: manifest.trainingSide, bestScore: reference.bestScore, submittedScore: reference.canonicalScore, originalScore: null, stable: true });
+    const canonicalOutdated = (referenceCheck.bestGapCp ?? 0) > 0 || (referenceCheck.bestGapWinChance ?? 0) > 0;
+    if (referenceCheck.referenceOutdated && !evidence.metrics.referenceOutdated) invalidAttempt('Client local reference is worse than the re-evaluated canonical move');
+    if (canonicalOutdated && !reference.canonicalReferenceOutdated) invalidAttempt('Client reference suppresses an outdated canonical comparison');
+    const submittedCheck = metricsFromMatchedOutcomeEvidence({ moveUci, originalMoveUci: evidence.metrics.originalMoveUci, trainingSide: manifest.trainingSide, bestScore: reference.bestScore, submittedScore: evidence.scoreAfter, originalScore: null, stable: evidence.metrics.stable });
+    if (submittedCheck.bestGapCp != null && evidence.metrics.bestGapCp !== submittedCheck.bestGapCp) invalidAttempt('Client comparison does not match its local reference scores');
+    if (submittedCheck.referenceOutdated && !evidence.metrics.referenceOutdated) invalidAttempt('Client comparison suppresses an outdated local reference');
+    const result = gradeTrainingMove(evidence.metrics, manifest.gradingPolicy);
+    const m = evidence.metrics;
+    return { result, source: 'CLIENT_EVALUATED' as const, scoreAfter: evidence.scoreAfter, comparison: { submittedScoreAfter: evidence.scoreAfter, bestGapCp: m.bestGapCp ?? null, bestGapWinChance: m.bestGapWinChance ?? null, recoveredCp: m.recoveredCp ?? null, recoveredWinChance: m.recoveredWinChance ?? null, preservesOutcome: m.preservesOutcome ?? null }, evidence: { trust: 'CLIENT_EVALUATED', serverVerified: false, clientEvidence: evidence } };
+}
+
+export async function enrichTrainingAttempt(args: { userId: string; momentId: string; request: EnrichTrainingAttemptRequest; dependencies: TrainingAttemptDependencies }): Promise<EnrichTrainingAttemptResponse> {
+    const { db } = args.dependencies;
+    const request = args.request;
+    const attempt = await db.trainingAttempt.findUnique({ where: { userId_clientAttemptId: { userId: args.userId, clientAttemptId: request.clientAttemptId } }, include: { steps: true } });
+    if (!attempt) throw new TrainingAttemptError('Record the original attempt before its refinement', 'NOT_FOUND', 425);
+    if (attempt.trainingMomentId !== args.momentId || attempt.solutionRevisionId !== request.solutionRevisionId || attempt.status !== 'GRADED') invalidAttempt('Refinement does not match the recorded attempt');
+    const payloadHash = createHash('sha256').update(stableJson(request)).digest('hex');
+    const key = { attemptId_clientEvidenceId: { attemptId: attempt.id, clientEvidenceId: request.clientEvidenceId } };
+    const existing = await db.trainingAttemptAssessmentRevision.findUnique({ where: key });
+    if (existing) {
+        if (existing.payloadHash !== payloadHash) throw new TrainingAttemptError('clientEvidenceId payload conflict', 'IDEMPOTENCY_CONFLICT', 409);
+        return { attemptId: attempt.id, status: 'ENRICHED', corrected: existing.corrected };
+    }
+    const moment = await db.trainingMoment.findFirst({ where: { id: args.momentId, userId: args.userId }, select: attemptMomentSelect });
+    const revision = await db.solutionRevision.findFirst({ where: { id: request.solutionRevisionId, momentId: args.momentId }, select: attemptMomentSelect.currentSolutionRevision.select });
+    if (!moment || !revision) throw new TrainingAttemptError('Training revision not found', 'NOT_FOUND', 404);
+    moment.currentSolutionRevision = revision;
+    moment.currentSolutionRevisionId = request.solutionRevisionId;
+    const manifest = toTrainingPromptDto(moment).grading;
+    const step = attempt.steps.find(item => item.stepIndex === request.stepIndex && item.actor === 'USER');
+    if (!step) invalidAttempt('Refinement step not found');
+    const findNode = (node: TrainingSolutionTreeNodeDto): TrainingSolutionTreeNodeDto | null => node.contextId === request.clientEvidence.contextId && node.fen === step.fenBefore ? node : node.branches.map(branch => findNode(branch.child)).find(Boolean) ?? null;
+    const node = findNode(manifest.solutionTree);
+    if (!node) invalidAttempt('Refinement context not found');
+    const evaluation = clientEvaluation(manifest, node, step.moveUci, request.clientEvidence);
+    if (evaluation.result.status !== 'GRADED' || evaluation.result.grade !== request.grade) invalidAttempt('Refinement grade does not match its client evidence');
+    const corrected = ['BEST','STRONG','GOOD'].includes(step.grade ?? '') !== evaluation.result.accepted;
+    try {
+        await db.trainingAttemptAssessmentRevision.create({ data: { attemptId: attempt.id, clientEvidenceId: request.clientEvidenceId, payloadHash, grade: request.grade, gradingSource: 'CLIENT_EVALUATED', comparison: json(evaluation.comparison), evidence: json({ ...evaluation.evidence, stepIndex: request.stepIndex, evaluatedAt: request.evaluatedAt }), corrected } });
+    } catch (error) {
+        if (!isUniqueViolation(error)) throw error;
+        const winner = await db.trainingAttemptAssessmentRevision.findUnique({ where: key });
+        if (!winner || winner.payloadHash !== payloadHash) throw new TrainingAttemptError('clientEvidenceId payload conflict', 'IDEMPOTENCY_CONFLICT', 409);
+        return { attemptId: attempt.id, status: 'ENRICHED', corrected: winner.corrected };
+    }
+    // The initial event and schedule remain immutable. This personal revision is
+    // evidence refinement, not another practice attempt or canonical promotion.
+    return { attemptId: attempt.id, status: 'ENRICHED', corrected };
 }

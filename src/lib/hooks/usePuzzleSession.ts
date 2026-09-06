@@ -15,9 +15,11 @@ import type {
     GradedPracticeResult,
     PracticeResult,
     RecordTrainingAttemptRequest,
+    EnrichTrainingAttemptRequest,
     RecordedTrainingAttemptStepDto,
     RevealedPracticeResult,
     TrainingPromptDto,
+    TrainingReviewDto,
     TrainingSolutionTreeNodeDto,
 } from '@/lib/training/api';
 import { newClientId } from '@/lib/training/clientIds';
@@ -60,16 +62,25 @@ export type PuzzleSessionOptions = {
     unresolvedMode?: 'RETRY' | 'REVEAL';
     prewarmEngine?: boolean;
     stopEngineOnTerminal?: boolean;
+    onRefined?: (prompt: TrainingPromptDto, request: EnrichTrainingAttemptRequest) => void;
     onCompleted?: (completion: PuzzleSessionCompletion) => void;
 };
 
+function reviewWithLocalReference(review: TrainingReviewDto, evaluation: LocalMoveEvaluation): TrainingReviewDto {
+    const evidence = evaluation.clientEvidence;
+    if (!evidence) return review;
+    const reference = evidence.localReference;
+    const accepted = evaluation.result.status === 'GRADED' && evaluation.result.accepted;
+    return { ...review, bestMoveUci: reference.bestMoveUci, bestLineUci: [reference.bestMoveUci], scoreAtStart: reference.bestScore, acceptedMovesUci: [...new Set([reference.bestMoveUci, ...(accepted ? [evidence.metrics.moveUci] : [])])], acceptedMovesComplete: false };
+}
+
 function gradingSource(
     steps: readonly RecordedTrainingAttemptStepDto[]
-): 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE' {
+): 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE' {
     const sources = steps.flatMap((step) =>
         step.source ? [step.source] : []
     );
-    if (sources.includes('DYNAMIC')) return 'DYNAMIC';
+    if (sources.includes('CLIENT_EVALUATED')) return 'CLIENT_EVALUATED';
     if (sources.includes('TABLEBASE')) return 'TABLEBASE';
     return 'PRECOMPUTED';
 }
@@ -146,6 +157,8 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     const presentationSequenceRef = useRef(0);
     const onCompletedRef = useRef(options.onCompleted);
     onCompletedRef.current = options.onCompleted;
+    const onRefinedRef = useRef(options.onRefined);
+    onRefinedRef.current = options.onRefined;
 
     const getOrCreateEngine = useCallback(() => {
         if (engineRef.current) return engineRef.current;
@@ -162,6 +175,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     }, []);
 
     const activatePrompt = useCallback((next: TrainingPromptDto) => {
+        engineRef.current?.cancelAll();
         generationRef.current += 1;
         presentationSequenceRef.current += 1;
         promptRef.current = next;
@@ -186,6 +200,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     }, []);
 
     const clearPrompt = useCallback(() => {
+        engineRef.current?.cancelAll();
         generationRef.current += 1;
         presentationSequenceRef.current += 1;
         promptRef.current = null;
@@ -234,6 +249,12 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         []
     );
 
+    const retryEngineForGeneration = useCallback((generation: number) => {
+        if (generationRef.current !== generation) throw new Error('Practice position changed');
+        stopEngine();
+        return getOrCreateEngine();
+    }, [getOrCreateEngine, stopEngine]);
+
     const revealAfterUnresolved = useCallback(
         (submission: Submission, comparison: LocalMoveEvaluation['comparison']) => {
             const activePrompt = promptRef.current;
@@ -259,6 +280,11 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
             dispatchPresentation({
                 type: 'SETTLE',
                 sequenceId: submission.presentationSequenceId,
+            });
+            onCompletedRef.current?.({
+                prompt: activePrompt,
+                terminalReason: 'REVEALED',
+                request: { kind: 'RECORD', completedAt: new Date().toISOString(), clientAttemptId, solutionRevisionId: activePrompt.solutionRevisionId, status: 'REVEALED', steps: [...stepsRef.current, { stepIndex: submission.stepIndex, actor: 'USER', fenBefore: submission.fenBefore, moveUci: submission.moveUci, timeSpentMs: submission.timeSpentMs }] },
             });
             if (options.stopEngineOnTerminal) stopEngine();
         },
@@ -314,11 +340,12 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                 moveUci: submission.moveUci,
                 grade: evaluation.result.grade,
                 source: evaluation.source,
+                ...(evaluation.clientEvidence ? { clientEvidence: evaluation.clientEvidence } : {}),
                 comparison: evaluation.comparison,
                 timeSpentMs: submission.timeSpentMs,
             };
             const stepsWithUser = [...stepsRef.current, userStep];
-            const continuation = evaluation.result.accepted
+            const continuation = evaluation.result.accepted && activePrompt.grading.continuation.gradedContinuationReady
                 ? localContinuationForMove({
                       node: submission.node,
                       moveUci: submission.moveUci,
@@ -378,13 +405,14 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
             const graded: GradedPracticeResult = {
                 attemptId: clientAttemptIdRef.current,
                 status: 'GRADED',
+                refinement: evaluation.refinementNeeded ? 'PENDING' : undefined,
                 grade,
                 accepted:
                     grade === 'BEST' ||
                     grade === 'STRONG' ||
                     grade === 'GOOD',
                 review: {
-                    ...activePrompt.grading.review,
+                    ...reviewWithLocalReference(activePrompt.grading.review, evaluation),
                     submittedMoveUci: userSteps[0]?.moveUci ?? null,
                     comparison,
                 },
@@ -415,9 +443,29 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                     steps: stepsWithUser,
                 },
             });
+            if (evaluation.refinementNeeded) {
+                const attemptId = clientAttemptIdRef.current;
+                try {
+                    const refined = await gradeUnknownLocalMove({ engine: getOrCreateEngine(), retryEngine: () => retryEngineForGeneration(generation), manifest: activePrompt.grading, node: submission.node, moveUci: submission.moveUci });
+                    if (generationRef.current !== generation) return;
+                    if (refined.result.status === 'GRADED' && refined.clientEvidence) {
+                        const refinedStepGrade = refined.result.grade;
+                        const refinedGrade = aggregateTrainingGrade(userSteps.flatMap(step => step.stepIndex === submission.stepIndex ? [refinedStepGrade] : step.grade ? [step.grade] : []));
+                        const accepted = ['BEST', 'STRONG', 'GOOD'].includes(refinedGrade);
+                        const corrected = graded.accepted !== accepted;
+                        setResponse({ ...graded, grade: refinedGrade, accepted, refinement: corrected ? 'CORRECTED' : 'REFINED', review: { ...(userSteps.length === 1 ? reviewWithLocalReference(graded.review, refined) : graded.review), comparison: userSteps.length === 1 ? refined.comparison : graded.review.comparison } });
+                        dispatchPresentation({ type: 'REFINE_GRADE', sequenceId: presentationSequenceRef.current, moveUci: submission.moveUci, grade: refinedStepGrade });
+                        onRefinedRef.current?.(activePrompt, { kind: 'ENRICH', clientAttemptId: attemptId, solutionRevisionId: activePrompt.solutionRevisionId, clientEvidenceId: crypto.randomUUID(), stepIndex: submission.stepIndex, evaluatedAt: new Date().toISOString(), clientEvidence: refined.clientEvidence, grade: refined.result.grade });
+                    } else setResponse({ ...graded, refinement: 'UNRESOLVED' });
+                } catch {
+                    if (generationRef.current === generation) setResponse({ ...graded, refinement: 'UNRESOLVED' });
+                }
+            }
             if (options.stopEngineOnTerminal) stopEngine();
         },
         [
+            getOrCreateEngine,
+            retryEngineForGeneration,
             options.stopEngineOnTerminal,
             options.unresolvedMode,
             revealAfterUnresolved,
@@ -501,6 +549,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                 });
                 const evaluated = await gradeUnknownLocalMove({
                     engine: getOrCreateEngine(),
+                    retryEngine: () => retryEngineForGeneration(generation),
                     manifest: activePrompt.grading,
                     node,
                     moveUci,
@@ -538,6 +587,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         [
             applyEvaluation,
             getOrCreateEngine,
+            retryEngineForGeneration,
             options.unresolvedMode,
             phase,
             revealAfterUnresolved,
@@ -568,6 +618,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         try {
             const evaluated = await gradeUnknownLocalMove({
                 engine: getOrCreateEngine(),
+                retryEngine: () => retryEngineForGeneration(generation),
                 manifest: activePrompt.grading,
                 node: submission.node,
                 moveUci: submission.moveUci,
@@ -593,7 +644,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                 gradingInFlightRef.current = false;
             }
         }
-    }, [applyEvaluation, getOrCreateEngine, phase, stopEngine]);
+    }, [applyEvaluation, getOrCreateEngine, retryEngineForGeneration, phase, stopEngine]);
 
     const reveal = useCallback(() => {
         const activePrompt = promptRef.current;
@@ -718,6 +769,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
 
     return {
         prompt,
+        refinement: response?.status === 'GRADED' ? response.refinement : undefined,
         positionFen: solveFen,
         solveFen,
         displayFen,

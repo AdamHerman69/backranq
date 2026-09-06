@@ -14,6 +14,8 @@ function solutionTreeDto(value: unknown): TrainingSolutionTreeNodeDto {
     const node = value as Record<string, unknown>;
     if (
         typeof node.fen !== 'string' ||
+        typeof node.contextId !== 'string' ||
+        !Array.isArray(node.positionHistory) ||
         !Number.isSafeInteger(node.ply) ||
         (node.role !== 'USER' &&
             node.role !== 'OPPONENT' &&
@@ -24,6 +26,9 @@ function solutionTreeDto(value: unknown): TrainingSolutionTreeNodeDto {
     }
     return {
         fen: node.fen,
+        contextId: node.contextId as string,
+        positionHistory: node.positionHistory as string[],
+        ...(node.answerCoverage ? { answerCoverage: node.answerCoverage as import('@/lib/training/contracts').AnswerCoverage } : {}),
         ply: node.ply as number,
         role: node.role,
         acceptedMovesUci: Array.isArray(node.acceptedMovesUci)
@@ -70,10 +75,10 @@ export function trainingPromptFromCandidate(
     if (
         !candidate.solution.trainable ||
         candidate.solution.verificationStatus !== 'VERIFIED' ||
-        candidate.solution.acceptanceFrontier.status !== 'STABLE'
+        candidate.solution.decision.status !== 'CONFIRMED_MISTAKE'
     ) {
         throw new Error(
-            'Only a verified candidate with a stable accepted set can become a public puzzle.'
+            'Only a confirmed decision with supported answers can become a puzzle.'
         );
     }
     return {
@@ -83,6 +88,9 @@ export function trainingPromptFromCandidate(
         sideToMove: candidate.sideToMove,
         grading: {
             version: 1,
+            decision: candidate.solution.decision,
+            answerCoverage: candidate.solution.answerCoverage,
+            continuation: candidate.solution.continuation,
             trainingSide: candidate.sideToMove,
             positionHistory: candidate.positionHistory,
             originalMoveUci: candidate.originalMoveUci,
@@ -93,6 +101,9 @@ export function trainingPromptFromCandidate(
             solutionTree: solutionTreeDto(candidate.solution.solutionTree),
             moveAssessments: candidate.solution.moveAssessments.map(
                 (assessment) => ({
+                    positionKey: assessment.positionKey,
+                    referenceId: assessment.referenceId,
+                    tierStable: assessment.tierStable,
                     decisionIndex: assessment.decisionIndex,
                     fen: assessment.fen,
                     moveUci: assessment.moveUci,
@@ -109,8 +120,7 @@ export function trainingPromptFromCandidate(
                 bestMoveUci: candidate.solution.bestMoveUci,
                 acceptedMovesUci: candidate.solution.acceptedMovesUci,
                 acceptedMovesComplete:
-                    candidate.solution.acceptanceFrontier.status ===
-                    'STABLE',
+                    candidate.solution.answerCoverage.status !== 'PARTIAL',
                 bestLineUci: candidate.solution.bestLineUci,
                 scoreAtStart: candidate.solution.scoreAtStart,
                 originalDecision: {

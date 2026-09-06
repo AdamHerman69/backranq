@@ -1,11 +1,15 @@
 import type {
     AttemptGrade,
     AcceptanceFrontier,
+    AnswerCoverage,
+    DecisionAssessment,
+    ContinuationReadiness,
     GradingPolicyV3,
     PovScore,
     TrainingLessonKind,
     TrainingSourceKind,
 } from '@/lib/training/contracts';
+import type { TrainingMoveMetrics } from '@/lib/training/grader';
 import type { GameSource } from '@/lib/types/game';
 
 export const PRACTICE_FEED_MAX_LIMIT = 50;
@@ -65,6 +69,9 @@ export type TrainingPromptDto = {
 
 export type TrainingSolutionTreeNodeDto = {
     fen: string;
+    contextId: string;
+    positionHistory: string[];
+    answerCoverage?: AnswerCoverage;
     ply: number;
     role: 'USER' | 'OPPONENT' | 'TERMINAL';
     acceptedMovesUci: string[];
@@ -79,6 +86,9 @@ export type TrainingSolutionTreeNodeDto = {
 };
 
 export type TrainingMoveAssessmentDto = {
+    positionKey: string;
+    referenceId: string;
+    tierStable: boolean;
     decisionIndex: number;
     fen: string;
     moveUci: string;
@@ -95,6 +105,9 @@ export type TrainingMoveAssessmentDto = {
  */
 export type TrainingGradingManifestDto = {
     version: 1;
+    decision: DecisionAssessment;
+    answerCoverage: AnswerCoverage;
+    continuation: ContinuationReadiness;
     trainingSide: 'w' | 'b';
     positionHistory: string[];
     originalMoveUci: string;
@@ -138,15 +151,53 @@ export type TrainingMomentResponse = {
     moment: TrainingPromptDto;
 };
 
+/** Personal browser evidence; never a canonical engine attestation. */
+export type TrainingClientMoveEvidence = {
+    version: 1;
+    contextId: string;
+    referenceId: string;
+    policyVersion: number;
+    metrics: TrainingMoveMetrics;
+    tierStable: boolean;
+    localReference: {
+        id: string;
+        bestMoveUci: string;
+        bestScore: PovScore;
+        canonicalBestMoveUci: string;
+        canonicalScore: PovScore;
+        canonicalReferenceOutdated: boolean;
+    };
+    scoreAfter: PovScore | null;
+    searches: Array<{ nodes: number; best: unknown; submitted: unknown; original: unknown; canonical: unknown }>;
+};
+
+export type EnrichTrainingAttemptRequest = {
+    kind: 'ENRICH';
+    clientAttemptId: string;
+    solutionRevisionId: string;
+    clientEvidenceId: string;
+    stepIndex: number;
+    evaluatedAt: string;
+    clientEvidence: TrainingClientMoveEvidence;
+    grade: AttemptGrade;
+};
+export type EnrichTrainingAttemptResponse = {
+    attemptId: string;
+    status: 'ENRICHED';
+    corrected: boolean;
+};
+export type TrainingAttemptWriteRequest = RecordTrainingAttemptRequest | EnrichTrainingAttemptRequest;
+
 export type RecordedTrainingAttemptStepDto = {
     stepIndex: number;
     actor: 'USER' | 'ENGINE';
     fenBefore: string;
     moveUci: string;
     grade?: AttemptGrade;
-    source?: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE';
+    source?: 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE';
     comparison?: TrainingComparisonDto | null;
     timeSpentMs?: number;
+    clientEvidence?: TrainingClientMoveEvidence;
 };
 
 export type RecordTrainingAttemptRequest = {
@@ -157,7 +208,7 @@ export type RecordTrainingAttemptRequest = {
     solutionRevisionId: string;
     status: 'GRADED' | 'REVEALED';
     grade?: AttemptGrade;
-    gradingSource?: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE';
+    gradingSource?: 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE';
     comparison?: TrainingComparisonDto | null;
     steps: RecordedTrainingAttemptStepDto[];
 };
@@ -209,6 +260,7 @@ export type TrainingReviewDto = {
 };
 
 export type GradedPracticeResult = {
+    refinement?: 'PENDING' | 'REFINED' | 'CORRECTED' | 'UNRESOLVED';
     attemptId: string;
     status: 'GRADED';
     grade: AttemptGrade;

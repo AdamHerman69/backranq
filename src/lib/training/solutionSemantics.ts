@@ -4,12 +4,8 @@
  * revision evidence, but must not change otherwise identical solution
  * semantics.
  */
-function objectValue(
-    value: unknown
-): Record<string, unknown> | null {
-    return value &&
-        typeof value === 'object' &&
-        !Array.isArray(value)
+function objectValue(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
         ? (value as Record<string, unknown>)
         : null;
 }
@@ -18,12 +14,8 @@ function canonicalScore(value: unknown): unknown {
     const score = objectValue(value);
     if (!score) return value ?? null;
     return {
-        ...(typeof score.type === 'string'
-            ? { type: score.type }
-            : {}),
-        ...(typeof score.value === 'number'
-            ? { value: score.value }
-            : {}),
+        ...(typeof score.type === 'string' ? { type: score.type } : {}),
+        ...(typeof score.value === 'number' ? { value: score.value } : {}),
     };
 }
 
@@ -32,21 +24,13 @@ function canonicalWdl(value: unknown): unknown {
     const wdl = objectValue(value);
     if (!wdl) return value ?? null;
     return {
-        ...(typeof wdl.win === 'number'
-            ? { win: wdl.win }
-            : {}),
-        ...(typeof wdl.draw === 'number'
-            ? { draw: wdl.draw }
-            : {}),
-        ...(typeof wdl.loss === 'number'
-            ? { loss: wdl.loss }
-            : {}),
+        ...(typeof wdl.win === 'number' ? { win: wdl.win } : {}),
+        ...(typeof wdl.draw === 'number' ? { draw: wdl.draw } : {}),
+        ...(typeof wdl.loss === 'number' ? { loss: wdl.loss } : {}),
     };
 }
 
-function canonicalAssessmentEvaluation(
-    value: unknown
-): unknown {
+function canonicalAssessmentEvaluation(value: unknown): unknown {
     const evaluation = objectValue(value);
     if (!evaluation) return value ?? null;
     return {
@@ -64,8 +48,7 @@ function canonicalAssessmentEvaluation(
             : {}),
         ...(typeof evaluation.categoryAfterMove === 'string'
             ? {
-                  categoryAfterMove:
-                      evaluation.categoryAfterMove,
+                  categoryAfterMove: evaluation.categoryAfterMove,
               }
             : {}),
         ...(typeof evaluation.outcome === 'string'
@@ -82,9 +65,7 @@ function canonicalAssessmentEvaluation(
  * depth, nodes, elapsed time, provider identity and raw matched passes are
  * intentionally excluded from immutable solution identity.
  */
-export function canonicalMoveAssessmentEvidence(
-    value: unknown
-): unknown {
+export function canonicalMoveAssessmentEvidence(value: unknown): unknown {
     const evidence = objectValue(value);
     if (!evidence) return {};
     const output: Record<string, unknown> = {};
@@ -94,15 +75,24 @@ export function canonicalMoveAssessmentEvidence(
         'recoveredCp',
         'recoveredWinChance',
         'preservesOutcome',
+        'evidenceModel',
+        'referenceOutdated',
+        'stable',
     ] as const) {
         if (evidence[key] !== undefined) {
             output[key] = evidence[key];
         }
     }
-    if (evidence.evaluation !== undefined) {
-        output.evaluation = canonicalAssessmentEvaluation(
-            evidence.evaluation
+    const membership = objectValue(evidence.membership);
+    if (membership)
+        output.membership = Object.fromEntries(
+            ['status', 'stable', 'contextId', 'policyVersion'].map((key) => [
+                key,
+                membership[key],
+            ]),
         );
+    if (evidence.evaluation !== undefined) {
+        output.evaluation = canonicalAssessmentEvaluation(evidence.evaluation);
     }
     if (evidence.score !== undefined) {
         output.score = canonicalScore(evidence.score);
@@ -128,24 +118,46 @@ export function canonicalSolutionTreeSemantics(value: unknown): unknown {
     const node = value as Record<string, unknown>;
     const normalized: Record<string, unknown> = {};
     if (typeof node.fen === 'string') normalized.fen = node.fen;
+    for (const key of [
+        'contextId',
+        'positionHistory',
+        'explanationAvailable',
+        'gradedContinuationReady',
+    ]) {
+        if (node[key] !== undefined) normalized[key] = node[key];
+    }
+    const coverage = objectValue(node.answerCoverage);
+    if (coverage)
+        normalized.answerCoverage = Object.fromEntries(
+            [
+                'version',
+                'contextId',
+                'status',
+                'policyVersion',
+                'legalMovesUci',
+                'assessedMovesUci',
+                'coveredMovesUci',
+            ].map((key) => [
+                key,
+                Array.isArray(coverage[key])
+                    ? [...coverage[key]].sort()
+                    : coverage[key],
+            ]),
+        );
     if (Number.isSafeInteger(node.ply)) normalized.ply = node.ply;
     if (typeof node.role === 'string') normalized.role = node.role;
     if (Array.isArray(node.acceptedMovesUci)) {
         normalized.acceptedMovesUci = Array.from(
             new Set(
                 node.acceptedMovesUci
-                    .filter(
-                        (move): move is string => typeof move === 'string'
-                    )
+                    .filter((move): move is string => typeof move === 'string')
                     .map((move) => move.trim().toLowerCase())
-                    .filter(Boolean)
-            )
+                    .filter(Boolean),
+            ),
         ).sort();
     }
     if (typeof node.selectedMoveUci === 'string') {
-        normalized.selectedMoveUci = node.selectedMoveUci
-            .trim()
-            .toLowerCase();
+        normalized.selectedMoveUci = node.selectedMoveUci.trim().toLowerCase();
     }
     if (typeof node.alternativesComplete === 'boolean') {
         normalized.alternativesComplete = node.alternativesComplete;
@@ -159,7 +171,7 @@ export function canonicalSolutionTreeSemantics(value: unknown): unknown {
                 (branch): branch is Record<string, unknown> =>
                     !!branch &&
                     typeof branch === 'object' &&
-                    !Array.isArray(branch)
+                    !Array.isArray(branch),
             )
             .map((branch) => ({
                 moveUci:

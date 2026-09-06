@@ -276,7 +276,7 @@ integration('analysis job lifecycle on PostgreSQL', () => {
                     blackMoveAccuracies: [],
                     extractionErrors: [],
                     decisionReceipts: [],
-                    lookaheadOwnedUserDecisionPlies: [],
+                    scanEvidence: [],
                 },
             });
             expect(yielded).toMatchObject({ status: 'QUEUED', attempts: 4 });

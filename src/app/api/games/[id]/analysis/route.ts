@@ -19,7 +19,9 @@ import {
     boundedJsonBody,
     isStrictIsoInstant,
 } from '@/lib/api/validation';
-import { hashSourcePgn } from '@/lib/chess/pgn';
+import { hashSourcePgn, sourcePgnPositionFens } from '@/lib/chess/pgn';
+import { isCompleteExtractionManifest } from '@/lib/analysis/extractionManifest';
+import { EXTRACTION_CONFIG_VERSION } from '@/lib/analysis/extractionConfig';
 import {
     trainingMomentCandidatesMatchSource,
     validateTrainingMomentCandidates,
@@ -168,23 +170,7 @@ function isGameAnalysis(value: unknown): value is GameAnalysis {
 function validateExtractionManifest(
     value: unknown
 ): ExtractionCompletionManifest | null {
-    if (
-        !isObject(value) ||
-        value.version !== 1 ||
-        value.complete !== true ||
-        typeof value.sourceGameId !== 'string' ||
-        typeof value.sourcePgnHash !== 'string' ||
-        !Number.isSafeInteger(value.scannedPlies) ||
-        !Number.isSafeInteger(value.expectedPlies) ||
-        (value.scannedPlies as number) < 0 ||
-        value.scannedPlies !== value.expectedPlies ||
-        value.termination !== 'COMPLETED' ||
-        !Array.isArray(value.errors) ||
-        value.errors.length !== 0
-    ) {
-        return null;
-    }
-    return value as ExtractionCompletionManifest;
+    return isCompleteExtractionManifest(value) ? value : null;
 }
 
 function analysisMatchesPgn(analysis: GameAnalysis, pgn: string): boolean {
@@ -218,7 +204,7 @@ function configMatchesAnalysisQuality(
     value: Record<string, unknown>,
     quality: AnalysisQuality
 ): boolean {
-    if (value.version !== 2 || !isObject(value.extractor)) return false;
+    if (value.version !== EXTRACTION_CONFIG_VERSION || !isObject(value.extractor)) return false;
     const extractor = value.extractor;
     const profile = analysisQualityProfile(quality);
     return (
@@ -436,12 +422,13 @@ export async function PUT(
     }
     const expectedTrainingSide =
         frozenPerspective.userSide === 'white' ? 'WHITE' : 'BLACK';
-    const expectedDecisionParity =
-        frozenPerspective.userSide === 'white' ? 0 : 1;
+    const sourcePositions = sourcePgnPositionFens(game.pgn);
     if (
         analysis.trainingExtraction.trainingSide !== expectedTrainingSide ||
         analysis.trainingExtraction.decisions.some(
-            (decision) => decision.ply % 2 !== expectedDecisionParity
+            (decision) =>
+                sourcePositions?.[decision.ply]?.split(/\s+/)[1] !==
+                frozenPerspective.userColor
         ) ||
         trainingMomentValidation.moments.some(
             (moment) => moment.sideToMove !== frozenPerspective.userColor

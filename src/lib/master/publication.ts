@@ -1,3 +1,4 @@
+import { ATTEMPT_GRADES, type AttemptGrade } from '@/lib/training/contracts';
 import { Prisma } from '@prisma/client';
 import type { TrainingPromptDto } from '@/lib/training/api';
 import { toTrainingPromptDto } from '@/lib/training/apiMappers';
@@ -35,6 +36,9 @@ function moveAssessments(value: Prisma.JsonValue) {
                 item != null && typeof item === 'object' && !Array.isArray(item)
         )
         .map((item) => ({
+            positionKey: typeof item.positionKey === 'string' ? item.positionKey : '',
+            referenceId: typeof item.referenceId === 'string' ? item.referenceId : '',
+            tierStable: item.tierStable === true,
             decisionIndex:
                 typeof item.decisionIndex === 'number'
                     ? item.decisionIndex
@@ -47,21 +51,20 @@ function moveAssessments(value: Prisma.JsonValue) {
                     ? ('TABLEBASE' as const)
                     : ('PRECOMPUTED' as const),
             status: 'VERIFIED' as const,
-            grade:
-                item.grade === 'GOOD'
-                    ? ('GOOD' as const)
-                    : item.grade === 'STRONG'
-                      ? ('STRONG' as const)
-                      : ('BEST' as const),
+            grade: ATTEMPT_GRADES.includes(item.grade as AttemptGrade)
+                ? item.grade as AttemptGrade
+                : null,
             scoreAfter: item.scoreAfter ?? null,
             evidence: item.evidence ?? null,
         }))
-        .filter((item) => item.fen && item.moveUci);
+        .filter((item): item is typeof item & { grade: AttemptGrade } => Boolean(item.fen && item.moveUci && item.grade));
 }
 
 export function masterCandidateToTrainingPrompt(
     candidate: PublicationCandidate
 ): TrainingPromptDto {
+    const contract = (candidate.evidence as Prisma.JsonObject)?.solutionContract as Prisma.JsonObject;
+    if (!contract) throw new Error('Master candidate requires current extraction evidence');
     return toTrainingPromptDto({
         id: candidate.id,
         currentSolutionRevisionId: candidate.id,
@@ -83,6 +86,10 @@ export function masterCandidateToTrainingPrompt(
             playedAt: candidate.snapshot.playedAt,
         },
         currentSolutionRevision: {
+            decision: contract.decision,
+            answerCoverage: contract.answerCoverage,
+            continuation: contract.continuation,
+            originalDecision: contract.originalDecision,
             bestMoveUci: candidate.bestMoveUci,
             acceptedMovesUci: candidate.acceptedMovesUci,
             acceptanceFrontier: candidate.acceptanceFrontier,

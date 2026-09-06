@@ -8,6 +8,7 @@ import { timeClassToUi } from '@/lib/games/dbMappings';
 import type { weeklyMasterConfig } from '@/lib/master/config';
 import {
     masterCandidateKey,
+    masterContentHash,
     rankMasterCandidate,
 } from '@/lib/master/ranking';
 import { MasterSnapshotAnalysisError } from '@/lib/master/analysisErrors';
@@ -118,11 +119,14 @@ export async function analyzeMasterSnapshot(args: {
                 now,
             });
             const solution = moment.solution;
+            const originalDecision = { ...moment.originalDecision, sourceKinds: moment.sourceKinds,
+                lessonKinds: moment.lessonKinds, themes: moment.themes, phase: moment.phase ?? null };
             const candidateKey = masterCandidateKey({
                 snapshotId: snapshot.id,
                 personId: account.personId,
                 decisionPly: moment.decisionPly,
                 configHash: solution.configHash,
+                evidenceHash: masterContentHash({ solution, originalDecision }),
             });
             persisted.push(
                 await prisma.masterCandidate.upsert({
@@ -170,6 +174,12 @@ export async function analyzeMasterSnapshot(args: {
                         targetOutcome: json(solution.targetOutcome),
                         gradingPolicy: json(solution.gradingPolicy),
                         evidence: json({
+                            solutionContract: {
+                                decision: solution.decision,
+                                answerCoverage: solution.answerCoverage,
+                                continuation: solution.continuation,
+                                originalDecision,
+                            },
                             solution: solution.evidence,
                             extractionManifest: manifest,
                             analysisConfig:
@@ -186,6 +196,12 @@ export async function analyzeMasterSnapshot(args: {
                     update: {
                         pipelineRunId: args.pipelineRunId,
                         evidence: json({
+                            solutionContract: {
+                                decision: solution.decision,
+                                answerCoverage: solution.answerCoverage,
+                                continuation: solution.continuation,
+                                originalDecision,
+                            },
                             solution: solution.evidence,
                             extractionManifest: manifest,
                             analysisConfig:

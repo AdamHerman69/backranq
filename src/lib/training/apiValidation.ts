@@ -6,6 +6,8 @@ import {
     type PracticeFeedFocus,
     type PracticeFeedRequest,
     type RecordTrainingAttemptRequest,
+    type EnrichTrainingAttemptRequest,
+    type TrainingClientMoveEvidence,
     type RecordedTrainingAttemptStepDto,
     type TrainingComparisonDto,
     type TrainingPhase,
@@ -281,7 +283,7 @@ export function parseRecordTrainingAttemptRequest(
     if (value.grade !== undefined && !grade) return null;
     const gradingSource =
         value.gradingSource === 'PRECOMPUTED' ||
-        value.gradingSource === 'DYNAMIC' ||
+        value.gradingSource === 'CLIENT_EVALUATED' ||
         value.gradingSource === 'TABLEBASE'
             ? value.gradingSource
             : undefined;
@@ -373,6 +375,7 @@ function parseRecordedStep(
             'source',
             'comparison',
             'timeSpentMs',
+            'clientEvidence',
         ]) ||
         !Number.isSafeInteger(value.stepIndex) ||
         (value.stepIndex as number) < 0 ||
@@ -400,14 +403,17 @@ function parseRecordedStep(
     if (value.grade !== undefined && !grade) return null;
     const source =
         value.source === 'PRECOMPUTED' ||
-        value.source === 'DYNAMIC' ||
+        value.source === 'CLIENT_EVALUATED' ||
         value.source === 'TABLEBASE'
             ? value.source
             : undefined;
     if (value.source !== undefined && !source) return null;
     const comparison = parseComparison(value.comparison);
-    if (comparison === 'INVALID') return null;
+    const clientEvidence = value.clientEvidence === undefined ? undefined : parseTrainingClientEvidence(value.clientEvidence);
+    if (comparison === 'INVALID' || clientEvidence === null) return null;
+    if ((source === 'CLIENT_EVALUATED') !== (clientEvidence !== undefined)) return null;
     return {
+        ...(clientEvidence ? { clientEvidence } : {}),
         stepIndex: value.stepIndex as number,
         actor: value.actor,
         fenBefore: value.fenBefore,
@@ -417,4 +423,58 @@ function parseRecordedStep(
         ...(comparison === undefined ? {} : { comparison }),
         ...(timeSpentMs == null ? {} : { timeSpentMs }),
     };
+}
+
+export function parseTrainingClientEvidence(value: unknown): TrainingClientMoveEvidence | null {
+    if (!isObject(value) || !hasOnlyKeys(value, ['version', 'contextId', 'referenceId', 'policyVersion', 'metrics', 'scoreAfter', 'searches', 'localReference', 'tierStable']) || value.version !== 1) return null;
+    for (const key of ['contextId', 'referenceId']) {
+        if (typeof value[key] !== 'string' || value[key].length < 1 || value[key].length > 256) return null;
+    }
+    if (!Number.isSafeInteger(value.policyVersion) || (value.policyVersion as number) < 1) return null;
+    if (value.scoreAfter !== null && !isPovScore(value.scoreAfter)) return null;
+    if (typeof value.tierStable !== 'boolean') return null;
+    const reference = value.localReference;
+    if (!isObject(reference) || !hasOnlyKeys(reference, ['id','bestMoveUci','bestScore','canonicalBestMoveUci','canonicalScore','canonicalReferenceOutdated']) ||
+        typeof reference.id !== 'string' || reference.id.length < 1 || reference.id.length > 256 || reference.id === value.referenceId ||
+        typeof reference.bestMoveUci !== 'string' || !UCI_RE.test(reference.bestMoveUci) ||
+        typeof reference.canonicalBestMoveUci !== 'string' || !UCI_RE.test(reference.canonicalBestMoveUci) ||
+        !isPovScore(reference.bestScore) || !isPovScore(reference.canonicalScore) || typeof reference.canonicalReferenceOutdated !== 'boolean') return null;
+    const m = value.metrics;
+    if (!isObject(m) || !hasOnlyKeys(m, ['moveUci','originalMoveUci','stable','bestGapCp','bestGapWinChance','recoveredCp','recoveredWinChance','preservesOutcome','evidenceModel','referenceOutdated']) ||
+        typeof m.moveUci !== 'string' || !UCI_RE.test(m.moveUci) ||
+        typeof m.originalMoveUci !== 'string' || (m.originalMoveUci !== '' && !UCI_RE.test(m.originalMoveUci)) ||
+        typeof m.stable !== 'boolean' || !['MATCHED_WDL','CP_ONLY','EXACT_OUTCOME'].includes(String(m.evidenceModel)) ||
+        (m.referenceOutdated !== undefined && typeof m.referenceOutdated !== 'boolean') ||
+        (m.preservesOutcome != null && typeof m.preservesOutcome !== 'boolean')) return null;
+    for (const key of ['bestGapCp','bestGapWinChance','recoveredCp','recoveredWinChance']) {
+        const n = m[key];
+        if (n != null && (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > (key.endsWith('WinChance') ? 1 : 100000))) return null;
+    }
+    if (!Array.isArray(value.searches) || value.searches.length < 2 || value.searches.length > 3) return null;
+    for (const search of value.searches) {
+        if (!boundedClientJson(search) || !isObject(search) || !hasOnlyKeys(search,['nodes','best','submitted','original','canonical']) || !Number.isSafeInteger(search.nodes) || (search.nodes as number) < 1 || (search.nodes as number) > 400000) return null;
+    }
+    // Payload size is bounded by the route. Search reports are untrusted client provenance.
+    return value as TrainingClientMoveEvidence;
+}
+
+export function parseEnrichTrainingAttemptRequest(value: unknown, receivedAt = new Date()): EnrichTrainingAttemptRequest | null {
+    if (!isObject(value) || value.kind !== 'ENRICH' || !hasOnlyKeys(value,['kind','clientAttemptId','solutionRevisionId','clientEvidenceId','stepIndex','evaluatedAt','clientEvidence','grade'])) return null;
+    for (const key of ['clientAttemptId','solutionRevisionId','clientEvidenceId']) {
+        if (typeof value[key] !== 'string' || !isTrainingApiUuid(value[key])) return null;
+    }
+    if (!Number.isSafeInteger(value.stepIndex) || (value.stepIndex as number) < 0 || (value.stepIndex as number) > MAX_TRAINING_CONTINUATION_STEPS || !(ATTEMPT_GRADES as readonly unknown[]).includes(value.grade)) return null;
+    const evaluatedAt = parseTrainingCompletionTime(value.evaluatedAt, receivedAt);
+    const clientEvidence = parseTrainingClientEvidence(value.clientEvidence);
+    if (!evaluatedAt || !clientEvidence) return null;
+    return { ...value, evaluatedAt: evaluatedAt.toISOString(), clientEvidence } as EnrichTrainingAttemptRequest;
+}
+
+function boundedClientJson(value: unknown, depth = 0): boolean {
+    if (depth > 8) return false;
+    if (value === null || typeof value === 'boolean') return true;
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value === 'string') return value.length <= 1024;
+    if (Array.isArray(value)) return value.length <= 256 && value.every(item => boundedClientJson(item, depth + 1));
+    return isObject(value) && Object.keys(value).length <= 32 && Object.values(value).every(item => boundedClientJson(item, depth + 1));
 }

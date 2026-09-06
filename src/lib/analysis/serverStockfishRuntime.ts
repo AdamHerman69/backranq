@@ -87,6 +87,7 @@ export async function createStockfish18LiteEngine(): Promise<ServerStockfishRunt
                 return;
             }
             terminated = true;
+            child.kill('SIGTERM');
             runtime.errorListener?.(error);
         };
 

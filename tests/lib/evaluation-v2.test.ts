@@ -13,7 +13,7 @@ describe('explicit engine evaluation model', () => {
     it('keeps mate categorical while providing stable legacy ordering', () => {
         expect(scoreToOrderingCp({ type: 'mate', value: 1 })).toBe(99_999);
         expect(scoreToOrderingCp({ type: 'mate', value: -3 })).toBe(-99_997);
-        expect(scoreToOrderingCp({ type: 'mate', value: 0 })).toBe(0);
+        expect(scoreToOrderingCp({ type: 'mate', value: 0 })).toBe(-100000);
         expect(winningChance({ type: 'mate', value: 1 })).toBe(1);
         expect(winningChance({ type: 'mate', value: -1 })).toBe(0);
     });
@@ -38,10 +38,10 @@ describe('explicit engine evaluation model', () => {
             { score: { type: 'cp', value: 90 } }
         );
         expect(loss.cp).toBe(30);
-        expect(loss.winningChance).toBeGreaterThan(0);
+        expect(loss.winningChance).toBeNull();
     });
 
-    it('uses winning-chance loss before the centipawn fallback', () => {
+    it('uses explicit cp-only loss when paired WDL is absent', () => {
         const saturated = evaluationLoss(
             { score: { type: 'cp', value: 1_200 } },
             { score: { type: 'cp', value: 900 } }
@@ -52,7 +52,7 @@ describe('explicit engine evaluation model', () => {
                 minWinningChanceLoss: 0.03,
                 fallbackMinCpLoss: 30,
             })
-        ).toBe(false);
+        ).toBe(true);
 
         expect(
             qualifiesEvaluationLoss(

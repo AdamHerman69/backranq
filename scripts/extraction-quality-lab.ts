@@ -5,6 +5,7 @@ import { Chess } from 'chess.js';
 import { extractTrainingMomentsFromGames } from '@/lib/analysis/extractTrainingMoments';
 import type { TrainingExtractionReceipt } from '@/lib/analysis/extractionReceipt';
 import { ServerStockfishClient } from '@/lib/analysis/serverStockfishClient';
+import { ExtractionQualityAudit } from './extraction-quality-audit';
 import type {
     AnalysisLimit,
     EvalResult,
@@ -20,9 +21,12 @@ const corpusPath = path.join(
     repositoryRoot,
     'tests/fixtures/training-v2/real-games.corpus.v1.json'
 );
+const reportName = process.env.BACKRANQ_EXTRACTION_REPORT_DIRECTORY;
+if (reportName && !/^[a-z0-9-]+$/i.test(reportName)) throw new Error('Invalid lab report directory name');
 const reportDirectory = path.join(
     repositoryRoot,
-    'artifacts/extraction-quality-lab'
+    'artifacts/extraction-quality-lab',
+    ...(reportName ? [reportName] : [])
 );
 const allowedTimeClasses = new Set(['blitz', 'rapid']);
 const targetPerProviderAndTimeClass = 4;
@@ -314,7 +318,7 @@ class CountingEngine implements StockfishEngine {
         largestMultiPv: 1,
     };
 
-    constructor(private readonly engine: ServerStockfishClient) {}
+    constructor(private readonly engine: StockfishEngine) {}
 
     private record(
         kind: 'eval' | 'multipv',
@@ -343,11 +347,11 @@ class CountingEngine implements StockfishEngine {
     }
 
     getIdentity() {
-        return this.engine.getIdentity();
+        return this.engine.getIdentity!();
     }
 
     terminate() {
-        this.engine.terminate();
+        this.engine.terminate?.();
     }
 }
 
@@ -373,8 +377,11 @@ async function runProfile(
     const games: GameRun[] = [];
     for (const [index, game] of corpus.games.entries()) {
         const startedAt = performance.now();
+        const audit = process.env.BACKRANQ_EXTRACTION_AUDIT === '1'
+            ? new ExtractionQualityAudit(`${profile.name}-${game.id}`)
+            : null;
         const engine = new CountingEngine(
-            new ServerStockfishClient({
+            audit ?? new ServerStockfishClient({
                 defaultNodes: profile.nodesPerPosition,
                 defaultTimeoutMs: 60_000,
             })
@@ -396,6 +403,8 @@ async function runProfile(
                     maxAcceptedMoves: 16,
                 },
             });
+            const extractionWallTimeMs = Math.round(performance.now() - startedAt);
+            audit?.write(output);
             const manifest = output.manifests[0];
             const analysis = output.analysis?.get(game.id);
             games.push({
@@ -405,7 +414,7 @@ async function runProfile(
                 playedAt: game.playedAt,
                 complete: manifest?.complete === true,
                 manifestErrors: manifest?.errors ?? ['Missing manifest'],
-                wallTimeMs: Math.round(performance.now() - startedAt),
+                wallTimeMs: extractionWallTimeMs,
                 cost: { ...engine.cost },
                 moments: output.moments.map((moment) => ({
                     key: `${game.id}:${moment.decisionPly}`,
@@ -424,6 +433,9 @@ async function runProfile(
                 receiptReasons:
                     analysis?.trainingExtraction.summary.reasons ?? {},
             });
+        } catch (error) {
+            audit?.write(null, error);
+            throw error;
         } finally {
             engine.terminate();
         }
@@ -668,6 +680,19 @@ async function runLab(mode: 'smoke' | 'full', requestedLimit: number | null) {
                   verificationNodesPerPosition: 400_000,
               };
     const productRun = await runProfile(corpus, product);
+    if (process.env.BACKRANQ_EXTRACTION_PRODUCT_ONLY === '1') {
+        fs.mkdirSync(reportDirectory, { recursive: true });
+        const jsonPath = path.join(reportDirectory, `${mode}-product-only.json`);
+        fs.writeFileSync(jsonPath, `${JSON.stringify({
+            version: 1,
+            generatedAt: new Date().toISOString(),
+            mode,
+            corpus: { path: path.relative(repositoryRoot, corpusPath), games: corpus.games.length },
+            product: productRun,
+        }, null, 2)}\n`);
+        console.log(JSON.stringify({ jsonPath, productOnly: true }));
+        return;
+    }
     const referenceRun = await runProfile(corpus, reference);
     const report = {
         version: 1,

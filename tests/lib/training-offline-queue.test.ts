@@ -12,7 +12,7 @@ import {
 import { TrainingClientError } from '@/lib/training/client';
 
 const queued: QueuedTrainingAttempt = {
-    version: 4,
+    version: 5,
     ownerId: 'owner-a',
     momentId: 'moment-a',
     request: {

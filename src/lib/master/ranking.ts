@@ -41,17 +41,14 @@ export function rankMasterCandidate(args: {
         reasons.push('NOT_VERIFIED');
     }
     if (solution.solutionShape === 'OPEN') reasons.push('OPEN_SOLUTION');
-    if (solution.acceptanceFrontier.status !== 'STABLE') {
-        reasons.push('ACCEPTANCE_FRONTIER_NOT_STABLE');
+    if (solution.decision.status !== 'CONFIRMED_MISTAKE') {
+        reasons.push('DECISION_NOT_CONFIRMED');
     }
     if (acceptedCount < 1 || acceptedCount > 3) {
         reasons.push('ACCEPTED_MOVE_FRONTIER_UNCLEAR');
     }
     if (lineLength < 1 || lineLength > 10) {
         reasons.push('SOLUTION_LENGTH_UNSUITABLE');
-    }
-    if ((args.moment.confidence ?? 0) < 0.95) {
-        reasons.push('LOW_ENGINE_CONFIDENCE');
     }
     if (
         solution.acceptedMovesUci.some(
@@ -80,7 +77,9 @@ export function rankMasterCandidate(args: {
             : acceptedCount === 2
               ? 0.78
               : 0.58;
-    const engineConfidenceScore = clamp01(args.moment.confidence ?? 0);
+    // Ranking weight for verified decision evidence; this is not a calibrated probability.
+    const engineConfidenceScore = solution.decision.status === 'CONFIRMED_MISTAKE' &&
+        solution.verificationStatus === 'VERIFIED' ? 1 : 0;
     const humanInterestScore = clamp01(
         Math.max(winChanceLoss / 0.25, cpLoss / 500)
     );
@@ -117,11 +116,13 @@ export function masterCandidateKey(args: {
     personId: string;
     decisionPly: number;
     configHash: string;
+    evidenceHash: string;
 }) {
     return createHash('sha256')
         .update(
             stableCanonicalStringify({
-                version: 1,
+                version: 2,
+                evidenceHash: args.evidenceHash,
                 snapshotId: args.snapshotId,
                 personId: args.personId,
                 decisionPly: args.decisionPly,

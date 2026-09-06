@@ -1,3 +1,4 @@
+import { isCompleteExtractionManifest } from '@/lib/analysis/extractionManifest';
 import type { Prisma } from '@prisma/client';
 import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainingMoments';
 import { hashSourcePgn } from '@/lib/chess/pgn';
@@ -151,7 +152,7 @@ function assertSolutionHash(solution: SolutionRevisionInput) {
         frontierMoves.some(
             (move, index) => move !== acceptedMoves[index]
         ) ||
-        (solution.acceptanceFrontier.status !== 'STABLE' &&
+        (solution.decision.status !== 'CONFIRMED_MISTAKE' &&
             solution.trainable) ||
         acceptedMoves.some((move) => !rootAssessments.has(move)) ||
         rootAssessments.get(normalizeUci(solution.bestMoveUci))?.grade !==
@@ -205,7 +206,6 @@ function assertMomentEvidence(moment: PersistableTrainingMoment) {
         !normalizeUci(moment.originalMoveUci) ||
         (moment.sideToMove !== 'w' && moment.sideToMove !== 'b') ||
         moment.sourceKinds.length === 0 ||
-        moment.lessonKinds.length === 0 ||
         (cpLoss !== undefined &&
             (!Number.isFinite(cpLoss) || cpLoss < 0)) ||
         (winChanceLoss !== undefined &&
@@ -297,6 +297,7 @@ function revisionCreateData(args: {
     revision: number;
     solution: SolutionRevisionInput;
     duplicateSolutionHashes: string[];
+    originalDecision: unknown;
 }): Prisma.SolutionRevisionUncheckedCreateInput {
     const solution = args.solution;
     return {
@@ -318,6 +319,10 @@ function revisionCreateData(args: {
             )
         ),
         acceptanceFrontier: json(solution.acceptanceFrontier),
+        decision: json(solution.decision),
+        answerCoverage: json(solution.answerCoverage),
+        continuation: json(solution.continuation),
+        originalDecision: json(args.originalDecision),
         bestLine: json(solution.bestLineUci.map(normalizeUci)),
         solutionTree: json(solution.solutionTree),
         scoreAtStart:
@@ -358,7 +363,7 @@ async function assertCurrentRevisionBelongsToMoment(
     if (!moment.currentSolutionRevisionId) return null;
     const current = await tx.solutionRevision.findUnique({
         where: { id: moment.currentSolutionRevisionId },
-        select: { id: true, momentId: true, solutionHash: true },
+        select: { id: true, momentId: true, solutionHash: true, configHash: true, generatorVersion: true, originalDecision: true, evidence: true, verificationStatus: true, trainable: true },
     });
     if (!current || current.momentId !== moment.id) {
         throw new Error(
@@ -379,10 +384,17 @@ async function appendOrReuseRunRevision(args: {
         lessonKinds: TrainingLessonKind[];
         themes: string[];
     };
+    originalDecision: unknown;
     currentRevision: {
         id: string;
         momentId: string;
         solutionHash: string;
+        configHash: string;
+        generatorVersion: string;
+        originalDecision: unknown;
+        evidence: unknown;
+        verificationStatus: string;
+        trainable: boolean;
     } | null;
 }) {
     const observation = await args.tx.trainingMomentObservation.findUnique({
@@ -395,6 +407,7 @@ async function appendOrReuseRunRevision(args: {
         select: {
             solutionRevisionId: true,
             observedSolutionHash: true,
+            solutionRevision: { select: { configHash: true, generatorVersion: true, originalDecision: true, evidence: true } },
         },
     });
     if (observation) {
@@ -405,6 +418,13 @@ async function appendOrReuseRunRevision(args: {
             throw new Error(
                 'Analysis run already observed different solution semantics'
             );
+        }
+        const pinned = observation.solutionRevision;
+        if (!pinned || pinned.configHash !== args.solution.configHash ||
+            pinned.generatorVersion !== args.solution.generatorVersion ||
+            stableCanonicalStringify(pinned.originalDecision) !== stableCanonicalStringify(args.originalDecision) ||
+            stableCanonicalStringify((pinned.evidence as {selected?: unknown})?.selected) !== stableCanonicalStringify(args.solution.evidence)) {
+            throw new Error('Analysis run already observed different immutable evidence');
         }
         return {
             revision: {
@@ -423,7 +443,11 @@ async function appendOrReuseRunRevision(args: {
     let created = false;
     if (
         args.currentRevision?.momentId === args.momentId &&
-        args.currentRevision.solutionHash === args.solution.solutionHash
+        args.currentRevision.solutionHash === args.solution.solutionHash &&
+        args.currentRevision.configHash === args.solution.configHash &&
+        args.currentRevision.generatorVersion === args.solution.generatorVersion &&
+        stableCanonicalStringify(args.currentRevision.originalDecision) === stableCanonicalStringify(args.originalDecision) &&
+        stableCanonicalStringify((args.currentRevision.evidence as {selected?: unknown})?.selected) === stableCanonicalStringify(args.solution.evidence)
     ) {
         revision = args.currentRevision;
     } else {
@@ -434,6 +458,7 @@ async function appendOrReuseRunRevision(args: {
                 revision: await nextRevision(args.tx, args.momentId),
                 solution: args.solution,
                 duplicateSolutionHashes: args.duplicateSolutionHashes,
+                originalDecision: args.originalDecision,
             }),
             select: {
                 id: true,
@@ -446,6 +471,8 @@ async function appendOrReuseRunRevision(args: {
             data: args.solution.moveAssessments.map((assessment) => ({
                 solutionRevisionId: revision.id,
                 positionKey: assessment.positionKey,
+                referenceId: assessment.referenceId,
+                tierStable: assessment.tierStable,
                 decisionIndex: assessment.decisionIndex,
                 fen: assessment.fen,
                 moveUci: normalizeUci(assessment.moveUci),
@@ -487,6 +514,7 @@ export async function persistTrainingMomentsInTransaction(
     }
     const manifest = args.extractionManifest;
     if (
+        !isCompleteExtractionManifest(manifest) ||
         manifest.version !== 1 ||
         manifest.complete !== true ||
         manifest.sourceGameId !== args.gameId ||
@@ -566,15 +594,7 @@ export async function persistTrainingMomentsInTransaction(
                     ) ||
                 existing.sideToMove !== selected.sideToMove ||
                 normalizeUci(existing.originalMoveUci) !==
-                    normalizeUci(selected.originalMoveUci) ||
-                stableCanonicalStringify(existing.scoreBefore) !==
-                    stableCanonicalStringify(
-                        selected.originalDecision.scoreBefore
-                    ) ||
-                stableCanonicalStringify(existing.scoreAfter) !==
-                    stableCanonicalStringify(
-                        selected.originalDecision.scoreAfter
-                    ))
+                    normalizeUci(selected.originalMoveUci))
         ) {
             throw new Error(
                 'Stored training moment does not match its canonical identity'
@@ -585,6 +605,13 @@ export async function persistTrainingMomentsInTransaction(
             : null;
 
         const metadata = mergeTrainingMomentMetadata(selected);
+        const unresolved = selected.solution.decision.status === 'UNRESOLVED';
+        const disproved = selected.solution.decision.status === 'NOT_A_MISTAKE';
+        const preserveCurrent = unresolved && currentRevision?.trainable === true && currentRevision.verificationStatus === 'VERIFIED';
+        const status = disproved ? 'ARCHIVED' : unresolved
+            ? preserveCurrent && currentRevision.configHash === args.analysisConfigHash ? 'ACTIVE' : 'UNSTABLE'
+            : selected.solution.trainable ? 'ACTIVE' : 'UNSTABLE';
+        const archivedAt = disproved ? new Date() : null;
         const moment = await args.tx.trainingMoment.upsert({
             where: { momentKey: selected.momentKey },
             create: {
@@ -603,19 +630,25 @@ export async function persistTrainingMomentsInTransaction(
                 winChanceLoss: selected.originalDecision.winChanceLoss,
                 confidence: selected.confidence,
                 phase: selected.phase,
-                status: 'ACTIVE',
+                status,
                 sourceKinds: metadata.sourceKinds,
                 lessonKinds: metadata.lessonKinds,
                 themes: metadata.themes,
-                archivedAt: null,
+                archivedAt,
             },
-            update: {
-                status: 'ACTIVE',
+            update: preserveCurrent ? { status, archivedAt } : {
+                status,
+                scoreBefore: json(selected.originalDecision.scoreBefore),
+                scoreAfter: json(selected.originalDecision.scoreAfter),
+                cpLoss: selected.originalDecision.cpLoss ?? null,
+                winChanceLoss: selected.originalDecision.winChanceLoss ?? null,
+                confidence: selected.confidence,
+                phase: selected.phase,
                 positionHistory: selected.positionHistory,
                 sourceKinds: metadata.sourceKinds,
                 lessonKinds: metadata.lessonKinds,
                 themes: metadata.themes,
-                archivedAt: null,
+                archivedAt,
             },
             select: { id: true },
         });
@@ -631,6 +664,18 @@ export async function persistTrainingMomentsInTransaction(
                 lessonKinds: selected.lessonKinds,
                 themes: selected.themes,
             },
+            originalDecision: {
+                ...selected.originalDecision,
+                fen: selected.fen,
+                positionHistory: selected.positionHistory,
+                originalMoveUci: selected.originalMoveUci,
+                sideToMove: selected.sideToMove,
+                sourceKinds: selected.sourceKinds,
+                lessonKinds: selected.lessonKinds,
+                themes: selected.themes,
+                confidence: selected.confidence,
+                phase: selected.phase,
+            },
             currentRevision,
         });
         const revision = revisionResult.revision;
@@ -639,34 +684,52 @@ export async function persistTrainingMomentsInTransaction(
                 'Solution revision does not belong to its training moment'
             );
         }
-        await args.tx.trainingMoment.update({
-            where: { id: moment.id },
-            data: { currentSolutionRevisionId: revision.id },
-        });
+        if (!preserveCurrent) {
+            await args.tx.trainingMoment.update({
+                where: { id: moment.id },
+                data: { currentSolutionRevisionId: revision.id },
+            });
+        }
 
         momentIdsByKey[selected.momentKey] = moment.id;
         solutionRevisionIdsByKey[selected.momentKey] = revision.id;
     }
 
-    const staleWhere: Prisma.TrainingMomentWhereInput = {
-        userId: args.userId,
-        gameId: args.gameId,
-        archivedAt: null,
-    };
-    if (selectedMoments.length > 0) {
-        staleWhere.NOT = {
-            momentKey: {
-                in: selectedMoments.map((moment) => moment.momentKey),
+    // Absence is not a negative conclusion: reconcile only explicitly assessed
+    // decisions, with source identity pinned to this run.
+    const rejectedPlies = manifest.decisionOutcomes
+        .filter(outcome => outcome.status === 'NOT_A_MISTAKE')
+        .map(outcome => outcome.decisionPly)
+        .filter(ply => !selectedMoments.some(moment => moment.decisionPly === ply));
+    const staleArchived = rejectedPlies.length === 0 ? { count: 0 } :
+        await args.tx.trainingMoment.updateMany({
+            where: {
+                userId: args.userId,
+                gameId: args.gameId,
+                sourcePgnHash: args.sourcePgnHash,
+                decisionPly: { in: rejectedPlies },
+                archivedAt: null,
             },
-        };
+            data: { archivedAt: new Date(), status: 'ARCHIVED' },
+        });
+    const unresolvedPlies = manifest.decisionOutcomes
+        .filter(outcome => outcome.status === 'UNRESOLVED')
+        .map(outcome => outcome.decisionPly);
+    if (unresolvedPlies.length > 0) {
+        // Prior same-policy proof remains usable. An incompatible prior policy
+        // keeps its history, but must not serve current authoritative verdicts.
+        await args.tx.trainingMoment.updateMany({
+            where: {
+                userId: args.userId,
+                gameId: args.gameId,
+                sourcePgnHash: args.sourcePgnHash,
+                decisionPly: { in: unresolvedPlies },
+                archivedAt: null,
+                currentSolutionRevision: { is: { configHash: { not: args.analysisConfigHash } } },
+            },
+            data: { status: 'UNSTABLE' },
+        });
     }
-    const staleArchived = await args.tx.trainingMoment.updateMany({
-        where: staleWhere,
-        data: {
-            archivedAt: new Date(),
-            status: 'ARCHIVED',
-        },
-    });
 
     return {
         upserted: selectedMoments.length,

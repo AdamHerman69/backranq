@@ -89,12 +89,12 @@
     {
       "coverage": "stalemate",
       "file": "tests/lib/continuation-verifier.test.ts",
-      "testName": "stops immediately after a legal move reaches $label"
+      "testName": "stops a stalemated continuation without requesting a further search"
     },
     {
       "coverage": "tablebase",
       "file": "tests/lib/continuation-verifier.test.ts",
-      "testName": "uses exact tablebase WDL/DTZ without calling the engine or inventing cp"
+      "testName": "never treats UNKNOWN tablebase moves as DRAW or complete coverage"
     }
   ]
 }

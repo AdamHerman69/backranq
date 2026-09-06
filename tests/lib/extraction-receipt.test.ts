@@ -8,7 +8,7 @@ import {
 
 function receipt(): TrainingExtractionReceipt {
     const reasons = emptyExtractionReasonCounts();
-    reasons.SAVED = 1;
+    reasons.MISTAKE_CONFIRMED = 1;
     return {
         version: 1,
         trainingSide: 'WHITE',
@@ -33,7 +33,7 @@ function receipt(): TrainingExtractionReceipt {
             {
                 ply: 12,
                 status: 'SAVED',
-                reason: 'SAVED',
+                reason: 'MISTAKE_CONFIRMED',
                 cpLoss: 95,
                 winChanceLoss: 0.08,
                 confirmation: {

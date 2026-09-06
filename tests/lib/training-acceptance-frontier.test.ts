@@ -39,7 +39,7 @@ describe('authoritative accepted-move frontier', () => {
         expect(frontier).toMatchObject({
             status: 'STABLE',
             targetCutoffCp: 100,
-            boundaryGapCp: 60,
+            boundaryGapCp: null,
             firstRejectedMoveUci: 'f2f3',
             moves: [
                 { moveUci: 'a2a3', tier: 'BEST' },
@@ -51,7 +51,7 @@ describe('authoritative accepted-move frontier', () => {
         });
     });
 
-    it('keeps a near-equal cluster together just beyond 100cp', () => {
+    it('does not silently expand tolerance for a near-equal cluster', () => {
         const frontier = acceptanceFrontierFromMultiPv({
             lines: lines([0, 90, 100, 110, 160]),
             requestedMultiPv: 5,
@@ -63,19 +63,18 @@ describe('authoritative accepted-move frontier', () => {
             'a2a3',
             'b2b3',
             'c2c3',
-            'd2d3',
         ]);
-        expect(frontier.firstRejectedMoveUci).toBe('e2e3');
+        expect(frontier.firstRejectedMoveUci).toBe('d2d3');
     });
 
-    it('leaves the frontier open instead of splitting a long unstable cluster', () => {
+    it('retains individually supported answers despite an unresolved cluster', () => {
         const frontier = acceptanceFrontierFromMultiPv({
             lines: lines([0, 90, 100, 115, 130, 145]),
             requestedMultiPv: 6,
             policy,
         });
 
-        expect(frontier.status).toBe('OPEN');
+        expect(frontier.status).toBe('STABLE');
         expect(frontier.effectiveCutoffCp).toBeNull();
     });
 
@@ -127,7 +126,7 @@ describe('authoritative accepted-move frontier', () => {
         );
     });
 
-    it('rejects publication when confirmation changes accepted membership', () => {
+    it('retains common answers when marginal membership changes', () => {
         const first = acceptanceFrontierFromMultiPv({
             lines: lines([0, 20, 160]),
             requestedMultiPv: 3,
@@ -144,11 +143,11 @@ describe('authoritative accepted-move frontier', () => {
         expect(first.status).toBe('STABLE');
         expect(confirmation.status).toBe('STABLE');
         expect(confirmAcceptanceFrontier(first, confirmation).status).toBe(
-            'OPEN'
+            'STABLE'
         );
     });
 
-    it('rejects publication when confirmation changes a move tier', () => {
+    it('retains conservative tiers when membership is unchanged', () => {
         const first = acceptanceFrontierFromMultiPv({
             lines: lines([0, 40, 90, 150]),
             requestedMultiPv: 4,
@@ -163,7 +162,7 @@ describe('authoritative accepted-move frontier', () => {
         expect(first.status).toBe('STABLE');
         expect(changed.status).toBe('STABLE');
         expect(confirmAcceptanceFrontier(first, changed).status).toBe(
-            'OPEN'
+            'STABLE'
         );
     });
 });

@@ -29,21 +29,21 @@ export function reverseWdl(wdl?: EngineWdl): EngineWdl | undefined {
  */
 export function engineScoreForWhite(
     score: Score | null,
-    fen: string
+    fen: string,
 ): Score | null {
     return fen.split(' ')[1] === 'b' ? negateScore(score) : score;
 }
 
 export function engineWdlForWhite(
     wdl: EngineWdl | undefined,
-    fen: string
+    fen: string,
 ): EngineWdl | undefined {
     return fen.split(' ')[1] === 'b' ? reverseWdl(wdl) : wdl;
 }
 
 export function formatEngineScoreForWhite(
     score: Score | null,
-    fen: string
+    fen: string,
 ): string {
     const whiteScore = engineScoreForWhite(score, fen);
     if (!whiteScore) return '—';
@@ -64,7 +64,7 @@ export function whiteExpectedScore(args: {
 }): number {
     const value = winningChance(
         engineScoreForWhite(args.score, args.fen),
-        engineWdlForWhite(args.wdl, args.fen)
+        engineWdlForWhite(args.wdl, args.fen),
     );
     return value == null || !Number.isFinite(value)
         ? 0.5
@@ -73,7 +73,7 @@ export function whiteExpectedScore(args: {
 
 export function formatEngineWdlForWhite(
     wdl: EngineWdl | undefined,
-    fen: string
+    fen: string,
 ): string | null {
     const whiteWdl = engineWdlForWhite(wdl, fen);
     if (!whiteWdl) return null;
@@ -87,13 +87,13 @@ export function formatEngineWdlForWhite(
 export function scoreToOrderingCp(score: Score | null): number | null {
     if (!score) return null;
     if (score.type === 'cp') return score.value;
-    if (score.value === 0) return 0;
+    if (score.value === 0) return -MATE_ORDERING_CP;
 
     // Prefer a shorter win and a longer unavoidable loss while retaining a
     // stable, finite ordering compatible with existing cp thresholds.
     const distancePenalty = Math.min(
         Math.abs(Math.trunc(score.value)),
-        MATE_ORDERING_CP / 10
+        MATE_ORDERING_CP / 10,
     );
     return score.value > 0
         ? MATE_ORDERING_CP - distancePenalty
@@ -106,7 +106,7 @@ export function scoreToOrderingCp(score: Score | null): number | null {
  */
 export function winningChance(
     score: Score | null,
-    wdl?: EngineWdl
+    wdl?: EngineWdl,
 ): number | null {
     if (wdl) {
         const total = wdl.win + wdl.draw + wdl.loss;
@@ -116,7 +116,7 @@ export function winningChance(
     if (score.type === 'mate') {
         if (score.value > 0) return 1;
         if (score.value < 0) return 0;
-        return 0.5;
+        return 0;
     }
     return 1 / (1 + Math.exp(-WIN_CHANCE_MULTIPLIER * score.value));
 }
@@ -144,13 +144,21 @@ export type EvaluationLossThreshold = {
  */
 export function evaluationLoss(
     best: EvaluationEvidence,
-    played: EvaluationEvidence
+    played: EvaluationEvidence,
 ): EvaluationLoss {
-    const bestCp = scoreToOrderingCp(best.score);
-    const playedCp = scoreToOrderingCp(played.score);
-    const bestChance = winningChance(best.score, best.wdl);
-    const playedChance = winningChance(played.score, played.wdl);
-
+    const bestCp = best.score?.type === 'cp' ? best.score.value : null;
+    const playedCp = played.score?.type === 'cp' ? played.score.value : null;
+    const matchedWdl = best.wdl && played.wdl;
+    const bestChance = matchedWdl
+        ? winningChance(best.score, best.wdl)
+        : best.score?.type === 'mate' && played.score?.type === 'mate'
+          ? winningChance(best.score)
+          : null;
+    const playedChance = matchedWdl
+        ? winningChance(played.score, played.wdl)
+        : best.score?.type === 'mate' && played.score?.type === 'mate'
+          ? winningChance(played.score)
+          : null;
     return {
         cp:
             bestCp == null || playedCp == null
@@ -170,15 +178,11 @@ export function evaluationLoss(
  */
 export function qualifiesEvaluationLoss(
     loss: EvaluationLoss,
-    threshold: EvaluationLossThreshold
+    threshold: EvaluationLossThreshold,
 ): boolean {
-    if (
-        loss.winningChance != null &&
-        Number.isFinite(loss.winningChance)
-    ) {
+    if (loss.winningChance != null && Number.isFinite(loss.winningChance)) {
         return (
-            loss.winningChance >=
-            Math.max(0, threshold.minWinningChanceLoss)
+            loss.winningChance >= Math.max(0, threshold.minWinningChanceLoss)
         );
     }
     return (
@@ -193,15 +197,11 @@ export function isWithinEvaluationLoss(
     threshold: {
         maxWinningChanceLoss: number;
         fallbackMaxCpLoss: number;
-    }
+    },
 ): boolean {
-    if (
-        loss.winningChance != null &&
-        Number.isFinite(loss.winningChance)
-    ) {
+    if (loss.winningChance != null && Number.isFinite(loss.winningChance)) {
         return (
-            loss.winningChance <=
-            Math.max(0, threshold.maxWinningChanceLoss)
+            loss.winningChance <= Math.max(0, threshold.maxWinningChanceLoss)
         );
     }
     return (

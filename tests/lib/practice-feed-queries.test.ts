@@ -28,7 +28,7 @@ describe('bounded practice feed queries', () => {
                 `solution."verificationStatus" = 'VERIFIED'::"VerificationStatus"`
             );
             expect(text).toContain(
-                `solution."acceptanceFrontier"->>'status' = 'STABLE'`
+                `solution."decision"->>'status' = 'CONFIRMED_MISTAKE'`
             );
             expect(text).toContain(
                 `raw."solutionHash" = solution."solutionHash"`
@@ -113,7 +113,7 @@ describe('bounded practice feed queries', () => {
             );
             expect(text).toContain('NOT EXISTS');
             expect(text).toContain(
-                `solution."acceptanceFrontier"->>'status' = 'STABLE'`
+                `solution."decision"->>'status' = 'CONFIRMED_MISTAKE'`
             );
             expect(text).toContain(
                 `state."solutionHash" = solution."solutionHash"`

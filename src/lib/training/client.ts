@@ -1,5 +1,6 @@
 import type {
-    RecordTrainingAttemptRequest,
+    TrainingAttemptWriteRequest,
+    EnrichTrainingAttemptResponse,
     RecordTrainingAttemptResponse,
     TrainingApiErrorResponse,
     TrainingMomentResponse,
@@ -143,9 +144,9 @@ export async function fetchTrainingMoment(
 export async function recordTrainingAttempt(
     ownerId: string,
     momentId: string,
-    request: RecordTrainingAttemptRequest,
+    request: TrainingAttemptWriteRequest,
     signal?: AbortSignal
-): Promise<RecordTrainingAttemptResponse> {
+): Promise<RecordTrainingAttemptResponse | EnrichTrainingAttemptResponse> {
     const response = await fetch(
         `/api/training/moments/${encodeURIComponent(momentId)}/attempts`,
         {
@@ -158,5 +159,5 @@ export async function recordTrainingAttempt(
             signal,
         }
     );
-    return readJson<RecordTrainingAttemptResponse>(response);
+    return readJson<RecordTrainingAttemptResponse | EnrichTrainingAttemptResponse>(response);
 }

@@ -1,12 +1,14 @@
 import type { VerificationStatus } from '@/lib/training/contracts';
 
 export const EXTRACTION_DECISION_REASONS = [
-    'SAVED',
+    'MISTAKE_CONFIRMED',
     'FORCED_MOVE',
-    'BELOW_COVERAGE_THRESHOLD',
-    'BELOW_THRESHOLD_AFTER_CONFIRMATION',
-    'ANALYSIS_INCOMPLETE',
-    'VERIFICATION_UNSTABLE',
+    'BELOW_CANDIDATE_SIGNAL',
+    'ORIGINAL_MOVE_QUALITY_CONFIRMED',
+    'ENGINE_EVIDENCE_INVALID',
+    'MISTAKE_COMPARISON_UNRESOLVED',
+    'SOURCE_INVALID',
+    'NO_SUPPORTED_PRACTICAL_LESSON',
 ] as const;
 
 export type ExtractionDecisionReason =
@@ -119,10 +121,10 @@ function nullableIntegerBetween(
 function expectedStatus(
     reason: ExtractionDecisionReason
 ): ExtractionDecisionStatus {
-    if (reason === 'SAVED') return 'SAVED';
+    if (reason === 'MISTAKE_CONFIRMED') return 'SAVED';
     if (
-        reason === 'ANALYSIS_INCOMPLETE' ||
-        reason === 'VERIFICATION_UNSTABLE'
+        reason === 'ENGINE_EVIDENCE_INVALID' ||
+        reason === 'MISTAKE_COMPARISON_UNRESOLVED'
     ) {
         return 'UNRESOLVED';
     }
@@ -246,14 +248,10 @@ export function isTrainingExtractionReceipt(
                 !finiteBetween(decision.winChanceLoss, 0, 1)) ||
             (confirmation !== undefined &&
                 !isConfirmationEvidence(confirmation)) ||
-            (reason === 'SAVED' &&
+            (reason === 'MISTAKE_CONFIRMED' &&
                 confirmation !== undefined &&
                 (!confirmation.stable ||
                     confirmation.termination !== 'STABLE')) ||
-            (reason === 'BELOW_THRESHOLD_AFTER_CONFIRMATION' &&
-                (confirmation === undefined ||
-                    !confirmation.stable ||
-                    confirmation.termination !== 'BELOW_THRESHOLD')) ||
             (decision.verificationStatus !== undefined &&
                 !['VERIFIED', 'AMBIGUOUS', 'UNSTABLE', 'INVALID'].includes(
                     decision.verificationStatus as string

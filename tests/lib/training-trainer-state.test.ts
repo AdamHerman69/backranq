@@ -86,3 +86,7 @@ describe('canonical training trainer state', () => {
     });
 
 });
+
+it('offers a neutral review after bounded local grading fails',()=>{
+    expect(feedbackForTrainingState({phase:'REVEALED',reviewFallback:true})).toEqual({tone:'neutral',message:'This move could not be graded reliably. Review the position below.'});
+});

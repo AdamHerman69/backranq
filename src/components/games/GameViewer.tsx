@@ -194,17 +194,21 @@ function classificationMarkerClass(c: MoveClassification): string {
 
 function extractionReasonLabel(reason: ExtractionDecisionReason): string {
     switch (reason) {
-        case 'SAVED':
+        case 'MISTAKE_CONFIRMED':
             return 'Saved as a practice position';
         case 'FORCED_MOVE':
             return 'Not saved: there was only one legal move';
-        case 'BELOW_COVERAGE_THRESHOLD':
+        case 'BELOW_CANDIDATE_SIGNAL':
             return 'Not saved: the outcome difference was below your coverage threshold';
-        case 'BELOW_THRESHOLD_AFTER_CONFIRMATION':
+        case 'ORIGINAL_MOVE_QUALITY_CONFIRMED':
             return 'Not saved: deeper confirmation put the difference below your threshold';
-        case 'ANALYSIS_INCOMPLETE':
+        case 'ENGINE_EVIDENCE_INVALID':
             return 'Not saved: engine evidence was incomplete';
-        case 'VERIFICATION_UNSTABLE':
+        case 'SOURCE_INVALID':
+            return 'The source position could not be reconstructed.';
+        case 'NO_SUPPORTED_PRACTICAL_LESSON':
+            return 'No clear practical lesson was confirmed in this position.';
+        case 'MISTAKE_COMPARISON_UNRESOLVED':
             return 'Not saved yet: deeper verification remained unstable';
     }
 }

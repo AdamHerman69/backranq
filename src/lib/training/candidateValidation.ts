@@ -1,4 +1,5 @@
 import { Chess } from 'chess.js';
+import { CONTINUATION_STOP_REASONS } from '@/lib/analysis/continuationVerifier';
 import { isStrictIsoInstant } from '@/lib/api/validation';
 import { isGameSource, type GameSource } from '@/lib/types/game';
 import { moveToUci } from '@/lib/chess/utils';
@@ -8,6 +9,7 @@ import {
 } from '@/lib/chess/pgn';
 import {
     CONTINUATION_SHAPES,
+    ATTEMPT_GRADES,
     GRADING_STRATEGIES,
     SOLUTION_SHAPES,
     TRAINING_LESSON_KINDS,
@@ -27,6 +29,8 @@ import {
     assessmentPositionKey,
 } from '@/lib/training/assessmentIdentity';
 
+import { answerCoverage, continuationReadiness, decisionAssessment } from './evidenceContract';
+
 const UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
 const HASH_RE = /^[a-f0-9]{64}$/;
 const MAX_TREE_DEPTH = 32;
@@ -44,16 +48,7 @@ const EVIDENCE_SOURCES = [
     'RULE',
     'NONE',
 ] as const;
-const STOP_REASONS = [
-    'CHECKMATE',
-    'STALEMATE',
-    'INSUFFICIENT_MATERIAL',
-    'FIFTY_MOVE',
-    'THREEFOLD_REPETITION',
-    'MAX_PLIES',
-    'MAX_POSITIONS',
-    'NO_STABLE_LINE',
-] as const;
+const STOP_REASONS = CONTINUATION_STOP_REASONS;
 const TABLEBASE_WDL = ['WIN', 'DRAW', 'LOSS', 'UNKNOWN'] as const;
 
 type ObjectValue = Record<string, unknown>;
@@ -67,6 +62,9 @@ type ValidatedTree = {
 
 type TreeNode = {
     fen: string;
+    contextId: string;
+    positionHistory: string[];
+    answerCoverage?: unknown;
     ply: number;
     role: (typeof NODE_ROLES)[number];
     acceptedMovesUci: string[];
@@ -344,7 +342,7 @@ function isBranchEvaluation(value: unknown): boolean {
     if (value.source === 'RULE') {
         return (
             value.outcome === 'DRAW' &&
-            value.reason === 'THREEFOLD_REPETITION'
+            ['THREEFOLD_REPETITION', 'FIFTY_MOVE_RULE'].includes(String(value.reason))
         );
     }
     return (
@@ -359,9 +357,9 @@ function isBranchEvaluation(value: unknown): boolean {
 }
 
 function assessmentPositionId(
-    position: { fen: string; decisionIndex: number }
+    position: { positionKey: string; decisionIndex: number }
 ): string {
-    return `${position.decisionIndex}\u0000${position.fen}`;
+    return `${position.decisionIndex}\u0000${position.positionKey}`;
 }
 
 function validateSolutionTree(
@@ -388,6 +386,8 @@ function validateSolutionTree(
             ++nodeCount > MAX_TREE_NODES ||
             !validFen(raw.fen) ||
             raw.fen !== expectedFen ||
+            raw.contextId !== assessmentPositionKey(expectedFen, positionHistory) ||
+            stableCanonicalStringify(raw.positionHistory) !== stableCanonicalStringify(positionHistory) ||
             raw.ply !== expectedPly ||
             !enumValue(raw.role, NODE_ROLES) ||
             !enumValue(raw.evidenceSource, EVIDENCE_SOURCES) ||
@@ -485,7 +485,7 @@ function validateSolutionTree(
                 return null;
             }
             const id = assessmentPositionId({
-                fen: raw.fen,
+                positionKey: assessmentPositionKey(raw.fen, positionHistory),
                 decisionIndex: Math.floor(expectedPly / 2),
             });
             userMovesByPosition.set(
@@ -528,6 +528,9 @@ function validateSolutionTree(
 
         return {
             fen: raw.fen,
+            contextId: raw.contextId as string,
+            positionHistory,
+            answerCoverage: raw.answerCoverage,
             ply: expectedPly,
             role: raw.role,
             acceptedMovesUci: acceptedMoves,
@@ -566,7 +569,7 @@ function validateAssessment(
         value.positionKey !==
             tree.assessmentKeysByPosition.get(
                 assessmentPositionId({
-                    fen: value.fen,
+                    positionKey: value.positionKey,
                     decisionIndex: value.decisionIndex,
                 })
             )
@@ -574,20 +577,14 @@ function validateAssessment(
         return null;
     }
     const moveUci = normalizedUci(value.moveUci);
-    const positionId = assessmentPositionId({
-        fen: value.fen,
-        decisionIndex: value.decisionIndex,
-    });
-    const allowedMoves = tree.userMovesByPosition.get(positionId);
     if (
         !moveUci ||
         !applyUci(value.fen, moveUci) ||
-        !allowedMoves?.has(moveUci) ||
         (value.source !== 'PRECOMPUTED' &&
             value.source !== 'TABLEBASE') ||
-        (value.grade !== 'BEST' &&
-            value.grade !== 'STRONG' &&
-            value.grade !== 'GOOD') ||
+        !enumValue(value.grade, ATTEMPT_GRADES) ||
+        !boundedString(value.referenceId, 512) ||
+        typeof value.tierStable !== 'boolean' ||
         (value.scoreAfter !== null && !isPovScore(value.scoreAfter)) ||
         (value.source === 'TABLEBASE' &&
             (!isObject(value.scoreAfter) ||
@@ -644,7 +641,7 @@ function validateGradingPolicy(
         !isObject(value) ||
         value.version !== 3 ||
         value.pov !== 'TRAINING_SIDE' ||
-        value.unknownMove !== 'REJECT_OUTSIDE_ACCEPTED_SET' ||
+        value.unknownMove !== 'EVALUATE' ||
         value.matePolicy !== 'EXACT' ||
         value.tablebasePolicy !== 'EXACT' ||
         !isObject(value.best) ||
@@ -861,16 +858,8 @@ function validateSolution(
         return null;
     }
     if (
-        (value.trainable &&
-            (value.verificationStatus !== 'VERIFIED' ||
-                acceptanceFrontier.status !== 'STABLE')) ||
+        (value.trainable && value.verificationStatus !== 'VERIFIED') ||
         (value.trainable && value.scoreAtStart === null)
-    ) {
-        return null;
-    }
-    if (
-        (acceptanceFrontier.status === 'STABLE') !==
-        tree.root.alternativesComplete
     ) {
         return null;
     }
@@ -914,7 +903,7 @@ function validateSolution(
         assessments.push(assessment);
     }
     const rootPosition = assessmentPositionId({
-        fen: rootFen,
+        positionKey: assessmentPositionKey(rootFen, rootPositionHistory),
         decisionIndex: 0,
     });
     for (const move of acceptedMovesUci) {
@@ -955,6 +944,35 @@ function validateSolution(
             }
         }
     }
+    const decision = decisionAssessment(value.decision);
+    const continuation = continuationReadiness(value.continuation);
+    const coverage = answerCoverage(value.answerCoverage, {
+        fen: rootFen,
+        positionHistory: rootPositionHistory,
+        policyVersion: value.gradingPolicy.version,
+        acceptedMovesUci,
+    });
+    if (!decision || !continuation || !coverage ||
+        (value.trainable && decision.status !== 'CONFIRMED_MISTAKE')) return null;
+    const rootAssessed = assessments.filter(assessment => assessment.positionKey === coverage.contextId && assessment.decisionIndex === 0);
+    if (rootAssessed.length !== coverage.assessedMovesUci.length ||
+        rootAssessed.some(assessment => assessment.referenceId !== coverage.referenceId ||
+            !coverage.assessedMovesUci.includes(assessment.moveUci))) return null;
+    const policyVersion = value.gradingPolicy.version;
+    const validNodeCoverage = (node: TreeNode): boolean => {
+        if (node.role === 'USER') {
+            const scoped = answerCoverage(node.answerCoverage ?? (node.ply === 0 ? coverage : null), {
+                fen: node.fen, positionHistory: node.positionHistory,
+                policyVersion, acceptedMovesUci: node.acceptedMovesUci,
+            });
+            if (!scoped || (node.ply === 0 && stableCanonicalStringify(scoped) !== stableCanonicalStringify(coverage))) return false;
+            const rows = assessments.filter(assessment => assessment.positionKey === node.contextId && assessment.decisionIndex === Math.floor(node.ply / 2));
+            if (rows.length !== scoped.assessedMovesUci.length || rows.some(row =>
+                !scoped.assessedMovesUci.includes(row.moveUci) || row.referenceId !== scoped.referenceId)) return false;
+        }
+        return node.branches.every(branch => validNodeCoverage(branch.child));
+    };
+    if (!validNodeCoverage(tree.root)) return null;
     const solution = value as unknown as SolutionRevisionInput;
     return solutionSemanticsHash(solution) === solution.solutionHash
         ? solution
@@ -998,7 +1016,6 @@ function validateCandidate(value: unknown): TrainingMomentCandidate | null {
             enumValue(kind, TRAINING_SOURCE_KINDS)
         ) ||
         !Array.isArray(value.lessonKinds) ||
-        value.lessonKinds.length === 0 ||
         value.lessonKinds.length > TRAINING_LESSON_KINDS.length ||
         new Set(value.lessonKinds).size !== value.lessonKinds.length ||
         !value.lessonKinds.every((kind) =>

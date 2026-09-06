@@ -1,3 +1,4 @@
+import { fixtureSolution } from '../helpers/extractionEvidence';
 import { describe, expect, it, vi } from 'vitest';
 import {
     type SolutionRevisionInput,
@@ -16,7 +17,7 @@ const rootFen = '8/8/8/8/8/8/4K3/6k1 w - - 0 1';
 const rootAssessmentKey = assessmentPositionKey(rootFen, []);
 
 function solution(bestMoveUci = 'e2e4'): SolutionRevisionInput {
-    const semantics = {
+    const semantics = fixtureSolution({
         verificationStatus: 'VERIFIED' as const,
         solutionShape: 'UNIQUE' as const,
         gradingStrategy: 'PRECOMPUTED' as const,
@@ -64,7 +65,7 @@ function solution(bestMoveUci = 'e2e4'): SolutionRevisionInput {
         },
         targetOutcome: { preserve: 'advantage' },
         gradingPolicy: normalizeGradingPolicy(undefined),
-    };
+    });
     return {
         ...semantics,
         solutionHash: solutionSemanticsHash(semantics),
@@ -99,13 +100,24 @@ function moment(
     };
 }
 
+function currentRevisionEvidence() {
+    const source = moment();
+    return {
+        configHash:'config-1',generatorVersion:source.solution.generatorVersion,verificationStatus:'VERIFIED',trainable:true,
+        evidence:{selected:source.solution.evidence},
+        originalDecision:{...source.originalDecision,fen:source.fen,positionHistory:source.positionHistory,
+            originalMoveUci:source.originalMoveUci,sideToMove:source.sideToMove,sourceKinds:source.sourceKinds,
+            lessonKinds:source.lessonKinds,themes:source.themes,confidence:source.confidence,phase:source.phase},
+    };
+}
+
 function existingMoment(
     currentSolutionRevisionId: string | null = 'revision-current'
 ) {
     return {
         id: 'moment-1',
         momentKey: 'stored-key',
-        sourcePgnHash: 'pgn-hash',
+        sourcePgnHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         decisionPly: 12,
         fen: moment().fen,
         positionHistory: [],
@@ -164,29 +176,24 @@ function persist(
     tx: ReturnType<typeof transaction>,
     moments: PersistableTrainingMoment[],
     analysisRunId = 'run-1',
-    manifestOverrides: Partial<{
-        version: 1;
-        complete: boolean;
-        sourceGameId: string;
-        sourcePgnHash: string;
-        scannedPlies: number;
-        expectedPlies: number;
-        termination: 'COMPLETED' | 'SOURCE_REPLAY_STOPPED';
-        errors: string[];
-    }> = {}
+    manifestOverrides: Partial<import('@/lib/analysis/extractTrainingMoments').ExtractionCompletionManifest> = {}
 ) {
     return persistTrainingMomentsInTransaction({
         tx: tx as never,
         userId: 'user-1',
         gameId: 'game-1',
-        sourcePgnHash: 'pgn-hash',
+        sourcePgnHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         analysisRunId,
         analysisConfigHash: 'config-1',
         extractionManifest: {
+            scope: 'FULL_GAME',
+            scanComplete: true,
+            extractionComplete: true,
+            decisionOutcomes: [],
             version: 1,
             complete: true,
             sourceGameId: 'game-1',
-            sourcePgnHash: 'pgn-hash',
+            sourcePgnHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             scannedPlies: 20,
             expectedPlies: 20,
             termination: 'COMPLETED',
@@ -340,6 +347,7 @@ describe('canonical training persistence', () => {
             momentKey: where.momentKey,
         }));
         tx.solutionRevision.findUnique.mockResolvedValue({
+            ...currentRevisionEvidence(),
             id: 'revision-current',
             momentId: 'moment-1',
             solutionHash: solution().solutionHash,
@@ -373,6 +381,7 @@ describe('canonical training persistence', () => {
             momentKey: where.momentKey,
         }));
         tx.solutionRevision.findUnique.mockResolvedValue({
+            ...currentRevisionEvidence(),
             id: 'revision-current',
             momentId: 'moment-1',
             solutionHash: solution('d2d4').solutionHash,
@@ -437,6 +446,7 @@ describe('canonical training persistence', () => {
             momentKey: where.momentKey,
         }));
         tx.solutionRevision.findUnique.mockResolvedValue({
+            ...currentRevisionEvidence(),
             id: 'revision-current',
             momentId: 'moment-1',
             solutionHash: previous.solutionHash,
@@ -474,6 +484,7 @@ describe('canonical training persistence', () => {
             momentKey: where.momentKey,
         }));
         tx.solutionRevision.findUnique.mockResolvedValue({
+            ...currentRevisionEvidence(),
             id: 'revision-current',
             momentId: 'moment-1',
             solutionHash: solution('d2d4').solutionHash,
@@ -496,6 +507,7 @@ describe('canonical training persistence', () => {
             momentKey: where.momentKey,
         }));
         tx.solutionRevision.findUnique.mockResolvedValue({
+            ...currentRevisionEvidence(),
             id: 'revision-current',
             momentId: 'other-moment',
             solutionHash: solution().solutionHash,
@@ -507,17 +519,19 @@ describe('canonical training persistence', () => {
         expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
     });
 
-    it('archives stale moments without deleting attempts or revisions', async () => {
+    it('archives only explicitly disproved decisions without deleting attempts or revisions', async () => {
         const tx = transaction();
         tx.trainingMoment.updateMany.mockResolvedValue({ count: 3 });
 
-        const result = await persist(tx, []);
+        const result = await persist(tx, [], 'run-1', {decisionOutcomes: [{decisionPly:12,status:'NOT_A_MISTAKE',reason:'ORIGINAL_MOVE_QUALITY_CONFIRMED'}]});
 
         expect(result).toMatchObject({ upserted: 0, staleArchived: 3 });
         expect(tx.trainingMoment.updateMany).toHaveBeenCalledWith({
             where: {
                 userId: 'user-1',
                 gameId: 'game-1',
+                sourcePgnHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                decisionPly: {in:[12]},
                 archivedAt: null,
             },
             data: {
@@ -526,6 +540,22 @@ describe('canonical training persistence', () => {
             },
         });
         expect(tx.solutionRevision.create).not.toHaveBeenCalled();
+    });
+
+    it('does not archive previously confirmed moments merely omitted by a new scan', async () => {
+        const tx = transaction();
+        await expect(persist(tx, [])).resolves.toMatchObject({staleArchived:0});
+        expect(tx.trainingMoment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('retains unresolved history and only suspends a prior incompatible policy', async () => {
+        const tx = transaction();
+        await persist(tx, [], 'run-2', {decisionOutcomes:[{decisionPly:12,status:'UNRESOLVED',reason:'MISTAKE_COMPARISON_UNRESOLVED'}]});
+        expect(tx.trainingMoment.updateMany).toHaveBeenCalledOnce();
+        expect(tx.trainingMoment.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({sourcePgnHash:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', decisionPly:{in:[12]},currentSolutionRevision:{is:{configHash:{not:'config-1'}}}}),
+            data:{status:'UNSTABLE'},
+        }));
     });
 
     it('requires a complete extraction manifest before any read or write', async () => {
@@ -559,7 +589,7 @@ describe('canonical training persistence', () => {
                 id: 'run-1',
                 userId: 'user-1',
                 gameId: 'game-1',
-                inputPgnHash: 'pgn-hash',
+                inputPgnHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 configHash: 'config-1',
                 status: 'RUNNING',
             },
@@ -575,7 +605,7 @@ describe('canonical training persistence', () => {
             sourceGameId: 'other-game',
             sourceProvider: 'lichess',
             sourcePlayedAt: '2026-07-05T12:00:00.000Z',
-            sourcePgnHash: 'pgn-hash',
+            sourcePgnHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             ...moment(),
             confidence: 0.94,
             phase: 'ENDGAME',
@@ -588,14 +618,18 @@ describe('canonical training persistence', () => {
                 gameId: 'game-1',
                 sourceProvider: 'lichess',
                 sourcePlayedAt: new Date('2026-07-05T12:00:00.000Z'),
-                sourcePgnHash: 'pgn-hash',
+                sourcePgnHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 analysisRunId: 'run-1',
                 analysisConfigHash: 'config-1',
                 extractionManifest: {
+            scope: 'FULL_GAME',
+            scanComplete: true,
+            extractionComplete: true,
+            decisionOutcomes: [],
                     version: 1,
                     complete: true,
                     sourceGameId: 'game-1',
-                    sourcePgnHash: 'pgn-hash',
+                    sourcePgnHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                     scannedPlies: 20,
                     expectedPlies: 20,
                     termination: 'COMPLETED',

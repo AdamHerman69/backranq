@@ -108,7 +108,7 @@ export type GradingPolicyV3 = {
         minRecoveredCp: number;
         minRecoveredWinChance: number;
     };
-    unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET';
+    unknownMove: 'EVALUATE';
     matePolicy: 'EXACT';
     tablebasePolicy: 'EXACT';
 };
@@ -124,8 +124,8 @@ export type AcceptanceFrontierStatus =
 export type AcceptedMoveTier = 'BEST' | 'STRONG' | 'GOOD';
 
 /**
- * Authoritative root grading boundary. Every move in `moves` is accepted;
- * every other legal move is rejected only when `status` is STABLE.
+ * Individually supported answers. Membership stability does not certify
+ * unlisted moves; only AnswerCoverage can support that conclusion.
  */
 export type AcceptanceFrontier = {
     version: 1;
@@ -146,13 +146,56 @@ export type SolutionMoveAssessmentInput = {
     fen: string;
     moveUci: string;
     source: 'PRECOMPUTED' | 'TABLEBASE';
-    grade: AcceptedMoveTier;
+    grade: AttemptGrade;
+    referenceId: string;
+    tierStable: boolean;
     scoreAfter: PovScore | null;
     evidence: unknown;
 };
 
+export type DecisionAssessment = {
+    status: 'CONFIRMED_MISTAKE' | 'NOT_A_MISTAKE' | 'UNRESOLVED';
+    reason: string;
+};
+
+export type AnswerCoverage = {
+    version: 1;
+    contextId: string;
+    status: 'PARTIAL' | 'QUALITY_BOUNDARY_VERIFIED' | 'ALL_LEGAL_ASSESSED';
+    legalMovesUci: string[];
+    assessedMovesUci: string[];
+    /** Only these moves have a supported below-quality-boundary conclusion. */
+    coveredMovesUci: string[];
+    referenceId: string;
+    policyVersion: number;
+    reason: string;
+    evidence?: unknown;
+};
+
+export type ContinuationReadiness = {
+    status: 'NONE' | 'EXPLANATION_ONLY' | 'GRADED_BRANCHES_READY';
+    explanationAvailable: boolean;
+    gradedContinuationReady: boolean;
+};
+
+/** Physical search identity lives in immutable evidence, not grading equivalence. */
+export function canonicalAnswerCoverage(coverage: AnswerCoverage) {
+    return {
+        version: coverage.version,
+        contextId: coverage.contextId,
+        status: coverage.status,
+        legalMovesUci: [...coverage.legalMovesUci].sort(),
+        assessedMovesUci: [...coverage.assessedMovesUci].sort(),
+        coveredMovesUci: [...coverage.coveredMovesUci].sort(),
+        policyVersion: coverage.policyVersion,
+    };
+}
+
 export type SolutionRevisionInput = {
     solutionHash: string;
+    decision: DecisionAssessment;
+    answerCoverage: AnswerCoverage;
+    continuation: ContinuationReadiness;
     verificationStatus: VerificationStatus;
     solutionShape: SolutionShape;
     gradingStrategy: GradingStrategy;
@@ -308,6 +351,9 @@ export function canonicalSolutionSemantics(
     input: Pick<
         SolutionRevisionInput,
         | 'verificationStatus'
+        | 'decision'
+        | 'answerCoverage'
+        | 'continuation'
         | 'solutionShape'
         | 'gradingStrategy'
         | 'continuationShape'
@@ -327,6 +373,9 @@ export function canonicalSolutionSemantics(
     const normalizeUci = (move: string) => move.trim().toLowerCase();
     return {
         version: 1,
+        decision: { status: input.decision.status },
+        answerCoverage: canonicalAnswerCoverage(input.answerCoverage),
+        continuation: input.continuation,
         verificationStatus: input.verificationStatus,
         solutionShape: input.solutionShape,
         gradingStrategy: input.gradingStrategy,
@@ -349,6 +398,7 @@ export function canonicalSolutionSemantics(
                 moveUci: normalizeUci(assessment.moveUci),
                 source: assessment.source,
                 grade: assessment.grade,
+                tierStable: assessment.tierStable,
                 scoreAfter: assessment.scoreAfter,
                 evidence: canonicalMoveAssessmentEvidence(
                     assessment.evidence

@@ -49,7 +49,7 @@ export type BoardPresentationEvent =
     | { type: 'USER_MOVE'; sequenceId: number; moveUci: string }
     | { type: 'CHECKING'; sequenceId: number }
     | {
-          type: 'GRADE_REVEAL';
+          type: 'GRADE_REVEAL' | 'REFINE_GRADE';
           sequenceId: number;
           moveUci: string;
           grade: AttemptGrade;
@@ -184,6 +184,12 @@ export function boardPresentationReducer(
                 lastMove: boardMoveFromUci(event.moveUci),
                 marker: markerForMove(event.moveUci, event.grade),
             };
+        case 'REFINE_GRADE': {
+            const move = boardMoveFromUci(event.moveUci);
+            return state.marker && move && state.lastMove?.from === move.from && state.lastMove?.to === move.to
+                ? { ...state, marker: markerForMove(event.moveUci, event.grade) }
+                : state;
+        }
         case 'OPPONENT_MOVE':
             return {
                 ...state,

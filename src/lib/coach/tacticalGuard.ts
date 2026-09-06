@@ -40,7 +40,7 @@ export function selectTacticalGuardMove(args: {
     const bestMove = best ? rootMove(best) : null;
     if (!best || !bestMove || best.score == null) {
         throw new Error(
-            'Tactical guard could not verify a legal Stockfish fallback.'
+            'Tactical guard could not verify a legal Stockfish fallback.',
         );
     }
 
@@ -67,15 +67,31 @@ export function selectTacticalGuardMove(args: {
         seen.add(moveUci);
         const line = lineByMove.get(moveUci);
         if (!line) return [];
+        if (best.score?.type === 'mate') {
+            const sameOutcome =
+                line.score?.type === 'mate' &&
+                line.score.value > 0 === best.score.value > 0;
+            return [
+                {
+                    ...candidate,
+                    moveUci,
+                    lossCp: 0,
+                    qualityPreserved: sameOutcome,
+                },
+            ];
+        }
         const loss = evaluationLoss(
             { score: best.score, wdl: best.wdl },
-            { score: line.score, wdl: line.wdl }
+            { score: line.score, wdl: line.wdl },
         );
         if (loss.cp == null || !Number.isFinite(loss.cp)) return [];
-        return [{ ...candidate, moveUci, lossCp: loss.cp }];
+        return [
+            { ...candidate, moveUci, lossCp: loss.cp, qualityPreserved: true },
+        ];
     });
     const safe = evaluated.filter(
-        (candidate) => candidate.lossCp < thresholdCp
+        (candidate) =>
+            candidate.qualityPreserved && candidate.lossCp < thresholdCp,
     );
 
     if (safe.length === 0) {

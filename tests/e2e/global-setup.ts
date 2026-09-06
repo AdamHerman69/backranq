@@ -1,3 +1,4 @@
+import { fixtureTree } from '../helpers/extractionEvidence';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -142,7 +143,7 @@ const GRADING_POLICY = {
         minRecoveredCp: 50,
         minRecoveredWinChance: 0.08,
     },
-    unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
+    unknownMove: 'EVALUATE',
     matePolicy: 'EXACT',
     tablebasePolicy: 'EXACT',
 } as const;
@@ -189,7 +190,7 @@ async function seedTrainingMoment(
         ? applyMove(fenAfterBest, 'b8c6')
         : null;
     const conditionalMove = 'f1b5';
-    const solutionTree = isConditional
+    const solutionTree = fixtureTree(isConditional
         ? {
               fen: fixture.fen,
               ply: 0,
@@ -259,7 +260,7 @@ async function seedTrainingMoment(
                       },
                   },
               ],
-          };
+          }, [], fixture.revisionId);
     await prisma.trainingMoment.create({
         data: {
             id: fixture.id,
@@ -299,6 +300,15 @@ async function seedTrainingMoment(
                 .createHash('sha256')
                 .update(`e2e-solution:${fixture.revisionId}`)
                 .digest('hex'),
+            decision: {status:'CONFIRMED_MISTAKE',reason:'E2E_CONFIRMED'},
+            answerCoverage: {
+                version:1, contextId:assessmentPositionKey(fixture.fen,[]), status:'PARTIAL',
+                legalMovesUci:new Chess(fixture.fen).moves({verbose:true}).map(move => move.lan),
+                assessedMovesUci:[fixture.bestMoveUci,fixture.originalMoveUci], coveredMovesUci:[],
+                referenceId:fixture.revisionId, policyVersion:3, reason:'E2E_KNOWN_ANSWERS',
+            },
+            continuation: {status:'GRADED_BRANCHES_READY',explanationAvailable:true,gradedContinuationReady:true},
+            originalDecision: {scoreBefore,scoreAfter,cpLoss:130,phase:fixture.phase,sourceKinds:[...fixture.sourceKinds],lessonKinds:[...fixture.lessonKinds],themes:fixture.themes},
             verificationStatus: 'VERIFIED',
             solutionShape: 'UNIQUE',
             gradingStrategy: 'PRECOMPUTED',
@@ -332,6 +342,7 @@ async function seedTrainingMoment(
             moveAssessments: {
                 create: [
                     {
+                        referenceId: fixture.revisionId, tierStable: true,
                         positionKey: assessmentPositionKey(
                             fixture.fen,
                             []
@@ -346,6 +357,7 @@ async function seedTrainingMoment(
                         evidence: { fixture: true },
                     },
                     {
+                        referenceId: fixture.revisionId, tierStable: true,
                         positionKey: assessmentPositionKey(
                             fixture.fen,
                             []
@@ -362,6 +374,7 @@ async function seedTrainingMoment(
                     ...(isConditional
                         ? [
                               {
+                                  referenceId: fixture.revisionId, tierStable: true,
                                   positionKey:
                                       assessmentPositionKey(
                                           fenAfterOpponent!,

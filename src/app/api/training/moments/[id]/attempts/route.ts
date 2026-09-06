@@ -2,13 +2,14 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { boundedJsonBody } from '@/lib/api/validation';
 import { prisma } from '@/lib/prisma';
-import { recordTrainingAttempt } from '@/lib/training/attemptService';
+import { recordTrainingAttempt, enrichTrainingAttempt } from '@/lib/training/attemptService';
 import type { TrainingApiErrorResponse } from '@/lib/training/api';
 import { expectedOwnerId } from '@/lib/auth/ownerContract';
 import {
     isTrainingApiUuid,
     MAX_TRAINING_API_BODY_BYTES,
     parseRecordTrainingAttemptRequest,
+    parseEnrichTrainingAttemptRequest,
 } from '@/lib/training/apiValidation';
 import {
     trainingAttemptErrorResponse,
@@ -51,7 +52,7 @@ export async function POST(
             { status: body.status ?? 400 }
         );
     }
-    const request = parseRecordTrainingAttemptRequest(body.value);
+    const request = parseRecordTrainingAttemptRequest(body.value) ?? parseEnrichTrainingAttemptRequest(body.value);
     if (!request) {
         return trainingErrorResponse(
             'Invalid training attempt request',
@@ -62,12 +63,12 @@ export async function POST(
 
     try {
         return NextResponse.json(
-            await recordTrainingAttempt({
+            await (request.kind === 'RECORD' ? recordTrainingAttempt({
                 userId,
                 momentId: id,
                 request,
                 dependencies: { db: prisma },
-            }),
+            }) : enrichTrainingAttempt({ userId, momentId: id, request, dependencies: { db: prisma } })),
             {
                 headers: {
                     'Cache-Control': 'private, no-store',

@@ -107,6 +107,7 @@ enum AttemptGrade {
 enum MoveAssessmentSource {
   PRECOMPUTED
   DYNAMIC
+  CLIENT_EVALUATED
   TABLEBASE
 }
 
@@ -1200,6 +1201,10 @@ model SolutionRevision {
   bestMoveUci        String
   acceptedMovesUci   String[]           @default([])
   acceptanceFrontier Json
+  decision           Json
+  answerCoverage     Json
+  continuation       Json
+  originalDecision   Json
   bestLine           Json
   solutionTree       Json               @default("{}")
   scoreAtStart       Json?
@@ -1249,6 +1254,8 @@ model SolutionMoveAssessment {
   id                 String               @id @default(uuid()) @db.Uuid
   solutionRevisionId String               @db.Uuid
   positionKey        String
+  referenceId        String
+  tierStable         Boolean
   decisionIndex      Int
   fen                String
   moveUci            String
@@ -1309,6 +1316,7 @@ model TrainingAttempt {
   practiceExposures PracticeExposure[]
   statusEvents      TrainingAttemptStatusEvent[]
   reviewEvents      PracticeReviewEvent[]
+  assessmentRevisions TrainingAttemptAssessmentRevision[]
 
   @@unique([userId, clientAttemptId])
   @@unique([id, userId])
@@ -1338,6 +1346,25 @@ model TrainingAttemptStep {
 
   @@unique([attemptId, stepIndex])
   @@index([attemptId])
+}
+
+/// Append-only refinement of one played event, pinned to the attempt's revision.
+model TrainingAttemptAssessmentRevision {
+  id               String               @id @default(uuid()) @db.Uuid
+  attemptId        String               @db.Uuid
+  clientEvidenceId String
+  payloadHash      String
+  grade            AttemptGrade
+  gradingSource    MoveAssessmentSource
+  comparison       Json
+  evidence         Json
+  corrected        Boolean
+  createdAt        DateTime             @default(now())
+
+  attempt TrainingAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, clientEvidenceId])
+  @@index([attemptId, createdAt])
 }
 
 /// Append-only lifecycle records for a Position being shown and leaving the

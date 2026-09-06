@@ -134,7 +134,7 @@ function position(
             solutionHash: 'solution-one',
             configHash: 'config-1',
             verificationStatus: 'VERIFIED',
-            acceptanceFrontier: { status: 'STABLE' },
+            decision: { status: 'CONFIRMED_MISTAKE' },
             trainable: true,
         },
         observations: [
@@ -203,7 +203,7 @@ describe('aggregateProgressSnapshot', () => {
         expect(result.inventory.eligiblePositions).toBe(0);
     });
 
-    it('excludes verified revisions whose acceptance frontier is not stable', () => {
+    it('excludes revisions without a confirmed original mistake', () => {
         const result = snapshot({
             positions: [
                 position('position-open-frontier', [], {
@@ -212,7 +212,7 @@ describe('aggregateProgressSnapshot', () => {
                         solutionHash: 'solution-one',
                         configHash: 'config-1',
                         verificationStatus: 'VERIFIED',
-                        acceptanceFrontier: { status: 'OPEN' },
+                        decision: { status: 'UNRESOLVED' },
                         trainable: true,
                     },
                 }),
@@ -221,6 +221,16 @@ describe('aggregateProgressSnapshot', () => {
 
         expect(result.coverage.eligiblePositions).toBe(0);
         expect(result.inventory.eligiblePositions).toBe(0);
+    });
+
+    it('retains prior confirmed evidence after a same-config unresolved reanalysis', () => {
+        const prior = position('prior');
+        prior.observations[0].analysisRunId = 'earlier-run';
+        const result = snapshot({ positions: [prior] });
+        expect(result.inventory.eligiblePositions).toBe(1);
+        const incompatible = position('incompatible');
+        incompatible.currentSolutionRevision!.configHash = 'older-policy';
+        expect(snapshot({ positions: [incompatible] }).inventory.eligiblePositions).toBe(0);
     });
 
     it('reports mutually exclusive imported analysis states', () => {
@@ -565,6 +575,7 @@ describe('aggregateProgressSnapshot', () => {
             },
         });
         const result = snapshot({
+            games: [game({currentAnalysisRun: {...game().currentAnalysisRun!, configHash: 'config-new'}})],
             positions: [
                 position('revised-position', [oldAttempt], {
                     phase: 'ENDGAME',
@@ -573,7 +584,7 @@ describe('aggregateProgressSnapshot', () => {
                         solutionHash: 'solution-new',
                         configHash: 'config-new',
                         verificationStatus: 'VERIFIED',
-                        acceptanceFrontier: { status: 'STABLE' },
+                        decision: { status: 'CONFIRMED_MISTAKE' },
                         trainable: true,
                     },
                     observations: [
