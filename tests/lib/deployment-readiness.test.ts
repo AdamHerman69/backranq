@@ -204,7 +204,7 @@ describe('deployment readiness', () => {
         }
     });
 
-    it('rejects a pooled migration URL', () => {
+    it('rejects a transaction-pooled migration URL', () => {
         const readiness = getDeploymentReadiness({
             ...completeEnv,
             DIRECT_URL:
@@ -215,10 +215,57 @@ describe('deployment readiness', () => {
             expect.objectContaining({
                 group: 'database',
                 warnings: expect.arrayContaining([
-                    'DIRECT_URL must use a direct, non-pooled database URL',
+                    'DIRECT_URL must use a direct connection or Supabase session pooler on port 5432, without pgbouncer=true',
                 ]),
             })
         );
+    });
+
+    it.each([':5432', ''])('accepts a matching Supabase session migration URL with port %s', port => {
+        const readiness = getDeploymentReadiness({
+            ...completeEnv,
+            DIRECT_URL: `postgresql://postgres.project:secret@aws-0-region.pooler.supabase.com${port}/postgres`,
+        });
+        expect(readiness.checks[0]).toMatchObject({ group: 'database', ok: true, warnings: [] });
+    });
+
+    it.each([
+        'postgresql://postgres.project:secret@aws-0-region.pooler.supabase.com:6543/postgres',
+        'postgresql://postgres.project:secret@aws-0-region.pooler.supabase.com:6432/postgres',
+        'postgresql://postgres.project:secret@aws-0-region.pooler.supabase.com:5432/postgres?pgbouncer=true',
+        'postgresql://postgres.project:secret@aws-0-region.pooler.supabase.com:5432/postgres?pgbouncer=false&pgbouncer=true',
+        'postgresql://postgres:secret@db.project.supabase.co:5432/postgres?pgbouncer=true',
+    ])('rejects unsupported transaction semantics in DIRECT_URL: %s', directUrl => {
+        const readiness = getDeploymentReadiness({ ...completeEnv, DIRECT_URL: directUrl });
+        expect(readiness.checks[0]).toMatchObject({ group: 'database', ok: false,
+            warnings: expect.arrayContaining([
+                'DIRECT_URL must use a direct connection or Supabase session pooler on port 5432, without pgbouncer=true',
+            ]),
+        });
+    });
+
+    it('still rejects a Neon pooler as the migration connection', () => {
+        const readiness = getDeploymentReadiness({
+            ...completeEnv,
+            DATABASE_URL: 'postgresql://app:secret@ep-example-pooler.eu-central-1.aws.neon.tech/backranq?pgbouncer=true&connection_limit=2',
+            DIRECT_URL: 'postgresql://app:secret@ep-example-pooler.eu-central-1.aws.neon.tech/backranq',
+        });
+        expect(readiness.checks[0]).toMatchObject({ group: 'database', ok: false,
+            warnings: expect.arrayContaining([
+                'DIRECT_URL must use a direct connection or Supabase session pooler on port 5432, without pgbouncer=true',
+            ]),
+        });
+    });
+
+    it.each([
+        'postgresql://postgres.other-project:secret@aws-0-region.pooler.supabase.com:5432/postgres',
+        'postgresql://postgres.project:secret@aws-0-region.pooler.supabase.com:5432/another-database',
+        'postgresql://postgres.project:secret@aws-0-region.pooler.supabase.com:5432/postgres?schema=another_schema',
+    ])('still verifies logical identity for an allowed session pooler: %s', directUrl => {
+        const readiness = getDeploymentReadiness({ ...completeEnv, DIRECT_URL: directUrl });
+        expect(readiness.checks[0]).toMatchObject({ group: 'database', ok: false,
+            warnings: ['DATABASE_URL and DIRECT_URL identify different logical databases'],
+        });
     });
 
     it('rejects different logical databases for generic and Supabase targets', () => {

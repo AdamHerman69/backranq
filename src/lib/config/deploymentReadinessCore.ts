@@ -102,8 +102,10 @@ function databaseReadiness(
                 'DATABASE_URL pooler URL must include connection_limit=1 or connection_limit=2'
             );
         }
-        if (directUrl && isPoolerUrl(directUrl)) {
-            warnings.push('DIRECT_URL must use a direct, non-pooled database URL');
+        if (directUrl && !supportsMigrationConnection(directUrl)) {
+            warnings.push(
+                'DIRECT_URL must use a direct connection or Supabase session pooler on port 5432, without pgbouncer=true'
+            );
         }
     }
 
@@ -306,4 +308,17 @@ function isPoolerUrl(url: URL) {
             url.hostname.split('.')[0]?.endsWith('-pooler') === true) ||
         url.port === '6543'
     );
+}
+
+/** Prisma CLI supports Supavisor session mode, but never transaction pooling.
+ * https://www.prisma.io/docs/orm/v6/overview/databases/supabase
+ */
+function supportsMigrationConnection(url: URL) {
+    if (url.searchParams.getAll('pgbouncer').some(value => value.toLowerCase() === 'true')) {
+        return false;
+    }
+    if (url.hostname.endsWith('.pooler.supabase.com')) {
+        return (url.port || '5432') === '5432';
+    }
+    return !isPoolerUrl(url);
 }
