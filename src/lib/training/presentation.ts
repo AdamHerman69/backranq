@@ -87,10 +87,10 @@ export function formatScoreForTrainingSide(
     const wdl = tablebaseWdlForSide(score.wdl, trainingSide);
     const outcome =
         wdl === 'WIN'
-            ? 'Tablebase win'
+            ? 'Winning position'
             : wdl === 'DRAW'
-              ? 'Tablebase draw'
-              : 'Tablebase loss';
+              ? 'Drawn position'
+              : 'Losing position';
     return outcome;
 }
 
@@ -135,7 +135,7 @@ export function formatSignedOutcomeDifference(args: {
         const sign = args.cp > 0 ? '+' : args.cp < 0 ? '−' : '';
         return `${sign}${Math.round(Math.abs(args.cp))} cp`;
     }
-    return 'No measurable difference';
+    return 'Comparison unavailable';
 }
 
 const SOURCE_LABELS: Record<TrainingSourceKind, string> = {

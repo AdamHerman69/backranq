@@ -5,6 +5,7 @@ import {
     WEEKLY_MASTER_LEASE_MS,
     WEEKLY_MASTER_MAX_ATTEMPTS,
     weeklyMasterConfig,
+    hasCurrentMasterAnalysisConfig,
 } from '@/lib/master/config';
 import {
     ensureDefaultMasterRoster,
@@ -113,7 +114,8 @@ export async function processWeeklyMasterRun(runId: string, now = new Date()) {
             targetSourceGameId?: string | null;
         };
         if (
-            config.version !== weeklyMasterConfig().version ||
+            config?.version !== weeklyMasterConfig().version ||
+            !hasCurrentMasterAnalysisConfig(config.analysis) ||
             masterContentHash(config) !== run.configHash
         ) {
             throw new WeeklyMasterPermanentFailure(

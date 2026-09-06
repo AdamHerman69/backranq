@@ -9,7 +9,7 @@
 let enginePromise = null;
 let engine = null;
 let needsNewGameBoundary = false;
-const runtimeRevision = 'stockfish-18.0.8-bridge-v4';
+const runtimeRevision = 'stockfish-18.0.8-bridge-v5';
 let identity = {
     name: 'Stockfish 18',
     version: '18.0.8',
@@ -147,6 +147,8 @@ function ensureEngine() {
                     : 'Stockfish 18 browser worker crashed';
             if (!ready) {
                 failStartup(new Error(message));
+            } else if (engine !== adapter) {
+                return;
             }
             if (activeJob) {
                 postMessage({
@@ -154,6 +156,17 @@ function ensureEngine() {
                     id: activeJob.id,
                     message,
                 });
+            }
+            if (ready) {
+                clearForceStopTimer();
+                adapter.terminate();
+                engine = null;
+                enginePromise = null;
+                listenedEngine = null;
+                activeJob = null;
+                const next = queuedStart;
+                queuedStart = null;
+                if (next) void startJob(next).catch((error) => postMessage({ type: 'error', id: next.id, message: String(error) }));
             }
         };
         void (async () => {
@@ -204,6 +217,7 @@ function parseInfoLine(line) {
     const pv = /\bpv\s+(.+)\s*$/.exec(line);
     const wdl = /\bwdl\s+(\d+)\s+(\d+)\s+(\d+)\b/.exec(line);
     const isBound = /\b(?:lowerbound|upperbound)\b/.test(line);
+    const boundedScore = scoreMate ? { type: 'mate', value: Number(scoreMate[1]) } : scoreCp ? { type: 'cp', value: Number(scoreCp[1]) } : null;
 
     return {
         depth: depth ? Number(depth[1]) : undefined,
@@ -227,14 +241,16 @@ function parseInfoLine(line) {
               }
             : undefined,
         pvUci: pv ? pv[1].trim().split(/\s+/).filter(Boolean) : null,
+        boundedScore: isBound ? boundedScore : null,
+        bound: isBound ? (/\bupperbound\b/.test(line) ? 'UPPER' : 'LOWER') : null,
     };
 }
 
 function normalizeRootMoves(value) {
     if (value == null) return null;
-    if (!Array.isArray(value) || value.length === 0 || value.length > 8) {
+    if (!Array.isArray(value) || value.length === 0 || value.length > 256) {
         throw new Error(
-            'Restricted Stockfish search requires between 1 and 8 root moves'
+            'Restricted Stockfish search requires a nonempty root scope of at most 256 moves'
         );
     }
     const seen = new Set();
@@ -253,6 +269,18 @@ function normalizeRootMoves(value) {
     });
 }
 
+function validCompleteLines(job, lines) {
+    const expected = Math.min(job.multiPv, job.legalRootMoves?.length ?? job.multiPv);
+    const roots = new Set();
+    if (lines.length !== expected) return false;
+    return lines.every((line, index) => {
+        const root = line.pvUci?.[0];
+        if (line.multipv !== index + 1 || !line.score || !Number.isFinite(line.score.value) || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(root ?? '') || roots.has(root) || (job.legalRootMoves && !job.legalRootMoves.includes(root))) return false;
+        roots.add(root);
+        return true;
+    });
+}
+
 function buildSnapshot(job) {
     const depthBuckets = Array.from(job.linesByDepth.entries()).sort(
         ([depthA], [depthB]) => depthB - depthA
@@ -260,21 +288,26 @@ function buildSnapshot(job) {
     const selectedBucket =
         depthBuckets.find(
             ([, linesAtDepth]) =>
-                linesAtDepth.has(1) &&
-                linesAtDepth.size >= job.multiPv
+                validCompleteLines(job, Array.from(linesAtDepth.values()).sort((a, b) => a.multipv - b.multipv))
         ) ??
         depthBuckets.find(([, linesAtDepth]) => linesAtDepth.has(1));
-    const lines = Array.from(selectedBucket?.[1].values() ?? [])
+    let lines = Array.from(selectedBucket?.[1].values() ?? [])
         .filter((line) => Array.isArray(line.pvUci) && line.pvUci.length > 0)
         .sort((left, right) => left.multipv - right.multipv);
+    let depth = selectedBucket?.[0] ?? job.lastDepth;
+    if (job.completeSnapshot && (!validCompleteLines(job, lines) || job.completeSnapshot.depth >= depth)) {
+        lines = job.completeSnapshot.lines;
+        depth = job.completeSnapshot.depth;
+    }
     return {
         fen: job.fen,
-        depth: selectedBucket?.[0] ?? job.lastDepth,
+        depth,
         selDepth: job.lastSelDepth,
         nodes: job.lastNodes,
         nps: job.lastNps,
         timeMs: job.lastTimeMs,
         lines,
+        boundLines: Array.from(job.boundLines?.values() ?? []),
     };
 }
 
@@ -323,7 +356,7 @@ function scheduleForceStop(timeoutMs) {
         const next = queuedStart;
         queuedStart = null;
         if (next) {
-            void startJob(next);
+            void startJob(next).catch((error) => postMessage({ type: 'error', id: next.id, message: String(error) }));
         }
     }, Math.max(50, timeoutMs | 0));
 }
@@ -334,6 +367,10 @@ function setActive(job) {
         fen: job.fen,
         multiPv: Math.max(1, Math.min(16, job.multiPv | 0)),
         rootMoves: job.rootMoves,
+        legalRootMoves: job.legalRootMoves,
+        positionCommand: job.positionCommand,
+        completeSnapshot: null,
+        boundLines: new Map(),
         minDepth:
             job.minDepth == null ? null : Math.max(1, Math.trunc(job.minDepth)),
         maxDepth:
@@ -400,7 +437,7 @@ async function startJob(job) {
         e.postMessage(`setoption name MultiPV value ${j.multiPv}`);
         await e.waitUntilReady();
         if (!activeJob || activeJob.id !== j.id || j.stopRequested) return;
-        e.postMessage(`position fen ${j.fen}`);
+        e.postMessage(j.positionCommand ?? `position fen ${j.fen}`);
         const searchMoves =
             j.rootMoves && j.rootMoves.length > 0
                 ? ` searchmoves ${j.rootMoves.join(' ')}`
@@ -497,7 +534,7 @@ function finishJob(bestMoveUci) {
     queuedStart = null;
     if (next) {
         // Fire and forget.
-        void startJob(next);
+        void startJob(next).catch((error) => postMessage({ type: 'error', id: next.id, message: String(error) }));
     }
 }
 
@@ -513,9 +550,13 @@ function attachEngineListener(e) {
             if (parsed.depth != null) activeJob.lastDepth = parsed.depth;
             if (parsed.selDepth != null)
                 activeJob.lastSelDepth = parsed.selDepth;
-            if (parsed.nodes != null) activeJob.lastNodes = parsed.nodes;
+            if (parsed.nodes != null) activeJob.lastNodes = Math.max(activeJob.lastNodes ?? 0, parsed.nodes);
             if (parsed.nps != null) activeJob.lastNps = parsed.nps;
-            if (parsed.timeMs != null) activeJob.lastTimeMs = parsed.timeMs;
+            if (parsed.timeMs != null) activeJob.lastTimeMs = Math.max(activeJob.lastTimeMs ?? 0, parsed.timeMs);
+            const boundedRoot = parsed.pvUci?.[0];
+            if (parsed.boundedScore && parsed.bound && boundedRoot && (!activeJob.legalRootMoves || activeJob.legalRootMoves.includes(boundedRoot))) {
+                activeJob.boundLines.set(boundedRoot, { moveUci: boundedRoot, score: parsed.boundedScore, bound: parsed.bound, depth: parsed.depth, nodes: parsed.nodes, timeMs: parsed.timeMs });
+            }
 
             if (parsed.pvUci) {
                 const depth = parsed.depth ?? activeJob.lastDepth ?? 0;
@@ -539,6 +580,10 @@ function attachEngineListener(e) {
                         timeMs: parsed.timeMs,
                     });
                     activeJob.linesByDepth.set(depth, linesAtDepth);
+                    const completeLines = Array.from(linesAtDepth.values()).sort((a, b) => a.multipv - b.multipv);
+                    if (validCompleteLines(activeJob, completeLines) && (!activeJob.completeSnapshot || depth >= activeJob.completeSnapshot.depth)) {
+                        activeJob.completeSnapshot = { depth, lines: completeLines };
+                    }
                 }
             }
 
@@ -591,6 +636,7 @@ self.onmessage = (ev) => {
             1,
             Math.min(
                 rootMoves?.length ?? 16,
+                16,
                 Math.trunc(msg.multiPv ?? 1)
             )
         );
@@ -623,6 +669,8 @@ self.onmessage = (ev) => {
             maxTimeMs,
             emitIntervalMs: msg.emitIntervalMs ?? 150,
             rootMoves,
+            legalRootMoves: Array.isArray(msg.legalRootMoves) ? msg.legalRootMoves : rootMoves,
+            positionCommand: typeof msg.positionCommand === 'string' ? msg.positionCommand : undefined,
             mode,
         }).catch((err) => {
             postMessage({

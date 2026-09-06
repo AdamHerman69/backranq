@@ -7,8 +7,12 @@ import { runCommand } from './lib/run-command.mjs';
 
 const root = process.cwd();
 const composeFile = path.join(root, 'docker-compose.e2e.yml');
+const localDatabasePort = process.env.BACKRANQ_E2E_DB_PORT ?? '55432';
+if (!/^\d+$/.test(localDatabasePort) || Number(localDatabasePort) < 1024 || Number(localDatabasePort) > 65535) {
+    throw new Error('BACKRANQ_E2E_DB_PORT must be a local TCP port from 1024 to 65535.');
+}
 const localDatabaseUrl =
-    'postgresql://backranq_e2e:backranq_e2e@127.0.0.1:55432/backranq_e2e?schema=public';
+    `postgresql://backranq_e2e:backranq_e2e@127.0.0.1:${localDatabasePort}/backranq_e2e?schema=public`;
 const useExternalDatabase =
     process.env.BACKRANQ_E2E_USE_EXTERNAL_DATABASE === 'true';
 const keepDatabase = process.env.BACKRANQ_E2E_KEEP_DB === 'true';

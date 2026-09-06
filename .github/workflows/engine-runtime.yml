@@ -35,4 +35,4 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Start Stockfish and run a real fixed-node search
-        run: pnpm vitest run tests/lib/server-stockfish-client.test.ts
+        run: RUN_FIRST_PUZZLE_SMOKE=1 pnpm vitest run tests/lib/server-stockfish-client.test.ts tests/lib/first-puzzle-extraction.live.test.ts

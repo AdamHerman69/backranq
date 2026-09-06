@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 const harness = vi.hoisted(() => ({
     effects: [] as Array<() => void | (() => void)>,
     complete: null as null | ((value: unknown) => void),
+    refine: null as null | ((prompt: unknown, request: unknown) => void),
     refs: [] as Array<{ current: unknown }>,
     refIndex: 0,
     ownerId: 'owner-a',
@@ -30,8 +31,9 @@ vi.mock('next-auth/react', () => ({
     }),
 }));
 vi.mock('@/lib/hooks/usePuzzleSession', () => ({
-    usePuzzleSession: (options: { initialPrompt: unknown; onCompleted: (value: unknown) => void }) => {
+    usePuzzleSession: (options: { initialPrompt: unknown; onCompleted: (value: unknown) => void; onRefined: (prompt:unknown,request:unknown)=>void }) => {
         harness.complete = options.onCompleted;
+        harness.refine = options.onRefined;
         return {
             prompt: options.initialPrompt,
             phase: 'READY',
@@ -125,6 +127,7 @@ function mountPractice(storageUnavailable = false) {
     });
     return {
         hook, storage, complete, fetchMock,
+        refine: () => harness.refine!(prompt, {kind:'ENRICH',clientAttemptId:'attempt-a',solutionRevisionId:'revision-a',clientEvidenceId:'evidence-a',stepIndex:0,evaluatedAt:'2026-07-30T08:00:01.000Z',grade:'STRONG',clientEvidence:{}}),
         signal: () => attemptSignal,
         changeOwner: () => {
             harness.ownerId = 'owner-b';
@@ -244,4 +247,17 @@ it('defers the one-shot retry until an already active flush has settled', async 
     test.respond({ error: 'Still unavailable' }, 500, 2);
     await vi.waitFor(() => expect(test.queue()[0]?.attemptCount).toBe(2));
     expect(test.fetchMock).toHaveBeenCalledTimes(3);
+});
+
+it('persists a refinement separately without removing its in-flight original event', async () => {
+    const test = mountPractice();
+    test.complete(); test.refine();
+    expect(test.queue().map(entry=>entry.request.kind)).toEqual(['RECORD','ENRICH']);
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+    await test.hook.flushQueue();
+    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+    test.respond({attemptId:'server-attempt-a',status:'RECORDED'},200,0);
+    await vi.waitFor(()=>expect(test.queue().map(entry=>entry.request.kind)).toEqual(['ENRICH']));
+    test.respond({attemptId:'server-attempt-a',status:'ENRICHED',corrected:true},200,1);
+    await vi.waitFor(()=>expect(test.queue()).toEqual([]));
 });

@@ -20,34 +20,63 @@ import { legalMoveFromInput } from '@/lib/training/boardInput';
 import { bestMoveReviewArrows } from '@/lib/training/boardPresentation';
 import { feedbackForTrainingState } from '@/lib/training/trainerState';
 import { cn } from '@/lib/utils';
+import {
+    PersonalGameScanHeader,
+    PersonalGameScanPlaceholder,
+    PersonalGameScanStatus,
+    useScanPlayback,
+    type ScanState,
+} from './PersonalGameScan';
 
 export function PublicPuzzlePlayer({
     puzzle,
+    personalScan,
     onTerminal,
     onAttemptStarted,
     statusSlot,
     compactLayout = false,
 }: {
     puzzle: LandingPuzzleDto;
+    personalScan?: ScanState;
     onTerminal?: () => void;
     onAttemptStarted?: () => void;
     statusSlot?: ReactNode;
     compactLayout?: boolean;
 }) {
-    const session = usePublicPuzzleSession(puzzle.prompt);
+    const session = usePublicPuzzleSession(personalScan ? null : puzzle.prompt);
+    const playback = useScanPlayback(personalScan);
+    const scanPreview = playback.displayed?.progress.preview;
+    const sessionActive = !personalScan && session.prompt === puzzle.prompt;
     const [flipped, setFlipped] = useState(false);
     const [revealOpen, setRevealOpen] = useState(false);
     const [keyboardMove, setKeyboardMove] = useState('');
     const [keyboardError, setKeyboardError] = useState<string | null>(null);
     const [showBestMove, setShowBestMove] = useState(false);
     const [reducedMotion, setReducedMotion] = useState(false);
-    const terminalReportedRef = useRef(false);
+    const terminalReportedRef = useRef<string | null>(null);
+    const [presentationIdentity, setPresentationIdentity] = useState(puzzle.id);
+    const nextPresentationIdentity = personalScan
+        ? `scan:${personalScan.runId}`
+        : puzzle.id;
+    if (presentationIdentity !== nextPresentationIdentity) {
+        setPresentationIdentity(nextPresentationIdentity);
+        setFlipped(false);
+        setRevealOpen(false);
+        setKeyboardMove('');
+        setKeyboardError(null);
+        setShowBestMove(false);
+    }
 
     useEffect(() => {
-        if (!session.terminal || terminalReportedRef.current) return;
-        terminalReportedRef.current = true;
+        terminalReportedRef.current = null;
+    }, [presentationIdentity]);
+
+    useEffect(() => {
+        if (!sessionActive || !session.terminal ||
+            terminalReportedRef.current === presentationIdentity) return;
+        terminalReportedRef.current = presentationIdentity;
         onTerminal?.();
-    }, [onTerminal, session.terminal]);
+    }, [onTerminal, session.terminal, sessionActive, presentationIdentity]);
 
     useEffect(() => {
         const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -108,8 +137,20 @@ export function PublicPuzzlePlayer({
         }
         return null;
     })();
+    const boardFen = personalScan
+        ? scanPreview?.fen ?? puzzle.prompt.fen
+        : sessionActive
+          ? session.displayFen ?? puzzle.prompt.fen
+          : puzzle.prompt.fen;
+    const boardSide = personalScan && scanPreview
+        ? scanPreview.orientation === 'white' ? 'w' : 'b'
+        : puzzle.prompt.sideToMove;
+    const animationDurationMs = personalScan
+        ? playback.animationMs
+        : sessionActive ? 180 : 0;
+
     const submitKeyboardMove = () => {
-        if (!session.canMove || !keyboardMove.trim()) return;
+        if (!sessionActive || !session.canMove || !keyboardMove.trim()) return;
         const move = legalMoveFromInput(
             session.positionFen ?? puzzle.prompt.fen,
             keyboardMove
@@ -126,8 +167,9 @@ export function PublicPuzzlePlayer({
     };
 
     return (
-        <section aria-label="Interactive chess puzzle" className="space-y-3 sm:space-y-4">
-            <div className="flex items-start justify-between gap-2 sm:gap-3">
+        <section aria-label={personalScan ? "Personal game search" : "Interactive chess puzzle"} className="space-y-3 sm:space-y-4">
+            <div className={cn("flex items-start justify-between gap-2 sm:gap-3", compactLayout && "h-[104px]")}>
+                {personalScan ? <PersonalGameScanHeader personal={personalScan} playback={playback} /> : <>
                 <div className="min-w-0 flex-1">
                     <p className="editorial-label">
                         {puzzle.context.kind === 'PERSONAL'
@@ -140,7 +182,7 @@ export function PublicPuzzlePlayer({
                         {puzzle.context.headline}
                     </h2>
                     {puzzle.context.teaser ? (
-                        <p className="mt-1 line-clamp-1 text-sm text-muted-foreground sm:line-clamp-none">
+                        <p className={cn('mt-1 line-clamp-1 text-sm text-muted-foreground', !compactLayout && 'sm:line-clamp-none')}>
                             {puzzle.context.teaser}
                         </p>
                     ) : null}
@@ -163,6 +205,7 @@ export function PublicPuzzlePlayer({
                     <FlipHorizontal2 aria-hidden="true" />
                     <span className="hidden sm:inline">Flip</span>
                 </Button>
+                </>}
             </div>
 
             <div
@@ -178,26 +221,40 @@ export function PublicPuzzlePlayer({
                         compactLayout && 'mx-auto w-full sm:max-w-none'
                     )}
                 >
+                    <div className="relative"
+                        role={personalScan && scanPreview ? 'group' : undefined}
+                        aria-label={personalScan && scanPreview ? 'Game being analyzed' : undefined}
+                        data-scan-fen={personalScan ? scanPreview?.fen : undefined}
+                        data-scan-phase={personalScan ? playback.displayed?.progress.phase : undefined}
+                        data-scan-ply={personalScan ? playback.displayed?.progress.ply : undefined}
+                        data-scan-orientation={personalScan ? scanPreview?.orientation : undefined}
+                        data-landing-board="true"
+                    >
+                    <div className={personalScan && !scanPreview ? 'invisible' : undefined}>
                     <PuzzleBoard
-                        positionFen={
-                            session.displayFen ?? puzzle.prompt.fen
-                        }
-                        sideToMove={puzzle.prompt.sideToMove}
-                        flipped={flipped}
-                        canMove={session.canMove}
-                        arrows={reviewArrows}
-                        presentation={session.presentation}
-                        feedback={boardFeedback}
+                        interactionId={presentationIdentity}
+                        positionFen={boardFen}
+                        sideToMove={boardSide}
+                        flipped={!personalScan && flipped}
+                        canMove={sessionActive && session.canMove}
+                        arrows={sessionActive ? reviewArrows : []}
+                        presentation={sessionActive ? session.presentation : undefined}
+                        feedback={sessionActive ? boardFeedback : null}
                         reducedMotion={reducedMotion}
-                        ariaLabel={`${puzzle.prompt.sideToMove === 'w' ? 'White' : 'Black'} to move — find the best move`}
+                        animationDurationMs={animationDurationMs}
+                        ariaLabel={personalScan ? "Analyzed position" : `${puzzle.prompt.sideToMove === 'w' ? 'White' : 'Black'} to move — find the best move`}
                         onMove={(move) => {
                             session.requestEnginePrewarm();
                             onAttemptStarted?.();
                             void session.submitMove(move);
                         }}
                     />
+                    </div>
+                    {personalScan && !scanPreview ? <PersonalGameScanPlaceholder personal={personalScan} /> : null}
+                    </div>
+                    {personalScan ? <PersonalGameScanStatus personal={personalScan} playback={playback} /> :
                     <div className="mt-3 flex flex-wrap gap-2">
-                        {session.canReveal ? (
+                        {sessionActive && session.canReveal ? (
                             <Button
                                 type="button"
                                 variant="outline"
@@ -207,7 +264,7 @@ export function PublicPuzzlePlayer({
                                 Reveal
                             </Button>
                         ) : null}
-                        {session.review?.submittedMoveUci ? (
+                        {sessionActive && session.review?.submittedMoveUci ? (
                             <Button
                                 type="button"
                                 variant="outline"
@@ -220,7 +277,7 @@ export function PublicPuzzlePlayer({
                                 Your move
                             </Button>
                         ) : null}
-                        {session.review ? (
+                        {sessionActive && session.review ? (
                             <Button
                                 type="button"
                                 variant="outline"
@@ -233,10 +290,10 @@ export function PublicPuzzlePlayer({
                                 Show best
                             </Button>
                         ) : null}
-                    </div>
+                    </div>}
                 </div>
 
-                <div className="space-y-3">
+                {!personalScan ? <div className="space-y-3">
                     <Card>
                         <CardHeader className="pb-3">
                             <CardTitle className="text-base">Your decision</CardTitle>
@@ -246,7 +303,7 @@ export function PublicPuzzlePlayer({
                                 Play the move you would choose in a real game. Known
                                 moves are graded instantly on this device.
                             </p>
-                            {session.canMove ? (
+                            {sessionActive && session.canMove ? (
                                 <details className="rounded-lg border px-3 py-2 text-sm">
                                     <summary className="flex min-h-11 cursor-pointer select-none items-center font-medium">
                                         Enter a move with the keyboard
@@ -289,10 +346,10 @@ export function PublicPuzzlePlayer({
                         </CardContent>
                     </Card>
                     {statusSlot}
-                </div>
+                </div> : null}
             </div>
 
-            {session.review ? (
+            {sessionActive && session.review ? (
                 <PostMoveStory
                     review={session.review}
                     rootFen={puzzle.prompt.fen}
@@ -309,7 +366,7 @@ export function PublicPuzzlePlayer({
             ) : null}
 
             <ModalDialog
-                open={revealOpen}
+                open={!personalScan && revealOpen}
                 onOpenChange={setRevealOpen}
                 title="Reveal this position?"
                 description="The answer and game context stay hidden until you confirm."

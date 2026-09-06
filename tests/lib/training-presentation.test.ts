@@ -47,7 +47,7 @@ describe('training presentation semantics', () => {
                 { kind: 'tablebase', wdl: 'WIN', pov: 'WHITE', dtz: 7 },
                 'b'
             )
-        ).toBe('Tablebase loss');
+        ).toBe('Losing position');
     });
 
     it('prefers outcome probability over centipawn fallback', () => {

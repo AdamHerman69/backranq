@@ -12,6 +12,8 @@ export type TrainingMoveMetrics = {
     recoveredCp?: number | null;
     recoveredWinChance?: number | null;
     preservesOutcome?: boolean | null;
+    evidenceModel?: 'MATCHED_WDL' | 'CP_ONLY' | 'EXACT_OUTCOME';
+    referenceOutdated?: boolean;
 };
 
 export type TrainingMoveGradeResult =
@@ -38,17 +40,20 @@ function finiteNonNegative(value: number | null | undefined): number | null {
 }
 
 /**
- * Winning-chance evidence is authoritative when present. Centipawns are the
- * fallback for engines/positions without usable WDL evidence.
+ * Cp and matched expected-score tolerances are both necessary when present.
+ * Exact outcomes use their own comparison, without synthetic centipawns.
  */
 function withinLoss(
     metrics: TrainingMoveMetrics,
     threshold: { maxCpLoss: number; maxWinChanceLoss: number }
 ): boolean {
     const chanceLoss = finiteNonNegative(metrics.bestGapWinChance);
-    if (chanceLoss != null) return chanceLoss <= threshold.maxWinChanceLoss;
     const cpLoss = finiteNonNegative(metrics.bestGapCp);
-    return cpLoss != null && cpLoss <= threshold.maxCpLoss;
+    if (metrics.evidenceModel === 'EXACT_OUTCOME') {
+        return chanceLoss != null && chanceLoss <= threshold.maxWinChanceLoss;
+    }
+    return cpLoss != null && cpLoss <= threshold.maxCpLoss &&
+        (chanceLoss == null || chanceLoss <= threshold.maxWinChanceLoss);
 }
 
 function isMeaningfulImprovement(
@@ -56,16 +61,10 @@ function isMeaningfulImprovement(
     policy: GradingPolicyV3
 ): boolean {
     const recoveredChance = finiteNonNegative(metrics.recoveredWinChance);
-    if (recoveredChance != null) {
-        return (
-            recoveredChance >= policy.improvement.minRecoveredWinChance
-        );
-    }
     const recoveredCp = finiteNonNegative(metrics.recoveredCp);
-    return (
-        recoveredCp != null &&
-        recoveredCp >= policy.improvement.minRecoveredCp
-    );
+    return (recoveredChance != null && recoveredChance >= policy.improvement.minRecoveredWinChance) ||
+        (metrics.evidenceModel !== 'EXACT_OUTCOME' && recoveredCp != null && recoveredCp >= policy.improvement.minRecoveredCp);
+
 }
 
 function hasOutcomeEvidence(metrics: TrainingMoveMetrics): boolean {
@@ -80,6 +79,7 @@ function hasRequiredPreservationEvidence(
     policy: GradingPolicyV3
 ): boolean {
     return (
+        metrics.evidenceModel !== 'EXACT_OUTCOME' ||
         !policy.success.preserveOutcome ||
         typeof metrics.preservesOutcome === 'boolean'
     );
@@ -97,7 +97,7 @@ export function gradeTrainingMove(
     metrics: TrainingMoveMetrics,
     policy: GradingPolicyV3
 ): TrainingMoveGradeResult {
-    if (!metrics.stable) {
+    if (!metrics.stable || metrics.referenceOutdated) {
         return { status: 'UNRESOLVED', reason: 'UNSTABLE_EVIDENCE' };
     }
     if (
@@ -107,18 +107,15 @@ export function gradeTrainingMove(
         return { status: 'UNRESOLVED', reason: 'MISSING_OUTCOME_EVIDENCE' };
     }
 
-    const repeated =
-        normalizeMove(metrics.moveUci) ===
-        normalizeMove(metrics.originalMoveUci);
-    if (repeated) {
-        return {
-            status: 'GRADED',
-            grade: 'REPEATED_MISTAKE',
-            accepted: false,
-        };
+    if (metrics.evidenceModel === 'MATCHED_WDL' && finiteNonNegative(metrics.bestGapCp) == null &&
+        finiteNonNegative(metrics.bestGapWinChance) != null && metrics.bestGapWinChance! <= policy.success.maxWinChanceLoss) {
+        // A mixed cp/exact comparison can prove a large WDL loss, but cannot
+        // certify quality without the required centipawn comparison.
+        return { status: 'UNRESOLVED', reason: 'MISSING_OUTCOME_EVIDENCE' };
     }
 
     const preservesRequiredOutcome =
+        metrics.evidenceModel !== 'EXACT_OUTCOME' ||
         !policy.success.preserveOutcome || metrics.preservesOutcome === true;
     if (
         preservesRequiredOutcome &&
@@ -138,6 +135,17 @@ export function gradeTrainingMove(
     ) {
         return { status: 'GRADED', grade: 'GOOD', accepted: true };
     }
+    const repeated =
+        normalizeMove(metrics.moveUci) ===
+        normalizeMove(metrics.originalMoveUci);
+    if (repeated) {
+        return {
+            status: 'GRADED',
+            grade: 'REPEATED_MISTAKE',
+            accepted: false,
+        };
+    }
+
     if (isMeaningfulImprovement(metrics, policy)) {
         return { status: 'GRADED', grade: 'IMPROVED', accepted: false };
     }

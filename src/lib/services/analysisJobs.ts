@@ -47,7 +47,8 @@ import {
     releaseServerAnalysisCreditsInTransaction,
     SERVER_ANALYSIS_BILLING_POLICY_V2,
 } from '@/lib/services/billingAccounts';
-import type { TrainingMomentExtractionCheckpoint } from '@/lib/analysis/extractTrainingMoments';
+import { resolveTrainingMomentExtractionOptions, type TrainingMomentExtractionCheckpoint } from '@/lib/analysis/extractTrainingMoments';
+import { createExtractionConfigSnapshot, EXTRACTION_CONFIG_VERSION } from '@/lib/analysis/extractionConfig';
 
 export const SERVER_ANALYSIS_EXECUTION_MODE =
     'SERVER_QUEUE' satisfies AnalysisExecutionMode;
@@ -75,6 +76,7 @@ const SERVER_ANALYSIS_SNAPSHOT_KEYS = [
     'engine',
     'executionMode',
     'extractOptions',
+    'extraction',
     'qualityProfileVersion',
     'version',
 ] as const;
@@ -709,7 +711,8 @@ export function serverAnalysisConfigFromPreferences(
         analysisDefaults.analysisQuality
     );
     const snapshot = {
-        version: 2,
+        version: EXTRACTION_CONFIG_VERSION,
+        extraction: createExtractionConfigSnapshot({ engine: SERVER_ANALYSIS_ENGINE_SNAPSHOT, extractor: resolveTrainingMomentExtractionOptions(extractOptions) }) as unknown as Prisma.InputJsonObject,
         executionMode: SERVER_ANALYSIS_EXECUTION_MODE,
         analysisQuality: analysisDefaults.analysisQuality,
         qualityProfileVersion: ANALYSIS_QUALITY_PROFILE_VERSION,
@@ -766,7 +769,7 @@ export function serverAnalysisConfigFromSnapshot(args: {
     if (!isRecord(args.snapshot)) return null;
     if (
         !hasExactKeys(args.snapshot, SERVER_ANALYSIS_SNAPSHOT_KEYS) ||
-        args.snapshot.version !== 2 ||
+        args.snapshot.version !== EXTRACTION_CONFIG_VERSION ||
         args.snapshot.executionMode !== SERVER_ANALYSIS_EXECUTION_MODE ||
         args.snapshot.qualityProfileVersion !==
             ANALYSIS_QUALITY_PROFILE_VERSION ||
@@ -791,7 +794,10 @@ export function serverAnalysisConfigFromSnapshot(args: {
     );
     if (
         stableCanonicalStringify(args.snapshot.extractOptions) !==
-        stableCanonicalStringify(canonicalOptions)
+        stableCanonicalStringify(canonicalOptions) ||
+        stableCanonicalStringify(args.snapshot.extraction) !== stableCanonicalStringify(
+            createExtractionConfigSnapshot({ engine: SERVER_ANALYSIS_ENGINE_SNAPSHOT, extractor: resolveTrainingMomentExtractionOptions(canonicalOptions) })
+        )
     ) {
         return null;
     }

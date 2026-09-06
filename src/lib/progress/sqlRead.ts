@@ -343,11 +343,11 @@ export async function readProgressPositionsSummary(args: {
                   AND revision."id" = moment."currentSolutionRevisionId"
                   AND revision."trainable"
                   AND revision."verificationStatus" = 'VERIFIED'::"VerificationStatus"
-                  AND revision."acceptanceFrontier" @> '{"status":"STABLE"}'::jsonb
+                  AND revision."decision" @> '{"status":"CONFIRMED_MISTAKE"}'::jsonb
+                  AND revision."configHash" = run."configHash"
                   AND EXISTS (
                       SELECT 1 FROM "TrainingMomentObservation" observation
                       WHERE observation."momentId" = moment."id"
-                        AND observation."analysisRunId" = run."id"
                         AND observation."solutionRevisionId" = revision."id"
                         AND observation."observedSolutionHash" = revision."solutionHash"
                   )

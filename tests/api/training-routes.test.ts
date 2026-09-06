@@ -1,3 +1,4 @@
+import { fixtureSolution } from '../helpers/extractionEvidence';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createJsonRequest, readJson } from '../helpers/route';
 import {
@@ -31,7 +32,8 @@ const feedRow = {
         provider: 'LICHESS',
         playedAt: new Date('2026-01-01T00:00:00.000Z'),
     },
-    currentSolutionRevision: {
+    currentSolutionRevision: fixtureSolution({
+        originalDecision: { scoreBefore: { kind: 'cp', cp:80, pov:'WHITE' }, scoreAfter:{kind:'cp',cp:0,pov:'WHITE'},cpLoss:80,winChanceLoss:0.1 },
         bestMoveUci: 'e2e3',
         acceptedMovesUci: ['e2e3'],
         acceptanceFrontier: {
@@ -60,7 +62,7 @@ const feedRow = {
                 minRecoveredCp: 40,
                 minRecoveredWinChance: 0.05,
             },
-            unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
+            unknownMove: 'EVALUATE',
             matePolicy: 'EXACT',
             tablebasePolicy: 'EXACT',
         },
@@ -101,7 +103,7 @@ const feedRow = {
                 evidence: { bestGapCp: 0 },
             },
         ],
-    },
+    }),
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     lastTrainedAt: null,
 };

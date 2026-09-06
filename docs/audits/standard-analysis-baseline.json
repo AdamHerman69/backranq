@@ -1,0 +1,4191 @@
+{
+  "version": 1,
+  "sourceSha": "873912414c5498fa1c94e575ed9847884cad190b",
+  "corpusSha256": "780d1c56adb2900d47094ab4a0c1d89f8a180132fbae1357c72bb10bad7c4bae",
+  "note": "Local observational audit, not a human quality label or production E2E certification. First full run includes diagnostic writer overhead; confirmation run measures extraction before writing.",
+  "runs": {
+    "smoke": {
+      "product": {
+        "profile": {
+          "name": "product",
+          "nodesPerPosition": 5000,
+          "confirmNodes": 10000,
+          "maxConfirmationNodes": 40000,
+          "verificationNodesPerPosition": 5000
+        },
+        "totals": {
+          "games": 2,
+          "completedGames": 2,
+          "candidates": 14,
+          "moments": 7,
+          "wallTimeMs": 12169,
+          "cost": {
+            "searches": 622,
+            "evalSearches": 471,
+            "multiPvSearches": 151,
+            "requestedNodes": 4345000,
+            "largestMultiPv": 16
+          },
+          "verificationStatuses": {
+            "AMBIGUOUS": 7,
+            "VERIFIED": 7
+          },
+          "receiptReasons": {
+            "SAVED": 7,
+            "FORCED_MOVE": 0,
+            "BELOW_COVERAGE_THRESHOLD": 79,
+            "BELOW_THRESHOLD_AFTER_CONFIRMATION": 1,
+            "ANALYSIS_INCOMPLETE": 0,
+            "VERIFICATION_UNSTABLE": 14
+          }
+        },
+        "games": [
+          {
+            "gameId": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 5169,
+            "cost": {
+              "searches": 319,
+              "evalSearches": 228,
+              "multiPvSearches": 91,
+              "requestedNodes": 2400000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:2",
+                "decisionPly": 2,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "g2g3",
+                "acceptedMovesUci": [
+                  "a2a3",
+                  "a2a4",
+                  "b1c3",
+                  "b1d2",
+                  "c1d2",
+                  "c1f4",
+                  "c1g5",
+                  "c2c3",
+                  "c2c4",
+                  "d1d2",
+                  "d1d3",
+                  "e2e3",
+                  "g1f3",
+                  "g2g3",
+                  "h2h3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:14",
+                "decisionPly": 14,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "d1d5",
+                "acceptedMovesUci": [
+                  "c3d5",
+                  "d1d5",
+                  "f1c4",
+                  "g1e2",
+                  "g2g3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:42",
+                "decisionPly": 42,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "d1a1",
+                "acceptedMovesUci": [
+                  "d1a1"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:46",
+                "decisionPly": 46,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f3e1",
+                "acceptedMovesUci": [
+                  "f3e1"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:50",
+                "decisionPly": 50,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2d3",
+                "acceptedMovesUci": [
+                  "e2d2",
+                  "e2d3",
+                  "e2e3",
+                  "f3d2",
+                  "g2g3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:54",
+                "decisionPly": 54,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "d4f3",
+                "acceptedMovesUci": [
+                  "d4f3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:64",
+                "decisionPly": 64,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "d4e6",
+                "acceptedMovesUci": [
+                  "b3b4",
+                  "d4e6",
+                  "d4f3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:76",
+                "decisionPly": 76,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "c4e3",
+                "acceptedMovesUci": [
+                  "c4e3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:84",
+                "decisionPly": 84,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "MULTIPLE",
+                "bestMoveUci": "f7d8",
+                "acceptedMovesUci": [
+                  "e3d2",
+                  "e3f2",
+                  "e3f3",
+                  "f7d6",
+                  "f7d8",
+                  "f7e5",
+                  "h2h4"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 5,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 33,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 1,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 8
+            }
+          },
+          {
+            "gameId": "lichess:bNDgiSuy",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 7000,
+            "cost": {
+              "searches": 303,
+              "evalSearches": 243,
+              "multiPvSearches": 60,
+              "requestedNodes": 1945000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "lichess:bNDgiSuy:16",
+                "decisionPly": 16,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "g5h4",
+                "acceptedMovesUci": [
+                  "b2b4",
+                  "g5f4",
+                  "g5h4",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:18",
+                "decisionPly": 18,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f3e5",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a1c1",
+                  "a3a4",
+                  "b2b4",
+                  "d1e2",
+                  "d3e2",
+                  "d3f1",
+                  "e1g1",
+                  "e3e4",
+                  "f3d2",
+                  "f3e5",
+                  "f3g1",
+                  "g2g4",
+                  "h1g1",
+                  "h2h3",
+                  "h4g3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:20",
+                "decisionPly": 20,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f3e1",
+                "acceptedMovesUci": [
+                  "b2b4",
+                  "f3d2",
+                  "f3e1",
+                  "f3e5",
+                  "g2g4",
+                  "h4g3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:44",
+                "decisionPly": 44,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f5f6",
+                "acceptedMovesUci": [
+                  "f5f6"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:54",
+                "decisionPly": 54,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "MULTIPLE",
+                "bestMoveUci": "h5h6",
+                "acceptedMovesUci": [
+                  "e5d3",
+                  "e5f3",
+                  "e5g4",
+                  "e5g6",
+                  "h5h6"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 2,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 46,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 0,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 6
+            }
+          }
+        ]
+      },
+      "reference": {
+        "profile": {
+          "name": "reference",
+          "nodesPerPosition": 20000,
+          "confirmNodes": 40000,
+          "maxConfirmationNodes": 160000,
+          "verificationNodesPerPosition": 20000
+        },
+        "totals": {
+          "games": 2,
+          "completedGames": 2,
+          "candidates": 12,
+          "moments": 5,
+          "wallTimeMs": 22901,
+          "cost": {
+            "searches": 603,
+            "evalSearches": 468,
+            "multiPvSearches": 135,
+            "requestedNodes": 16660000,
+            "largestMultiPv": 16
+          },
+          "verificationStatuses": {
+            "VERIFIED": 5,
+            "AMBIGUOUS": 7
+          },
+          "receiptReasons": {
+            "SAVED": 5,
+            "FORCED_MOVE": 0,
+            "BELOW_COVERAGE_THRESHOLD": 80,
+            "BELOW_THRESHOLD_AFTER_CONFIRMATION": 2,
+            "ANALYSIS_INCOMPLETE": 0,
+            "VERIFICATION_UNSTABLE": 14
+          }
+        },
+        "games": [
+          {
+            "gameId": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 10275,
+            "cost": {
+              "searches": 273,
+              "evalSearches": 220,
+              "multiPvSearches": 53,
+              "requestedNodes": 7580000,
+              "largestMultiPv": 10
+            },
+            "moments": [
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:46",
+                "decisionPly": 46,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f3e1",
+                "acceptedMovesUci": [
+                  "f3e1"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:50",
+                "decisionPly": 50,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2d3",
+                "acceptedMovesUci": [
+                  "e2d2",
+                  "e2d3",
+                  "e2e3",
+                  "f3d2",
+                  "g2g3",
+                  "h2h3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:54",
+                "decisionPly": 54,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "d4f3",
+                "acceptedMovesUci": [
+                  "d4f3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:64",
+                "decisionPly": 64,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "d4e6",
+                "acceptedMovesUci": [
+                  "d4e6",
+                  "d4f3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:76",
+                "decisionPly": 76,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "c4e3",
+                "acceptedMovesUci": [
+                  "c4e3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:84",
+                "decisionPly": 84,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "MULTIPLE",
+                "bestMoveUci": "f7d8",
+                "acceptedMovesUci": [
+                  "e3d2",
+                  "e3f2",
+                  "f7d6",
+                  "f7d8",
+                  "f7e5",
+                  "h2h4"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 4,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 36,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 2,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 5
+            }
+          },
+          {
+            "gameId": "lichess:bNDgiSuy",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 12626,
+            "cost": {
+              "searches": 330,
+              "evalSearches": 248,
+              "multiPvSearches": 82,
+              "requestedNodes": 9080000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "lichess:bNDgiSuy:4",
+                "decisionPly": 4,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2e4",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a2a3",
+                  "a2a4",
+                  "c1d2",
+                  "c1e3",
+                  "c1f4",
+                  "d1d3",
+                  "e2e3",
+                  "e2e4",
+                  "f2f4",
+                  "g1f3",
+                  "g1h3",
+                  "g2g3",
+                  "h2h3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:20",
+                "decisionPly": 20,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f3e1",
+                "acceptedMovesUci": [
+                  "b2b4",
+                  "f3d2",
+                  "f3e1",
+                  "f3e5",
+                  "g2g4",
+                  "h4g3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:30",
+                "decisionPly": 30,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "d1f3",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a1c1",
+                  "a3a4",
+                  "b2b4",
+                  "c3a4",
+                  "c3b1",
+                  "c3e2",
+                  "d1d2",
+                  "d1e1",
+                  "d1e2",
+                  "d1f3",
+                  "e3e4",
+                  "f1f2",
+                  "f1f3",
+                  "g1f2",
+                  "g2g4"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:44",
+                "decisionPly": 44,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f5f6",
+                "acceptedMovesUci": [
+                  "f5f6"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:54",
+                "decisionPly": 54,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "h5h6",
+                "acceptedMovesUci": [
+                  "e5d3",
+                  "e5g4",
+                  "e5g6",
+                  "h5h6"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:58",
+                "decisionPly": 58,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "h5h3",
+                "acceptedMovesUci": [
+                  "h5h1",
+                  "h5h2",
+                  "h5h3",
+                  "h5h4"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 1,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 44,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 0,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 9
+            }
+          }
+        ]
+      },
+      "comparison": {
+        "sharedMoments": 5,
+        "productOnly": [
+          "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:42",
+          "lichess:bNDgiSuy:54"
+        ],
+        "referenceOnly": [],
+        "referenceCoverage": 1,
+        "productAgreement": 0.7142857142857143,
+        "bestMoveAgreement": 1,
+        "bestMoveCompatibility": 1,
+        "meanAcceptedMoveJaccard": 0.9714285714285715,
+        "bestMoveDisagreements": [],
+        "acceptedMoveDisagreements": [
+          {
+            "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:84",
+            "productBestMoveUci": "f7d8",
+            "referenceBestMoveUci": "f7d8",
+            "exactBestMove": true,
+            "bestMovesCompatible": true,
+            "acceptedMoveJaccard": 0.8571428571428571
+          }
+        ]
+      }
+    },
+    "full": {
+      "product": {
+        "profile": {
+          "name": "product",
+          "nodesPerPosition": 100000,
+          "confirmNodes": 200000,
+          "maxConfirmationNodes": 800000,
+          "verificationNodesPerPosition": 100000
+        },
+        "totals": {
+          "games": 2,
+          "completedGames": 2,
+          "candidates": 14,
+          "moments": 5,
+          "wallTimeMs": 131929,
+          "cost": {
+            "searches": 653,
+            "evalSearches": 471,
+            "multiPvSearches": 182,
+            "requestedNodes": 94400000,
+            "largestMultiPv": 16
+          },
+          "verificationStatuses": {
+            "AMBIGUOUS": 9,
+            "VERIFIED": 5
+          },
+          "receiptReasons": {
+            "SAVED": 5,
+            "FORCED_MOVE": 0,
+            "BELOW_COVERAGE_THRESHOLD": 79,
+            "BELOW_THRESHOLD_AFTER_CONFIRMATION": 2,
+            "ANALYSIS_INCOMPLETE": 0,
+            "VERIFICATION_UNSTABLE": 15
+          }
+        },
+        "games": [
+          {
+            "gameId": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 48295,
+            "cost": {
+              "searches": 308,
+              "evalSearches": 220,
+              "multiPvSearches": 88,
+              "requestedNodes": 43000000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:8",
+                "decisionPly": 8,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e4f5",
+                "acceptedMovesUci": [
+                  "a2a3",
+                  "a2a4",
+                  "d1e2",
+                  "d1f3",
+                  "d4d5",
+                  "e4f5",
+                  "f1b5",
+                  "f1c4",
+                  "f1d3",
+                  "f1e2",
+                  "f2f4",
+                  "g1f3",
+                  "g1h3",
+                  "g2g3",
+                  "g5h4",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:46",
+                "decisionPly": 46,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f3e1",
+                "acceptedMovesUci": [
+                  "f3e1"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:50",
+                "decisionPly": 50,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2d3",
+                "acceptedMovesUci": [
+                  "e2d2",
+                  "e2d3",
+                  "e2e3",
+                  "f3d2",
+                  "g2g3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:54",
+                "decisionPly": 54,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "d4f3",
+                "acceptedMovesUci": [
+                  "d4f3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:64",
+                "decisionPly": 64,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "d4e6",
+                "acceptedMovesUci": [
+                  "d4e6",
+                  "d4f3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:66",
+                "decisionPly": 66,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "d4f3",
+                "acceptedMovesUci": [
+                  "b4b5",
+                  "c3b2",
+                  "c3b3",
+                  "c3d2",
+                  "c4c5",
+                  "d4b3",
+                  "d4c2",
+                  "d4e2",
+                  "d4f3",
+                  "h2h3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:76",
+                "decisionPly": 76,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "c4e3",
+                "acceptedMovesUci": [
+                  "c4e3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:84",
+                "decisionPly": 84,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f7d8",
+                "acceptedMovesUci": [
+                  "e3d2",
+                  "e3f2",
+                  "f7d6",
+                  "f7d8",
+                  "f7e5",
+                  "h2h4"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 3,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 35,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 1,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 8
+            }
+          },
+          {
+            "gameId": "lichess:bNDgiSuy",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 83634,
+            "cost": {
+              "searches": 345,
+              "evalSearches": 251,
+              "multiPvSearches": 94,
+              "requestedNodes": 51400000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "lichess:bNDgiSuy:4",
+                "decisionPly": 4,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2e4",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a2a3",
+                  "a2a4",
+                  "c1d2",
+                  "c1e3",
+                  "c1f4",
+                  "c3b1",
+                  "d1d3",
+                  "e2e3",
+                  "e2e4",
+                  "g1f3",
+                  "g1h3",
+                  "g2g3",
+                  "g2g4",
+                  "h2h3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:18",
+                "decisionPly": 18,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f3e5",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a1c1",
+                  "b2b4",
+                  "d1d2",
+                  "d1e2",
+                  "d3e2",
+                  "d3f1",
+                  "e1f1",
+                  "e1g1",
+                  "e3e4",
+                  "f3d2",
+                  "f3e5",
+                  "f3g1",
+                  "g2g4",
+                  "h1g1",
+                  "h2h3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:20",
+                "decisionPly": 20,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f3e5",
+                "acceptedMovesUci": [
+                  "b2b4",
+                  "f3d2",
+                  "f3e1",
+                  "f3e5",
+                  "g2g4",
+                  "h4g3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:28",
+                "decisionPly": 28,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f1f4",
+                "acceptedMovesUci": [
+                  "b2b4",
+                  "d1e1",
+                  "d1e2",
+                  "d1f3",
+                  "f1f3",
+                  "f1f4",
+                  "g3f4",
+                  "g3g4"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:44",
+                "decisionPly": 44,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f5f6",
+                "acceptedMovesUci": [
+                  "f5f6"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:54",
+                "decisionPly": 54,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "MULTIPLE",
+                "bestMoveUci": "h5h6",
+                "acceptedMovesUci": [
+                  "e5d3",
+                  "e5f3",
+                  "e5g4",
+                  "e5g6",
+                  "h5h6"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 2,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 44,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 1,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 7
+            }
+          }
+        ]
+      },
+      "reference": {
+        "profile": {
+          "name": "reference",
+          "nodesPerPosition": 400000,
+          "confirmNodes": 800000,
+          "maxConfirmationNodes": 3200000,
+          "verificationNodesPerPosition": 400000
+        },
+        "totals": {
+          "games": 2,
+          "completedGames": 2,
+          "candidates": 13,
+          "moments": 4,
+          "wallTimeMs": 430015,
+          "cost": {
+            "searches": 629,
+            "evalSearches": 464,
+            "multiPvSearches": 165,
+            "requestedNodes": 350400000,
+            "largestMultiPv": 16
+          },
+          "verificationStatuses": {
+            "AMBIGUOUS": 7,
+            "VERIFIED": 6
+          },
+          "receiptReasons": {
+            "SAVED": 4,
+            "FORCED_MOVE": 0,
+            "BELOW_COVERAGE_THRESHOLD": 81,
+            "BELOW_THRESHOLD_AFTER_CONFIRMATION": 3,
+            "ANALYSIS_INCOMPLETE": 0,
+            "VERIFICATION_UNSTABLE": 13
+          }
+        },
+        "games": [
+          {
+            "gameId": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 172090,
+            "cost": {
+              "searches": 280,
+              "evalSearches": 214,
+              "multiPvSearches": 66,
+              "requestedNodes": 143200000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:8",
+                "decisionPly": 8,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e4f5",
+                "acceptedMovesUci": [
+                  "a2a3",
+                  "d1d3",
+                  "d1e2",
+                  "d1f3",
+                  "e4e5",
+                  "e4f5",
+                  "f1b5",
+                  "f1c4",
+                  "f1d3",
+                  "f1e2",
+                  "f2f4",
+                  "g1f3",
+                  "g1h3",
+                  "g2g3",
+                  "g5f6",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:46",
+                "decisionPly": 46,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f3e1",
+                "acceptedMovesUci": [
+                  "f3e1"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:50",
+                "decisionPly": 50,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2d3",
+                "acceptedMovesUci": [
+                  "e2d2",
+                  "e2d3",
+                  "f3d2",
+                  "g2g3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:54",
+                "decisionPly": 54,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "d4f3",
+                "acceptedMovesUci": [
+                  "d4f3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:64",
+                "decisionPly": 64,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "MULTIPLE",
+                "bestMoveUci": "d4e6",
+                "acceptedMovesUci": [
+                  "b3b4",
+                  "d4e6",
+                  "d4f3",
+                  "h2h3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:76",
+                "decisionPly": 76,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "c4e3",
+                "acceptedMovesUci": [
+                  "c4e3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:84",
+                "decisionPly": 84,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f7d8",
+                "acceptedMovesUci": [
+                  "e3d2",
+                  "e3f2",
+                  "f7d6",
+                  "f7d8",
+                  "h2h4"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 3,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 37,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 2,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 5
+            }
+          },
+          {
+            "gameId": "lichess:bNDgiSuy",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 257925,
+            "cost": {
+              "searches": 349,
+              "evalSearches": 250,
+              "multiPvSearches": 99,
+              "requestedNodes": 207200000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "lichess:bNDgiSuy:4",
+                "decisionPly": 4,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2e4",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a2a3",
+                  "a2a4",
+                  "b2b3",
+                  "c1d2",
+                  "c1e3",
+                  "c1f4",
+                  "d1d3",
+                  "e2e3",
+                  "e2e4",
+                  "f2f3",
+                  "g1f3",
+                  "g1h3",
+                  "g2g3",
+                  "h2h3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:18",
+                "decisionPly": 18,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f3e5",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "b2b4",
+                  "d1d2",
+                  "d1e2",
+                  "d3e2",
+                  "d3f1",
+                  "e1d2",
+                  "e1g1",
+                  "e3e4",
+                  "f3d2",
+                  "f3e5",
+                  "f3g1",
+                  "g2g4",
+                  "h1g1",
+                  "h2h3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:20",
+                "decisionPly": 20,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "MULTIPLE",
+                "bestMoveUci": "f3e5",
+                "acceptedMovesUci": [
+                  "b2b4",
+                  "f3d2",
+                  "f3e1",
+                  "f3e5",
+                  "g2g4",
+                  "h4g3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:30",
+                "decisionPly": 30,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "b2b4",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a1c1",
+                  "a3a4",
+                  "b2b3",
+                  "b2b4",
+                  "c3a4",
+                  "c3b1",
+                  "c3e2",
+                  "d1d2",
+                  "d1e1",
+                  "d1e2",
+                  "d1f3",
+                  "d3e2",
+                  "e3e4",
+                  "f1f2",
+                  "f1f3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:44",
+                "decisionPly": 44,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f5f6",
+                "acceptedMovesUci": [
+                  "f5f6"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:54",
+                "decisionPly": 54,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "h5h6",
+                "acceptedMovesUci": [
+                  "e5d3",
+                  "e5g6",
+                  "h5h6"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 1,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 44,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 1,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 8
+            }
+          }
+        ]
+      },
+      "comparison": {
+        "sharedMoments": 4,
+        "productOnly": [
+          "lichess:bNDgiSuy:54"
+        ],
+        "referenceOnly": [],
+        "referenceCoverage": 1,
+        "productAgreement": 0.8,
+        "bestMoveAgreement": 1,
+        "bestMoveCompatibility": 1,
+        "meanAcceptedMoveJaccard": 1,
+        "bestMoveDisagreements": [],
+        "acceptedMoveDisagreements": []
+      }
+    },
+    "confirmation": {
+      "product": {
+        "profile": {
+          "name": "product",
+          "nodesPerPosition": 100000,
+          "confirmNodes": 200000,
+          "maxConfirmationNodes": 800000,
+          "verificationNodesPerPosition": 100000
+        },
+        "totals": {
+          "games": 2,
+          "completedGames": 2,
+          "candidates": 14,
+          "moments": 5,
+          "wallTimeMs": 105091,
+          "cost": {
+            "searches": 653,
+            "evalSearches": 471,
+            "multiPvSearches": 182,
+            "requestedNodes": 94400000,
+            "largestMultiPv": 16
+          },
+          "verificationStatuses": {
+            "AMBIGUOUS": 9,
+            "VERIFIED": 5
+          },
+          "receiptReasons": {
+            "SAVED": 5,
+            "FORCED_MOVE": 0,
+            "BELOW_COVERAGE_THRESHOLD": 79,
+            "BELOW_THRESHOLD_AFTER_CONFIRMATION": 2,
+            "ANALYSIS_INCOMPLETE": 0,
+            "VERIFICATION_UNSTABLE": 15
+          }
+        },
+        "games": [
+          {
+            "gameId": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 42084,
+            "cost": {
+              "searches": 308,
+              "evalSearches": 220,
+              "multiPvSearches": 88,
+              "requestedNodes": 43000000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:8",
+                "decisionPly": 8,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e4f5",
+                "acceptedMovesUci": [
+                  "a2a3",
+                  "a2a4",
+                  "d1e2",
+                  "d1f3",
+                  "d4d5",
+                  "e4f5",
+                  "f1b5",
+                  "f1c4",
+                  "f1d3",
+                  "f1e2",
+                  "f2f4",
+                  "g1f3",
+                  "g1h3",
+                  "g2g3",
+                  "g5h4",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:46",
+                "decisionPly": 46,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f3e1",
+                "acceptedMovesUci": [
+                  "f3e1"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:50",
+                "decisionPly": 50,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2d3",
+                "acceptedMovesUci": [
+                  "e2d2",
+                  "e2d3",
+                  "e2e3",
+                  "f3d2",
+                  "g2g3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:54",
+                "decisionPly": 54,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "d4f3",
+                "acceptedMovesUci": [
+                  "d4f3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:64",
+                "decisionPly": 64,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "d4e6",
+                "acceptedMovesUci": [
+                  "d4e6",
+                  "d4f3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:66",
+                "decisionPly": 66,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "d4f3",
+                "acceptedMovesUci": [
+                  "b4b5",
+                  "c3b2",
+                  "c3b3",
+                  "c3d2",
+                  "c4c5",
+                  "d4b3",
+                  "d4c2",
+                  "d4e2",
+                  "d4f3",
+                  "h2h3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:76",
+                "decisionPly": 76,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "c4e3",
+                "acceptedMovesUci": [
+                  "c4e3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:84",
+                "decisionPly": 84,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f7d8",
+                "acceptedMovesUci": [
+                  "e3d2",
+                  "e3f2",
+                  "f7d6",
+                  "f7d8",
+                  "f7e5",
+                  "h2h4"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 3,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 35,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 1,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 8
+            }
+          },
+          {
+            "gameId": "lichess:bNDgiSuy",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 63007,
+            "cost": {
+              "searches": 345,
+              "evalSearches": 251,
+              "multiPvSearches": 94,
+              "requestedNodes": 51400000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "lichess:bNDgiSuy:4",
+                "decisionPly": 4,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2e4",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a2a3",
+                  "a2a4",
+                  "c1d2",
+                  "c1e3",
+                  "c1f4",
+                  "c3b1",
+                  "d1d3",
+                  "e2e3",
+                  "e2e4",
+                  "g1f3",
+                  "g1h3",
+                  "g2g3",
+                  "g2g4",
+                  "h2h3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:18",
+                "decisionPly": 18,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f3e5",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a1c1",
+                  "b2b4",
+                  "d1d2",
+                  "d1e2",
+                  "d3e2",
+                  "d3f1",
+                  "e1f1",
+                  "e1g1",
+                  "e3e4",
+                  "f3d2",
+                  "f3e5",
+                  "f3g1",
+                  "g2g4",
+                  "h1g1",
+                  "h2h3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:20",
+                "decisionPly": 20,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f3e5",
+                "acceptedMovesUci": [
+                  "b2b4",
+                  "f3d2",
+                  "f3e1",
+                  "f3e5",
+                  "g2g4",
+                  "h4g3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:28",
+                "decisionPly": 28,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f1f4",
+                "acceptedMovesUci": [
+                  "b2b4",
+                  "d1e1",
+                  "d1e2",
+                  "d1f3",
+                  "f1f3",
+                  "f1f4",
+                  "g3f4",
+                  "g3g4"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:44",
+                "decisionPly": 44,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f5f6",
+                "acceptedMovesUci": [
+                  "f5f6"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:54",
+                "decisionPly": 54,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "MULTIPLE",
+                "bestMoveUci": "h5h6",
+                "acceptedMovesUci": [
+                  "e5d3",
+                  "e5f3",
+                  "e5g4",
+                  "e5g6",
+                  "h5h6"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 2,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 44,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 1,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 7
+            }
+          }
+        ]
+      },
+      "candidate": {
+        "profile": {
+          "name": "confirmation-candidate",
+          "nodesPerPosition": 100000,
+          "confirmNodes": 200000,
+          "maxConfirmationNodes": 1600000,
+          "verificationNodesPerPosition": 100000
+        },
+        "totals": {
+          "games": 2,
+          "completedGames": 2,
+          "candidates": 14,
+          "moments": 4,
+          "wallTimeMs": 112598,
+          "cost": {
+            "searches": 634,
+            "evalSearches": 464,
+            "multiPvSearches": 170,
+            "requestedNodes": 104900000,
+            "largestMultiPv": 16
+          },
+          "verificationStatuses": {
+            "AMBIGUOUS": 9,
+            "VERIFIED": 5
+          },
+          "receiptReasons": {
+            "SAVED": 4,
+            "FORCED_MOVE": 0,
+            "BELOW_COVERAGE_THRESHOLD": 83,
+            "BELOW_THRESHOLD_AFTER_CONFIRMATION": 0,
+            "ANALYSIS_INCOMPLETE": 0,
+            "VERIFICATION_UNSTABLE": 14
+          }
+        },
+        "games": [
+          {
+            "gameId": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 48285,
+            "cost": {
+              "searches": 302,
+              "evalSearches": 218,
+              "multiPvSearches": 84,
+              "requestedNodes": 47500000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:2",
+                "decisionPly": 2,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "g2g3",
+                "acceptedMovesUci": [
+                  "a2a3",
+                  "a2a4",
+                  "b1c3",
+                  "b1d2",
+                  "c1d2",
+                  "c1f4",
+                  "c1g5",
+                  "c2c3",
+                  "c2c4",
+                  "d1d2",
+                  "d4d5",
+                  "e2e3",
+                  "g1f3",
+                  "g1h3",
+                  "g2g3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:8",
+                "decisionPly": 8,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e4f5",
+                "acceptedMovesUci": [
+                  "a2a3",
+                  "a2a4",
+                  "d1d3",
+                  "d1e2",
+                  "d1f3",
+                  "e4e5",
+                  "e4f5",
+                  "f1b5",
+                  "f1c4",
+                  "f1d3",
+                  "f1e2",
+                  "f2f4",
+                  "g1f3",
+                  "g1h3",
+                  "g2g3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:46",
+                "decisionPly": 46,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f3e1",
+                "acceptedMovesUci": [
+                  "f3e1"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:50",
+                "decisionPly": 50,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2d3",
+                "acceptedMovesUci": [
+                  "e2d2",
+                  "e2d3",
+                  "e2e3",
+                  "f3d2",
+                  "g2g3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:54",
+                "decisionPly": 54,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "d4f3",
+                "acceptedMovesUci": [
+                  "d4f3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:64",
+                "decisionPly": 64,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "d4e6",
+                "acceptedMovesUci": [
+                  "d4e6"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:76",
+                "decisionPly": 76,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "c4e3",
+                "acceptedMovesUci": [
+                  "c4e3"
+                ]
+              },
+              {
+                "key": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f:84",
+                "decisionPly": 84,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f7d8",
+                "acceptedMovesUci": [
+                  "e3d2",
+                  "e3f2",
+                  "f7d6",
+                  "f7d8",
+                  "h2h4"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 3,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 38,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 0,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 6
+            }
+          },
+          {
+            "gameId": "lichess:bNDgiSuy",
+            "complete": true,
+            "manifestErrors": [],
+            "wallTimeMs": 64313,
+            "cost": {
+              "searches": 332,
+              "evalSearches": 246,
+              "multiPvSearches": 86,
+              "requestedNodes": 57400000,
+              "largestMultiPv": 16
+            },
+            "moments": [
+              {
+                "key": "lichess:bNDgiSuy:4",
+                "decisionPly": 4,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "e2e4",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a2a3",
+                  "a2a4",
+                  "b2b3",
+                  "c1d2",
+                  "c1e3",
+                  "c1f4",
+                  "d1d3",
+                  "e2e3",
+                  "e2e4",
+                  "f2f3",
+                  "g1f3",
+                  "g1h3",
+                  "g2g3",
+                  "h2h3",
+                  "h2h4"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:18",
+                "decisionPly": 18,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f3e5",
+                "acceptedMovesUci": [
+                  "a1b1",
+                  "a1c1",
+                  "a3a4",
+                  "b2b4",
+                  "d1d2",
+                  "d1e2",
+                  "d3e2",
+                  "e1g1",
+                  "e3e4",
+                  "f3d2",
+                  "f3e5",
+                  "f3g1",
+                  "g2g4",
+                  "h1g1",
+                  "h2h3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:20",
+                "decisionPly": 20,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "MULTIPLE",
+                "bestMoveUci": "f3e5",
+                "acceptedMovesUci": [
+                  "b2b4",
+                  "f3d2",
+                  "f3e1",
+                  "f3e5",
+                  "g2g4",
+                  "h4g3"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:28",
+                "decisionPly": 28,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE",
+                  "MISSED_OPPORTUNITY"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "f1f4",
+                "acceptedMovesUci": [
+                  "d1f3",
+                  "f1f4"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:44",
+                "decisionPly": 44,
+                "trainable": true,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "VERIFIED",
+                "solutionShape": "UNIQUE",
+                "bestMoveUci": "f5f6",
+                "acceptedMovesUci": [
+                  "f5f6"
+                ]
+              },
+              {
+                "key": "lichess:bNDgiSuy:54",
+                "decisionPly": 54,
+                "trainable": false,
+                "sourceKinds": [
+                  "MY_MISTAKE"
+                ],
+                "verificationStatus": "AMBIGUOUS",
+                "solutionShape": "OPEN",
+                "bestMoveUci": "h5h6",
+                "acceptedMovesUci": [
+                  "e5d3",
+                  "e5f3",
+                  "e5f7",
+                  "e5g4",
+                  "e5g6",
+                  "h5h6"
+                ]
+              }
+            ],
+            "receiptReasons": {
+              "SAVED": 1,
+              "FORCED_MOVE": 0,
+              "BELOW_COVERAGE_THRESHOLD": 45,
+              "BELOW_THRESHOLD_AFTER_CONFIRMATION": 0,
+              "ANALYSIS_INCOMPLETE": 0,
+              "VERIFICATION_UNSTABLE": 8
+            }
+          }
+        ]
+      },
+      "comparison": {
+        "sharedMoments": 4,
+        "productOnly": [
+          "lichess:bNDgiSuy:54"
+        ],
+        "referenceOnly": [],
+        "referenceCoverage": 1,
+        "productAgreement": 0.8,
+        "bestMoveAgreement": 1,
+        "bestMoveCompatibility": 1,
+        "meanAcceptedMoveJaccard": 1,
+        "bestMoveDisagreements": [],
+        "acceptedMoveDisagreements": []
+      }
+    }
+  },
+  "phaseAndPositionDetails": [
+    {
+      "name": "product-chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "startupMs": 249.44212600001134,
+      "totalMs": 48289.672374999995,
+      "phases": {
+        "scan": {
+          "calls": 188,
+          "requestedNodes": 18800000,
+          "reportedNodes": 18811620,
+          "wallTimeMs": 19804.430958999976
+        },
+        "opportunity-lookahead": {
+          "calls": 10,
+          "requestedNodes": 1000000,
+          "reportedNodes": 1000678,
+          "wallTimeMs": 1087.1791680000003
+        },
+        "loss-confirmation": {
+          "calls": 44,
+          "requestedNodes": 16000000,
+          "reportedNodes": 16007594,
+          "wallTimeMs": 18401.78350399998
+        },
+        "solution-root-frontier": {
+          "calls": 22,
+          "requestedNodes": 2800000,
+          "reportedNodes": 2801438,
+          "wallTimeMs": 2394.9372530000146
+        },
+        "solution-nonroot-continuation": {
+          "calls": 44,
+          "requestedNodes": 4400000,
+          "reportedNodes": 4402467,
+          "wallTimeMs": 4424.588208999985
+        }
+      },
+      "repeatedIdenticalRequests": 106,
+      "manifests": [
+        {
+          "version": 1,
+          "complete": true,
+          "sourceGameId": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f",
+          "sourcePgnHash": "c3527c67671dfb44982514a0adbbdda0af6559db02786bdf693da6af46244e41",
+          "scannedPlies": 94,
+          "expectedPlies": 94,
+          "termination": "COMPLETED",
+          "errors": []
+        }
+      ],
+      "moments": [
+        {
+          "decisionPly": 8,
+          "fen": "rnbqkb1r/ppp3pp/3ppn2/5pB1/3PP3/2N5/PPP2PPP/R2QKBNR w KQkq - 0 5",
+          "sourceKinds": [
+            "MY_MISTAKE",
+            "MISSED_OPPORTUNITY"
+          ],
+          "played": "e5",
+          "best": "exf5",
+          "accepted": [
+            "exf5",
+            "Nf3",
+            "Bd3",
+            "h4",
+            "Nh3",
+            "f4",
+            "Bc4",
+            "Be2",
+            "Qe2",
+            "a3",
+            "a4",
+            "Bb5+",
+            "d5",
+            "Bh4",
+            "Qf3",
+            "g3"
+          ],
+          "originalLossCp": 85,
+          "originalLossExpectedScore": 0.33599999999999997,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": false,
+          "diagnostics": [
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 46,
+          "fen": "8/1p4pp/p7/3kPp2/8/1P3N2/2P2PPP/1b3K2 w - - 2 24",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "c4+",
+          "best": "Ne1",
+          "accepted": [
+            "Ne1"
+          ],
+          "originalLossCp": 218,
+          "originalLossExpectedScore": 0.5,
+          "trainable": true,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": false,
+          "diagnostics": []
+        },
+        {
+          "decisionPly": 50,
+          "fen": "8/1p4pp/p3k3/4Pp2/2P5/1P3N2/b3KPPP/8 w - - 3 26",
+          "sourceKinds": [
+            "MY_MISTAKE",
+            "MISSED_OPPORTUNITY"
+          ],
+          "played": "Nd4+",
+          "best": "Kd3",
+          "accepted": [
+            "Kd3",
+            "g3",
+            "Ke3",
+            "Nd2",
+            "h4",
+            "Kd2"
+          ],
+          "originalLossCp": 234,
+          "originalLossExpectedScore": 0.499,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": false,
+          "diagnostics": [
+            "Accepted-move frontier changed during confirmation at ply 0",
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 54,
+          "fen": "8/1p5p/p5p1/4kp2/2PN4/1P1K4/b4PPP/8 w - - 0 28",
+          "sourceKinds": [
+            "MY_MISTAKE",
+            "MISSED_OPPORTUNITY"
+          ],
+          "played": "g3",
+          "best": "Nf3+",
+          "accepted": [
+            "Nf3+"
+          ],
+          "originalLossCp": 269,
+          "originalLossExpectedScore": 0.49450000000000005,
+          "trainable": true,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": false,
+          "diagnostics": []
+        },
+        {
+          "decisionPly": 64,
+          "fen": "8/1p5p/p5p1/2k2p2/2PN1P2/1PK3P1/7P/1b6 w - - 5 33",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "b4+",
+          "best": "Ne6+",
+          "accepted": [
+            "Ne6+",
+            "Nf3"
+          ],
+          "originalLossCp": 100,
+          "originalLossExpectedScore": 0.4595,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": false,
+          "diagnostics": [
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 66,
+          "fen": "8/1p5p/p2k2p1/5p2/1PPN1P2/2K3P1/7P/1b6 w - - 1 34",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "c5+",
+          "best": "Nf3",
+          "accepted": [
+            "Nf3",
+            "Ne2",
+            "Nb3",
+            "Kd2",
+            "h4",
+            "Kb2",
+            "Kb3",
+            "h3",
+            "c5+",
+            "b5",
+            "Nc2"
+          ],
+          "originalLossCp": 54,
+          "originalLossExpectedScore": 0.06699999999999995,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": true,
+          "diagnostics": [
+            "Accepted-move frontier changed during confirmation at ply 0",
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 76,
+          "fen": "8/1p6/p5pp/2Pk1p2/1PN2P2/3K2P1/6bP/8 w - - 2 39",
+          "sourceKinds": [
+            "MY_MISTAKE",
+            "MISSED_OPPORTUNITY"
+          ],
+          "played": "Ne5",
+          "best": "Ne3+",
+          "accepted": [
+            "Ne3+"
+          ],
+          "originalLossCp": 552,
+          "originalLossExpectedScore": 0.5,
+          "trainable": true,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": false,
+          "diagnostics": []
+        },
+        {
+          "decisionPly": 84,
+          "fen": "8/1p3N2/p7/2Pk1p1p/1P3P2/4K3/7P/5b2 w - - 0 43",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "Ng5",
+          "best": "Nd8",
+          "accepted": [
+            "Nd8",
+            "Nd6",
+            "Kf2",
+            "Kd2",
+            "h4",
+            "Ne5"
+          ],
+          "originalLossCp": 267,
+          "originalLossExpectedScore": 0.502,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": false,
+          "diagnostics": [
+            "Accepted-move frontier changed during confirmation at ply 0",
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "product-lichess_bNDgiSuy.json",
+      "startupMs": 233.60562500001106,
+      "totalMs": 83623.69279100001,
+      "phases": {
+        "scan": {
+          "calls": 216,
+          "requestedNodes": 21600000,
+          "reportedNodes": 21575325,
+          "wallTimeMs": 37720.24645700003
+        },
+        "opportunity-lookahead": {
+          "calls": 10,
+          "requestedNodes": 1000000,
+          "reportedNodes": 1000471,
+          "wallTimeMs": 1421.5643329999803
+        },
+        "loss-confirmation": {
+          "calls": 50,
+          "requestedNodes": 21600000,
+          "reportedNodes": 21611980,
+          "wallTimeMs": 30124.105463999964
+        },
+        "solution-root-frontier": {
+          "calls": 17,
+          "requestedNodes": 2000000,
+          "reportedNodes": 2001252,
+          "wallTimeMs": 2368.088291000029
+        },
+        "solution-nonroot-continuation": {
+          "calls": 52,
+          "requestedNodes": 5200000,
+          "reportedNodes": 5203613,
+          "wallTimeMs": 6790.01150200003
+        }
+      },
+      "repeatedIdenticalRequests": 118,
+      "manifests": [
+        {
+          "version": 1,
+          "complete": true,
+          "sourceGameId": "lichess:bNDgiSuy",
+          "sourcePgnHash": "91bb921441dcaab82a60eaed5501613b74a952a2a8706f8b69d648a5a1688ed5",
+          "scannedPlies": 108,
+          "expectedPlies": 108,
+          "termination": "COMPLETED",
+          "errors": []
+        }
+      ],
+      "moments": [
+        {
+          "decisionPly": 4,
+          "fen": "rnbqkbnr/ppp2ppp/4p3/3p4/3P4/2N5/PPP1PPPP/R1BQKBNR w KQkq - 0 3",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "Bf4",
+          "best": "e4",
+          "accepted": [
+            "e4",
+            "Bf4",
+            "Nf3",
+            "e3",
+            "h4",
+            "a3",
+            "h3",
+            "g3",
+            "Bd2",
+            "Be3",
+            "a4",
+            "Nh3",
+            "Rb1",
+            "Qd3",
+            "Nb1",
+            "g4"
+          ],
+          "originalLossCp": 32,
+          "originalLossExpectedScore": 0.03850000000000009,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": true,
+          "diagnostics": [
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 18,
+          "fen": "r1b1kb1r/pp1n1pp1/2p1p2p/q2p3n/3P3B/P1NBPN2/1PP2PPP/R2QK2R w KQkq - 2 10",
+          "sourceKinds": [
+            "MY_MISTAKE",
+            "MISSED_OPPORTUNITY"
+          ],
+          "played": "O-O",
+          "best": "Ne5",
+          "accepted": [
+            "Ne5",
+            "Nd2",
+            "O-O",
+            "Ng1",
+            "h3",
+            "Rb1",
+            "g4",
+            "Qd2",
+            "b4",
+            "Rg1",
+            "Be2",
+            "e4",
+            "Qe2",
+            "Bf1",
+            "Kf1",
+            "Rc1"
+          ],
+          "originalLossCp": 39,
+          "originalLossExpectedScore": 0.16200000000000003,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": true,
+          "diagnostics": [
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 20,
+          "fen": "r1b1kb1r/pp1n1p2/2p1p2p/q2p2pn/3P3B/P1NBPN2/1PP2PPP/R2Q1RK1 w kq - 0 11",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "Bg3",
+          "best": "Ne5",
+          "accepted": [
+            "Ne5",
+            "Ne1",
+            "g4",
+            "Bg3",
+            "Nd2",
+            "b4"
+          ],
+          "originalLossCp": 33,
+          "originalLossExpectedScore": 0.0665,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": true,
+          "diagnostics": [
+            "Accepted-move frontier changed during confirmation at ply 0",
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 28,
+          "fen": "r1b1k2r/pp3p2/2pbpn1p/q2pN3/3P1p2/P1NBP1P1/1PP3P1/R2Q1RK1 w kq - 0 15",
+          "sourceKinds": [
+            "MY_MISTAKE",
+            "MISSED_OPPORTUNITY"
+          ],
+          "played": "gxf4",
+          "best": "Rxf4",
+          "accepted": [
+            "Rxf4",
+            "Qf3",
+            "gxf4",
+            "b4",
+            "Rf3",
+            "Qe1",
+            "Qe2",
+            "g4"
+          ],
+          "originalLossCp": 91,
+          "originalLossExpectedScore": 0.37550000000000006,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": true,
+          "diagnostics": [
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 44,
+          "fen": "2kr4/pp2bpr1/2pq1n1p/3pNR2/3P4/P1P1PQ2/1P2N1P1/5RK1 w - - 1 23",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "Ng3",
+          "best": "Rxf6",
+          "accepted": [
+            "Rxf6"
+          ],
+          "originalLossCp": 445,
+          "originalLossExpectedScore": 0.511,
+          "trainable": true,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": false,
+          "diagnostics": []
+        },
+        {
+          "decisionPly": 54,
+          "fen": "2k5/pp2b3/2pq1p1p/3pN2R/3P4/P1P1P3/1P4K1/5R2 w - - 0 28",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "Nf7",
+          "best": "Rxh6",
+          "accepted": [
+            "Rxh6",
+            "Ng6",
+            "Nd3",
+            "Ng4",
+            "Nf3"
+          ],
+          "originalLossCp": 160,
+          "originalLossExpectedScore": 0.48999999999999994,
+          "trainable": true,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": false,
+          "diagnostics": []
+        }
+      ]
+    },
+    {
+      "name": "reference-chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "startupMs": 252.13979299998027,
+      "totalMs": 172082.90050000002,
+      "phases": {
+        "scan": {
+          "calls": 188,
+          "requestedNodes": 75200000,
+          "reportedNodes": 75248741,
+          "wallTimeMs": 88989.74233799995
+        },
+        "opportunity-lookahead": {
+          "calls": 10,
+          "requestedNodes": 4000000,
+          "reportedNodes": 4002800,
+          "wallTimeMs": 4641.4415819999995
+        },
+        "loss-confirmation": {
+          "calls": 32,
+          "requestedNodes": 41600000,
+          "reportedNodes": 41610916,
+          "wallTimeMs": 50513.39037399998
+        },
+        "solution-root-frontier": {
+          "calls": 17,
+          "requestedNodes": 9200000,
+          "reportedNodes": 9203923,
+          "wallTimeMs": 10029.780791999918
+        },
+        "solution-nonroot-continuation": {
+          "calls": 33,
+          "requestedNodes": 13200000,
+          "reportedNodes": 13209247,
+          "wallTimeMs": 15508.191002000007
+        }
+      },
+      "repeatedIdenticalRequests": 107,
+      "manifests": [
+        {
+          "version": 1,
+          "complete": true,
+          "sourceGameId": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f",
+          "sourcePgnHash": "c3527c67671dfb44982514a0adbbdda0af6559db02786bdf693da6af46244e41",
+          "scannedPlies": 94,
+          "expectedPlies": 94,
+          "termination": "COMPLETED",
+          "errors": []
+        }
+      ],
+      "moments": [
+        {
+          "decisionPly": 8,
+          "fen": "rnbqkb1r/ppp3pp/3ppn2/5pB1/3PP3/2N5/PPP2PPP/R2QKBNR w KQkq - 0 5",
+          "sourceKinds": [
+            "MY_MISTAKE",
+            "MISSED_OPPORTUNITY"
+          ],
+          "played": "e5",
+          "best": "exf5",
+          "accepted": [
+            "exf5",
+            "Bd3",
+            "Nf3",
+            "h4",
+            "Nh3",
+            "Be2",
+            "f4",
+            "Qd3",
+            "Qe2",
+            "e5",
+            "Qf3",
+            "Bb5+",
+            "a3",
+            "Bxf6",
+            "Bc4",
+            "g3"
+          ],
+          "originalLossCp": 81,
+          "originalLossExpectedScore": 0.32700000000000007,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": true,
+          "diagnostics": [
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 46,
+          "fen": "8/1p4pp/p7/3kPp2/8/1P3N2/2P2PPP/1b3K2 w - - 2 24",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "c4+",
+          "best": "Ne1",
+          "accepted": [
+            "Ne1"
+          ],
+          "originalLossCp": 239,
+          "originalLossExpectedScore": 0.5,
+          "trainable": true,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": false,
+          "diagnostics": []
+        },
+        {
+          "decisionPly": 50,
+          "fen": "8/1p4pp/p3k3/4Pp2/2P5/1P3N2/b3KPPP/8 w - - 3 26",
+          "sourceKinds": [
+            "MY_MISTAKE",
+            "MISSED_OPPORTUNITY"
+          ],
+          "played": "Nd4+",
+          "best": "Kd3",
+          "accepted": [
+            "Kd3",
+            "Kd2",
+            "g3",
+            "Nd2"
+          ],
+          "originalLossCp": 282,
+          "originalLossExpectedScore": 0.49950000000000006,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": false,
+          "diagnostics": [
+            "Accepted-move frontier changed during confirmation at ply 0",
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 54,
+          "fen": "8/1p5p/p5p1/4kp2/2PN4/1P1K4/b4PPP/8 w - - 0 28",
+          "sourceKinds": [
+            "MY_MISTAKE",
+            "MISSED_OPPORTUNITY"
+          ],
+          "played": "g3",
+          "best": "Nf3+",
+          "accepted": [
+            "Nf3+"
+          ],
+          "originalLossCp": 300,
+          "originalLossExpectedScore": 0.496,
+          "trainable": true,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": false,
+          "diagnostics": []
+        },
+        {
+          "decisionPly": 64,
+          "fen": "8/1p5p/p5p1/2k2p2/2PN1P2/1PK3P1/7P/1b6 w - - 5 33",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "b4+",
+          "best": "Ne6+",
+          "accepted": [
+            "Ne6+",
+            "Nf3",
+            "h4",
+            "b4+",
+            "h3"
+          ],
+          "originalLossCp": 102,
+          "originalLossExpectedScore": 0.46699999999999997,
+          "trainable": false,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": true,
+          "diagnostics": []
+        },
+        {
+          "decisionPly": 76,
+          "fen": "8/1p6/p5pp/2Pk1p2/1PN2P2/3K2P1/6bP/8 w - - 2 39",
+          "sourceKinds": [
+            "MY_MISTAKE",
+            "MISSED_OPPORTUNITY"
+          ],
+          "played": "Ne5",
+          "best": "Ne3+",
+          "accepted": [
+            "Ne3+"
+          ],
+          "originalLossCp": 646,
+          "originalLossExpectedScore": 0.5,
+          "trainable": true,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": false,
+          "diagnostics": []
+        },
+        {
+          "decisionPly": 84,
+          "fen": "8/1p3N2/p7/2Pk1p1p/1P3P2/4K3/7P/5b2 w - - 0 43",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "Ng5",
+          "best": "Nd8",
+          "accepted": [
+            "Nd8",
+            "Nd6",
+            "Kf2",
+            "Kd2",
+            "h4"
+          ],
+          "originalLossCp": 288,
+          "originalLossExpectedScore": 0.501,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": false,
+          "diagnostics": [
+            "Accepted-move frontier changed during confirmation at ply 0",
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reference-lichess_bNDgiSuy.json",
+      "startupMs": 225.9675400000997,
+      "totalMs": 257921.05404200003,
+      "phases": {
+        "scan": {
+          "calls": 216,
+          "requestedNodes": 86400000,
+          "reportedNodes": 86443923,
+          "wallTimeMs": 97732.80678299954
+        },
+        "loss-confirmation": {
+          "calls": 50,
+          "requestedNodes": 86400000,
+          "reportedNodes": 86415354,
+          "wallTimeMs": 113484.23720800033
+        },
+        "opportunity-lookahead": {
+          "calls": 9,
+          "requestedNodes": 3600000,
+          "reportedNodes": 3601839,
+          "wallTimeMs": 4207.98133099993
+        },
+        "solution-root-frontier": {
+          "calls": 17,
+          "requestedNodes": 8000000,
+          "reportedNodes": 8005364,
+          "wallTimeMs": 9848.052541999903
+        },
+        "solution-nonroot-continuation": {
+          "calls": 57,
+          "requestedNodes": 22800000,
+          "reportedNodes": 22817086,
+          "wallTimeMs": 28868.73575799982
+        }
+      },
+      "repeatedIdenticalRequests": 117,
+      "manifests": [
+        {
+          "version": 1,
+          "complete": true,
+          "sourceGameId": "lichess:bNDgiSuy",
+          "sourcePgnHash": "91bb921441dcaab82a60eaed5501613b74a952a2a8706f8b69d648a5a1688ed5",
+          "scannedPlies": 108,
+          "expectedPlies": 108,
+          "termination": "COMPLETED",
+          "errors": []
+        }
+      ],
+      "moments": [
+        {
+          "decisionPly": 4,
+          "fen": "rnbqkbnr/ppp2ppp/4p3/3p4/3P4/2N5/PPP1PPPP/R1BQKBNR w KQkq - 0 3",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "Bf4",
+          "best": "e4",
+          "accepted": [
+            "e4",
+            "Bf4",
+            "Nf3",
+            "e3",
+            "a3",
+            "g3",
+            "a4",
+            "h4",
+            "h3",
+            "b3",
+            "Be3",
+            "Bd2",
+            "Nh3",
+            "Qd3",
+            "Rb1",
+            "f3"
+          ],
+          "originalLossCp": 38,
+          "originalLossExpectedScore": 0.04150000000000009,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": true,
+          "diagnostics": [
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 18,
+          "fen": "r1b1kb1r/pp1n1pp1/2p1p2p/q2p3n/3P3B/P1NBPN2/1PP2PPP/R2QK2R w KQkq - 2 10",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "O-O",
+          "best": "Ne5",
+          "accepted": [
+            "Ne5",
+            "Nd2",
+            "O-O",
+            "h3",
+            "g4",
+            "Ng1",
+            "Rg1",
+            "Rb1",
+            "Qd2",
+            "Be2",
+            "b4",
+            "Qe2",
+            "Bf1",
+            "e4",
+            "Kd2"
+          ],
+          "originalLossCp": 35,
+          "originalLossExpectedScore": 0.14900000000000002,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": true,
+          "diagnostics": [
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 20,
+          "fen": "r1b1kb1r/pp1n1p2/2p1p2p/q2p2pn/3P3B/P1NBPN2/1PP2PPP/R2Q1RK1 w kq - 0 11",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "Bg3",
+          "best": "Ne5",
+          "accepted": [
+            "Ne5",
+            "Ne1",
+            "g4",
+            "Bg3",
+            "Nd2",
+            "b4"
+          ],
+          "originalLossCp": 38,
+          "originalLossExpectedScore": 0.0655,
+          "trainable": false,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": true,
+          "diagnostics": []
+        },
+        {
+          "decisionPly": 30,
+          "fen": "r1bqk2r/pp3p2/2pbpn1p/3pN3/3P1P2/P1NBP3/1PP3P1/R2Q1RK1 w kq - 1 16",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "f5",
+          "best": "b4",
+          "accepted": [
+            "b4",
+            "Na4",
+            "Rf3",
+            "Qf3",
+            "e4",
+            "Rb1",
+            "Qe2",
+            "Qe1",
+            "Qd2",
+            "Be2",
+            "Rc1",
+            "a4",
+            "Rf2",
+            "b3",
+            "Nb1",
+            "Ne2"
+          ],
+          "originalLossCp": 156,
+          "originalLossExpectedScore": 0.365,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": false,
+          "diagnostics": [
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        },
+        {
+          "decisionPly": 44,
+          "fen": "2kr4/pp2bpr1/2pq1n1p/3pNR2/3P4/P1P1PQ2/1P2N1P1/5RK1 w - - 1 23",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "Ng3",
+          "best": "Rxf6",
+          "accepted": [
+            "Rxf6"
+          ],
+          "originalLossCp": 451,
+          "originalLossExpectedScore": 0.5145,
+          "trainable": true,
+          "verification": "VERIFIED",
+          "frontier": "STABLE",
+          "playedAccepted": false,
+          "diagnostics": []
+        },
+        {
+          "decisionPly": 54,
+          "fen": "2k5/pp2b3/2pq1p1p/3pN2R/3P4/P1P1P3/1P4K1/5R2 w - - 0 28",
+          "sourceKinds": [
+            "MY_MISTAKE"
+          ],
+          "played": "Nf7",
+          "best": "Rxh6",
+          "accepted": [
+            "Rxh6",
+            "Ng6",
+            "Nd3"
+          ],
+          "originalLossCp": 179,
+          "originalLossExpectedScore": 0.49749999999999994,
+          "trainable": false,
+          "verification": "AMBIGUOUS",
+          "frontier": "OPEN",
+          "playedAccepted": false,
+          "diagnostics": [
+            "Accepted-move frontier changed during confirmation at ply 0",
+            "MultiPV alternative frontier remains open at ply 0"
+          ]
+        }
+      ]
+    }
+  ],
+  "candidateComparison": [
+    {
+      "game": "chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "ply": 8,
+      "product": {
+        "decisionPly": 8,
+        "fen": "rnbqkb1r/ppp3pp/3ppn2/5pB1/3PP3/2N5/PPP2PPP/R2QKBNR w KQkq - 0 5",
+        "sourceKinds": [
+          "MY_MISTAKE",
+          "MISSED_OPPORTUNITY"
+        ],
+        "played": "e5",
+        "best": "exf5",
+        "accepted": [
+          "exf5",
+          "Nf3",
+          "Bd3",
+          "h4",
+          "Nh3",
+          "f4",
+          "Bc4",
+          "Be2",
+          "Qe2",
+          "a3",
+          "a4",
+          "Bb5+",
+          "d5",
+          "Bh4",
+          "Qf3",
+          "g3"
+        ],
+        "originalLossCp": 85,
+        "originalLossExpectedScore": 0.33599999999999997,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": false,
+        "diagnostics": [
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "reference": {
+        "decisionPly": 8,
+        "fen": "rnbqkb1r/ppp3pp/3ppn2/5pB1/3PP3/2N5/PPP2PPP/R2QKBNR w KQkq - 0 5",
+        "sourceKinds": [
+          "MY_MISTAKE",
+          "MISSED_OPPORTUNITY"
+        ],
+        "played": "e5",
+        "best": "exf5",
+        "accepted": [
+          "exf5",
+          "Bd3",
+          "Nf3",
+          "h4",
+          "Nh3",
+          "Be2",
+          "f4",
+          "Qd3",
+          "Qe2",
+          "e5",
+          "Qf3",
+          "Bb5+",
+          "a3",
+          "Bxf6",
+          "Bc4",
+          "g3"
+        ],
+        "originalLossCp": 81,
+        "originalLossExpectedScore": 0.32700000000000007,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": true,
+        "diagnostics": [
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "productAcceptedOnly": [
+        "a4",
+        "d5",
+        "Bh4"
+      ],
+      "referenceAcceptedOnly": [
+        "Qd3",
+        "e5",
+        "Bxf6"
+      ]
+    },
+    {
+      "game": "chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "ply": 46,
+      "product": {
+        "decisionPly": 46,
+        "fen": "8/1p4pp/p7/3kPp2/8/1P3N2/2P2PPP/1b3K2 w - - 2 24",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "c4+",
+        "best": "Ne1",
+        "accepted": [
+          "Ne1"
+        ],
+        "originalLossCp": 218,
+        "originalLossExpectedScore": 0.5,
+        "trainable": true,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": false,
+        "diagnostics": []
+      },
+      "reference": {
+        "decisionPly": 46,
+        "fen": "8/1p4pp/p7/3kPp2/8/1P3N2/2P2PPP/1b3K2 w - - 2 24",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "c4+",
+        "best": "Ne1",
+        "accepted": [
+          "Ne1"
+        ],
+        "originalLossCp": 239,
+        "originalLossExpectedScore": 0.5,
+        "trainable": true,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": false,
+        "diagnostics": []
+      },
+      "productAcceptedOnly": [],
+      "referenceAcceptedOnly": []
+    },
+    {
+      "game": "chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "ply": 50,
+      "product": {
+        "decisionPly": 50,
+        "fen": "8/1p4pp/p3k3/4Pp2/2P5/1P3N2/b3KPPP/8 w - - 3 26",
+        "sourceKinds": [
+          "MY_MISTAKE",
+          "MISSED_OPPORTUNITY"
+        ],
+        "played": "Nd4+",
+        "best": "Kd3",
+        "accepted": [
+          "Kd3",
+          "g3",
+          "Ke3",
+          "Nd2",
+          "h4",
+          "Kd2"
+        ],
+        "originalLossCp": 234,
+        "originalLossExpectedScore": 0.499,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": false,
+        "diagnostics": [
+          "Accepted-move frontier changed during confirmation at ply 0",
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "reference": {
+        "decisionPly": 50,
+        "fen": "8/1p4pp/p3k3/4Pp2/2P5/1P3N2/b3KPPP/8 w - - 3 26",
+        "sourceKinds": [
+          "MY_MISTAKE",
+          "MISSED_OPPORTUNITY"
+        ],
+        "played": "Nd4+",
+        "best": "Kd3",
+        "accepted": [
+          "Kd3",
+          "Kd2",
+          "g3",
+          "Nd2"
+        ],
+        "originalLossCp": 282,
+        "originalLossExpectedScore": 0.49950000000000006,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": false,
+        "diagnostics": [
+          "Accepted-move frontier changed during confirmation at ply 0",
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "productAcceptedOnly": [
+        "Ke3",
+        "h4"
+      ],
+      "referenceAcceptedOnly": []
+    },
+    {
+      "game": "chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "ply": 54,
+      "product": {
+        "decisionPly": 54,
+        "fen": "8/1p5p/p5p1/4kp2/2PN4/1P1K4/b4PPP/8 w - - 0 28",
+        "sourceKinds": [
+          "MY_MISTAKE",
+          "MISSED_OPPORTUNITY"
+        ],
+        "played": "g3",
+        "best": "Nf3+",
+        "accepted": [
+          "Nf3+"
+        ],
+        "originalLossCp": 269,
+        "originalLossExpectedScore": 0.49450000000000005,
+        "trainable": true,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": false,
+        "diagnostics": []
+      },
+      "reference": {
+        "decisionPly": 54,
+        "fen": "8/1p5p/p5p1/4kp2/2PN4/1P1K4/b4PPP/8 w - - 0 28",
+        "sourceKinds": [
+          "MY_MISTAKE",
+          "MISSED_OPPORTUNITY"
+        ],
+        "played": "g3",
+        "best": "Nf3+",
+        "accepted": [
+          "Nf3+"
+        ],
+        "originalLossCp": 300,
+        "originalLossExpectedScore": 0.496,
+        "trainable": true,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": false,
+        "diagnostics": []
+      },
+      "productAcceptedOnly": [],
+      "referenceAcceptedOnly": []
+    },
+    {
+      "game": "chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "ply": 64,
+      "product": {
+        "decisionPly": 64,
+        "fen": "8/1p5p/p5p1/2k2p2/2PN1P2/1PK3P1/7P/1b6 w - - 5 33",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "b4+",
+        "best": "Ne6+",
+        "accepted": [
+          "Ne6+",
+          "Nf3"
+        ],
+        "originalLossCp": 100,
+        "originalLossExpectedScore": 0.4595,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": false,
+        "diagnostics": [
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "reference": {
+        "decisionPly": 64,
+        "fen": "8/1p5p/p5p1/2k2p2/2PN1P2/1PK3P1/7P/1b6 w - - 5 33",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "b4+",
+        "best": "Ne6+",
+        "accepted": [
+          "Ne6+",
+          "Nf3",
+          "h4",
+          "b4+",
+          "h3"
+        ],
+        "originalLossCp": 102,
+        "originalLossExpectedScore": 0.46699999999999997,
+        "trainable": false,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": true,
+        "diagnostics": []
+      },
+      "productAcceptedOnly": [],
+      "referenceAcceptedOnly": [
+        "h4",
+        "b4+",
+        "h3"
+      ]
+    },
+    {
+      "game": "chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "ply": 66,
+      "product": {
+        "decisionPly": 66,
+        "fen": "8/1p5p/p2k2p1/5p2/1PPN1P2/2K3P1/7P/1b6 w - - 1 34",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "c5+",
+        "best": "Nf3",
+        "accepted": [
+          "Nf3",
+          "Ne2",
+          "Nb3",
+          "Kd2",
+          "h4",
+          "Kb2",
+          "Kb3",
+          "h3",
+          "c5+",
+          "b5",
+          "Nc2"
+        ],
+        "originalLossCp": 54,
+        "originalLossExpectedScore": 0.06699999999999995,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": true,
+        "diagnostics": [
+          "Accepted-move frontier changed during confirmation at ply 0",
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "reference": {
+        "ply": 66,
+        "status": "NOT_SAVED",
+        "reason": "BELOW_COVERAGE_THRESHOLD",
+        "cpLoss": 45,
+        "winChanceLoss": 0.019000000000000017
+      },
+      "productAcceptedOnly": null,
+      "referenceAcceptedOnly": null
+    },
+    {
+      "game": "chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "ply": 76,
+      "product": {
+        "decisionPly": 76,
+        "fen": "8/1p6/p5pp/2Pk1p2/1PN2P2/3K2P1/6bP/8 w - - 2 39",
+        "sourceKinds": [
+          "MY_MISTAKE",
+          "MISSED_OPPORTUNITY"
+        ],
+        "played": "Ne5",
+        "best": "Ne3+",
+        "accepted": [
+          "Ne3+"
+        ],
+        "originalLossCp": 552,
+        "originalLossExpectedScore": 0.5,
+        "trainable": true,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": false,
+        "diagnostics": []
+      },
+      "reference": {
+        "decisionPly": 76,
+        "fen": "8/1p6/p5pp/2Pk1p2/1PN2P2/3K2P1/6bP/8 w - - 2 39",
+        "sourceKinds": [
+          "MY_MISTAKE",
+          "MISSED_OPPORTUNITY"
+        ],
+        "played": "Ne5",
+        "best": "Ne3+",
+        "accepted": [
+          "Ne3+"
+        ],
+        "originalLossCp": 646,
+        "originalLossExpectedScore": 0.5,
+        "trainable": true,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": false,
+        "diagnostics": []
+      },
+      "productAcceptedOnly": [],
+      "referenceAcceptedOnly": []
+    },
+    {
+      "game": "chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "ply": 84,
+      "product": {
+        "decisionPly": 84,
+        "fen": "8/1p3N2/p7/2Pk1p1p/1P3P2/4K3/7P/5b2 w - - 0 43",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "Ng5",
+        "best": "Nd8",
+        "accepted": [
+          "Nd8",
+          "Nd6",
+          "Kf2",
+          "Kd2",
+          "h4",
+          "Ne5"
+        ],
+        "originalLossCp": 267,
+        "originalLossExpectedScore": 0.502,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": false,
+        "diagnostics": [
+          "Accepted-move frontier changed during confirmation at ply 0",
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "reference": {
+        "decisionPly": 84,
+        "fen": "8/1p3N2/p7/2Pk1p1p/1P3P2/4K3/7P/5b2 w - - 0 43",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "Ng5",
+        "best": "Nd8",
+        "accepted": [
+          "Nd8",
+          "Nd6",
+          "Kf2",
+          "Kd2",
+          "h4"
+        ],
+        "originalLossCp": 288,
+        "originalLossExpectedScore": 0.501,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": false,
+        "diagnostics": [
+          "Accepted-move frontier changed during confirmation at ply 0",
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "productAcceptedOnly": [
+        "Ne5"
+      ],
+      "referenceAcceptedOnly": []
+    },
+    {
+      "game": "lichess_bNDgiSuy.json",
+      "ply": 4,
+      "product": {
+        "decisionPly": 4,
+        "fen": "rnbqkbnr/ppp2ppp/4p3/3p4/3P4/2N5/PPP1PPPP/R1BQKBNR w KQkq - 0 3",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "Bf4",
+        "best": "e4",
+        "accepted": [
+          "e4",
+          "Bf4",
+          "Nf3",
+          "e3",
+          "h4",
+          "a3",
+          "h3",
+          "g3",
+          "Bd2",
+          "Be3",
+          "a4",
+          "Nh3",
+          "Rb1",
+          "Qd3",
+          "Nb1",
+          "g4"
+        ],
+        "originalLossCp": 32,
+        "originalLossExpectedScore": 0.03850000000000009,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": true,
+        "diagnostics": [
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "reference": {
+        "decisionPly": 4,
+        "fen": "rnbqkbnr/ppp2ppp/4p3/3p4/3P4/2N5/PPP1PPPP/R1BQKBNR w KQkq - 0 3",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "Bf4",
+        "best": "e4",
+        "accepted": [
+          "e4",
+          "Bf4",
+          "Nf3",
+          "e3",
+          "a3",
+          "g3",
+          "a4",
+          "h4",
+          "h3",
+          "b3",
+          "Be3",
+          "Bd2",
+          "Nh3",
+          "Qd3",
+          "Rb1",
+          "f3"
+        ],
+        "originalLossCp": 38,
+        "originalLossExpectedScore": 0.04150000000000009,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": true,
+        "diagnostics": [
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "productAcceptedOnly": [
+        "Nb1",
+        "g4"
+      ],
+      "referenceAcceptedOnly": [
+        "b3",
+        "f3"
+      ]
+    },
+    {
+      "game": "lichess_bNDgiSuy.json",
+      "ply": 18,
+      "product": {
+        "decisionPly": 18,
+        "fen": "r1b1kb1r/pp1n1pp1/2p1p2p/q2p3n/3P3B/P1NBPN2/1PP2PPP/R2QK2R w KQkq - 2 10",
+        "sourceKinds": [
+          "MY_MISTAKE",
+          "MISSED_OPPORTUNITY"
+        ],
+        "played": "O-O",
+        "best": "Ne5",
+        "accepted": [
+          "Ne5",
+          "Nd2",
+          "O-O",
+          "Ng1",
+          "h3",
+          "Rb1",
+          "g4",
+          "Qd2",
+          "b4",
+          "Rg1",
+          "Be2",
+          "e4",
+          "Qe2",
+          "Bf1",
+          "Kf1",
+          "Rc1"
+        ],
+        "originalLossCp": 39,
+        "originalLossExpectedScore": 0.16200000000000003,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": true,
+        "diagnostics": [
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "reference": {
+        "decisionPly": 18,
+        "fen": "r1b1kb1r/pp1n1pp1/2p1p2p/q2p3n/3P3B/P1NBPN2/1PP2PPP/R2QK2R w KQkq - 2 10",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "O-O",
+        "best": "Ne5",
+        "accepted": [
+          "Ne5",
+          "Nd2",
+          "O-O",
+          "h3",
+          "g4",
+          "Ng1",
+          "Rg1",
+          "Rb1",
+          "Qd2",
+          "Be2",
+          "b4",
+          "Qe2",
+          "Bf1",
+          "e4",
+          "Kd2"
+        ],
+        "originalLossCp": 35,
+        "originalLossExpectedScore": 0.14900000000000002,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": true,
+        "diagnostics": [
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "productAcceptedOnly": [
+        "Kf1",
+        "Rc1"
+      ],
+      "referenceAcceptedOnly": [
+        "Kd2"
+      ]
+    },
+    {
+      "game": "lichess_bNDgiSuy.json",
+      "ply": 20,
+      "product": {
+        "decisionPly": 20,
+        "fen": "r1b1kb1r/pp1n1p2/2p1p2p/q2p2pn/3P3B/P1NBPN2/1PP2PPP/R2Q1RK1 w kq - 0 11",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "Bg3",
+        "best": "Ne5",
+        "accepted": [
+          "Ne5",
+          "Ne1",
+          "g4",
+          "Bg3",
+          "Nd2",
+          "b4"
+        ],
+        "originalLossCp": 33,
+        "originalLossExpectedScore": 0.0665,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": true,
+        "diagnostics": [
+          "Accepted-move frontier changed during confirmation at ply 0",
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "reference": {
+        "decisionPly": 20,
+        "fen": "r1b1kb1r/pp1n1p2/2p1p2p/q2p2pn/3P3B/P1NBPN2/1PP2PPP/R2Q1RK1 w kq - 0 11",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "Bg3",
+        "best": "Ne5",
+        "accepted": [
+          "Ne5",
+          "Ne1",
+          "g4",
+          "Bg3",
+          "Nd2",
+          "b4"
+        ],
+        "originalLossCp": 38,
+        "originalLossExpectedScore": 0.0655,
+        "trainable": false,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": true,
+        "diagnostics": []
+      },
+      "productAcceptedOnly": [],
+      "referenceAcceptedOnly": []
+    },
+    {
+      "game": "lichess_bNDgiSuy.json",
+      "ply": 28,
+      "product": {
+        "decisionPly": 28,
+        "fen": "r1b1k2r/pp3p2/2pbpn1p/q2pN3/3P1p2/P1NBP1P1/1PP3P1/R2Q1RK1 w kq - 0 15",
+        "sourceKinds": [
+          "MY_MISTAKE",
+          "MISSED_OPPORTUNITY"
+        ],
+        "played": "gxf4",
+        "best": "Rxf4",
+        "accepted": [
+          "Rxf4",
+          "Qf3",
+          "gxf4",
+          "b4",
+          "Rf3",
+          "Qe1",
+          "Qe2",
+          "g4"
+        ],
+        "originalLossCp": 91,
+        "originalLossExpectedScore": 0.37550000000000006,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": true,
+        "diagnostics": [
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "reference": {
+        "ply": 28,
+        "status": "UNRESOLVED",
+        "reason": "VERIFICATION_UNSTABLE",
+        "cpLoss": 153,
+        "winChanceLoss": 0.47050000000000003,
+        "confirmation": {
+          "version": 1,
+          "stable": false,
+          "termination": "MAX_BUDGET_UNSTABLE",
+          "passes": [
+            {
+              "nodes": 800000,
+              "bestMoveUci": "f1f4",
+              "qualifies": true,
+              "cpLoss": 92,
+              "winChanceLoss": 0.38149999999999995
+            },
+            {
+              "nodes": 1600000,
+              "bestMoveUci": "f1f4",
+              "qualifies": true,
+              "cpLoss": 121,
+              "winChanceLoss": 0.44499999999999995
+            },
+            {
+              "nodes": 3200000,
+              "bestMoveUci": "f1f4",
+              "qualifies": true,
+              "cpLoss": 153,
+              "winChanceLoss": 0.47050000000000003
+            }
+          ]
+        }
+      },
+      "productAcceptedOnly": null,
+      "referenceAcceptedOnly": null
+    },
+    {
+      "game": "lichess_bNDgiSuy.json",
+      "ply": 44,
+      "product": {
+        "decisionPly": 44,
+        "fen": "2kr4/pp2bpr1/2pq1n1p/3pNR2/3P4/P1P1PQ2/1P2N1P1/5RK1 w - - 1 23",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "Ng3",
+        "best": "Rxf6",
+        "accepted": [
+          "Rxf6"
+        ],
+        "originalLossCp": 445,
+        "originalLossExpectedScore": 0.511,
+        "trainable": true,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": false,
+        "diagnostics": []
+      },
+      "reference": {
+        "decisionPly": 44,
+        "fen": "2kr4/pp2bpr1/2pq1n1p/3pNR2/3P4/P1P1PQ2/1P2N1P1/5RK1 w - - 1 23",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "Ng3",
+        "best": "Rxf6",
+        "accepted": [
+          "Rxf6"
+        ],
+        "originalLossCp": 451,
+        "originalLossExpectedScore": 0.5145,
+        "trainable": true,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": false,
+        "diagnostics": []
+      },
+      "productAcceptedOnly": [],
+      "referenceAcceptedOnly": []
+    },
+    {
+      "game": "lichess_bNDgiSuy.json",
+      "ply": 54,
+      "product": {
+        "decisionPly": 54,
+        "fen": "2k5/pp2b3/2pq1p1p/3pN2R/3P4/P1P1P3/1P4K1/5R2 w - - 0 28",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "Nf7",
+        "best": "Rxh6",
+        "accepted": [
+          "Rxh6",
+          "Ng6",
+          "Nd3",
+          "Ng4",
+          "Nf3"
+        ],
+        "originalLossCp": 160,
+        "originalLossExpectedScore": 0.48999999999999994,
+        "trainable": true,
+        "verification": "VERIFIED",
+        "frontier": "STABLE",
+        "playedAccepted": false,
+        "diagnostics": []
+      },
+      "reference": {
+        "decisionPly": 54,
+        "fen": "2k5/pp2b3/2pq1p1p/3pN2R/3P4/P1P1P3/1P4K1/5R2 w - - 0 28",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "Nf7",
+        "best": "Rxh6",
+        "accepted": [
+          "Rxh6",
+          "Ng6",
+          "Nd3"
+        ],
+        "originalLossCp": 179,
+        "originalLossExpectedScore": 0.49749999999999994,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": false,
+        "diagnostics": [
+          "Accepted-move frontier changed during confirmation at ply 0",
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "productAcceptedOnly": [
+        "Ng4",
+        "Nf3"
+      ],
+      "referenceAcceptedOnly": []
+    },
+    {
+      "game": "lichess_bNDgiSuy.json",
+      "ply": 30,
+      "product": {
+        "ply": 30,
+        "status": "UNRESOLVED",
+        "reason": "VERIFICATION_UNSTABLE",
+        "cpLoss": 162,
+        "winChanceLoss": 0.376,
+        "confirmation": {
+          "version": 1,
+          "stable": false,
+          "termination": "MAX_BUDGET_UNSTABLE",
+          "passes": [
+            {
+              "nodes": 200000,
+              "bestMoveUci": "c3a4",
+              "qualifies": true,
+              "cpLoss": 146,
+              "winChanceLoss": 0.27399999999999997
+            },
+            {
+              "nodes": 400000,
+              "bestMoveUci": "f1f3",
+              "qualifies": true,
+              "cpLoss": 152,
+              "winChanceLoss": 0.32200000000000006
+            },
+            {
+              "nodes": 800000,
+              "bestMoveUci": "d1f3",
+              "qualifies": true,
+              "cpLoss": 162,
+              "winChanceLoss": 0.376
+            }
+          ]
+        }
+      },
+      "reference": {
+        "decisionPly": 30,
+        "fen": "r1bqk2r/pp3p2/2pbpn1p/3pN3/3P1P2/P1NBP3/1PP3P1/R2Q1RK1 w kq - 1 16",
+        "sourceKinds": [
+          "MY_MISTAKE"
+        ],
+        "played": "f5",
+        "best": "b4",
+        "accepted": [
+          "b4",
+          "Na4",
+          "Rf3",
+          "Qf3",
+          "e4",
+          "Rb1",
+          "Qe2",
+          "Qe1",
+          "Qd2",
+          "Be2",
+          "Rc1",
+          "a4",
+          "Rf2",
+          "b3",
+          "Nb1",
+          "Ne2"
+        ],
+        "originalLossCp": 156,
+        "originalLossExpectedScore": 0.365,
+        "trainable": false,
+        "verification": "AMBIGUOUS",
+        "frontier": "OPEN",
+        "playedAccepted": false,
+        "diagnostics": [
+          "MultiPV alternative frontier remains open at ply 0"
+        ]
+      },
+      "productAcceptedOnly": null,
+      "referenceAcceptedOnly": null
+    }
+  ],
+  "browser": {
+    "generatedAt": "2026-09-05T04:18:21.082Z",
+    "head": "873912414c5498fa1c94e575ed9847884cad190b",
+    "corpusSha256": "780d1c56adb2900d47094ab4a0c1d89f8a180132fbae1357c72bb10bad7c4bae",
+    "environment": {
+      "node": "v24.16.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M1 Pro"
+    },
+    "summaries": [
+      {
+        "gameId": "chesscom:0f8e42f0-8fda-11f1-b9f6-9dd41a01000f",
+        "complete": true,
+        "browserTotalMs": 26047,
+        "serverTotalMs": 48289.672374999995,
+        "browserRequests": 301,
+        "browserPhysicalSearches": 195,
+        "serverRequests": 308,
+        "browserTrainable": [
+          46,
+          54,
+          76
+        ],
+        "serverTrainable": [
+          46,
+          54,
+          76
+        ],
+        "browserReasons": {
+          "SAVED": 3,
+          "FORCED_MOVE": 0,
+          "BELOW_COVERAGE_THRESHOLD": 37,
+          "BELOW_THRESHOLD_AFTER_CONFIRMATION": 0,
+          "ANALYSIS_INCOMPLETE": 0,
+          "VERIFICATION_UNSTABLE": 7
+        },
+        "serverReasons": {
+          "SAVED": 3,
+          "FORCED_MOVE": 0,
+          "BELOW_COVERAGE_THRESHOLD": 35,
+          "BELOW_THRESHOLD_AFTER_CONFIRMATION": 1,
+          "ANALYSIS_INCOMPLETE": 0,
+          "VERIFICATION_UNSTABLE": 8
+        },
+        "error": null
+      },
+      {
+        "gameId": "lichess:bNDgiSuy",
+        "complete": true,
+        "browserTotalMs": 35449,
+        "serverTotalMs": 83623.69279100001,
+        "browserRequests": 315,
+        "browserPhysicalSearches": 197,
+        "serverRequests": 345,
+        "browserTrainable": [
+          44
+        ],
+        "serverTrainable": [
+          44,
+          54
+        ],
+        "browserReasons": {
+          "SAVED": 1,
+          "FORCED_MOVE": 0,
+          "BELOW_COVERAGE_THRESHOLD": 45,
+          "BELOW_THRESHOLD_AFTER_CONFIRMATION": 1,
+          "ANALYSIS_INCOMPLETE": 0,
+          "VERIFICATION_UNSTABLE": 7
+        },
+        "serverReasons": {
+          "SAVED": 2,
+          "FORCED_MOVE": 0,
+          "BELOW_COVERAGE_THRESHOLD": 44,
+          "BELOW_THRESHOLD_AFTER_CONFIRMATION": 1,
+          "ANALYSIS_INCOMPLETE": 0,
+          "VERIFICATION_UNSTABLE": 7
+        },
+        "error": null
+      }
+    ],
+    "assetRequests": [
+      {
+        "path": "/vendor/stockfish/backranq-engine.worker.js?v=stockfish-18.0.8-bridge-v4",
+        "bytes": 22545,
+        "time": "2026-09-05T04:18:21.654Z"
+      },
+      {
+        "path": "/vendor/stockfish/stockfish-18-lite-single.js?v=stockfish-18.0.8-bridge-v4",
+        "bytes": 21429,
+        "time": "2026-09-05T04:18:21.665Z"
+      },
+      {
+        "path": "/vendor/stockfish/stockfish-18-lite-single.wasm?v=stockfish-18.0.8-bridge-v4",
+        "bytes": 7295411,
+        "time": "2026-09-05T04:18:21.679Z"
+      },
+      {
+        "path": "/vendor/stockfish/stockfish-18-lite-single.wasm?v=stockfish-18.0.8-bridge-v4",
+        "bytes": 7295411,
+        "time": "2026-09-05T04:18:47.860Z"
+      }
+    ]
+  },
+  "artifactManifest": [
+    {
+      "path": "artifacts/extraction-quality-lab/smoke.json",
+      "bytes": 97753,
+      "sha256": "a82bd834b6dee21d32ab6fc18ed17a628b1692230a3044c4054724fb159c771a"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/full.json",
+      "bytes": 99941,
+      "sha256": "d1e8d555e9bee46b2a7e3d12ffdffd078562f67c4963542632eb42b85ec0640a"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/confirmation.json",
+      "bytes": 100069,
+      "sha256": "4d6c5bde0195df99e49c892c49b90184aa6f50433f946b0185ba508280be4bf7"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/runtime-parity/report.json",
+      "bytes": 81814,
+      "sha256": "1ca5f1f49ae6e50587e644299b953e0dc5f545ee3ec3bebb92a1f444dba44f88"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/browser-extraction/summary.json",
+      "bytes": 2793,
+      "sha256": "653d59aa71ed96aa75282ce1daead917575a4b1b0485b52e20ee2713b5e5b809"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/audit/product-chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "bytes": 1054442,
+      "sha256": "37bbe3b25406659bd31af9fadaed239d490995ebd4529dd732429df587754b27"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/audit/product-lichess_bNDgiSuy.json",
+      "bytes": 1117666,
+      "sha256": "703b02f0ee73f4635af34519712095116403b7ba4c8f5e7f782800be46e77213"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/audit/reference-chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "bytes": 906121,
+      "sha256": "72e8319406843974bb94cd4e890a486996233c6e2948cbe2300e30cba439e8af"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/audit/reference-lichess_bNDgiSuy.json",
+      "bytes": 1201033,
+      "sha256": "2a3f81c9d116b029a28b918f0db2f4612b03f22b40cbfa2165cc4175072c14f1"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/audit-confirmation/confirmation-candidate-chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "bytes": 1017567,
+      "sha256": "91d0260fa2c77151ae431cd44bda0dec9d69eb032be0be15b318e16fc2bffd1c"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/audit-confirmation/confirmation-candidate-lichess_bNDgiSuy.json",
+      "bytes": 1055051,
+      "sha256": "5f0614c27b777b2d12e1b6e5aa3ce6da904088ed0e094ab54de49dc3b6b1c13a"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/audit-confirmation/product-chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "bytes": 1058206,
+      "sha256": "c62dba4ccc99386743d1aa937ca1f95786a0750ae28dd130c925a71ded815e37"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/audit-confirmation/product-lichess_bNDgiSuy.json",
+      "bytes": 1121989,
+      "sha256": "52e8b346bf29aa25179e49c6ef31855114f6c484f925b769b4a2cc4db433dba1"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/browser-extraction/chesscom_0f8e42f0-8fda-11f1-b9f6-9dd41a01000f.json",
+      "bytes": 1134757,
+      "sha256": "0b7cf9dd16fcc6df7e67f1d571951dad807ed20f2ae1aeadaa1088a77979a3fb"
+    },
+    {
+      "path": "artifacts/extraction-quality-lab/browser-extraction/lichess_bNDgiSuy.json",
+      "bytes": 996552,
+      "sha256": "5d254f18dc136accde8c6d559aebe8e5c8f1eddc7ebec8b501fd1af665a07855"
+    }
+  ]
+}

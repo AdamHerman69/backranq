@@ -46,6 +46,10 @@ describe('analysis completion fencing', () => {
                 } as never,
                 trainingMoments: [],
                 extractionManifest: {
+            scope: 'FULL_GAME',
+            scanComplete: true,
+            extractionComplete: true,
+            decisionOutcomes: [],
                     version: 1,
                     complete: true,
                     sourceGameId: 'game-1',
@@ -122,6 +126,10 @@ describe('analysis completion fencing', () => {
                 } as never,
                 trainingMoments: [],
                 extractionManifest: {
+            scope: 'FULL_GAME',
+            scanComplete: true,
+            extractionComplete: true,
+            decisionOutcomes: [],
                     version: 1,
                     complete: true,
                     sourceGameId: 'game-1',
@@ -180,6 +188,10 @@ describe('analysis completion fencing', () => {
                 } as never,
                 trainingMoments: [],
                 extractionManifest: {
+            scope: 'FULL_GAME',
+            scanComplete: true,
+            extractionComplete: true,
+            decisionOutcomes: [],
                     version: 1,
                     complete: true,
                     sourceGameId: 'game-1',
@@ -221,6 +233,7 @@ describe('analysis completion fencing', () => {
                 analysis: { moves: [] } as never,
                 trainingMoments: [],
                 extractionManifest: {
+                    scope: 'FULL_GAME', scanComplete: false, extractionComplete: false, decisionOutcomes: [],
                     version: 1,
                     complete: false,
                     sourceGameId: 'game-1',
@@ -370,6 +383,10 @@ describe('analysis completion fencing', () => {
                 analysis: { moves: [] } as never,
                 trainingMoments: [],
                 extractionManifest: {
+            scope: 'FULL_GAME',
+            scanComplete: true,
+            extractionComplete: true,
+            decisionOutcomes: [],
                     version: 1,
                     complete: true,
                     sourceGameId: 'game-1',

@@ -16,6 +16,8 @@ import type {
 } from '@/lib/training/contracts';
 import { gameSourceToUi } from '@/lib/games/dbMappings';
 import type { GameSource } from '@prisma/client';
+import { assessmentPositionKey, appendAssessmentHistory } from './assessmentIdentity';
+import { answerCoverage, continuationReadiness, decisionAssessment } from './evidenceContract';
 
 export function toTrainingPromptDto(row: {
     id: string;
@@ -41,16 +43,23 @@ export function toTrainingPromptDto(row: {
         bestMoveUci: string;
         acceptedMovesUci: string[];
         acceptanceFrontier: unknown;
+        decision: unknown;
+        answerCoverage: unknown;
+        continuation: unknown;
+        originalDecision: unknown;
         solutionShape: 'UNIQUE' | 'MULTIPLE' | 'OPEN';
         bestLine: unknown;
         scoreAtStart: unknown;
         gradingPolicy: unknown;
         solutionTree: unknown;
         moveAssessments: Array<{
+            positionKey: string;
+            referenceId: string;
+            tierStable: boolean;
             decisionIndex: number;
             fen: string;
             moveUci: string;
-            source: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE';
+            source: 'PRECOMPUTED' | 'DYNAMIC' | 'CLIENT_EVALUATED' | 'TABLEBASE';
             status: 'PENDING' | 'VERIFIED' | 'FAILED';
             grade: AttemptGrade | null;
             scoreAfter: unknown;
@@ -66,14 +75,24 @@ export function toTrainingPromptDto(row: {
         throw new Error('Training prompt is missing canonical state');
     }
     const revision = row.currentSolutionRevision;
-    const originalScoreAfter = nullablePovScore(row.scoreAfter);
+    const original = revision.originalDecision as Record<string, unknown>;
+    const originalScoreAfter = nullablePovScore(original?.scoreAfter);
     const gradingPolicy = gradingPolicyV3(
         revision.gradingPolicy
     );
     const acceptanceFrontier = acceptanceFrontierDto(
         revision.acceptanceFrontier
     );
-    const solutionTree = trainingSolutionTreeDto(revision.solutionTree);
+    const solutionTree = trainingSolutionTreeDto(revision.solutionTree, row.positionHistory);
+    const decision = decisionAssessment(revision.decision);
+    const continuation = continuationReadiness(revision.continuation);
+    const coverage = gradingPolicy && answerCoverage(revision.answerCoverage, {
+        fen: row.fen,
+        positionHistory: row.positionHistory,
+        policyVersion: gradingPolicy.version,
+        acceptedMovesUci: revision.acceptedMovesUci,
+    });
+    if (coverage && !solutionTree.answerCoverage) solutionTree.answerCoverage = coverage;
     const frontierMoves = acceptanceFrontier?.moves.map(
         (move) => move.moveUci
     ) ?? [];
@@ -83,13 +102,18 @@ export function toTrainingPromptDto(row: {
                 assessment
             ): assessment is typeof assessment & {
                 status: 'VERIFIED';
+                source: 'PRECOMPUTED' | 'TABLEBASE';
                 grade: AttemptGrade;
             } =>
                 assessment.status === 'VERIFIED' &&
-                assessment.grade != null
+                assessment.grade != null &&
+                (assessment.source === 'PRECOMPUTED' || assessment.source === 'TABLEBASE')
         )
         .map(
             (assessment): TrainingMoveAssessmentDto => ({
+                positionKey: assessment.positionKey,
+                referenceId: assessment.referenceId,
+                tierStable: assessment.tierStable,
                 decisionIndex: assessment.decisionIndex,
                 fen: assessment.fen,
                 moveUci: assessment.moveUci,
@@ -103,8 +127,9 @@ export function toTrainingPromptDto(row: {
         !originalScoreAfter ||
         !gradingPolicy ||
         !acceptanceFrontier ||
-        acceptanceFrontier.status !== 'STABLE' ||
-        solutionTree.alternativesComplete !== true ||
+        !decision || decision.status !== 'CONFIRMED_MISTAKE' ||
+        !continuation || !coverage ||
+        solutionTree.contextId !== coverage.contextId ||
         frontierMoves.length === 0 ||
         frontierMoves[0] !== revision.bestMoveUci ||
         acceptanceFrontier.moves[0]?.tier !== 'BEST' ||
@@ -112,7 +137,7 @@ export function toTrainingPromptDto(row: {
             revision.acceptedMovesUci.length ||
         frontierMoves.length !==
             solutionTree.acceptedMovesUci.length ||
-        !hasCompleteLocalGradingTree(solutionTree, moveAssessments) ||
+        !hasSupportedLocalGradingTree(solutionTree, moveAssessments, gradingPolicy.version) ||
         frontierMoves.some(
             (move, index) =>
                 move !== revision.acceptedMovesUci[index] ||
@@ -120,6 +145,7 @@ export function toTrainingPromptDto(row: {
                 moveAssessments.find(
                     (assessment) =>
                         assessment.decisionIndex === 0 &&
+                        assessment.positionKey === coverage.contextId &&
                         assessment.fen === row.fen &&
                         assessment.moveUci === move
                 )?.grade !== acceptanceFrontier.moves[index]?.tier
@@ -135,6 +161,9 @@ export function toTrainingPromptDto(row: {
     });
     const grading: TrainingGradingManifestDto = {
         version: 1,
+        decision,
+        answerCoverage: coverage,
+        continuation,
         trainingSide: row.sideToMove,
         positionHistory: row.positionHistory,
         originalMoveUci: row.originalMoveUci,
@@ -154,20 +183,28 @@ export function toTrainingPromptDto(row: {
     };
 }
 
-function hasCompleteLocalGradingTree(
+function hasSupportedLocalGradingTree(
     node: TrainingSolutionTreeNodeDto,
-    assessments: TrainingMoveAssessmentDto[]
+    assessments: TrainingMoveAssessmentDto[],
+    policyVersion: number
 ): boolean {
     if (node.role === 'USER') {
+        const coverage = answerCoverage(node.answerCoverage, {
+            fen: node.fen, positionHistory: node.positionHistory,
+            policyVersion, acceptedMovesUci: node.acceptedMovesUci,
+        });
+        if (!coverage) return false;
+        const rows = assessments.filter(row => row.positionKey === node.contextId && row.decisionIndex === Math.floor(node.ply / 2));
+        if (rows.length !== coverage.assessedMovesUci.length || rows.some(row =>
+            row.referenceId !== coverage.referenceId || !coverage.assessedMovesUci.includes(row.moveUci))) return false;
         const branchMoves = node.branches.map(
             (branch) => branch.moveUci
         );
         if (
-            node.alternativesComplete !== true ||
             node.acceptedMovesUci.length === 0 ||
-            branchMoves.length !== node.acceptedMovesUci.length ||
+            (branchMoves.length > 0 && branchMoves.length !== node.acceptedMovesUci.length) ||
             node.acceptedMovesUci.some(
-                (move, index) => move !== branchMoves[index]
+                (move, index) => branchMoves.length > 0 && move !== branchMoves[index]
             ) ||
             node.acceptedMovesUci.some(
                 (move) =>
@@ -175,6 +212,7 @@ function hasCompleteLocalGradingTree(
                         (assessment) =>
                             assessment.decisionIndex ===
                                 Math.floor(node.ply / 2) &&
+                            assessment.positionKey === node.contextId &&
                             assessment.fen === node.fen &&
                             assessment.moveUci === move &&
                             (assessment.grade === 'BEST' ||
@@ -188,8 +226,7 @@ function hasCompleteLocalGradingTree(
     }
     if (
         node.role === 'OPPONENT' &&
-        (node.alternativesComplete !== true ||
-            node.acceptedMovesUci.length !== 0 ||
+        (node.acceptedMovesUci.length !== 0 ||
             node.branches.length > 1 ||
             (node.branches.length === 1 &&
                 node.selectedMoveUci !==
@@ -205,7 +242,7 @@ function hasCompleteLocalGradingTree(
         return false;
     }
     return node.branches.every((branch) =>
-        hasCompleteLocalGradingTree(branch.child, assessments)
+        hasSupportedLocalGradingTree(branch.child, assessments, policyVersion)
     );
 }
 
@@ -216,7 +253,7 @@ function gradingPolicyV3(value: unknown): GradingPolicyV3 | null {
     const policy = value as Partial<GradingPolicyV3>;
     return policy.version === 3 &&
         policy.pov === 'TRAINING_SIDE' &&
-        policy.unknownMove === 'REJECT_OUTSIDE_ACCEPTED_SET' &&
+        policy.unknownMove === 'EVALUATE' &&
         policy.matePolicy === 'EXACT' &&
         policy.tablebasePolicy === 'EXACT' &&
         !!policy.best &&
@@ -247,7 +284,8 @@ function acceptanceFrontierDto(
 }
 
 function trainingSolutionTreeDto(
-    value: unknown
+    value: unknown,
+    expectedHistory: string[]
 ): TrainingSolutionTreeNodeDto {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
         throw new Error('Training prompt has an invalid solution tree');
@@ -255,6 +293,9 @@ function trainingSolutionTreeDto(
     const node = value as Record<string, unknown>;
     if (
         typeof node.fen !== 'string' ||
+        typeof node.contextId !== 'string' ||
+        !Array.isArray(node.positionHistory) ||
+        !node.positionHistory.every(fen => typeof fen === 'string') ||
         !Number.isSafeInteger(node.ply) ||
         (node.role !== 'USER' &&
             node.role !== 'OPPONENT' &&
@@ -263,7 +304,13 @@ function trainingSolutionTreeDto(
     ) {
         throw new Error('Training prompt has an invalid solution tree');
     }
+    if (JSON.stringify(node.positionHistory) !== JSON.stringify(expectedHistory) || node.contextId !== assessmentPositionKey(node.fen, expectedHistory)) {
+        throw new Error('Training prompt has an invalid history context');
+    }
     return {
+        contextId: node.contextId,
+        positionHistory: node.positionHistory as string[],
+        ...(node.answerCoverage ? { answerCoverage: node.answerCoverage as import('./contracts').AnswerCoverage } : {}),
         fen: node.fen,
         ply: node.ply as number,
         role: node.role,
@@ -306,7 +353,7 @@ function trainingSolutionTreeDto(
             return {
                 moveUci: branch.moveUci,
                 best: branch.best,
-                child: trainingSolutionTreeDto(branch.child),
+                child: trainingSolutionTreeDto(branch.child, appendAssessmentHistory(expectedHistory, node.fen as string)),
             };
         }),
     };
@@ -373,6 +420,8 @@ export function toTrainingReviewDto(args: {
         bestMoveUci: string;
         acceptedMovesUci: string[];
         acceptanceFrontier: unknown;
+        answerCoverage: unknown;
+        originalDecision: unknown;
         solutionShape: 'UNIQUE' | 'MULTIPLE' | 'OPEN';
         bestLine: unknown;
         scoreAtStart: unknown;
@@ -380,8 +429,9 @@ export function toTrainingReviewDto(args: {
     submittedMoveUci: string | null;
     comparison: TrainingComparisonDto | null;
 }): TrainingReviewDto {
-    const scoreBefore = nullablePovScore(args.moment.scoreBefore);
-    const scoreAfter = nullablePovScore(args.moment.scoreAfter);
+    const original = args.revision.originalDecision as Record<string, unknown>;
+    const scoreBefore = nullablePovScore(original?.scoreBefore);
+    const scoreAfter = nullablePovScore(original?.scoreAfter);
     if (!scoreBefore || !scoreAfter) {
         throw new Error('Training moment has invalid original-decision scores');
     }
@@ -398,9 +448,9 @@ export function toTrainingReviewDto(args: {
         bestMoveUci: args.revision.bestMoveUci,
         acceptedMovesUci: args.revision.acceptedMovesUci,
         acceptedMovesComplete:
-            acceptanceFrontierDto(
-                args.revision.acceptanceFrontier
-            )?.status === 'STABLE',
+            ['QUALITY_BOUNDARY_VERIFIED', 'ALL_LEGAL_ASSESSED'].includes(
+                String((args.revision.answerCoverage as Record<string, unknown>)?.status)
+            ),
         bestLineUci: Array.isArray(args.revision.bestLine)
             ? args.revision.bestLine.filter(
                   (move): move is string => typeof move === 'string'
@@ -410,13 +460,13 @@ export function toTrainingReviewDto(args: {
         originalDecision: {
             scoreBefore,
             scoreAfter,
-            cpLoss: args.moment.cpLoss,
-            winChanceLoss: args.moment.winChanceLoss,
+            cpLoss: typeof original.cpLoss === 'number' ? original.cpLoss : null,
+            winChanceLoss: typeof original.winChanceLoss === 'number' ? original.winChanceLoss : null,
         },
         comparison: args.comparison,
-        sourceKinds: args.moment.sourceKinds,
-        lessonKinds: args.moment.lessonKinds,
-        themes: args.moment.themes,
+        sourceKinds: Array.isArray(original.sourceKinds) ? original.sourceKinds as TrainingSourceKind[] : [],
+        lessonKinds: Array.isArray(original.lessonKinds) ? original.lessonKinds as TrainingLessonKind[] : [],
+        themes: Array.isArray(original.themes) ? original.themes as string[] : [],
         source: {
             gameId: args.moment.gameId,
             provider: gameSourceToUi(args.moment.game.provider),

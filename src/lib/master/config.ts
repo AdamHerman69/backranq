@@ -1,4 +1,8 @@
-import { serverAnalysisConfigFromPreferences } from '@/lib/services/analysisJobs';
+import {
+    serverAnalysisConfigFromPreferences,
+    serverAnalysisConfigFromSnapshot,
+} from '@/lib/services/analysisJobs';
+import { stableCanonicalStringify } from '@/lib/training/contracts';
 
 export const WEEKLY_MASTER_SLOT_KEY = 'landing-weekly-master';
 export const WEEKLY_MASTER_LEASE_MS = 5 * 60_000;
@@ -192,4 +196,18 @@ export function weeklyMasterConfig() {
             maxStaleDays: 35,
         },
     };
+}
+
+/** Stored Master runs must use the same current analysis contract as personal jobs. */
+export function hasCurrentMasterAnalysisConfig(value: unknown): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const analysis = value as Record<string, unknown>;
+    if (typeof analysis.configHash !== 'string') return false;
+    const resolved = serverAnalysisConfigFromSnapshot({
+        snapshot: analysis.snapshot,
+        hash: analysis.configHash,
+    });
+    return resolved !== null &&
+        stableCanonicalStringify(analysis.options) ===
+            stableCanonicalStringify(resolved.options);
 }

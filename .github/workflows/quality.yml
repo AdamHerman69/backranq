@@ -117,3 +117,5 @@ jobs:
           tests/lib/job-lifecycle-postgres.integration.test.ts
           tests/lib/game-import-postgres.integration.test.ts
           tests/lib/progress-read-postgres.integration.test.ts
+          tests/lib/extraction-practice-postgres.integration.test.ts
+          tests/lib/master-analysis-postgres.integration.test.ts

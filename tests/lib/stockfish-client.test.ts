@@ -103,9 +103,9 @@ describe('restricted Stockfish roots', () => {
     it('normalizes exact roots and rejects empty, duplicate, or malformed sets', () => {
         expect(
             normalizeRestrictedRootMoves([' E2E4 ', 'd2d4'])
-        ).toEqual(['e2e4', 'd2d4']);
+        ).toEqual(['d2d4', 'e2e4']);
         expect(() => normalizeRestrictedRootMoves([])).toThrow(
-            'between 1 and 8'
+            'nonempty legal root scope'
         );
         expect(() =>
             normalizeRestrictedRootMoves(['e2e4', 'E2E4'])

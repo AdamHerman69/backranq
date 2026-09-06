@@ -13,6 +13,7 @@ export type PersonalSearchState =
           runId: string;
           identity: PublicChessIdentity;
           progress: OnboardingAnalysisProgress;
+          animationMs: number;
       }
     | {
           status: 'READY';
@@ -39,7 +40,6 @@ export type LandingOnboardingState = {
     masterTerminal: boolean;
     activePuzzleInteracted: boolean;
     personal: PersonalSearchState;
-    handoff: 'HIDDEN' | 'OFFERED';
 };
 
 export type LandingOnboardingEvent =
@@ -63,7 +63,6 @@ export type LandingOnboardingEvent =
       }
     | { type: 'PUZZLE_INTERACTED'; puzzleId: string }
     | { type: 'MASTER_TERMINAL' }
-    | { type: 'ACCEPT_HANDOFF' }
     | { type: 'RESET_MASTER'; puzzle: LandingPuzzleDto };
 
 export function landingOnboardingReducer(
@@ -79,11 +78,10 @@ export function landingOnboardingReducer(
                     runId: event.runId,
                     identity: event.identity,
                 },
-                handoff: 'HIDDEN',
             };
         case 'ANALYSIS_PROGRESS':
             if (
-                state.personal.status === 'IDLE' ||
+                (state.personal.status !== 'FETCHING' && state.personal.status !== 'ANALYZING') ||
                 state.personal.runId !== event.runId
             ) {
                 return state;
@@ -95,33 +93,40 @@ export function landingOnboardingReducer(
                     runId: event.runId,
                     identity: state.personal.identity,
                     progress: event.progress,
+                    animationMs:
+                        state.personal.status === 'ANALYZING' &&
+                        event.progress.preview !== undefined &&
+                        state.personal.progress.phase === 'SCANNING' &&
+                        event.progress.phase === 'SCANNING' &&
+                        state.personal.progress.preview?.gameId === event.progress.preview?.gameId &&
+                        state.personal.progress.ply + 1 === event.progress.ply &&
+                        state.personal.progress.preview?.fen === event.progress.preview?.previousFen
+                            ? 100 : 0,
                 },
             };
         case 'PERSONAL_READY': {
             if (
-                state.personal.status === 'IDLE' ||
+                (state.personal.status !== 'FETCHING' && state.personal.status !== 'ANALYZING') ||
                 state.personal.runId !== event.runId
             ) {
                 return state;
             }
-            const showImmediately =
-                !state.activePuzzleInteracted &&
-                state.activePuzzle.context.kind !== 'PERSONAL';
             return {
                 ...state,
-                activePuzzle: showImmediately ? event.puzzle : state.activePuzzle,
+                activePuzzle: event.puzzle,
+                activePuzzleInteracted: false,
+                masterTerminal: false,
                 personal: {
                     status: 'READY',
                     runId: event.runId,
                     identity: state.personal.identity,
                     puzzle: event.puzzle,
                 },
-                handoff: showImmediately ? 'HIDDEN' : 'OFFERED',
             };
         }
         case 'SEARCH_EMPTY':
             if (
-                state.personal.status === 'IDLE' ||
+                (state.personal.status !== 'FETCHING' && state.personal.status !== 'ANALYZING') ||
                 state.personal.runId !== event.runId
             ) {
                 return state;
@@ -134,11 +139,10 @@ export function landingOnboardingReducer(
                     identity: state.personal.identity,
                     reason: event.reason,
                 },
-                handoff: 'HIDDEN',
             };
         case 'SEARCH_FAILED':
             if (
-                state.personal.status === 'IDLE' ||
+                (state.personal.status !== 'FETCHING' && state.personal.status !== 'ANALYZING') ||
                 state.personal.runId !== event.runId
             ) {
                 return state;
@@ -152,35 +156,23 @@ export function landingOnboardingReducer(
                     reason: event.reason,
                     retryable: event.retryable,
                 },
-                handoff: 'HIDDEN',
             };
         case 'PUZZLE_INTERACTED':
-            if (event.puzzleId !== state.activePuzzle.id) return state;
+            if ((state.personal.status !== 'IDLE' && state.personal.status !== 'READY') || event.puzzleId !== state.activePuzzle.id) return state;
             return { ...state, activePuzzleInteracted: true };
         case 'MASTER_TERMINAL':
             return {
                 ...state,
                 masterTerminal: true,
             };
-        case 'ACCEPT_HANDOFF':
-            if (state.personal.status !== 'READY') return state;
-            return {
-                ...state,
-                activePuzzle: state.personal.puzzle,
-                activePuzzleInteracted: false,
-                masterTerminal: false,
-                handoff: 'HIDDEN',
-            };
         case 'RESET_MASTER':
-            if (state.activePuzzleInteracted || state.activePuzzle.context.kind === 'PERSONAL') {
+            if (state.personal.status !== 'IDLE' || state.activePuzzleInteracted) {
                 return state;
             }
             return {
                 ...state,
                 activePuzzle: event.puzzle,
                 masterTerminal: false,
-                handoff:
-                    state.personal.status === 'READY' ? 'OFFERED' : 'HIDDEN',
             };
     }
 }

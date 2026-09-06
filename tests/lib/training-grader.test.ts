@@ -25,6 +25,12 @@ function metrics(
 }
 
 describe('gradeTrainingMove', () => {
+    it('evaluates original move quality before repeated-mistake identity', () => {
+        expect(gradeTrainingMove(metrics({ moveUci: 'a2a3', bestGapCp: 10 }), policy)).toMatchObject({ grade: 'BEST', accepted: true });
+    });
+    it('does not use cp outcome classes as exact-outcome gates', () => {
+        expect(gradeTrainingMove(metrics({ preservesOutcome: null, evidenceModel: 'CP_ONLY' }), policy)).toMatchObject({ grade: 'BEST' });
+    });
     it('grades a practically optimal move as BEST', () => {
         expect(gradeTrainingMove(metrics({ bestGapCp: 10 }), policy)).toEqual({
             status: 'GRADED',
@@ -102,6 +108,7 @@ describe('gradeTrainingMove', () => {
         expect(
             gradeTrainingMove(
                 metrics({
+                    evidenceModel: 'EXACT_OUTCOME',
                     preservesOutcome: null,
                 }),
                 policy
@@ -112,7 +119,7 @@ describe('gradeTrainingMove', () => {
         });
     });
 
-    it('uses winning-chance evidence before contradictory centipawn evidence', () => {
+    it('requires the cp tolerance even when matched WDL is saturated', () => {
         expect(
             gradeTrainingMove(
                 metrics({
@@ -123,8 +130,8 @@ describe('gradeTrainingMove', () => {
             )
         ).toEqual({
             status: 'GRADED',
-            grade: 'BEST',
-            accepted: true,
+            grade: 'IMPROVED',
+            accepted: false,
         });
     });
 
@@ -134,6 +141,8 @@ describe('gradeTrainingMove', () => {
                 metrics({
                     bestGapCp: 0,
                     recoveredCp: 0,
+                    evidenceModel: 'EXACT_OUTCOME',
+                    bestGapWinChance: 1,
                     preservesOutcome: false,
                 }),
                 policy
@@ -144,4 +153,9 @@ describe('gradeTrainingMove', () => {
             accepted: false,
         });
     });
+});
+
+it('does not turn a missing cp comparison into a bad verdict for a small matched WDL gap',()=>{
+    expect(gradeTrainingMove(metrics({evidenceModel:'MATCHED_WDL',bestGapCp:null,bestGapWinChance:0.05}),policy)).toEqual({status:'UNRESOLVED',reason:'MISSING_OUTCOME_EVIDENCE'});
+    expect(gradeTrainingMove(metrics({evidenceModel:'MATCHED_WDL',bestGapCp:null,bestGapWinChance:0.2}),policy)).toMatchObject({status:'GRADED',accepted:false});
 });

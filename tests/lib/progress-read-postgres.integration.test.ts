@@ -127,6 +127,9 @@ async function seedProgressFixture() {
             bestMoveUci: 'a1b1',
             acceptedMovesUci: ['a1b1'],
             acceptanceFrontier: { status: 'STABLE' },
+            decision: {status:'CONFIRMED_MISTAKE',reason:'TEST'},
+            answerCoverage: {status:'PARTIAL'}, continuation:{status:'NONE'},
+            originalDecision:{scoreBefore:{cp:100},scoreAfter:{cp:-80}},
             bestLine: ['a1b1'],
             targetOutcome: {},
             gradingPolicy: {},
@@ -284,7 +287,8 @@ async function seedProgressScaleFixture() {
             "verificationStatus", "solutionShape", "gradingStrategy",
             "continuationShape", "trainable", "bestMoveUci",
             "acceptedMovesUci", "acceptanceFrontier", "bestLine",
-            "targetOutcome", "gradingPolicy", "generatorVersion", "configHash"
+            "targetOutcome", "gradingPolicy", "generatorVersion", "configHash",
+            "decision", "answerCoverage", "continuation", "originalDecision"
         )
         SELECT
             revision_id,
@@ -304,7 +308,8 @@ async function seedProgressScaleFixture() {
             '{}'::jsonb,
             '{}'::jsonb,
             'progress-scale-v1',
-            ${configHash}
+            ${configHash},
+            '{"status":"CONFIRMED_MISTAKE"}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb
         FROM generated
     `);
     await db.$executeRaw(Prisma.sql`
@@ -543,7 +548,8 @@ function oracle(scope: 90 | 'all') {
                     solutionHash,
                     configHash,
                     verificationStatus: 'VERIFIED',
-                    acceptanceFrontier: { status: 'STABLE' },
+                    decision: { status: 'CONFIRMED_MISTAKE' },
+
                     trainable: true,
                 },
                 observations: [

@@ -1,8 +1,8 @@
-import type { RecordTrainingAttemptRequest } from '@/lib/training/api';
+import type { TrainingAttemptWriteRequest } from '@/lib/training/api';
 import { TrainingClientError } from '@/lib/training/client';
 import { parseTrainingCompletionTime } from '@/lib/training/completionTime';
 
-export const TRAINING_QUEUE_VERSION = 4 as const;
+export const TRAINING_QUEUE_VERSION = 5 as const;
 export const TRAINING_QUEUE_MAX_ENTRIES = 100;
 
 export type TrainingAttemptOutboxError = {
@@ -15,7 +15,7 @@ export type QueuedTrainingAttempt = {
     version: typeof TRAINING_QUEUE_VERSION;
     ownerId: string;
     momentId: string;
-    request: RecordTrainingAttemptRequest;
+    request: TrainingAttemptWriteRequest;
     queuedAt: string;
     state: 'PENDING' | 'NEEDS_ATTENTION';
     attemptCount: number;
@@ -33,16 +33,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isAttemptRequest(value: unknown): value is RecordTrainingAttemptRequest {
+function isAttemptRequest(value: unknown): value is TrainingAttemptWriteRequest {
     if (!isRecord(value)) return false;
-    return (
-        value.kind === 'RECORD' &&
-        parseTrainingCompletionTime(value.completedAt) !== null &&
-        typeof value.clientAttemptId === 'string' &&
-        typeof value.solutionRevisionId === 'string' &&
-        (value.status === 'GRADED' || value.status === 'REVEALED') &&
-        Array.isArray(value.steps)
-    );
+    if (typeof value.clientAttemptId !== 'string' || typeof value.solutionRevisionId !== 'string') return false;
+    return value.kind === 'RECORD'
+        ? parseTrainingCompletionTime(value.completedAt) !== null && (value.status === 'GRADED' || value.status === 'REVEALED') && Array.isArray(value.steps)
+        : value.kind === 'ENRICH' && parseTrainingCompletionTime(value.evaluatedAt) !== null && typeof value.clientEvidenceId === 'string' && isRecord(value.clientEvidence);
+
 }
 
 function isOutboxError(value: unknown): value is TrainingAttemptOutboxError {
@@ -101,7 +98,7 @@ export function enqueueTrainingAttempt(
         (entry) =>
             entry.momentId === next.momentId &&
             entry.request.clientAttemptId === next.request.clientAttemptId &&
-            entry.request.kind === next.request.kind
+            trainingAttemptQueueIdentity(entry.request) === trainingAttemptQueueIdentity(next.request)
     );
     if (duplicate || entries.length >= TRAINING_QUEUE_MAX_ENTRIES) {
         return [...entries];
@@ -176,18 +173,18 @@ export function reconcileTrainingAttemptFlush(
 ): QueuedTrainingAttempt[] {
     const snapshotById = new Map(
         snapshot.map((entry) => [
-            entry.request.clientAttemptId,
+            trainingAttemptQueueIdentity(entry.request),
             entry,
         ])
     );
     const processedById = new Map(
         processedSnapshot.map((entry) => [
-            entry.request.clientAttemptId,
+            trainingAttemptQueueIdentity(entry.request),
             entry,
         ])
     );
     const reconciled = latest.flatMap((entry) => {
-        const clientAttemptId = entry.request.clientAttemptId;
+        const clientAttemptId = trainingAttemptQueueIdentity(entry.request);
         const snapshotEntry = snapshotById.get(clientAttemptId);
         if (!snapshotEntry) return [entry];
         // A user action or another queue mutation changed this snapshot entry
@@ -205,4 +202,8 @@ function sameQueuedTrainingAttempt(
     right: QueuedTrainingAttempt
 ): boolean {
     return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function trainingAttemptQueueIdentity(request: TrainingAttemptWriteRequest): string {
+    return `${request.clientAttemptId}:${request.kind}:${request.kind === 'ENRICH' ? request.clientEvidenceId : ''}`;
 }

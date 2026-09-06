@@ -263,6 +263,7 @@ export function TrainingTrainer({
     const feedback = feedbackForTrainingState({
         phase: training.phase,
         grade: training.grade,
+        reviewFallback: training.reviewFallback,
     });
     const boardFeedback = (() => {
         if (
@@ -559,6 +560,9 @@ export function TrainingTrainer({
                                 }}
                             />
 
+                            {training.refinement ? <p className="mt-2 text-sm text-muted-foreground" role="status">
+                                {training.refinement === 'PENDING' ? 'Refining this move’s assessment…' : training.refinement === 'CORRECTED' ? 'Further analysis corrected the initial verdict. Your attempt is preserved.' : training.refinement === 'REFINED' ? 'Assessment refined by local analysis.' : 'The initial verdict stands; a finer assessment remains unresolved.'}
+                            </p> : null}
                             <div
                                 ref={feedbackRef}
                                 tabIndex={-1}
@@ -703,8 +707,9 @@ export function TrainingTrainer({
                                 </CardHeader>
                                 <CardContent className="space-y-3 px-0">
                                     <p className="text-sm text-muted-foreground">
-                                        Every legal move is graded on this device against
-                                        the position and your original game.
+                                        {training.reviewFallback
+                                            ? 'Your move is saved without a grade. Review it alongside the best move and your original game.'
+                                            : 'Your move is evaluated on this device against the position and your original game.'}
                                     </p>
                                     <div className="flex flex-wrap gap-2">
                                         {training.phase === 'UNRESOLVED' ? (

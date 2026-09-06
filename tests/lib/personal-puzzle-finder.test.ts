@@ -1,3 +1,4 @@
+import { fixtureSolution } from '../helpers/extractionEvidence';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { StockfishEngine } from '@/lib/analysis/stockfishClient';
@@ -43,7 +44,7 @@ function candidate(sourceGameId: string): TrainingMomentCandidate {
         sourceKinds: ['MISSED_OPPORTUNITY'],
         lessonKinds: ['CONVERT_ADVANTAGE'],
         themes: ['mate'],
-        solution: {
+        solution: fixtureSolution({
             verificationStatus: 'VERIFIED',
             solutionShape: 'UNIQUE',
             gradingStrategy: 'PRECOMPUTED',
@@ -103,7 +104,7 @@ function candidate(sourceGameId: string): TrainingMomentCandidate {
             evidence: { kind: 'TEST' },
             generatorVersion: 'test',
             configHash: 'test-config',
-        },
+        }),
     };
 }
 
@@ -119,88 +120,78 @@ const identity = { provider: 'lichess', username: 'public-player' } as const;
 const engine = {} as StockfishEngine;
 
 describe('personal puzzle finder', () => {
-    it('scouts newest first, verifies strongest first, and stops at the first valid result', async () => {
+    it('uses one FIRST_PUZZLE invocation for the newest game and never opens older games after success', async () => {
+        const extractor = vi.fn(async (args: ExtractorArgs) => {
+            expect(args.strategy).toBe('FIRST_PUZZLE');
+            expect(args.options).toMatchObject({ nodesPerPosition: 12_000, confirmNodes: 180_000, maxConfirmationNodes: 500_000 });
+            return output([candidate(args.games[0]!.id)]);
+        });
+        const result = await findFirstVerifiedPersonalPuzzle({
+            games: [game('old', '2026-08-01'), game('new', '2026-08-06')], identity, engine, extractor,
+        });
+        expect(extractor).toHaveBeenCalledTimes(1);
+        expect(extractor.mock.calls[0]![0].games[0]!.id).toBe('new');
+        expect(result?.context.sourceUrl).toBe('https://lichess.org/new');
+    });
+
+    it('finishes each game before trying the next oldest, ignoring untrainable results', async () => {
         const calls: string[] = [];
         const extractor = vi.fn(async (args: ExtractorArgs) => {
-            const id = args.games[0]!.id;
-            const search = args.landingSearch!;
-            calls.push(`${search.mode}:${id}`);
-            if (search.mode === 'SCOUT') {
-                search.onCandidate({
-                    decisionPly: 0,
-                    loss: { cp: 200, winningChance: { oldest: 0.3, middle: 0.5, newest: 0.1 }[id]! },
-                });
-                return output();
-            }
-            expect(search.decisionPly).toBe(0);
-            return output(id === 'oldest' ? [candidate(id)] : []);
+            const id = args.games[0]!.id; calls.push(id);
+            const found = candidate(id);
+            found.solution.trainable = id === 'oldest';
+            return output(id === 'newest' ? [] : [found]);
         });
         const result = await findFirstVerifiedPersonalPuzzle({
             games: [game('oldest', '2026-08-01'), game('newest', '2026-08-06'), game('middle', '2026-08-05')],
-            identity,
-            engine,
-            extractor,
+            identity, engine, extractor,
         });
-        expect(calls).toEqual(['SCOUT:newest', 'SCOUT:middle', 'SCOUT:oldest', 'VERIFY:middle', 'VERIFY:oldest']);
+        expect(calls).toEqual(['newest', 'middle', 'oldest']);
         expect(result?.context.sourceUrl).toBe('https://lichess.org/oldest');
     });
 
-    it('breaks equal-loss ties by newest game then earliest decision and deduplicates scouts', async () => {
-        const verified: string[] = [];
-        const extractor = vi.fn(async (args: ExtractorArgs) => {
-            const search = args.landingSearch!;
-            const id = args.games[0]!.id;
-            if (search.mode === 'SCOUT') {
-                for (const decisionPly of [4, 2, 2]) {
-                    search.onCandidate({ decisionPly, loss: { cp: 200, winningChance: 0.2 } });
-                }
-            } else {
-                verified.push(`${id}:${search.decisionPly}`);
-            }
-            return output();
-        });
-        await findFirstVerifiedPersonalPuzzle({
-            games: [game('old', '2026-08-01'), game('new', '2026-08-06')],
-            identity, engine, extractor,
-        });
-        expect(verified).toEqual(['new:2', 'new:4', 'old:2', 'old:4']);
-    });
-
-    it('only scouts games whose immutable provider identity and player side match the requested account', async () => {
-        const wrongPlayer = game('wrong-player', '2026-08-01');
-        wrongPlayer.white.name = 'another-player';
+    it('only searches games whose immutable provider identity and player side match the requested account', async () => {
+        const wrongPlayer = game('wrong-player', '2026-08-01'); wrongPlayer.white.name = 'another-player';
         const wrongProvider = { ...game('wrong-provider', '2026-08-01'), provider: 'chesscom' as const };
         const wrongIdentity = game('wrong-identity', '2026-08-01');
-        wrongIdentity.white.name = 'another-player';
-        wrongIdentity.provenance!.username = 'another-player';
+        wrongIdentity.white.name = 'another-player'; wrongIdentity.provenance!.username = 'another-player';
         const black = game('black', '2026-08-01');
-        black.black.name = 'public-player';
-        black.white.name = 'opponent';
-        black.provenance!.userSide = 'black';
-        const extractor = vi.fn(async (args: ExtractorArgs) => {
-            expect(args.landingSearch?.mode).toBe('SCOUT');
-            return output();
-        });
-        await findFirstVerifiedPersonalPuzzle({
-            games: [wrongPlayer, wrongProvider, wrongIdentity, black], identity, engine, extractor,
-        });
+        black.black.name = 'public-player'; black.white.name = 'opponent'; black.provenance!.userSide = 'black';
+        const extractor = vi.fn(async (args: ExtractorArgs) => { expect(args.strategy).toBe('FIRST_PUZZLE'); return output(); });
+        await findFirstVerifiedPersonalPuzzle({ games: [wrongPlayer, wrongProvider, wrongIdentity, black], identity, engine, extractor });
         expect(extractor).toHaveBeenCalledTimes(1);
         expect(extractor.mock.calls[0]![0].games[0]!.id).toBe('black');
     });
 
-    it.each(['SCOUT', 'VERIFY'] as const)('honors cancellation during %s before publishing a result', async (phase) => {
-        const controller = new AbortController();
+    it('maps canonical engine progress without replaying the source PGN', async () => {
+        const progress = vi.fn();
+        const source = game('source', '2026-08-01');
+        source.pgn = 'Deliberately not independently parseable by presentation';
         const extractor = vi.fn(async (args: ExtractorArgs) => {
-            const search = args.landingSearch!;
-            if (search.mode === 'SCOUT') {
-                search.onCandidate({ decisionPly: 0, loss: { cp: 200, winningChance: 0.2 } });
-            }
-            if (search.mode === phase) controller.abort();
+            for (const phase of ['scanning', 'confirming'] as const) args.onProgress?.({
+                runId: 'run-1', gameId: source.id, gameIndex: 0, gameCount: 1,
+                ply: 2, plyCount: 4, phase, fen, previousFen: after, positionHistory: [after], userSide: 'white',
+            });
+            return output();
+        });
+        await findFirstVerifiedPersonalPuzzle({ games: [source], identity, engine, extractor, onProgress: progress });
+        expect(progress.mock.calls.map(([event]) => event.phase)).toEqual(['SCANNING', 'CONFIRMING']);
+        expect(progress.mock.calls[1]![0]).toMatchObject({ runId: 'run-1', ply: 2,
+            preview: { gameId: 'source', fen, previousFen: after, orientation: 'white' } });
+    });
+
+    it('honors cancellation before publishing a late result or progress event', async () => {
+        const controller = new AbortController(); const progress = vi.fn();
+        const extractor = vi.fn(async (args: ExtractorArgs) => {
+            controller.abort();
+            args.onProgress?.({ runId: 'late', gameId: 'source', gameIndex: 0, gameCount: 1,
+                ply: 0, plyCount: 1, phase: 'confirming', fen, positionHistory: [], userSide: 'white' });
             return output([candidate('source')]);
         });
         await expect(findFirstVerifiedPersonalPuzzle({
-            games: [game('source', '2026-08-01')], identity, engine, extractor, signal: controller.signal,
+            games: [game('source', '2026-08-01')], identity, engine, extractor, signal: controller.signal, onProgress: progress,
         })).rejects.toThrow('Analysis aborted');
-        expect(extractor).toHaveBeenCalledTimes(phase === 'SCOUT' ? 1 : 2);
+        expect(extractor).toHaveBeenCalledTimes(1);
+        expect(progress).not.toHaveBeenCalled();
     });
 });

@@ -1,13 +1,13 @@
 import {
     extractTrainingMomentsFromGames,
     isLandingReadyTrainingMoment,
-    type LandingDecisionCandidate,
 } from '@/lib/analysis/extractTrainingMoments';
 import type { StockfishEngine } from '@/lib/analysis/stockfishClient';
 import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
 import type { NormalizedGame } from '@/lib/types/game';
 import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 
+import { createScanPreview } from './scanPreview';
 import { landingPuzzleFromCandidate } from './candidatePrompt';
 import type {
     LandingPuzzleDto,
@@ -41,7 +41,6 @@ export async function findFirstVerifiedPersonalPuzzle(args: {
         );
     const tablebase = new LichessTablebaseClient();
     const extractor = args.extractor ?? extractTrainingMomentsFromGames;
-    const candidates: Array<LandingDecisionCandidate & { gameIndex: number }> = [];
     const options = {
         returnAnalysis: false,
         nodesPerPosition: 12_000,
@@ -52,66 +51,23 @@ export async function findFirstVerifiedPersonalPuzzle(args: {
 
     for (const [gameIndex, game] of games.entries()) {
         if (args.signal?.aborted) throw new Error('Analysis aborted');
-        const gameCandidates = new Map<number, LandingDecisionCandidate>();
-        await extractor({
-            games: [game],
-            selectedGameIds: new Set([game.id]),
-            engine: args.engine,
-            tablebase,
-            signal: args.signal,
-            stopAfterFirstVerified: true,
-            landingSearch: {
-                mode: 'SCOUT',
-                onCandidate: (candidate) => {
-                    gameCandidates.set(candidate.decisionPly, candidate);
-                },
-            },
-            onProgress: (progress) => {
-                args.onProgress?.({
-                    phase: 'SCANNING',
-                    gameIndex,
-                    gameCount: games.length,
-                    ply: progress.ply,
-                    plyCount: progress.plyCount,
-                });
-            },
-            options,
-        });
-        if (args.signal?.aborted) throw new Error('Analysis aborted');
-        candidates.push(
-            ...Array.from(gameCandidates.values(), (candidate) => ({
-                ...candidate,
-                gameIndex,
-            }))
-        );
-    }
-
-    candidates.sort(
-        (left, right) =>
-            (right.loss.winningChance ?? 0) -
-                (left.loss.winningChance ?? 0) ||
-            (right.loss.cp ?? 0) - (left.loss.cp ?? 0) ||
-            left.gameIndex - right.gameIndex ||
-            left.decisionPly - right.decisionPly
-    );
-    for (const { gameIndex, decisionPly } of candidates) {
-        if (args.signal?.aborted) throw new Error('Analysis aborted');
-        const game = games[gameIndex]!;
         const output = await extractor({
             games: [game],
             selectedGameIds: new Set([game.id]),
             engine: args.engine,
             tablebase,
             signal: args.signal,
-            stopAfterFirstVerified: true,
-            landingSearch: { mode: 'VERIFY', decisionPly },
+            strategy: 'FIRST_PUZZLE',
             onProgress: (progress) => {
+                if (args.signal?.aborted) return;
                 args.onProgress?.({
-                    phase: 'CONFIRMING',
+                    runId: progress.runId,
+                    phase: progress.phase === 'confirming' ? 'CONFIRMING' : 'SCANNING',
                     gameIndex,
                     gameCount: games.length,
-                    ply: decisionPly,
+                    ply: progress.ply,
                     plyCount: progress.plyCount,
+                    preview: createScanPreview(game, progress),
                 });
             },
             options,

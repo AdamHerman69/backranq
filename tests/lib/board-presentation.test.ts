@@ -103,3 +103,12 @@ describe('board presentation', () => {
         expect(boardPresentationDelay('GRADE', true)).toBe(0);
     });
 });
+
+it('updates the displayed marker after refinement while preserving a review position', () => {
+    const graded = boardPresentationReducer(initialBoardPresentation(20), { type: 'GRADE_REVEAL', sequenceId: 20, moveUci: 'f7h7', grade: 'DIFFERENT_MISTAKE' });
+    const refined = boardPresentationReducer(graded, { type: 'REFINE_GRADE', sequenceId: 20, moveUci: 'f7h7', grade: 'BEST' });
+    expect(refined.marker?.grade).toBe('BEST');
+    expect(refined.stage).toBe(graded.stage);
+    const decision = boardPresentationReducer(graded, { type: 'REVIEW_DECISION', sequenceId: 20 });
+    expect(boardPresentationReducer(decision, { type: 'REFINE_GRADE', sequenceId: 20, moveUci: 'f7h7', grade: 'BEST' })).toEqual(decision);
+});

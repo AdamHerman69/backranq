@@ -358,10 +358,6 @@ export function analysisDefaultsToExtractOptions(
             quality.verificationNodesPerPosition,
         minWinningChanceLoss: trainingConfig.minWinChanceLoss,
         fallbackMinCpLoss: trainingConfig.fallbackMinCpLoss,
-        maxAcceptedWinningChanceLoss:
-            trainingConfig.gradingPolicy.success.maxWinChanceLoss,
-        fallbackMaxAcceptedCpLoss:
-            trainingConfig.gradingPolicy.success.maxCpLoss,
         gradingPolicy: trainingConfig.gradingPolicy,
         returnAnalysis: opts?.returnAnalysis ?? false,
     };

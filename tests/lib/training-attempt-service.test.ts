@@ -1,11 +1,15 @@
+import { fixtureSolution, TEST_REFERENCE_ID } from '../helpers/extractionEvidence';
+import { Chess } from 'chess.js';
+import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     recordTrainingAttempt,
+    enrichTrainingAttempt,
     trainingAttemptPayloadHash,
     TrainingAttemptError,
 } from '@/lib/training/attemptService';
-import type { RecordTrainingAttemptRequest } from '@/lib/training/api';
+import type { TrainingSolutionTreeNodeDto, TrainingClientMoveEvidence, EnrichTrainingAttemptRequest, RecordTrainingAttemptRequest } from '@/lib/training/api';
 
 const momentId = '11111111-1111-4111-8111-111111111111';
 const revisionId = '22222222-2222-4222-8222-222222222222';
@@ -32,13 +36,14 @@ const gradingPolicy = {
         minRecoveredCp: 40,
         minRecoveredWinChance: 0.05,
     },
-    unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
+    unknownMove: 'EVALUATE',
     matePolicy: 'EXACT',
     tablebasePolicy: 'EXACT',
 };
 
 function revisionFixture() {
-    return {
+    return fixtureSolution({
+        originalDecision: { phase: 'MIDDLEGAME', fen: rootFen, sideToMove: 'w', originalMoveUci: 'd2d4', positionHistory: [], scoreBefore: { kind: 'cp', cp: 25, pov: 'WHITE' }, scoreAfter: { kind: 'cp', cp: -95, pov: 'WHITE' }, cpLoss: 120, winChanceLoss: 0.2, sourceKinds: ['MY_MISTAKE'], lessonKinds: ['TACTICAL'], themes: ['fork'] },
         trainable: true,
         verificationStatus: 'VERIFIED',
         acceptanceFrontier: {
@@ -97,7 +102,7 @@ function revisionFixture() {
                 },
             },
         ],
-    };
+    });
 }
 
 function momentFixture() {
@@ -128,7 +133,7 @@ function momentFixture() {
 }
 
 function continuationRevisionFixture() {
-    return {
+    const result = fixtureSolution({
         ...revisionFixture(),
         bestLine: ['e2e4', 'e7e5', 'g1f3'],
         solutionTree: {
@@ -181,12 +186,15 @@ function continuationRevisionFixture() {
         moveAssessments: [
             ...revisionFixture().moveAssessments,
             {
+                positionKey: assessmentPositionKey(afterE4E5, [rootFen, afterE4]),
+                referenceId: TEST_REFERENCE_ID,
+                tierStable: true,
                 decisionIndex: 1,
                 fen: afterE4E5,
                 moveUci: 'g1f3',
                 source: 'PRECOMPUTED',
                 status: 'VERIFIED',
-                grade: 'GOOD',
+                grade: 'BEST',
                 scoreAfter: {
                     kind: 'cp',
                     cp: 5,
@@ -199,7 +207,10 @@ function continuationRevisionFixture() {
                 },
             },
         ],
-    };
+    });
+    const node = result.solutionTree.branches[0].child.branches[0].child as unknown as TrainingSolutionTreeNodeDto;
+    node.answerCoverage = { ...result.answerCoverage, contextId: node.contextId, legalMovesUci: new Chess(afterE4E5).moves({verbose:true}).map(move => move.from + move.to + (move.promotion ?? '')), assessedMovesUci: ['g1f3'], coveredMovesUci: [] };
+    return result;
 }
 
 function gradedRequest(): RecordTrainingAttemptRequest {
@@ -276,6 +287,8 @@ function dependencies() {
         trainingMoment: {
             findFirst: vi.fn().mockResolvedValue(momentFixture()),
         },
+        solutionRevision: { findFirst: vi.fn().mockResolvedValue(revisionFixture()) },
+        trainingAttemptAssessmentRevision: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({id:'refinement-1'}) },
         $transaction: vi.fn(
             async (callback: (transaction: typeof tx) => unknown) =>
                 callback(tx)
@@ -714,7 +727,7 @@ describe('client-graded training attempt recording', () => {
         });
     });
 
-    it('rejects a verified revision whose acceptance frontier is not stable', async () => {
+    it('rejects a revision with a malformed acceptance summary', async () => {
         const { db, tx } = dependencies();
         const moment = await db.trainingMoment.findFirst();
         db.trainingMoment.findFirst.mockResolvedValue({
@@ -736,7 +749,7 @@ describe('client-graded training attempt recording', () => {
         expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
     });
 
-    it('rechecks the current revision under the transaction lock before writing', async () => {
+    it('preserves the served revision when a newer revision wins the transaction race', async () => {
         const { db, tx } = dependencies();
         tx.$queryRaw.mockResolvedValue([
             {
@@ -753,12 +766,9 @@ describe('client-graded training attempt recording', () => {
                 request: gradedRequest(),
                 dependencies: { db: db as never },
             })
-        ).rejects.toMatchObject({
-            code: 'STALE_REVISION',
-            status: 409,
-        });
-        expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
-        expect(tx.practiceReviewState.upsert).not.toHaveBeenCalled();
+        ).resolves.toMatchObject({ status: 'RECORDED' });
+        expect(tx.trainingAttempt.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ solutionRevisionId: revisionId, gradingEvidence: expect.objectContaining({ historicalRevision: true }) }) }));
+
     });
 
     it('validates the complete local continuation line before writing', async () => {
@@ -781,11 +791,11 @@ describe('client-graded training attempt recording', () => {
                 actor: 'USER',
                 fenBefore: afterE4E5,
                 moveUci: 'g1f3',
-                grade: 'GOOD',
+                grade: 'BEST',
                 source: 'PRECOMPUTED',
             },
         ];
-        request.grade = 'GOOD';
+        request.grade = 'BEST';
 
         await expect(
             recordTrainingAttempt({
@@ -831,11 +841,11 @@ describe('client-graded training attempt recording', () => {
                 actor: 'USER',
                 fenBefore: afterE4E5,
                 moveUci: 'g1f3',
-                grade: 'GOOD',
+                grade: 'BEST',
                 source: 'TABLEBASE',
             },
         ];
-        request.grade = 'GOOD';
+        request.grade = 'BEST';
         request.gradingSource = 'TABLEBASE';
 
         await expect(
@@ -848,7 +858,7 @@ describe('client-graded training attempt recording', () => {
         ).resolves.toMatchObject({ status: 'RECORDED' });
         expect(tx.trainingAttempt.create).toHaveBeenCalledWith({
             data: expect.objectContaining({
-                grade: 'GOOD',
+                grade: 'BEST',
                 gradingSource: 'TABLEBASE',
             }),
             select: { id: true },
@@ -1044,4 +1054,70 @@ describe('client-graded training attempt recording', () => {
         expect(harness.eventCount()).toBe(2);
         expect(harness.state()).toMatchObject({ successes: 2 });
     });
+});
+
+function clientEvidence(moveUci = 'a2a3'): TrainingClientMoveEvidence {
+    return { version: 1, contextId: assessmentPositionKey(rootFen, []), referenceId: TEST_REFERENCE_ID, policyVersion: 3, tierStable:true, localReference: { id:'local-reference', bestMoveUci:'e2e4', bestScore:{kind:'cp',cp:25,pov:'WHITE'}, canonicalBestMoveUci:'e2e4', canonicalScore:{kind:'cp',cp:25,pov:'WHITE'}, canonicalReferenceOutdated:false }, metrics: {moveUci, originalMoveUci:'d2d4', stable:true, evidenceModel:'CP_ONLY', bestGapCp:30, recoveredCp:90, preservesOutcome:null}, scoreAfter:{kind:'cp',cp:-5,pov:'WHITE'}, searches:[{nodes:100000,best:{},submitted:{},original:{},canonical:{}},{nodes:200000,best:{},submitted:{},original:{},canonical:{}}] };
+}
+
+describe('personal and historical attempt evidence', () => {
+    it('records a locally evaluated unknown answer without claiming canonical verification', async () => {
+        const {db,tx}=dependencies(); const request=gradedRequest();
+        request.grade='STRONG'; request.gradingSource='CLIENT_EVALUATED';
+        request.steps=[{stepIndex:0,actor:'USER',fenBefore:rootFen,moveUci:'a2a3',grade:'STRONG',source:'CLIENT_EVALUATED',clientEvidence:clientEvidence()}];
+        await expect(recordTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).resolves.toMatchObject({status:'RECORDED'});
+        expect(tx.trainingAttempt.create).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({gradingSource:'CLIENT_EVALUATED',gradingEvidence:expect.objectContaining({serverVerified:false,trust:'CLIENT_EVALUATED'})})}));
+        expect(tx.trainingAttemptStep.createMany).toHaveBeenCalledWith(expect.objectContaining({data:[expect.objectContaining({evidence:expect.objectContaining({serverVerified:false})})]}));
+    });
+    it('rejects a locally evaluated answer carrying another history context', async () => {
+        const {db}=dependencies();const request=gradedRequest();request.grade='STRONG';request.gradingSource='CLIENT_EVALUATED';
+        request.steps=[{stepIndex:0,actor:'USER',fenBefore:rootFen,moveUci:'a2a3',grade:'STRONG',source:'CLIENT_EVALUATED',clientEvidence:{...clientEvidence(),contextId:'other-history'}}];
+        await expect(recordTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).rejects.toMatchObject({code:'INVALID_REQUEST'});
+    });
+    it('loads the explicitly served historical revision without rebinding the attempt', async () => {
+        const {db,tx}=dependencies(); const moment=momentFixture(); moment.currentSolutionRevisionId='99999999-9999-4999-8999-999999999999'; db.trainingMoment.findFirst.mockResolvedValue(moment);
+        await expect(recordTrainingAttempt({userId:'user-1',momentId,request:gradedRequest(),dependencies:{db:db as never}})).resolves.toMatchObject({status:'RECORDED'});
+        expect(db.solutionRevision.findFirst).toHaveBeenCalledWith(expect.objectContaining({where:{id:revisionId,momentId}}));
+        expect(tx.trainingAttempt.create).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({solutionRevisionId:revisionId,gradingEvidence:expect.objectContaining({historicalRevision:true})})}));
+    });
+    it('appends an idempotent visible correction without creating another attempt or schedule event', async () => {
+        const {db,tx}=dependencies();
+        db.trainingAttempt.findUnique.mockResolvedValue({id:'attempt-1',trainingMomentId:momentId,solutionRevisionId:revisionId,status:'GRADED',steps:[{stepIndex:0,actor:'USER',fenBefore:rootFen,moveUci:'a2a3',grade:'DIFFERENT_MISTAKE'}]});
+        const request:EnrichTrainingAttemptRequest={kind:'ENRICH',clientAttemptId,solutionRevisionId:revisionId,clientEvidenceId:'55555555-5555-4555-8555-555555555555',stepIndex:0,evaluatedAt:'2026-07-30T08:00:01.000Z',clientEvidence:clientEvidence(),grade:'STRONG'};
+        const result=await enrichTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}});
+        expect(result).toEqual({attemptId:'attempt-1',status:'ENRICHED',corrected:true});
+        const data=db.trainingAttemptAssessmentRevision.create.mock.calls[0][0].data;
+        expect(data).toMatchObject({gradingSource:'CLIENT_EVALUATED',corrected:true,evidence:{serverVerified:false}});
+        expect(tx.trainingAttempt.create).not.toHaveBeenCalled();expect(tx.practiceReviewEvent.create).not.toHaveBeenCalled();
+        db.trainingAttemptAssessmentRevision.findUnique.mockResolvedValue({...data,id:'refinement-1'});
+        await expect(enrichTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).resolves.toEqual(result);
+        expect(db.trainingAttemptAssessmentRevision.create).toHaveBeenCalledTimes(1);
+        await expect(enrichTrainingAttempt({userId:'user-1',momentId,request:{...request,grade:'GOOD'},dependencies:{db:db as never}})).rejects.toMatchObject({code:'IDEMPOTENCY_CONFLICT'});
+    });
+});
+
+it('rejects a graded continuation whose per-node coverage uses another reference', async()=>{
+    const {db,tx}=dependencies();const revision=continuationRevisionFixture();
+    const node=revision.solutionTree.branches[0].child.branches[0].child as unknown as TrainingSolutionTreeNodeDto;
+    node.answerCoverage={...node.answerCoverage!,referenceId:'foreign-reference'};
+    db.trainingMoment.findFirst.mockResolvedValue({...momentFixture(),currentSolutionRevision:revision});
+    await expect(recordTrainingAttempt({userId:'user-1',momentId,request:gradedRequest(),dependencies:{db:db as never}})).rejects.toMatchObject({code:'NOT_FOUND'});
+    expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
+});
+
+it('rejects personal evidence that conceals a superseded canonical reference',async()=>{
+    const {db}=dependencies();const request=gradedRequest();const evidence=clientEvidence();
+    evidence.localReference.canonicalScore={kind:'cp',cp:-100,pov:'WHITE'};
+    request.grade='STRONG';request.gradingSource='CLIENT_EVALUATED';request.steps=[{stepIndex:0,actor:'USER',fenBefore:rootFen,moveUci:'a2a3',grade:'STRONG',source:'CLIENT_EVALUATED',clientEvidence:evidence}];
+    await expect(recordTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).rejects.toThrow('suppresses an outdated canonical');
+    evidence.localReference.canonicalReferenceOutdated=true;
+    await expect(recordTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).resolves.toMatchObject({status:'RECORDED'});
+});
+
+it('records a legal ungraded move as neutral review without inventing a failed verdict',async()=>{
+    const {db,tx}=dependencies();
+    const request:RecordTrainingAttemptRequest={kind:'RECORD',clientAttemptId,solutionRevisionId:revisionId,completedAt:'2026-07-30T08:00:00.000Z',status:'REVEALED',steps:[{stepIndex:0,actor:'USER',fenBefore:rootFen,moveUci:'a2a3',timeSpentMs:1000}]};
+    await expect(recordTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).resolves.toMatchObject({status:'RECORDED'});
+    expect(tx.trainingAttempt.create).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({userMoveUci:'a2a3',grade:null,gradingSource:null,gradingEvidence:expect.objectContaining({trust:'UNASSESSED',serverVerified:false})})}));
+    expect(tx.trainingAttemptStep.createMany).toHaveBeenCalledWith(expect.objectContaining({data:[expect.objectContaining({grade:null,evidence:expect.objectContaining({serverVerified:false,evidence:{kind:'UNRESOLVED_LOCAL_REVIEW',serverVerified:false}})})]}));
 });

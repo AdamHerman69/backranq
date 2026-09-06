@@ -6,15 +6,14 @@ const WIN_CHANCE_MULTIPLIER = 0.00368208;
 
 export function scoreForTrainingSide(
     score: PovScore | null,
-    trainingSide: 'w' | 'b'
+    trainingSide: 'w' | 'b',
 ): { cp: number | null; chance: number | null } {
     if (!score) return { cp: null, chance: null };
     if (score.kind === 'cp') {
         const cp = trainingSide === 'w' ? score.cp : -score.cp;
         return {
             cp,
-            chance:
-                1 / (1 + Math.exp(-WIN_CHANCE_MULTIPLIER * cp)),
+            chance: 1 / (1 + Math.exp(-WIN_CHANCE_MULTIPLIER * cp)),
         };
     }
     if (score.kind === 'mate') {
@@ -31,10 +30,13 @@ export function scoreForTrainingSide(
     };
 }
 
-function outcomeClass(chance: number): 0 | 1 | 2 {
-    if (chance >= 0.55) return 2;
-    if (chance <= 0.45) return 0;
-    return 1;
+function exactOutcome(
+    score: PovScore | null,
+    trainingSide: 'w' | 'b',
+): number | null {
+    return score && score.kind !== 'cp'
+        ? scoreForTrainingSide(score, trainingSide).chance
+        : null;
 }
 
 function exactBestOutcomeCompatibility(args: {
@@ -42,38 +44,14 @@ function exactBestOutcomeCompatibility(args: {
     submittedScore: PovScore | null;
     trainingSide: 'w' | 'b';
 }): boolean | null {
-    const best = args.bestScore;
-    if (!best) return null;
-    if (best.kind === 'mate') {
-        return (
-            args.submittedScore?.kind === 'mate' &&
-            args.submittedScore.winner === best.winner
-        );
-    }
-    if (best.kind === 'tablebase') {
-        if (args.submittedScore?.kind !== 'tablebase') return false;
-        const bestOutcome = scoreForTrainingSide(
-            best,
-            args.trainingSide
-        ).chance;
-        const submittedOutcome = scoreForTrainingSide(
-            args.submittedScore,
-            args.trainingSide
-        ).chance;
-        return (
-            bestOutcome != null &&
-            submittedOutcome != null &&
-            outcomeClass(submittedOutcome) >=
-                outcomeClass(bestOutcome)
-        );
-    }
-    return null;
+    const best = exactOutcome(args.bestScore, args.trainingSide);
+    if (best == null) return null;
+    const submitted = exactOutcome(args.submittedScore, args.trainingSide);
+    return submitted != null && submitted >= best;
 }
 
 function finiteNonNegative(value: unknown): number | null {
-    return typeof value === 'number' &&
-        Number.isFinite(value) &&
-        value >= 0
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0
         ? value
         : null;
 }
@@ -103,11 +81,11 @@ export function metricsFromPovScores(args: {
     const best = scoreForTrainingSide(args.bestScore, args.trainingSide);
     const submitted = scoreForTrainingSide(
         args.submittedScore,
-        args.trainingSide
+        args.trainingSide,
     );
     const original = scoreForTrainingSide(
         args.originalScore,
-        args.trainingSide
+        args.trainingSide,
     );
     const evidence =
         args.evidence &&
@@ -116,23 +94,21 @@ export function metricsFromPovScores(args: {
             ? (args.evidence as Record<string, unknown>)
             : {};
     const evidenceCp = finiteNonNegative(evidence.bestGapCp);
-    const evidenceChance = finiteNonNegative(
-        evidence.bestGapWinChance
-    );
-    const evidenceRecoveredCp = finiteNonNegative(
-        evidence.recoveredCp
-    );
+    const evidenceChance = finiteNonNegative(evidence.bestGapWinChance);
+    const evidenceRecoveredCp = finiteNonNegative(evidence.recoveredCp);
     const evidenceRecoveredChance = finiteNonNegative(
-        evidence.recoveredWinChance
+        evidence.recoveredWinChance,
     );
     const bestGapCp =
         evidenceCp ??
         (best.cp != null && submitted.cp != null
             ? Math.max(0, best.cp - submitted.cp)
             : null);
+    const exact =
+        args.bestScore?.kind !== 'cp' && args.submittedScore?.kind !== 'cp';
     const bestGapWinChance =
         evidenceChance ??
-        (best.chance != null && submitted.chance != null
+        (exact && best.chance != null && submitted.chance != null
             ? Math.max(0, best.chance - submitted.chance)
             : null);
     return {
@@ -150,16 +126,25 @@ export function metricsFromPovScores(args: {
                 : null),
         recoveredWinChance:
             evidenceRecoveredChance ??
-            (submitted.chance != null && original.chance != null
+            (args.submittedScore?.kind !== 'cp' &&
+            args.originalScore?.kind !== 'cp' &&
+            submitted.chance != null &&
+            original.chance != null
                 ? Math.max(0, submitted.chance - original.chance)
                 : null),
         preservesOutcome:
             typeof evidence.preservesOutcome === 'boolean'
                 ? evidence.preservesOutcome
-                : best.chance != null && submitted.chance != null
-                ? outcomeClass(submitted.chance) >=
-                  outcomeClass(best.chance)
-                : null,
+                : exactBestOutcomeCompatibility(args),
+        evidenceModel:
+            evidence.evidenceModel === 'MATCHED_WDL' ||
+            evidence.evidenceModel === 'EXACT_OUTCOME' ||
+            evidence.evidenceModel === 'CP_ONLY'
+                ? evidence.evidenceModel
+                : args.bestScore?.kind === 'cp'
+                  ? 'CP_ONLY'
+                  : 'EXACT_OUTCOME',
+        referenceOutdated: evidence.referenceOutdated === true,
     };
 }
 
@@ -203,34 +188,29 @@ export function metricsFromMatchedOutcomeEvidence(args: {
             bestGapWinChance: exactCompatibility ? 0 : 1,
             recoveredWinChance: null,
             preservesOutcome: exactCompatibility,
+            evidenceModel: 'EXACT_OUTCOME',
+            referenceOutdated:
+                (exactOutcome(args.submittedScore, args.trainingSide) != null &&
+                    exactOutcome(args.submittedScore, args.trainingSide)! >
+                        exactOutcome(args.bestScore, args.trainingSide)!) ||
+                (exactOutcome(args.bestScore, args.trainingSide) === 0 &&
+                    args.submittedScore?.kind === 'cp'),
         };
     }
 
     const bestWdlChance = finiteProbability(args.bestWdlChance);
-    const submittedWdlChance = finiteProbability(
-        args.submittedWdlChance
-    );
-    const originalWdlChance = finiteProbability(
-        args.originalWdlChance
-    );
-    const hasMatchedWdl =
-        bestWdlChance != null && submittedWdlChance != null;
+    const submittedWdlChance = finiteProbability(args.submittedWdlChance);
+    const originalWdlChance = finiteProbability(args.originalWdlChance);
+    const hasMatchedWdl = bestWdlChance != null && submittedWdlChance != null;
     const bestGapWinChance = hasMatchedWdl
-        ? roundedProbability(
-              Math.max(0, bestWdlChance - submittedWdlChance)
-          )
+        ? roundedProbability(Math.max(0, bestWdlChance - submittedWdlChance))
         : null;
-    const preservesOutcome = hasMatchedWdl
-        ? outcomeClass(submittedWdlChance) >=
-          outcomeClass(bestWdlChance)
-        : base.preservesOutcome;
+    // A cp sign or model probability is not a rule-exact outcome.
+    const preservesOutcome = null;
     const recoveredWinChance =
         hasMatchedWdl && originalWdlChance != null
             ? roundedProbability(
-                  Math.max(
-                      0,
-                      submittedWdlChance - originalWdlChance
-                  )
+                  Math.max(0, submittedWdlChance - originalWdlChance),
               )
             : null;
 
@@ -244,12 +224,21 @@ export function metricsFromMatchedOutcomeEvidence(args: {
         bestGapWinChance,
         recoveredWinChance,
         preservesOutcome,
+        evidenceModel: hasMatchedWdl ? 'MATCHED_WDL' : 'CP_ONLY',
+        referenceOutdated:
+            (args.bestScore?.kind === 'cp' &&
+                args.submittedScore?.kind === 'cp' &&
+                (args.trainingSide === 'w' ? 1 : -1) * args.submittedScore.cp >
+                    (args.trainingSide === 'w' ? 1 : -1) * args.bestScore.cp) ||
+            (args.bestScore?.kind === 'cp' &&
+                exactOutcome(args.submittedScore, args.trainingSide) === 1) ||
+            (hasMatchedWdl && submittedWdlChance > bestWdlChance),
     };
 }
 
 export function engineScoreToWhitePov(
     score: Score | null,
-    scorePov: 'w' | 'b'
+    scorePov: 'w' | 'b',
 ): PovScore | null {
     if (!score) return null;
     if (score.type === 'cp') {
@@ -259,17 +248,11 @@ export function engineScoreToWhitePov(
             pov: 'WHITE',
         };
     }
-    const winner =
-        score.value >= 0
-            ? scorePov
-            : scorePov === 'w'
-              ? 'b'
-              : 'w';
-    const distance = Math.max(1, Math.abs(Math.trunc(score.value)));
+    const winner = score.value > 0 ? scorePov : scorePov === 'w' ? 'b' : 'w';
+    const distance = Math.abs(Math.trunc(score.value));
     return {
         kind: 'mate',
-        plies:
-            score.value >= 0 ? distance * 2 - 1 : distance * 2,
+        plies: score.value > 0 ? distance * 2 - 1 : distance * 2,
         winner: winner === 'w' ? 'WHITE' : 'BLACK',
     };
 }
@@ -277,21 +260,19 @@ export function engineScoreToWhitePov(
 export function engineWdlChance(
     wdl: EngineWdl | undefined,
     scorePov: 'w' | 'b',
-    trainingSide: 'w' | 'b'
+    trainingSide: 'w' | 'b',
 ): number | null {
     if (!wdl) return null;
     const total = wdl.win + wdl.draw + wdl.loss;
     if (total <= 0) return null;
     const scorePovChance = (wdl.win + wdl.draw * 0.5) / total;
-    return scorePov === trainingSide
-        ? scorePovChance
-        : 1 - scorePovChance;
+    return scorePov === trainingSide ? scorePovChance : 1 - scorePovChance;
 }
 
 export function trainingWdlToWhitePov(
     wdl: 'WIN' | 'DRAW' | 'LOSS',
     trainingSide: 'w' | 'b',
-    dtz?: number
+    dtz?: number,
 ): PovScore {
     const whiteWdl =
         trainingSide === 'w'

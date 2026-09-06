@@ -261,6 +261,10 @@ const promptSelect = {
             bestMoveUci: true,
             acceptedMovesUci: true,
             acceptanceFrontier: true,
+            decision: true,
+            answerCoverage: true,
+            continuation: true,
+            originalDecision: true,
             solutionShape: true,
             bestLine: true,
             scoreAtStart: true,
@@ -273,6 +277,9 @@ const promptSelect = {
                     { moveUci: 'asc' as const },
                 ],
                 select: {
+                    positionKey: true,
+                    referenceId: true,
+                    tierStable: true,
                     decisionIndex: true,
                     fen: true,
                     moveUci: true,
@@ -403,10 +410,7 @@ export async function listPracticeFeed(args: {
                 is: {
                     trainable: true,
                     verificationStatus: 'VERIFIED',
-                    acceptanceFrontier: {
-                        path: ['status'],
-                        equals: 'STABLE',
-                    },
+                    decision: { path: ['status'], equals: 'CONFIRMED_MISTAKE' },
                 },
             },
         },
@@ -462,10 +466,7 @@ export async function getTrainingMomentPrompt(args: {
                 is: {
                     trainable: true,
                     verificationStatus: 'VERIFIED',
-                    acceptanceFrontier: {
-                        path: ['status'],
-                        equals: 'STABLE',
-                    },
+                    decision: { path: ['status'], equals: 'CONFIRMED_MISTAKE' },
                 },
             },
         },

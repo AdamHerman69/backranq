@@ -1,13 +1,15 @@
 import { Prisma } from '@prisma/client';
 import { extractTrainingMomentsFromGames } from '@/lib/analysis/extractTrainingMoments';
+import { isCompleteExtractionManifest } from '@/lib/analysis/extractionManifest';
 import { ServerStockfishClient } from '@/lib/analysis/serverStockfishClient';
 import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
 import { prisma } from '@/lib/prisma';
 import type { NormalizedGame } from '@/lib/types/game';
 import { timeClassToUi } from '@/lib/games/dbMappings';
-import type { weeklyMasterConfig } from '@/lib/master/config';
+import { hasCurrentMasterAnalysisConfig, type weeklyMasterConfig } from '@/lib/master/config';
 import {
     masterCandidateKey,
+    masterContentHash,
     rankMasterCandidate,
 } from '@/lib/master/ranking';
 import { MasterSnapshotAnalysisError } from '@/lib/master/analysisErrors';
@@ -25,6 +27,9 @@ export async function analyzeMasterSnapshot(args: {
     config: WeeklyMasterConfig;
     now?: Date;
 }) {
+    if (!hasCurrentMasterAnalysisConfig(args.config.analysis)) {
+        throw new Error('Master analysis configuration is invalid');
+    }
     const now = args.now ?? new Date();
     const snapshot = await prisma.masterSourceGameSnapshot.findUnique({
         where: { id: args.snapshotId },
@@ -100,130 +105,186 @@ export async function analyzeMasterSnapshot(args: {
         const manifest = output.manifests.find(
             (item) => item.sourceGameId === snapshot.id
         );
-        if (!manifest?.complete || manifest.sourcePgnHash !== snapshot.pgnHash) {
+        if (!isCompleteExtractionManifest(manifest) || manifest.sourcePgnHash !== snapshot.pgnHash) {
             throw new MasterSnapshotAnalysisError(
                 'Master extraction did not produce a complete receipt',
                 'INCOMPLETE_RECEIPT'
             );
         }
 
-        const persisted = [];
-        for (const moment of output.moments.filter(
-            (item) => item.sourceGameId === snapshot.id
-        )) {
-            const ranking = rankMasterCandidate({
-                moment,
-                playedAt: snapshot.playedAt,
-                personPriority: account.person.priority,
-                now,
-            });
-            const solution = moment.solution;
-            const candidateKey = masterCandidateKey({
-                snapshotId: snapshot.id,
-                personId: account.personId,
-                decisionPly: moment.decisionPly,
-                configHash: solution.configHash,
-            });
-            persisted.push(
-                await prisma.masterCandidate.upsert({
-                    where: { candidateKey },
-                    create: {
+        return await prisma.$transaction(async (tx) => {
+            // Serialize receipt completion for this preserved source. Engine work
+            // has already finished and never holds a database transaction open.
+            await tx.$queryRaw`
+                SELECT "id" FROM "MasterSourceGameSnapshot"
+                WHERE "id" = ${snapshot.id}::uuid
+                FOR UPDATE
+            `;
+            const existingReceipt = await tx.masterAnalysisReceipt.findUnique({
+                where: {
+                    snapshotId_accountId_configHash: {
                         snapshotId: snapshot.id,
-                        personId: account.personId,
                         accountId: account.id,
-                        pipelineRunId: args.pipelineRunId,
-                        candidateKey,
-                        decisionPly: moment.decisionPly,
-                        fen: moment.fen,
-                        positionHistory: moment.positionHistory,
-                        sideToMove: moment.sideToMove,
-                        originalMoveUci: moment.originalMoveUci,
-                        scoreBefore: json(moment.originalDecision.scoreBefore),
-                        scoreAfter: json(moment.originalDecision.scoreAfter),
-                        cpLoss: moment.originalDecision.cpLoss ?? null,
-                        winChanceLoss:
-                            moment.originalDecision.winChanceLoss ?? null,
-                        phase: moment.phase ?? null,
-                        sourceKinds: moment.sourceKinds,
-                        lessonKinds: moment.lessonKinds,
-                        themes: moment.themes,
-                        verificationStatus: solution.verificationStatus,
-                        solutionShape: solution.solutionShape,
-                        gradingStrategy: solution.gradingStrategy,
-                        continuationShape: solution.continuationShape,
-                        bestMoveUci: solution.bestMoveUci,
-                        acceptedMovesUci: solution.acceptedMovesUci,
-                        acceptanceFrontier: json(
-                            solution.acceptanceFrontier
-                        ),
-                        bestLine: json(solution.bestLineUci),
-                        solutionTree: json(solution.solutionTree),
-                        moveAssessments: json(solution.moveAssessments),
-                        scoreAtStart:
-                            solution.scoreAtStart == null
-                                ? Prisma.DbNull
-                                : json(solution.scoreAtStart),
-                        playedMoveScore:
-                            solution.playedMoveScore == null
-                                ? Prisma.DbNull
-                                : json(solution.playedMoveScore),
-                        targetOutcome: json(solution.targetOutcome),
-                        gradingPolicy: json(solution.gradingPolicy),
-                        evidence: json({
-                            solution: solution.evidence,
-                            extractionManifest: manifest,
-                            analysisConfig:
-                                args.config.analysis.snapshot,
-                        }),
-                        solutionHash: solution.solutionHash,
-                        generatorVersion: solution.generatorVersion,
-                        configHash: solution.configHash,
-                        ...ranking,
-                        status: ranking.hardGatePassed
-                            ? 'ELIGIBLE'
-                            : 'REJECTED',
+                        configHash: args.config.analysis.configHash,
                     },
-                    update: {
-                        pipelineRunId: args.pipelineRunId,
-                        evidence: json({
-                            solution: solution.evidence,
-                            extractionManifest: manifest,
-                            analysisConfig:
-                                args.config.analysis.snapshot,
-                        }),
-                        ...ranking,
-                        status: ranking.hardGatePassed
-                            ? 'ELIGIBLE'
-                            : 'REJECTED',
+                },
+            });
+            if (existingReceipt?.complete) {
+                if (!isCompleteExtractionManifest(existingReceipt.manifest) ||
+                    existingReceipt.manifest.sourceGameId !== snapshot.id ||
+                    existingReceipt.manifest.sourcePgnHash !== snapshot.pgnHash) {
+                    throw new MasterSnapshotAnalysisError(
+                        'Stored Master receipt does not satisfy the current completion contract',
+                        'INCOMPLETE_RECEIPT'
+                    );
+                }
+                const candidates = await tx.masterCandidate.findMany({
+                    where: {
+                        snapshotId: snapshot.id,
+                        accountId: account.id,
+                        configHash: args.config.analysis.configHash,
+                        pipelineRunId: existingReceipt.pipelineRunId,
                     },
-                })
-            );
-        }
-        await prisma.masterAnalysisReceipt.upsert({
-            where: {
-                snapshotId_accountId_configHash: {
+                });
+                return {
+                    manifest: existingReceipt.manifest as unknown as typeof manifest,
+                    candidates,
+                };
+            }
+
+            const persisted = [];
+            for (const moment of output.moments.filter(
+                (item) => item.sourceGameId === snapshot.id
+            )) {
+                const ranking = rankMasterCandidate({
+                    moment,
+                    playedAt: snapshot.playedAt,
+                    personPriority: account.person.priority,
+                    now,
+                });
+                const solution = moment.solution;
+                const originalDecision = { ...moment.originalDecision, sourceKinds: moment.sourceKinds,
+                    lessonKinds: moment.lessonKinds, themes: moment.themes, phase: moment.phase ?? null };
+                const candidateKey = masterCandidateKey({
+                    snapshotId: snapshot.id,
+                    personId: account.personId,
+                    decisionPly: moment.decisionPly,
+                    configHash: solution.configHash,
+                    evidenceHash: masterContentHash({ solution, originalDecision }),
+                });
+                persisted.push(
+                    await tx.masterCandidate.upsert({
+                        where: { candidateKey },
+                        create: {
+                            snapshotId: snapshot.id,
+                            personId: account.personId,
+                            accountId: account.id,
+                            pipelineRunId: args.pipelineRunId,
+                            candidateKey,
+                            decisionPly: moment.decisionPly,
+                            fen: moment.fen,
+                            positionHistory: moment.positionHistory,
+                            sideToMove: moment.sideToMove,
+                            originalMoveUci: moment.originalMoveUci,
+                            scoreBefore: json(moment.originalDecision.scoreBefore),
+                            scoreAfter: json(moment.originalDecision.scoreAfter),
+                            cpLoss: moment.originalDecision.cpLoss ?? null,
+                            winChanceLoss:
+                                moment.originalDecision.winChanceLoss ?? null,
+                            phase: moment.phase ?? null,
+                            sourceKinds: moment.sourceKinds,
+                            lessonKinds: moment.lessonKinds,
+                            themes: moment.themes,
+                            verificationStatus: solution.verificationStatus,
+                            solutionShape: solution.solutionShape,
+                            gradingStrategy: solution.gradingStrategy,
+                            continuationShape: solution.continuationShape,
+                            bestMoveUci: solution.bestMoveUci,
+                            acceptedMovesUci: solution.acceptedMovesUci,
+                            acceptanceFrontier: json(
+                                solution.acceptanceFrontier
+                            ),
+                            bestLine: json(solution.bestLineUci),
+                            solutionTree: json(solution.solutionTree),
+                            moveAssessments: json(solution.moveAssessments),
+                            scoreAtStart:
+                                solution.scoreAtStart == null
+                                    ? Prisma.DbNull
+                                    : json(solution.scoreAtStart),
+                            playedMoveScore:
+                                solution.playedMoveScore == null
+                                    ? Prisma.DbNull
+                                    : json(solution.playedMoveScore),
+                            targetOutcome: json(solution.targetOutcome),
+                            gradingPolicy: json(solution.gradingPolicy),
+                            evidence: json({
+                                solutionContract: {
+                                    decision: solution.decision,
+                                    answerCoverage: solution.answerCoverage,
+                                    continuation: solution.continuation,
+                                    originalDecision,
+                                },
+                                solution: solution.evidence,
+                                extractionManifest: manifest,
+                                analysisConfig:
+                                    args.config.analysis.snapshot,
+                            }),
+                            solutionHash: solution.solutionHash,
+                            generatorVersion: solution.generatorVersion,
+                            configHash: solution.configHash,
+                            ...ranking,
+                            status: ranking.hardGatePassed
+                                ? 'ELIGIBLE'
+                                : 'REJECTED',
+                        },
+                        update: {
+                            pipelineRunId: args.pipelineRunId,
+                            evidence: json({
+                                solutionContract: {
+                                    decision: solution.decision,
+                                    answerCoverage: solution.answerCoverage,
+                                    continuation: solution.continuation,
+                                    originalDecision,
+                                },
+                                solution: solution.evidence,
+                                extractionManifest: manifest,
+                                analysisConfig:
+                                    args.config.analysis.snapshot,
+                            }),
+                            ...ranking,
+                            status: ranking.hardGatePassed
+                                ? 'ELIGIBLE'
+                                : 'REJECTED',
+                        },
+                    })
+                );
+            }
+            await tx.masterAnalysisReceipt.upsert({
+                where: {
+                    snapshotId_accountId_configHash: {
+                        snapshotId: snapshot.id,
+                        accountId: account.id,
+                        configHash: args.config.analysis.configHash,
+                    },
+                },
+                create: {
                     snapshotId: snapshot.id,
                     accountId: account.id,
+                    pipelineRunId: args.pipelineRunId,
                     configHash: args.config.analysis.configHash,
+                    complete: true,
+                    candidateCount: persisted.length,
+                    manifest: json(manifest),
                 },
-            },
-            create: {
-                snapshotId: snapshot.id,
-                accountId: account.id,
-                pipelineRunId: args.pipelineRunId,
-                configHash: args.config.analysis.configHash,
-                complete: true,
-                candidateCount: persisted.length,
-                manifest: json(manifest),
-            },
-            update: {
-                pipelineRunId: args.pipelineRunId,
-                complete: true,
-                candidateCount: persisted.length,
-                manifest: json(manifest),
-            },
-        });
-        return { manifest, candidates: persisted };
+                update: {
+                    pipelineRunId: args.pipelineRunId,
+                    complete: true,
+                    candidateCount: persisted.length,
+                    manifest: json(manifest),
+                },
+            });
+            return { manifest, candidates: persisted };
+        }, { timeout: 30_000 });
     } finally {
         engine.terminate();
     }

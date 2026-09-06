@@ -21,9 +21,11 @@ export type TrainerFeedback = {
 export function feedbackForTrainingState({
     phase,
     grade,
+    reviewFallback = false,
 }: {
     phase: TrainerAttemptPhase;
     grade?: GradedPracticeResult['grade'] | null;
+    reviewFallback?: boolean;
 }): TrainerFeedback {
     if (phase === 'SUBMITTING') {
         return {
@@ -43,6 +45,9 @@ export function feedbackForTrainingState({
             message:
                 'This move could not be graded yet. It has not been marked right or wrong.',
         };
+    }
+    if (phase === 'REVEALED' && reviewFallback) {
+        return { tone: 'neutral', message: 'This move could not be graded reliably. Review the position below.' };
     }
     if (phase === 'REVEALED') {
         return {

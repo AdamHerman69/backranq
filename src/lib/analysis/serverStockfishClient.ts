@@ -1,6 +1,13 @@
 import { Chess } from 'chess.js';
 import {
     isStructurallyCompleteMultiPvBundle,
+    resolveEngineSearchContext,
+    resolvedEngineLimit,
+    engineSearchCacheKey,
+    createSearchEvidence,
+    terminalEngineResult,
+    type EngineSearchContext,
+    type BoundedEngineLine,
     type AnalysisLimit,
     type EngineIdentity,
     type EngineWdl,
@@ -29,6 +36,10 @@ type ActiveJob = {
     id: string;
     fen: string;
     multiPv: number;
+    context: EngineSearchContext;
+    limit: AnalysisLimit & { multiPv?: number };
+    completeSnapshot?: { depth: number; lines: MultiPvLine[] };
+    boundLines: Map<string, BoundedEngineLine>;
     resolve: (value: MultiPvResult) => void;
     reject: (error: Error) => void;
     linesByDepth: Map<number, Map<number, MultiPvLine>>;
@@ -98,6 +109,8 @@ export type ParsedInfoLine = {
     wdl?: EngineWdl;
     pvUci: string[] | null;
     isBound: boolean;
+    boundedScore: Score | null;
+    bound: 'UPPER' | 'LOWER' | null;
 };
 
 function uid() {
@@ -142,6 +155,8 @@ export function parseUciInfoLine(line: string): ParsedInfoLine {
             : undefined,
         pvUci: pv ? pv[1].trim().split(/\s+/).filter(Boolean) : null,
         isBound,
+        boundedScore: isBound ? scoreMate ? { type: 'mate', value: Number(scoreMate[1]) } : scoreCp ? { type: 'cp', value: Number(scoreCp[1]) } : null : null,
+        bound: isBound ? /\bupperbound\b/.test(line) ? 'UPPER' : 'LOWER' : null,
     };
 }
 
@@ -153,6 +168,9 @@ export function parseUciInfoLine(line: string): ParsedInfoLine {
  * the server bundle materially smaller than the 100+ MB full network build.
  */
 export class ServerStockfishClient implements StockfishEngine {
+    private terminated = false;
+    private cacheMulti = new Map<string, MultiPvResult>();
+    private requests = new Set<{ reject: (error: Error) => void; abortCleanup?: () => void }>();
     private enginePromise: Promise<StockfishInstance> | null = null;
     private engine: StockfishInstance | null = null;
     private active: ActiveJob | null = null;
@@ -207,51 +225,73 @@ export class ServerStockfishClient implements StockfishEngine {
     }
 
     async evalPosition(
-        opts: AnalysisLimit & { fen: string }
+        opts: AnalysisLimit & { fen: string; cacheKey?: string }
     ): Promise<EvalResult> {
         const res = await this.analyzeMultiPv({
             ...opts,
             multiPv: 1,
         });
         const first = res.lines[0];
+        if (!first && !res.terminal) throw new ExactPvUnavailableError();
         return {
             fen: res.fen,
-            bestMoveUci: res.bestMoveUci || first?.pvUci?.[0] || '',
+            bestMoveUci: first?.pvUci?.[0] || res.bestMoveUci || '',
             pvUci: first?.pvUci ?? [],
-            score: first?.score ?? null,
-            wdl: first?.wdl,
+            score: res.terminal ? { type: res.terminal.outcome === 'LOSS' ? 'mate' : 'cp', value: 0 } : first?.score ?? null,
+            wdl: res.terminal ? { win: 0, draw: res.terminal.outcome === 'DRAW' ? 1000 : 0, loss: res.terminal.outcome === 'LOSS' ? 1000 : 0 } : first?.wdl,
             depth: first?.depth,
             selDepth: first?.selDepth,
-            nodes: first?.nodes,
+            nodes: res.searchEvidence?.reported.nodes ?? first?.nodes,
             nps: first?.nps,
-            timeMs: first?.timeMs,
+            timeMs: res.searchEvidence?.reported.timeMs ?? first?.timeMs,
+            terminal: res.terminal,
+            searchEvidence: res.searchEvidence,
         };
     }
 
     async analyzeMultiPv(
-        opts: AnalysisLimit & { fen: string; multiPv?: number }
+        opts: AnalysisLimit & { fen: string; multiPv?: number; cacheKey?: string }
     ): Promise<MultiPvResult> {
         const generation = this.cancellationGeneration;
+        if (this.terminated) throw new Error('Engine terminated');
+        if (opts.signal?.aborted) throw new Error('Analysis aborted');
         const run = () => {
             if (generation !== this.cancellationGeneration) {
                 throw new Error('Analysis cancelled');
             }
-            return this.runAnalysis(opts);
+            return this.runAnalysis(opts, generation);
         };
         const next = this.chain.then(run, run);
         this.chain = next.catch(() => undefined);
-        return next;
+        return new Promise<MultiPvResult>((resolve, reject) => {
+            const request = { reject, abortCleanup: undefined as (() => void) | undefined };
+            const finish = () => { this.requests.delete(request); request.abortCleanup?.(); };
+            if (opts.signal) {
+                const abort = () => { finish(); reject(new Error('Analysis aborted')); };
+                opts.signal.addEventListener('abort', abort, { once: true });
+                request.abortCleanup = () => opts.signal?.removeEventListener('abort', abort);
+            }
+            this.requests.add(request);
+            next.then((value) => { finish(); resolve(value); }, (error) => { finish(); reject(error); });
+        });
     }
 
     cancelAll() {
         this.cancellationGeneration++;
+        for (const request of this.requests) {
+            request.abortCleanup?.();
+            request.reject(new Error('Analysis cancelled'));
+        }
+        this.requests.clear();
         const job = this.active;
         if (!job) return;
         this.stopAndReject(job, new Error('Analysis cancelled'));
     }
 
     terminate() {
+        this.terminated = true;
         this.cancelAll();
+        this.cacheMulti.clear();
         for (const waiter of this.protocolWaiters) {
             clearTimeout(waiter.timeout);
             waiter.reject(new Error('Engine terminated'));
@@ -264,10 +304,15 @@ export class ServerStockfishClient implements StockfishEngine {
     }
 
     private async ensureEngine() {
+        if (this.terminated) throw new Error('Engine terminated');
         if (this.enginePromise) return this.enginePromise;
 
         this.enginePromise = this.runtimeFactory()
             .then(async (engine) => {
+                if (this.terminated) {
+                    engine.terminate?.();
+                    throw new Error('Engine terminated');
+                }
                 this.engine = engine;
                 engine.listener = (line) => this.onLine(String(line));
                 engine.errorListener = (error) =>
@@ -361,31 +406,36 @@ export class ServerStockfishClient implements StockfishEngine {
     }
 
     private async runAnalysis(
-        opts: AnalysisLimit & { fen: string; multiPv?: number }
+        opts: AnalysisLimit & { fen: string; multiPv?: number; cacheKey?: string },
+        generation: number
     ): Promise<MultiPvResult> {
+        const assertCurrent = () => {
+            if (this.terminated || generation !== this.cancellationGeneration || opts.signal?.aborted) throw new Error('Analysis cancelled or aborted');
+        };
+        assertCurrent();
+        const context = resolveEngineSearchContext(opts);
+        const multiPv = Math.max(1, Math.min(16, context.rootMoves?.length ?? 16, Math.trunc(opts.multiPv ?? 1)));
+        const limit = { ...resolvedEngineLimit(opts, this.defaultNodes), multiPv };
+        const key = engineSearchCacheKey(context, limit, multiPv);
+        const cached = this.cacheMulti.get(key);
+        if (cached && opts.reuse === 'REUSE_ALLOWED') return { ...cached, searchEvidence: cached.searchEvidence ? { ...cached.searchEvidence, reused: true } : undefined };
+        const terminal = terminalEngineResult(context, createSearchEvidence(uid(), this.identity, context, limit));
+        if (terminal) return terminal;
         let engine = await this.ensureEngine();
+        assertCurrent();
         await this.waitForIdle();
         // A timeout watchdog may terminate and replace the runtime while this
         // request is waiting behind the active job. Never continue with that
         // stale local engine reference.
         engine = await this.ensureEngine();
+        assertCurrent();
 
         if (opts.signal?.aborted) {
             throw new Error('Analysis aborted');
         }
 
         const id = uid();
-        const nodes =
-            opts.nodes == null
-                ? this.defaultNodes
-                : Math.max(1, Math.trunc(opts.nodes));
-        const depth =
-            opts.depth == null ? undefined : Math.max(1, Math.trunc(opts.depth));
-        const movetimeMs =
-            opts.movetimeMs == null
-                ? undefined
-                : Math.max(1, Math.trunc(opts.movetimeMs));
-        const multiPv = Math.max(1, Math.min(16, Math.trunc(opts.multiPv ?? 1)));
+        const { nodes, depth, movetimeMs } = limit;
         const timeoutMs = Math.max(
             1_000,
             Math.trunc(
@@ -408,11 +458,12 @@ export class ServerStockfishClient implements StockfishEngine {
             `setoption name MultiPV value ${multiPv}`
         );
         await this.waitUntilReady(engine);
+        assertCurrent();
         if (opts.signal?.aborted) {
             throw new Error('Analysis aborted');
         }
 
-        return new Promise<MultiPvResult>((resolve, reject) => {
+        const result = await new Promise<MultiPvResult>((resolve, reject) => {
             const timeout = setTimeout(() => {
                 const current = this.active;
                 if (current?.id !== id) return;
@@ -424,11 +475,14 @@ export class ServerStockfishClient implements StockfishEngine {
 
             const job: ActiveJob = {
                 id,
-                fen: opts.fen,
+                fen: context.fen,
                 multiPv,
+                context,
+                limit,
                 resolve,
                 reject,
                 linesByDepth: new Map(),
+                boundLines: new Map(),
                 timeout,
                 bestMoveUci: '',
                 settled: false,
@@ -445,18 +499,23 @@ export class ServerStockfishClient implements StockfishEngine {
                     opts.signal?.removeEventListener('abort', onAbort);
             }
 
-            this.sendRuntimeCommand(engine, `position fen ${opts.fen}`);
+            this.sendRuntimeCommand(engine, context.positionCommand);
+            const searchMoves = context.rootMoves ? ` searchmoves ${context.rootMoves.join(' ')}` : '';
 
             // Deterministic work limits win over wall time. Movetime remains a
             // compatibility fallback and the watchdog above is always present.
             if (opts.nodes != null || (depth == null && movetimeMs == null)) {
-                this.sendRuntimeCommand(engine, `go nodes ${nodes}`);
+                this.sendRuntimeCommand(engine, `go nodes ${nodes}${searchMoves}`);
             } else if (depth != null) {
-                this.sendRuntimeCommand(engine, `go depth ${depth}`);
+                this.sendRuntimeCommand(engine, `go depth ${depth}${searchMoves}`);
             } else {
-                this.sendRuntimeCommand(engine, `go movetime ${movetimeMs}`);
+                this.sendRuntimeCommand(engine, `go movetime ${movetimeMs}${searchMoves}`);
             }
         });
+        assertCurrent();
+        this.cacheMulti.set(key, result);
+        if (this.cacheMulti.size > 256) this.cacheMulti.delete(this.cacheMulti.keys().next().value!);
+        return result;
     }
 
     private sendRuntimeCommand(engine: StockfishInstance, command: string) {
@@ -586,9 +645,13 @@ export class ServerStockfishClient implements StockfishEngine {
             const parsed = parseUciInfoLine(line);
             if (parsed.depth != null) job.latestDepth = parsed.depth;
             if (parsed.selDepth != null) job.latestSelDepth = parsed.selDepth;
-            if (parsed.nodes != null) job.latestNodes = parsed.nodes;
+            if (parsed.nodes != null) job.latestNodes = Math.max(job.latestNodes ?? 0, parsed.nodes);
             if (parsed.nps != null) job.latestNps = parsed.nps;
-            if (parsed.timeMs != null) job.latestTimeMs = parsed.timeMs;
+            if (parsed.timeMs != null) job.latestTimeMs = Math.max(job.latestTimeMs ?? 0, parsed.timeMs);
+            const boundedRoot = parsed.pvUci?.[0];
+            if (parsed.boundedScore && parsed.bound && boundedRoot && (job.context.rootMoves ?? job.context.legalRootMoves).includes(boundedRoot)) {
+                job.boundLines.set(boundedRoot, { moveUci: boundedRoot, score: parsed.boundedScore, bound: parsed.bound, depth: parsed.depth, nodes: parsed.nodes, timeMs: parsed.timeMs });
+            }
 
             const depth = parsed.depth ?? job.latestDepth ?? 0;
             const linesAtDepth =
@@ -612,6 +675,10 @@ export class ServerStockfishClient implements StockfishEngine {
                     timeMs: parsed.timeMs ?? job.latestTimeMs,
                 });
                 job.linesByDepth.set(depth, linesAtDepth);
+                const completeLines = Array.from(linesAtDepth.values()).sort((a, b) => a.multipv - b.multipv);
+                if (isStructurallyCompleteMultiPvBundle(completeLines, job.multiPv, job.context.rootMoves ?? job.context.legalRootMoves) && (!job.completeSnapshot || depth >= job.completeSnapshot.depth)) {
+                    job.completeSnapshot = { depth, lines: completeLines };
+                }
             }
             return;
         }
@@ -628,7 +695,8 @@ export class ServerStockfishClient implements StockfishEngine {
             const completeBucket = depthBuckets.find(([, linesAtDepth]) => {
                 return isStructurallyCompleteMultiPvBundle(
                     Array.from(linesAtDepth.values()),
-                    job.multiPv
+                    job.multiPv,
+                    job.context.rootMoves ?? job.context.legalRootMoves
                 );
             });
             const selectedBucket =
@@ -636,12 +704,17 @@ export class ServerStockfishClient implements StockfishEngine {
                 depthBuckets.find(([, linesAtDepth]) =>
                     linesAtDepth.has(1)
                 );
-            const lines = Array.from(
+            let lines = Array.from(
                 selectedBucket?.[1].values() ?? []
             ).sort((a, b) => a.multipv - b.multipv);
+            if (job.completeSnapshot && (!completeBucket || job.completeSnapshot.depth >= completeBucket[0])) lines = job.completeSnapshot.lines;
+            const legalRoots = job.context.rootMoves ?? job.context.legalRootMoves;
+            if (lines.some((line) => !legalRoots.includes(line.pvUci[0] ?? ''))) lines = [];
             if (lines.length === 0) {
-                const terminalFallback = exactMateInOneFallback(job);
-                if (!terminalFallback) {
+                const terminalFallback = legalRoots.includes(job.bestMoveUci) ? exactMateInOneFallback(job) : null;
+                if (!terminalFallback && job.boundLines.size > 0) {
+                    job.resolve({ fen: job.fen, bestMoveUci: '', lines: [], boundLines: Array.from(job.boundLines.values()), alternativesComplete: false, identity: this.identity, searchEvidence: createSearchEvidence(job.id, this.identity, job.context, job.limit, { nodes: job.latestNodes, timeMs: job.latestTimeMs }) });
+                } else if (!terminalFallback) {
                     job.reject(new ExactPvUnavailableError());
                 } else {
                     job.resolve({
@@ -658,18 +731,19 @@ export class ServerStockfishClient implements StockfishEngine {
                                 MultiPV: job.multiPv,
                             },
                         },
+                        searchEvidence: createSearchEvidence(job.id, this.identity, job.context, job.limit, { nodes: job.latestNodes, timeMs: job.latestTimeMs }),
                     });
                 }
             } else {
                 job.resolve({
                     fen: job.fen,
                     bestMoveUci:
-                        job.bestMoveUci ||
                         lines.find((candidate) => candidate.multipv === 1)
                             ?.pvUci[0] ||
                         '',
                     lines,
-                    alternativesComplete: completeBucket != null,
+                    boundLines: Array.from(job.boundLines.values()),
+                    alternativesComplete: isStructurallyCompleteMultiPvBundle(lines, job.multiPv, legalRoots),
                     identity: {
                         ...this.identity,
                         options: {
@@ -677,6 +751,7 @@ export class ServerStockfishClient implements StockfishEngine {
                             MultiPV: job.multiPv,
                         },
                     },
+                    searchEvidence: createSearchEvidence(job.id, this.identity, job.context, job.limit, { nodes: job.latestNodes, timeMs: job.latestTimeMs }),
                 });
             }
         }

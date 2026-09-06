@@ -12,7 +12,6 @@ import {
     type ReactNode,
 } from 'react';
 import {
-    ArrowRight,
     CheckCircle2,
     CircleAlert,
     Loader2,
@@ -60,30 +59,32 @@ function errorCopy(reason: OnboardingSearchError) {
         case 'PROFILE_NOT_FOUND':
             return 'We could not find that public profile. Check the spelling and provider.';
         case 'PROVIDER_RATE_LIMITED':
-            return 'The chess provider is busy right now. Keep solving and try again shortly.';
+            return 'The chess provider is busy right now. Try again shortly.';
         case 'PROVIDER_UNAVAILABLE':
-            return 'That provider is temporarily unavailable. The puzzle on the board still works.';
+            return 'That provider is temporarily unavailable. Please try again shortly.';
         case 'ENGINE_UNAVAILABLE':
-            return 'We could not finish analysis in this browser. Try again; the puzzle on the board still works.';
+            return 'We could not finish analysis in this browser. Please try again.';
         case 'OFFLINE':
             return 'You appear to be offline. Reconnect and try again when you are ready.';
         case 'INVALID_USERNAME':
             return 'Enter a valid public username.';
         default:
-            return 'We could not prepare a personal position this time. You can keep solving this one.';
+            return 'We could not prepare a personal position this time. Please try again.';
     }
 }
 
 function analysisPercent(progress: OnboardingAnalysisProgress) {
     if (progress.phase === 'ENGINE_STARTING') return 0;
-    if (progress.phase === 'CONFIRMING') return 90;
-    const gameShare = 80 / Math.max(1, progress.gameCount);
+    const gameShare = 100 / Math.max(1, progress.gameCount);
+    if (progress.phase === 'CONFIRMING') {
+        return Math.min(99, Math.round((progress.gameIndex + 0.9) * gameShare));
+    }
     const withinGame = progress.plyCount
         ? Math.min(1, progress.ply / progress.plyCount)
         : 0;
     return Math.min(
         99,
-        Math.round(progress.gameIndex * gameShare + withinGame * gameShare)
+        Math.round(progress.gameIndex * gameShare + withinGame * gameShare * 0.8)
     );
 }
 
@@ -93,13 +94,14 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
         masterTerminal: false,
         activePuzzleInteracted: false,
         personal: { status: 'IDLE' },
-        handoff: 'HIDDEN',
     });
     const [provider, setProvider] =
         useState<PublicChessProvider>('lichess');
     const [username, setUsername] = useState('');
     const [validationError, setValidationError] = useState<string | null>(null);
     const abortRef = useRef<AbortController | null>(null);
+    const stageRef = useRef<HTMLDivElement | null>(null);
+    const searchRunId = state.personal.status === 'IDLE' ? null : state.personal.runId;
     const engineRef = useRef<StockfishClient | null>(null);
     const terminalStateRef = useRef(false);
     const startedPuzzleIdsRef = useRef(new Set<string>());
@@ -107,6 +109,18 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
     const sessionIdRef = useRef<string | null>(null);
     const milestonesRef = useRef(new Set<number>());
     const presentationEventsRef = useRef(new Set<string>());
+    const progressFrameRef = useRef<number | null>(null);
+    const progressTimerRef = useRef<number | null>(null);
+    const lastProgressPaintRef = useRef(0);
+    const pendingProgressRef = useRef<{ runId: string; progress: OnboardingAnalysisProgress } | null>(null);
+    const clearProgressFrame = useCallback(() => {
+        if (progressFrameRef.current !== null) cancelAnimationFrame(progressFrameRef.current);
+        progressFrameRef.current = null;
+        if (progressTimerRef.current !== null) window.clearTimeout(progressTimerRef.current);
+        progressTimerRef.current = null;
+        lastProgressPaintRef.current = 0;
+        pendingProgressRef.current = null;
+    }, []);
 
     const emit = useCallback(
         (
@@ -130,6 +144,20 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
     );
 
     useEffect(() => {
+        if (!searchRunId) return;
+        const stage = stageRef.current;
+        // On narrow screens the form is below the board. A new search brings
+        // its result into view once; progress and readiness never move the page.
+        if (stage && window.matchMedia('(max-width: 1023px)').matches &&
+            stage.getBoundingClientRect().top < 64) {
+            stage.scrollIntoView({
+                block: 'start',
+                behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+            });
+        }
+    }, [searchRunId]);
+
+    useEffect(() => {
         mountedRef.current = true;
         sessionIdRef.current = sessionId();
         emit('LANDING_VIEWED');
@@ -139,13 +167,14 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
         });
         return () => {
             mountedRef.current = false;
+            clearProgressFrame();
             abortRef.current?.abort();
             engineRef.current?.terminate?.();
         };
-    }, [emit]);
+    }, [clearProgressFrame, emit]);
 
     useEffect(() => {
-        if (state.activePuzzle.context.kind === 'MASTER') {
+        if (state.personal.status === 'IDLE' && state.activePuzzle.context.kind === 'MASTER') {
             const key = `master:${state.activePuzzle.id}`;
             if (!presentationEventsRef.current.has(key)) {
                 presentationEventsRef.current.add(key);
@@ -154,10 +183,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
         }
         const personal = state.personal;
         if (personal.status !== 'READY') return;
-        const isShown = state.activePuzzle.id === personal.puzzle.id;
-        const eventName = isShown
-            ? 'PERSONAL_PUZZLE_SHOWN'
-            : 'PERSONAL_READY_NOTICE_SHOWN';
+        const eventName = 'PERSONAL_PUZZLE_SHOWN';
         const key = `${personal.runId}:${eventName}`;
         if (presentationEventsRef.current.has(key)) return;
         presentationEventsRef.current.add(key);
@@ -170,7 +196,21 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
 
     const reportProgress = useCallback(
         (runId: string, progress: OnboardingAnalysisProgress) => {
-            dispatch({ type: 'ANALYSIS_PROGRESS', runId, progress });
+            pendingProgressRef.current = { runId, progress };
+            // Latest position wins. Rendering has its own cadence, so fast engine
+            // results cannot queue animations or interrupt every moving piece.
+            if (progressFrameRef.current === null && progressTimerRef.current === null) {
+                progressTimerRef.current = window.setTimeout(() => {
+                    progressTimerRef.current = null;
+                    progressFrameRef.current = requestAnimationFrame(() => {
+                        progressFrameRef.current = null;
+                        lastProgressPaintRef.current = performance.now();
+                        const latest = pendingProgressRef.current;
+                        pendingProgressRef.current = null;
+                        if (latest) dispatch({ type: 'ANALYSIS_PROGRESS', ...latest });
+                    });
+                }, Math.max(0, 120 - (performance.now() - lastProgressPaintRef.current)));
+            }
             const percent = analysisPercent(progress);
             for (const milestone of [25, 50, 75] as const) {
                 if (
@@ -199,6 +239,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
             return;
         }
         setValidationError(null);
+        clearProgressFrame();
         abortRef.current?.abort();
         engineRef.current?.terminate?.();
         const controller = new AbortController();
@@ -210,6 +251,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
         };
         milestonesRef.current = new Set();
         const startedAt = performance.now();
+        let searchEngine: StockfishClient | null = null;
         let lookupSucceeded = false;
         dispatch({ type: 'SEARCH_STARTED', runId, identity });
         emit('IDENTITY_SUBMITTED', { runId, provider });
@@ -255,12 +297,15 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
             const { findFirstVerifiedPersonalPuzzle } = puzzleFinderModule;
             const engine = new StockfishClient();
             engineRef.current = engine;
+            searchEngine = engine;
             const puzzle = await findFirstVerifiedPersonalPuzzle({
                 games: response.games,
                 identity,
                 engine,
                 signal: controller.signal,
-                onProgress: (progress) => reportProgress(runId, progress),
+                onProgress: (progress) => {
+                    if (!controller.signal.aborted) reportProgress(runId, progress);
+                },
             });
             if (controller.signal.aborted) return;
             if (!puzzle) {
@@ -271,6 +316,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                 });
                 return;
             }
+            clearProgressFrame();
             dispatch({ type: 'PERSONAL_READY', runId, puzzle });
             emit('PERSONAL_PUZZLE_READY', {
                 runId,
@@ -299,10 +345,9 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                 { runId, provider, reason }
             );
         } finally {
-            if (engineRef.current) {
-                engineRef.current.terminate?.();
-                engineRef.current = null;
-            }
+            searchEngine?.terminate?.();
+            if (engineRef.current === searchEngine) engineRef.current = null;
+            if (abortRef.current === controller) clearProgressFrame();
         }
     };
 
@@ -317,62 +362,20 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
             return (
                 <WorkingStatus
                     title="Finding your recent games"
-                    detail="You can keep solving while the public profile loads."
-                    progress={12}
+                    detail="Loading public games from your profile."
                 />
             );
         }
         if (personal.status === 'ANALYZING') {
-            const percent = analysisPercent(personal.progress);
             return (
                 <WorkingStatus
-                    title={
-                        personal.progress.phase === 'CONFIRMING'
-                            ? 'Preparing your personal position'
-                            : 'Reviewing your recent games'
-                    }
-                    detail={personal.progress.phase === 'CONFIRMING'
-                        ? 'Checking the strongest opportunities for a clear, reliable exercise.'
-                        : `Game ${personal.progress.gameIndex + 1} of ${personal.progress.gameCount}. Looking for the decisions worth revisiting.`}
-                    progress={percent}
+                    title={`Searching ${personal.identity.username}'s games`}
+                    detail="Follow the analysis on the board. Your position becomes playable as soon as it is verified."
                 />
             );
         }
         if (personal.status === 'READY') {
-            if (state.activePuzzle.id === personal.puzzle.id) {
-                return (
-                    <ReadyStatus>
-                        This position came from one of your public games.
-                    </ReadyStatus>
-                );
-            }
-            return (
-                <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.07] p-4 shadow-sm" aria-live="polite">
-                    <div className="flex gap-3 text-sm font-medium text-emerald-900 dark:text-emerald-100">
-                        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                        <p>Your personal position is ready. Switch now, or finish this puzzle first.</p>
-                    </div>
-                    <div className="mt-3">
-                        {state.handoff === 'OFFERED' ? (
-                            <Button
-                                type="button"
-                                className="w-full"
-                                onClick={() => {
-                                    dispatch({ type: 'ACCEPT_HANDOFF' });
-                                    emit('PERSONAL_HANDOFF_CLICKED', {
-                                        runId: personal.runId,
-                                        provider: personal.identity.provider,
-                                        masterState: state.masterTerminal ? 'TERMINAL' : 'SOLVING',
-                                    });
-                                }}
-                            >
-                                Solve my position
-                                <ArrowRight aria-hidden="true" />
-                            </Button>
-                        ) : null}
-                    </div>
-                </div>
-            );
+            return <ReadyStatus>This position came from one of your public games.</ReadyStatus>;
         }
         if (personal.status === 'EMPTY') {
             return (
@@ -386,7 +389,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
             );
         }
         return <NoticeStatus text={errorCopy(personal.reason)} />;
-    }, [emit, state]);
+    }, [state.personal]);
 
     return (
         <section className="relative overflow-hidden border-b border-foreground/10">
@@ -403,17 +406,18 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                         Stop solving random puzzles. Practice your decisions.
                     </h1>
                     <p className="mt-3 max-w-md text-pretty text-sm leading-5 text-muted-foreground sm:hidden">
-                        Make a move now. Then turn one of your public games into the next position.
+                        Try a move now. Then watch us find a position from your own games.
                     </p>
                     <p className="mt-5 hidden max-w-xl text-pretty text-lg leading-8 text-muted-foreground sm:block">
                         Enter a public Chess.com or Lichess username. Backranq finds a
-                        real training position from your games—and gives you something
-                        worth solving while it works.
+                        real training position from your games. Watch the search unfold,
+                        then find your better move.
                     </p>
                 </div>
 
                 <div
-                    className="min-w-0 border-y border-foreground/15 bg-card/40 py-3 sm:rounded-xl sm:border sm:p-5 sm:shadow-raised lg:col-start-2 lg:row-span-2 lg:row-start-1"
+                    ref={stageRef}
+                    className="min-w-0 scroll-mt-20 border-y border-foreground/15 bg-card/40 py-3 sm:rounded-xl sm:border sm:p-5 sm:shadow-raised lg:col-start-2 lg:row-span-2 lg:row-start-1"
                     onPointerDownCapture={() => dispatch({
                         type: 'PUZZLE_INTERACTED', puzzleId: state.activePuzzle.id,
                     })}
@@ -422,7 +426,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                     })}
                 >
                     <PublicPuzzlePlayer
-                        key={state.activePuzzle.id}
+                        personalScan={state.personal.status !== 'IDLE' && state.personal.status !== 'READY' ? state.personal : undefined}
                         puzzle={state.activePuzzle}
                         compactLayout
                         onAttemptStarted={() => {
@@ -507,8 +511,10 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                             size="lg"
                             className="h-12 w-full font-semibold"
                             disabled={
-                                state.personal.status === 'FETCHING' ||
-                                state.personal.status === 'ANALYZING'
+                                (state.personal.status === 'FETCHING' ||
+                                    state.personal.status === 'ANALYZING') &&
+                                state.personal.identity.provider === provider &&
+                                state.personal.identity.username === username.trim()
                             }
                         >
                             {state.personal.status === 'FETCHING' ||
@@ -555,11 +561,9 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
 function WorkingStatus({
     title,
     detail,
-    progress,
 }: {
     title: string;
     detail: string;
-    progress: number;
 }) {
     return (
         <div className="rounded-2xl border bg-card/90 p-4 shadow-sm" aria-live="polite">
@@ -576,19 +580,6 @@ function WorkingStatus({
                     <p className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</p>
                 </div>
             </div>
-            <div
-                className="mt-3 h-1.5 overflow-hidden rounded-full bg-secondary"
-                role="progressbar"
-                aria-label="Personal game analysis progress"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={progress}
-            >
-                <div
-                    className="h-full rounded-full bg-foreground transition-[width] duration-500 ease-out motion-reduce:transition-none"
-                    style={{ width: `${progress}%` }}
-                />
-            </div>
         </div>
     );
 }
@@ -599,9 +590,9 @@ function JourneyStatus() {
             <div className="flex gap-3">
                 <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-foreground" aria-hidden="true" />
                 <div>
-                    <p className="font-medium text-foreground">Your next useful position, in the background.</p>
+                    <p className="font-medium text-foreground">Your next useful position, from your games.</p>
                     <p className="mt-1 text-xs leading-5">
-                        Add a public username, keep solving, then switch when your personal position is verified.
+                        Add a public username, watch your games being reviewed, then solve your verified personal position.
                     </p>
                 </div>
             </div>

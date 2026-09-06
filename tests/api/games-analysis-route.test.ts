@@ -1,3 +1,4 @@
+import { fixtureSolution, TEST_REFERENCE_ID } from '../helpers/extractionEvidence';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainingMoments';
 import { hashSourcePgn } from '@/lib/chess/pgn';
@@ -11,6 +12,9 @@ import {
 } from '@/lib/training/contracts';
 import { solutionSemanticsHash } from '@/lib/training/contractHashes.server';
 import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
+import { createExtractionConfigSnapshot } from '@/lib/analysis/extractionConfig';
+import { resolveTrainingMomentExtractionOptions } from '@/lib/analysis/extractTrainingMoments';
+import { emptyExtractionReasonCounts } from '@/lib/analysis/extractionReceipt';
 import { analysisDefaultsToExtractOptions } from '@/lib/preferences';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -44,13 +48,12 @@ const standardAnalysisDefaults = {
     trainingCoveragePreset: 'ALL_CONFIRMED',
     trainingGradingTolerance: 'PRACTICAL',
 } as const;
-const defaultConfigSnapshot = {
-    version: 2,
+const defaultConfigSnapshot = createExtractionConfigSnapshot({
     engine: null,
-    extractor: analysisDefaultsToExtractOptions(standardAnalysisDefaults, {
+    extractor: resolveTrainingMomentExtractionOptions(analysisDefaultsToExtractOptions(standardAnalysisDefaults, {
         returnAnalysis: true,
-    }),
-};
+    })),
+});
 const defaultConfigHash = hashAnalysisConfig(defaultConfigSnapshot);
 const rootFen =
     'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -79,20 +82,13 @@ const validAnalysis: GameAnalysis = {
             userDecisions: 1,
             savedPositions: 0,
             unresolvedDecisions: 0,
-            reasons: {
-                SAVED: 0,
-                FORCED_MOVE: 0,
-                BELOW_COVERAGE_THRESHOLD: 1,
-                BELOW_THRESHOLD_AFTER_CONFIRMATION: 0,
-                ANALYSIS_INCOMPLETE: 0,
-                VERIFICATION_UNSTABLE: 0,
-            },
+            reasons: { ...emptyExtractionReasonCounts(), BELOW_CANDIDATE_SIGNAL: 1 },
         },
         decisions: [
             {
                 ply: 0,
                 status: 'NOT_SAVED',
-                reason: 'BELOW_COVERAGE_THRESHOLD',
+                reason: 'BELOW_CANDIDATE_SIGNAL',
                 cpLoss: 2,
                 winChanceLoss: 0.001,
             },
@@ -117,7 +113,7 @@ const validAnalysis: GameAnalysis = {
 const solutionCore: Omit<
     SolutionRevisionInput,
     'solutionHash' | 'evidence' | 'generatorVersion' | 'configHash'
-> = {
+> = fixtureSolution({
     verificationStatus: 'VERIFIED',
     solutionShape: 'UNIQUE',
     gradingStrategy: 'PRECOMPUTED',
@@ -177,11 +173,11 @@ const solutionCore: Omit<
             minRecoveredCp: 50,
             minRecoveredWinChance: 0.05,
         },
-        unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
+        unknownMove: 'EVALUATE',
         matePolicy: 'EXACT',
         tablebasePolicy: 'EXACT',
     },
-};
+});
 
 const validTrainingMoment: TrainingMomentCandidate = {
     sourceGameId: 'game-1',
@@ -214,6 +210,8 @@ const validTrainingMoment: TrainingMomentCandidate = {
 };
 
 const validManifest: ExtractionCompletionManifest = {
+    scope: 'FULL_GAME', scanComplete: true, extractionComplete: true,
+    decisionOutcomes: [{decisionPly: 0, status: 'UNRESOLVED', reason: 'BELOW_CANDIDATE_SIGNAL'}],
     version: 1,
     complete: true,
     sourceGameId: 'game-1',
@@ -567,6 +565,7 @@ describe('PUT /api/games/[id]/analysis', () => {
             moveAssessments: [
                 {
                     positionKey: rootAssessmentKey,
+                    referenceId: TEST_REFERENCE_ID, tierStable: true,
                     decisionIndex: 0,
                     fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
                     moveUci: 'g1f3',
@@ -878,7 +877,7 @@ describe('PUT /api/games/[id]/analysis', () => {
                 analyzedAt: analyzedAt.toISOString(),
                 currentAnalysisRunId: 'run-1',
             },
-            trainingMoments: { upserted: 0, staleArchived: 3 },
+            trainingMoments: { upserted: 0, staleArchived: 0 },
             analysisRun: {
                 id: 'run-1',
                 executionMode: 'LOCAL_BROWSER',
@@ -926,15 +925,13 @@ describe('PUT /api/games/[id]/analysis', () => {
             }),
         });
         expect(tx.trainingMoment.updateMany).toHaveBeenCalledWith({
-            where: {
+            where: expect.objectContaining({
                 userId: 'user-1',
                 gameId: 'game-1',
                 archivedAt: null,
-            },
-            data: {
-                archivedAt: expect.any(Date),
-                status: 'ARCHIVED',
-            },
+                currentSolutionRevision: { is: { configHash: { not: expect.any(String) } } },
+            }),
+            data: { status: 'UNSTABLE' },
         });
         expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
         expect(prismaMock.trainingMoment.upsert).not.toHaveBeenCalled();

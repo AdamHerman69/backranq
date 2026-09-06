@@ -211,7 +211,7 @@ export function normalizeGradingPolicy(
                 defaults.improvement.minRecoveredWinChance
             ),
         },
-        unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
+        unknownMove: 'EVALUATE',
         matePolicy: 'EXACT',
         tablebasePolicy: 'EXACT',
     };

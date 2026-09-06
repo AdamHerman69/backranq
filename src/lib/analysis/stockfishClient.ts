@@ -1,8 +1,42 @@
 import { STOCKFISH_BROWSER_WORKER_URL } from '@/lib/analysis/stockfishMetadata';
+import { Chess } from 'chess.js';
+import { ruleTerminalEvaluation } from './ruleEvaluation';
+
+export type SearchReusePolicy = 'FRESH_REQUIRED' | 'REUSE_ALLOWED';
+export type RuleTerminalOutcome = {
+    kind: 'CHECKMATE' | 'STALEMATE' | 'INSUFFICIENT_MATERIAL' | 'FIFTY_MOVE_RULE' | 'THREEFOLD_REPETITION' | 'SEVENTY_FIVE_MOVE_RULE' | 'FIVEFOLD_REPETITION';
+    outcome: 'LOSS' | 'DRAW';
+    pov: 'SIDE_TO_MOVE';
+};
+export type SearchEvidence = {
+    id: string;
+    source: 'ENGINE' | 'RULE';
+    engine: EngineIdentity;
+    request: {
+        fen: string;
+        rootMoves: string[];
+        previousFens: string[];
+        historyMode: 'FEN_ONLY' | 'REPLAY';
+        purpose: string;
+        multiPv: number;
+        limits: { nodes?: number; depth?: number; movetimeMs?: number };
+    };
+    reported: { nodes: number; timeMs: number };
+    reused: boolean;
+};
 
 export type Score =
     | { type: 'cp'; value: number }
     | { type: 'mate'; value: number };
+
+export type BoundedEngineLine = {
+    moveUci: string;
+    score: Score;
+    bound: 'UPPER' | 'LOWER';
+    depth?: number;
+    nodes?: number;
+    timeMs?: number;
+};
 
 export type EngineWdl = {
     win: number;
@@ -21,6 +55,10 @@ export type EngineIdentity = {
 };
 
 export type AnalysisLimit = {
+    rootMoves?: readonly string[];
+    previousFens?: readonly string[];
+    reuse?: SearchReusePolicy;
+    purpose?: string;
     /** Preferred deterministic work limit. */
     nodes?: number;
     /** Optional deterministic depth limit. Used when nodes is not supplied. */
@@ -33,6 +71,7 @@ export type AnalysisLimit = {
 };
 
 export type MultiPvStreamingUpdate = {
+    boundLines?: BoundedEngineLine[];
     fen: string;
     depth?: number;
     selDepth?: number;
@@ -57,6 +96,8 @@ export interface StreamingAnalysisHandle {
 }
 
 export type EvalResult = {
+    terminal?: RuleTerminalOutcome;
+    searchEvidence?: SearchEvidence;
     fen: string;
     bestMoveUci: string;
     pvUci: string[];
@@ -82,6 +123,10 @@ export type MultiPvLine = {
 };
 
 export type MultiPvResult = {
+    /** Bounds retain their direction and are never exact scoring lines. */
+    boundLines?: BoundedEngineLine[];
+    terminal?: RuleTerminalOutcome;
+    searchEvidence?: SearchEvidence;
     fen: string;
     bestMoveUci: string;
     lines: MultiPvLine[];
@@ -98,25 +143,98 @@ export type MultiPvResult = {
 const ROOT_UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
 
 export function normalizeRestrictedRootMoves(
-    value: readonly string[] | undefined
+    value: readonly string[] | undefined,
+    fen?: string
 ): string[] | undefined {
     if (value == null) return undefined;
-    if (value.length === 0 || value.length > 8) {
+    if (value.length === 0 || value.length > 256) {
         throw new Error(
-            'Restricted Stockfish search requires between 1 and 8 root moves.'
+            'Restricted Stockfish search requires a nonempty legal root scope of at most 256 moves.'
         );
     }
     const seen = new Set<string>();
+    const legal = fen == null ? null : new Set(new Chess(fen).moves({ verbose: true }).map((move) => `${move.from}${move.to}${move.promotion ?? ''}`));
     return value.map((rawMove) => {
         const move = rawMove.trim().toLowerCase();
-        if (!ROOT_UCI_RE.test(move) || seen.has(move)) {
+        if (!ROOT_UCI_RE.test(move) || seen.has(move) || (legal && !legal.has(move))) {
             throw new Error(
-                'Restricted Stockfish root moves must be unique, exact UCI moves.'
+                'Restricted Stockfish root moves must be unique, exact legal UCI moves.'
             );
         }
         seen.add(move);
         return move;
-    });
+    }).sort();
+}
+
+export type EngineSearchContext = {
+    fen: string;
+    previousFens: string[];
+    legalRootMoves: string[];
+    rootMoves?: string[];
+    positionCommand: string;
+    terminal?: RuleTerminalOutcome;
+};
+
+const historyCommands = new Map<string, string>();
+
+/** Validate the entire historical scope before it can become engine evidence. */
+export function resolveEngineSearchContext(opts: AnalysisLimit & { fen: string }): EngineSearchContext {
+    const chess = new Chess(opts.fen);
+    const fen = chess.fen();
+    const previousFens = [...(opts.previousFens ?? [])].map((value) => new Chess(value).fen());
+    const rootMoves = normalizeRestrictedRootMoves(opts.rootMoves, fen);
+    const legalRootMoves = chess.moves({ verbose: true }).map((move) => `${move.from}${move.to}${move.promotion ?? ''}`).sort();
+    const historyKey = JSON.stringify([previousFens, fen]);
+    let positionCommand = historyCommands.get(historyKey);
+    if (!positionCommand) {
+        if (previousFens.length === 0) positionCommand = `position fen ${fen}`;
+        else {
+            // Adjacent scan positions share an already-validated replay. Reuse
+            // only the exact canonical prefix, then validate its new transition.
+            const prefixCommand = historyCommands.get(JSON.stringify([
+                previousFens.slice(0, -1), previousFens.at(-1),
+            ]));
+            const replay = new Chess(prefixCommand ? previousFens.at(-1)! : previousFens[0]);
+            const moves: string[] = [];
+            for (const nextFen of prefixCommand ? [fen] : [...previousFens.slice(1), fen]) {
+                const move = replay.moves({ verbose: true }).find((candidate) => candidate.after === nextFen);
+                if (!move) throw new Error('Engine history does not legally replay to the requested position');
+                moves.push(`${move.from}${move.to}${move.promotion ?? ''}`);
+                replay.move({ from: move.from, to: move.to, promotion: move.promotion });
+            }
+            positionCommand = prefixCommand
+                ? `${prefixCommand}${previousFens.length === 1 ? ' moves' : ''} ${moves.join(' ')}`
+                : `position fen ${previousFens[0]} moves ${moves.join(' ')}`;
+        }
+        historyCommands.set(historyKey, positionCommand);
+        if (historyCommands.size > 128) historyCommands.delete(historyCommands.keys().next().value!);
+    }
+    const terminal = ruleTerminalEvaluation(fen, previousFens)?.terminal;
+    return { fen, previousFens, rootMoves, legalRootMoves, positionCommand, ...(terminal ? { terminal } : {}) };
+}
+
+export function engineSearchCacheKey(context: EngineSearchContext, opts: AnalysisLimit & { cacheKey?: string }, multiPv: number): string {
+    return JSON.stringify([opts.cacheKey ?? '', context.fen, context.previousFens, context.rootMoves ?? null, opts.nodes ?? null, opts.depth ?? null, opts.movetimeMs ?? null, multiPv]);
+}
+
+export function resolvedEngineLimit<T extends AnalysisLimit>(opts: T, defaultNodes = 100_000): T {
+    const positiveInteger = (value: number) => {
+        if (!Number.isFinite(value)) throw new Error('Engine budget must be finite');
+        return Math.max(1, Math.trunc(value));
+    };
+    const nodes = opts.nodes != null ? positiveInteger(opts.nodes) : opts.depth == null && opts.movetimeMs == null ? positiveInteger(defaultNodes) : undefined;
+    const depth = nodes == null && opts.depth != null ? positiveInteger(opts.depth) : undefined;
+    const movetimeMs = nodes == null && depth == null && opts.movetimeMs != null ? positiveInteger(opts.movetimeMs) : undefined;
+    return { ...opts, nodes, depth, movetimeMs };
+}
+
+export function createSearchEvidence(id: string, engine: EngineIdentity, context: EngineSearchContext, opts: AnalysisLimit & { multiPv?: number }, reported: { nodes?: number; timeMs?: number } = {}): SearchEvidence {
+    return { id, source: 'ENGINE', engine: { ...engine, options: { ...engine.options } }, request: { fen: context.fen, rootMoves: [...(context.rootMoves ?? context.legalRootMoves)], previousFens: context.previousFens, historyMode: context.previousFens.length ? 'REPLAY' : 'FEN_ONLY', purpose: opts.purpose ?? 'UNSPECIFIED', multiPv: opts.multiPv ?? 1, limits: { ...(opts.nodes != null ? { nodes: opts.nodes } : {}), ...(opts.depth != null ? { depth: opts.depth } : {}), ...(opts.movetimeMs != null ? { movetimeMs: opts.movetimeMs } : {}) } }, reported: { nodes: reported.nodes ?? 0, timeMs: reported.timeMs ?? 0 }, reused: false };
+}
+
+export function terminalEngineResult(context: EngineSearchContext, evidence: SearchEvidence): MultiPvResult | null {
+    if (!context.terminal) return null;
+    return { fen: context.fen, bestMoveUci: '', lines: [], alternativesComplete: true, terminal: context.terminal, identity: evidence.engine, searchEvidence: { ...evidence, source: 'RULE' } };
 }
 
 /**
@@ -126,13 +244,15 @@ export function normalizeRestrictedRootMoves(
  */
 export function isStructurallyCompleteMultiPvBundle(
     lines: readonly MultiPvLine[],
-    requestedMultiPv: number
+    requestedMultiPv: number,
+    legalRootMoves?: readonly string[]
 ): boolean {
     const requested = Math.max(
         1,
         Math.min(16, Math.trunc(requestedMultiPv))
     );
-    if (lines.length !== requested) return false;
+    const expected = legalRootMoves ? Math.min(requested, legalRootMoves.length) : requested;
+    if (lines.length !== expected) return false;
 
     const ordered = lines
         .slice()
@@ -146,6 +266,8 @@ export function isStructurallyCompleteMultiPvBundle(
             line.score == null ||
             !ROOT_UCI_RE.test(rootMove) ||
             rootMoves.has(rootMove)
+            || (legalRootMoves && !legalRootMoves.includes(rootMove))
+            || !Number.isFinite(line.score.value)
         ) {
             return false;
         }
@@ -195,6 +317,8 @@ export class StockfishClient implements StockfishEngine {
           | {
               kind: 'multipv';
               requestedMultiPv: number;
+              context: EngineSearchContext;
+              limit: AnalysisLimit & { multiPv?: number };
               cacheKey?: string;
               resolve: (v: MultiPvResult) => void;
               reject: (e: Error) => void;
@@ -237,6 +361,12 @@ export class StockfishClient implements StockfishEngine {
         if (typeof window === 'undefined') {
             throw new Error('Stockfish can only run in the browser.');
         }
+        this.ensureWorker();
+    }
+
+    private ensureWorker() {
+        if (this.terminated) throw new Error('Engine terminated');
+        if (this.worker) return;
         this.worker = new Worker(STOCKFISH_BROWSER_WORKER_URL);
         this.debugLog('worker created');
         this.worker.onmessage = (ev: MessageEvent) => {
@@ -245,6 +375,9 @@ export class StockfishClient implements StockfishEngine {
         this.worker.onerror = (ev: ErrorEvent) => {
             const msg = ev?.message || 'Stockfish worker crashed unexpectedly';
             this.debugLog('worker error', msg);
+            const failedWorker = this.worker;
+            this.worker = null;
+            failedWorker?.terminate();
             this.failAll(new Error(msg));
         };
     }
@@ -331,9 +464,7 @@ export class StockfishClient implements StockfishEngine {
     }
 
     async getIdentity(): Promise<EngineIdentity> {
-        if (this.terminated || !this.worker) {
-            throw new Error('Engine terminated');
-        }
+        this.ensureWorker();
         return new Promise<EngineIdentity>((resolve, reject) => {
             const waiter = {
                 resolve,
@@ -348,57 +479,11 @@ export class StockfishClient implements StockfishEngine {
         });
     }
 
-    async evalPosition(opts: AnalysisLimit & {
-        fen: string;
-        cacheKey?: string;
-    }): Promise<EvalResult> {
-        if (opts.signal?.aborted) throw new Error('Analysis aborted');
-        const nodes =
-            opts.nodes == null ? undefined : Math.max(1, Math.trunc(opts.nodes));
-        const depth =
-            opts.depth == null ? undefined : Math.max(1, Math.trunc(opts.depth));
-        const movetimeMs =
-            nodes == null && depth == null
-                ? Math.max(1, Math.trunc(opts.movetimeMs ?? 200))
-                : undefined;
-        const key =
-            opts.cacheKey ??
-            `${opts.fen}::nodes=${nodes ?? ''}::depth=${depth ?? ''}::time=${movetimeMs}`;
-        const cached = this.cacheEval.get(key);
-        if (cached) return cached;
-
-        const id = uid();
-        const p = new Promise<EvalResult>((resolve, reject) => {
-            this.pending.set(id, {
-                kind: 'single',
-                cacheKey: key,
-                resolve,
-                reject,
-            });
-            this.activeJobId = id;
-            // movetime is best-effort; add buffer for startup/GC/etc.
-            this.installTimeout(
-                id,
-                opts.timeoutMs ??
-                    Math.max((movetimeMs ?? 0) + 2000, 10_000)
-            );
-            this.installAbort(id, opts.signal);
-            if (!this.pending.has(id)) return;
-            this.debugLog('start eval', { id, nodes, depth, movetimeMs });
-            this.worker?.postMessage({
-                type: 'start',
-                id,
-                fen: opts.fen,
-                multiPv: 1,
-                maxNodes: nodes,
-                maxDepth: depth,
-                maxTimeMs: movetimeMs,
-                emitIntervalMs: 120,
-            });
-        });
-        const res = await p;
-        this.cacheEval.set(key, res);
-        return res;
+    async evalPosition(opts: AnalysisLimit & { fen: string; cacheKey?: string }): Promise<EvalResult> {
+        const result = await this.analyzeMultiPv({ ...opts, multiPv: 1 });
+        const first = result.lines[0];
+        if (!first && !result.terminal) throw new Error('Engine returned no exact PV');
+        return { fen: result.fen, bestMoveUci: first?.pvUci[0] ?? result.bestMoveUci, pvUci: first?.pvUci ?? [], score: result.terminal ? { type: result.terminal.outcome === 'LOSS' ? 'mate' : 'cp', value: 0 } : first?.score ?? null, wdl: result.terminal ? { win: 0, draw: result.terminal.outcome === 'DRAW' ? 1000 : 0, loss: result.terminal.outcome === 'LOSS' ? 1000 : 0 } : first?.wdl, depth: first?.depth, selDepth: first?.selDepth, nodes: result.searchEvidence?.reported.nodes ?? first?.nodes, nps: first?.nps, timeMs: result.searchEvidence?.reported.timeMs ?? first?.timeMs, terminal: result.terminal, searchEvidence: result.searchEvidence };
     }
 
     async analyzeMultiPv(opts: AnalysisLimit & {
@@ -407,37 +492,37 @@ export class StockfishClient implements StockfishEngine {
         cacheKey?: string;
         rootMoves?: readonly string[];
     }): Promise<MultiPvResult> {
+        this.ensureWorker();
         if (opts.signal?.aborted) throw new Error('Analysis aborted');
-        const nodes =
-            opts.nodes == null ? undefined : Math.max(1, Math.trunc(opts.nodes));
-        const depth =
-            opts.depth == null ? undefined : Math.max(1, Math.trunc(opts.depth));
-        const movetimeMs =
-            nodes == null && depth == null
-                ? Math.max(1, Math.trunc(opts.movetimeMs ?? 400))
-                : undefined;
-        const rootMoves = normalizeRestrictedRootMoves(opts.rootMoves);
+        const context = resolveEngineSearchContext(opts);
+        const normalizedLimit = resolvedEngineLimit(opts);
+        const { nodes, depth, movetimeMs } = normalizedLimit;
+        const rootMoves = context.rootMoves;
         const multiPv = Math.max(
             1,
             Math.min(
+                16,
                 rootMoves?.length ?? 16,
-                Math.trunc(opts.multiPv ?? 3)
+                Math.trunc(opts.multiPv ?? 1)
             )
         );
 
-        const key =
-            opts.cacheKey ??
-            `${opts.fen}::nodes=${nodes ?? ''}::depth=${depth ?? ''}::time=${movetimeMs}::multipv=${multiPv}::roots=${rootMoves?.join(',') ?? ''}`;
+        const limit = { ...normalizedLimit, multiPv };
+        const key = engineSearchCacheKey(context, { ...limit, cacheKey: opts.cacheKey }, multiPv);
         const cached = this.cacheMulti.get(key);
-        if (cached) {
-            return cached;
+        if (cached && opts.reuse === 'REUSE_ALLOWED') {
+            return { ...cached, searchEvidence: cached.searchEvidence ? { ...cached.searchEvidence, reused: true } : undefined };
         }
 
         const id = uid();
+        const terminal = terminalEngineResult(context, createSearchEvidence(id, this.identity, context, limit));
+        if (terminal) return terminal;
         const p = new Promise<MultiPvResult>((resolve, reject) => {
             this.pending.set(id, {
                 kind: 'multipv',
                 requestedMultiPv: multiPv,
+                context,
+                limit,
                 cacheKey: key,
                 resolve,
                 reject,
@@ -461,7 +546,9 @@ export class StockfishClient implements StockfishEngine {
             this.worker?.postMessage({
                 type: 'start',
                 id,
-                fen: opts.fen,
+                fen: context.fen,
+                positionCommand: context.positionCommand,
+                legalRootMoves: rootMoves ?? context.legalRootMoves,
                 multiPv,
                 maxNodes: nodes,
                 maxDepth: depth,
@@ -473,6 +560,7 @@ export class StockfishClient implements StockfishEngine {
 
         const res = await p;
         this.cacheMulti.set(key, res);
+        if (this.cacheMulti.size > 256) this.cacheMulti.delete(this.cacheMulti.keys().next().value!);
         return res;
     }
 
@@ -487,6 +575,7 @@ export class StockfishClient implements StockfishEngine {
         onError?(e: Error): void;
         onDone?(): void;
     }): StreamingAnalysisHandle {
+        this.ensureWorker();
         const id = uid();
         const multiPv = Math.max(1, Math.min(16, Math.trunc(opts.multiPv)));
         const emitIntervalMs = Math.max(
@@ -649,16 +738,26 @@ export class StockfishClient implements StockfishEngine {
                             timeMs: l.timeMs ?? latest.timeMs,
                         })
                     );
+                    const legalRootMoves = p.context.rootMoves ?? p.context.legalRootMoves;
+                    const boundLines = (latest.boundLines ?? []).filter((line) => legalRootMoves.includes(line.moveUci) && Number.isFinite(line.score.value));
+                    if (latest.fen !== p.context.fen || (lines.length === 0 && boundLines.length === 0) || lines.some((line) => !line.score || !legalRootMoves.includes(line.pvUci[0]))) {
+                        p.reject(new Error('Engine returned no valid exact PV in the requested root scope'));
+                        if (this.activeJobId === id) this.activeJobId = null;
+                        return;
+                    }
                     p.resolve({
                         fen: latest.fen,
-                        bestMoveUci,
+                        bestMoveUci: lines[0]?.pvUci[0] ?? '',
                         lines,
+                        boundLines,
                         alternativesComplete:
                             isStructurallyCompleteMultiPvBundle(
                                 lines,
-                                p.requestedMultiPv
+                                p.requestedMultiPv,
+                                legalRootMoves
                             ),
                         identity: this.identity,
+                        searchEvidence: createSearchEvidence(id, this.identity, p.context, p.limit, { nodes: latest.nodes, timeMs: latest.timeMs }),
                     });
                 }
             }

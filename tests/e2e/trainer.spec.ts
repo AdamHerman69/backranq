@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 import { clickMove, dragMove, square, waitForBoard } from './support/board';
+import { trainingQueueStorageKey } from '../../src/lib/training/offlineQueue';
 import { resetE2eTrainingAttempts } from './support/database';
 import {
     E2E_GAMES,
@@ -609,12 +610,10 @@ test.describe('authenticated personal decision practice', () => {
                 .getByRole('alert')
                 .filter({ hasText: 'This result can no longer be recorded.' })
         ).toBeVisible();
-        const storedState = await page.evaluate((ownerId) => {
-            const raw = window.localStorage.getItem(
-                `backranq:training-attempts:v4:${ownerId}`
-            );
+        const storedState = await page.evaluate((storageKey) => {
+            const raw = window.localStorage.getItem(storageKey);
             return raw ? JSON.parse(raw)[0]?.state : null;
-        }, E2E_USER.id);
+        }, trainingQueueStorageKey(E2E_USER.id));
         expect(storedState).toBe('NEEDS_ATTENTION');
     });
 
@@ -662,10 +661,7 @@ test.describe('authenticated personal decision practice', () => {
             page.getByText(/result waiting to sync/)
         ).toHaveCount(0);
         expect(
-            await page.evaluate((ownerId) =>
-                window.localStorage.getItem(
-                    `backranq:training-attempts:v4:${ownerId}`
-                ), E2E_USER.id)
+            await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), trainingQueueStorageKey(E2E_USER.id))
         ).toBeNull();
     });
 

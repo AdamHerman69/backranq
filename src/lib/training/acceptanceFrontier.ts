@@ -1,220 +1,109 @@
-import { evaluationLoss } from '@/lib/analysis/evaluation';
 import type { MultiPvLine } from '@/lib/analysis/stockfishClient';
 import type {
     AcceptanceFrontier,
     AcceptedMoveTier,
     GradingPolicyV3,
-} from '@/lib/training/contracts';
+} from './contracts';
+import {
+    engineScoreToWhitePov,
+    engineWdlChance,
+    metricsFromMatchedOutcomeEvidence,
+} from './gradingEvidence';
+import { gradeTrainingMove } from './grader';
 
+// Retained exported calibration constants for instrumentation; no hidden expansion.
 export const ACCEPTANCE_BOUNDARY_MIN_GAP_CP = 30;
-export const ACCEPTANCE_BOUNDARY_MAX_EXPANSION_CP = 40;
+export const ACCEPTANCE_BOUNDARY_MAX_EXPANSION_CP = 0;
 
-type RankedMove = {
-    moveUci: string;
-    line: MultiPvLine;
-    lossCp: number;
-};
-
-function normalizeUci(value: string | undefined): string {
-    return value?.trim().toLowerCase() ?? '';
-}
-
-function tierForLoss(
-    lossCp: number,
-    policy: GradingPolicyV3
-): AcceptedMoveTier {
-    if (lossCp <= policy.best.maxCpLoss) return 'BEST';
-    if (lossCp <= policy.strong.maxCpLoss) return 'STRONG';
-    return 'GOOD';
-}
-
-function openFrontier(args: {
-    policy: GradingPolicyV3;
-    ranked: RankedMove[];
-    status?: 'OPEN' | 'UNSTABLE';
-}): AcceptanceFrontier {
-    const accepted = args.ranked.filter(
-        (move) => move.lossCp <= args.policy.success.maxCpLoss
-    );
-    return {
-        version: 1,
-        status: args.status ?? 'OPEN',
-        targetCutoffCp: args.policy.success.maxCpLoss,
-        effectiveCutoffCp: null,
-        boundaryGapCp: null,
-        moves: accepted.map((move) => ({
-            moveUci: move.moveUci,
-            tier: tierForLoss(move.lossCp, args.policy),
-        })),
-        firstRejectedMoveUci:
-            args.ranked[accepted.length]?.moveUci ?? null,
-    };
-}
-
-/**
- * Turns one exact, ranked MultiPV snapshot into a monotone accepted prefix.
- * All moves at or below the target cutoff are kept. If the cutoff lands inside
- * a near-equal cluster, the prefix expands until a natural evaluation gap.
- */
+/** Individual answer quality. This object never certifies unlisted legal moves. */
 export function acceptanceFrontierFromMultiPv(args: {
     lines: readonly MultiPvLine[];
     requestedMultiPv: number;
     alternativesComplete?: boolean;
     policy: GradingPolicyV3;
 }): AcceptanceFrontier {
-    const ordered = args.lines
-        .slice()
-        .sort((left, right) => left.multipv - right.multipv);
+    const ordered = args.lines.slice().sort((a, b) => a.multipv - b.multipv);
     const best = ordered[0];
-    if (!best?.score) {
-        return openFrontier({
-            policy: args.policy,
-            ranked: [],
-            status: 'UNSTABLE',
-        });
-    }
-
     const seen = new Set<string>();
-    const ranked: RankedMove[] = [];
-    let duplicateRootMove = false;
-    for (let index = 0; index < ordered.length; index += 1) {
-        const line = ordered[index]!;
-        const moveUci = normalizeUci(line.pvUci[0]);
-        const loss = evaluationLoss(
-            { score: best.score, wdl: best.wdl },
-            { score: line.score, wdl: line.wdl }
-        );
-        if (moveUci && seen.has(moveUci)) {
-            duplicateRootMove = true;
+    const moves: AcceptanceFrontier['moves'] = [];
+    let firstRejectedMoveUci: string | null = null;
+    let invalid = !best?.score;
+    let previousCp: number | null = null;
+    for (const [index, line] of ordered.entries()) {
+        const moveUci = line.pvUci[0]?.trim().toLowerCase() ?? '';
+        if (
+            !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(moveUci) ||
+            seen.has(moveUci) ||
+            line.multipv !== index + 1 ||
+            !line.score ||
+            !best?.score
+        ) {
+            invalid = true;
             continue;
         }
-        if (
-            line.multipv !== index + 1 ||
-            !moveUci ||
-            line.score == null ||
-            loss.cp == null ||
-            !Number.isFinite(loss.cp)
-        ) {
-            return openFrontier({
-                policy: args.policy,
-                ranked,
-                status: 'UNSTABLE',
-            });
-        }
-        const lossCp = Math.max(0, loss.cp);
-        if (
-            ranked.length > 0 &&
-            lossCp < ranked[ranked.length - 1]!.lossCp
-        ) {
-            return openFrontier({
-                policy: args.policy,
-                ranked,
-                status: 'UNSTABLE',
-            });
-        }
         seen.add(moveUci);
-        ranked.push({ moveUci, line, lossCp });
-    }
-    if (ranked.length === 0) {
-        return openFrontier({
-            policy: args.policy,
-            ranked,
-            status: 'UNSTABLE',
-        });
-    }
-    if (duplicateRootMove) {
-        return openFrontier({
-            policy: args.policy,
-            ranked,
-            status: 'UNSTABLE',
-        });
-    }
-
-    const target = args.policy.success.maxCpLoss;
-    const maxExpansion = target + ACCEPTANCE_BOUNDARY_MAX_EXPANSION_CP;
-    let acceptedEnd = ranked.findLastIndex(
-        (move) => move.lossCp <= target
-    );
-    acceptedEnd = Math.max(0, acceptedEnd);
-
-    while (acceptedEnd + 1 < ranked.length) {
-        const acceptedEdge = ranked[acceptedEnd]!;
-        const rejectedEdge = ranked[acceptedEnd + 1]!;
-        const gap = rejectedEdge.lossCp - acceptedEdge.lossCp;
-        if (gap >= ACCEPTANCE_BOUNDARY_MIN_GAP_CP) {
-            const accepted = ranked.slice(0, acceptedEnd + 1);
-            return {
-                version: 1,
-                status: 'STABLE',
-                targetCutoffCp: target,
-                effectiveCutoffCp: Math.round(
-                    (acceptedEdge.lossCp + rejectedEdge.lossCp) / 2
-                ),
-                boundaryGapCp: gap,
-                moves: accepted.map((move) => ({
-                    moveUci: move.moveUci,
-                    tier: tierForLoss(move.lossCp, args.policy),
-                })),
-                firstRejectedMoveUci: rejectedEdge.moveUci,
-            };
+        if (line.score.type === 'cp') {
+            if (previousCp != null && line.score.value > previousCp)
+                invalid = true;
+            previousCp = line.score.value;
         }
-        if (rejectedEdge.lossCp > maxExpansion) {
-            return openFrontier({ policy: args.policy, ranked });
-        }
-        acceptedEnd += 1;
+        const metrics = metricsFromMatchedOutcomeEvidence({
+            moveUci,
+            originalMoveUci: '',
+            trainingSide: 'w',
+            bestScore: engineScoreToWhitePov(best.score, 'w'),
+            submittedScore: engineScoreToWhitePov(line.score, 'w'),
+            originalScore: null,
+            bestWdlChance: engineWdlChance(best.wdl, 'w', 'w'),
+            submittedWdlChance: engineWdlChance(line.wdl, 'w', 'w'),
+            stable: true,
+        });
+        const result = gradeTrainingMove(metrics, args.policy);
+        if (result.status === 'GRADED' && result.accepted)
+            moves.push({ moveUci, tier: result.grade as AcceptedMoveTier });
+        else firstRejectedMoveUci ??= moveUci;
     }
-
-    const structurallyExhausted =
-        args.alternativesComplete === true &&
-        ranked.length < Math.max(1, Math.trunc(args.requestedMultiPv));
-    if (!structurallyExhausted) {
-        return openFrontier({ policy: args.policy, ranked });
-    }
-    const accepted = ranked.slice(0, acceptedEnd + 1);
     return {
         version: 1,
-        status: 'STABLE',
-        targetCutoffCp: target,
-        effectiveCutoffCp: accepted.at(-1)?.lossCp ?? 0,
+        status: invalid ? 'UNSTABLE' : moves.length ? 'STABLE' : 'OPEN',
+        targetCutoffCp: args.policy.success.maxCpLoss,
+        effectiveCutoffCp: null,
         boundaryGapCp: null,
-        moves: accepted.map((move) => ({
-            moveUci: move.moveUci,
-            tier: tierForLoss(move.lossCp, args.policy),
-        })),
-        firstRejectedMoveUci: null,
+        moves,
+        firstRejectedMoveUci,
     };
 }
 
+/** Keep independently supported answers; marginal alternatives never invalidate the core. */
 export function confirmAcceptanceFrontier(
     first: AcceptanceFrontier,
-    confirmation: AcceptanceFrontier
+    confirmation: AcceptanceFrontier,
 ): AcceptanceFrontier {
-    const confirmedTiers = new Map(
-        confirmation.moves.map((move) => [move.moveUci, move.tier])
+    const rank: Record<AcceptedMoveTier, number> = {
+        BEST: 0,
+        STRONG: 1,
+        GOOD: 2,
+    };
+    const previous = new Map(
+        first.moves.map((move) => [move.moveUci, move.tier]),
     );
-    const sameMoves =
-        first.moves.length === confirmation.moves.length &&
-        confirmedTiers.size === confirmation.moves.length &&
-        new Set(first.moves.map((move) => move.moveUci)).size ===
-            first.moves.length &&
-        first.moves.every(
-            (move) => confirmedTiers.get(move.moveUci) === move.tier
-        );
-    if (
-        first.status !== 'STABLE' ||
-        confirmation.status !== 'STABLE' ||
-        !sameMoves
-    ) {
-        return {
-            ...confirmation,
-            status:
-                first.status === 'UNSTABLE' ||
-                confirmation.status === 'UNSTABLE'
-                    ? 'UNSTABLE'
-                    : 'OPEN',
-            effectiveCutoffCp: null,
-            boundaryGapCp: null,
-        };
-    }
-    return confirmation;
+    const moves = confirmation.moves
+        .filter((move) => previous.has(move.moveUci))
+        .map((move) => ({
+            ...move,
+            tier:
+                rank[previous.get(move.moveUci)!] > rank[move.tier]
+                    ? previous.get(move.moveUci)!
+                    : move.tier,
+        }));
+    return {
+        ...confirmation,
+        moves,
+        status:
+            first.status === 'UNSTABLE' || confirmation.status === 'UNSTABLE'
+                ? 'UNSTABLE'
+                : moves.length
+                  ? 'STABLE'
+                  : 'OPEN',
+    };
 }

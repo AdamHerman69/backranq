@@ -5,6 +5,8 @@ import {
     tacticalMoveFacts,
     type TrainingMomentExtractionOptions,
 } from '@/lib/analysis/extractTrainingMoments';
+import { parseExtractionCheckpoint } from '@/lib/analysis/extractionCheckpoint';
+import { negateScore, reverseWdl } from '@/lib/analysis/evaluation';
 import type {
     AnalysisLimit,
     EvalResult,
@@ -20,25 +22,45 @@ import { validateTrainingMomentCandidates } from '@/lib/training/candidateValida
 import type { NormalizedGame } from '@/lib/types/game';
 
 type EvalFactory = (
-    limit: AnalysisLimit & { fen: string }
+    limit: AnalysisLimit & { fen: string },
 ) => EvalResult | Promise<EvalResult>;
 type MultiFactory = (
-    limit: AnalysisLimit & { fen: string; multiPv?: number }
+    limit: AnalysisLimit & { fen: string; multiPv?: number },
 ) => MultiPvResult | Promise<MultiPvResult>;
 
 class FixtureEngine implements StockfishEngine {
     constructor(
         private readonly evalFactory: EvalFactory,
-        private readonly multiFactory: MultiFactory
+        private readonly multiFactory: MultiFactory,
     ) {}
 
-    evalPosition(opts: AnalysisLimit & { fen: string }) {
-        return Promise.resolve(this.evalFactory(opts));
+    async evalPosition(opts: AnalysisLimit & { fen: string }) {
+        if (opts.rootMoves?.length === 1) {
+            const root = opts.rootMoves[0]!;
+            const board = new Chess(opts.fen);
+            board.move({
+                from: root.slice(0, 2),
+                to: root.slice(2, 4),
+                promotion: root.slice(4) || undefined,
+            });
+            const after = await this.evalFactory({
+                ...opts,
+                fen: board.fen(),
+                rootMoves: undefined,
+            });
+            return {
+                ...after,
+                fen: opts.fen,
+                bestMoveUci: root,
+                pvUci: [root, ...after.pvUci],
+                score: negateScore(after.score),
+                wdl: reverseWdl(after.wdl),
+            };
+        }
+        return this.evalFactory(opts);
     }
 
-    analyzeMultiPv(
-        opts: AnalysisLimit & { fen: string; multiPv?: number }
-    ) {
+    analyzeMultiPv(opts: AnalysisLimit & { fen: string; multiPv?: number }) {
         return Promise.resolve(this.multiFactory(opts));
     }
 }
@@ -100,7 +122,7 @@ function multi(
         pv?: string[];
         cp?: number;
         mate?: number;
-    }>
+    }>,
 ): MultiPvResult {
     return {
         fen,
@@ -133,97 +155,132 @@ const baseOptions: TrainingMomentExtractionOptions = {
     verifyContinuations: false,
 };
 
-describe('canonical training-moment extraction v2', () => {
+describe('canonical decision evidence extraction', () => {
     it.each(['white', 'black'] as const)(
-        'scouts only the imported %s decisions without confirming or fabricating moments',
+        'FIRST_PUZZLE scans once then confirms only the imported %s decisions',
         async (userSide) => {
-            const source = game({
-                id: 'landing-scout',
-                pgn: '1. e4 e5 2. Nf3 Nc6 *',
+            const source = game({ id: 'first-puzzle-side', pgn: '1. e4 e5 2. Nf3 Nc6 *',
                 white: userSide === 'white' ? 'adam' : 'opponent',
-                black: userSide === 'black' ? 'adam' : 'opponent',
-                userSide,
-            });
-            const confirm = vi.fn(() => {
-                throw new Error('Scout must not confirm candidates');
-            });
+                black: userSide === 'black' ? 'adam' : 'opponent', userSide });
+            const confirm = vi.fn(() => { throw new Error('Inconclusive confirmation'); });
             const engine = new FixtureEngine(({ fen }) => {
                 const chess = new Chess(fen);
                 const move = chess.moves({ verbose: true })[0]!;
                 const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
-                return result({
-                    fen, bestMove: uci, pv: [uci],
-                    cp: chess.turn() === 'w' ? 200 : 0,
-                });
+                return result({ fen, bestMove: uci, pv: [uci], cp: chess.turn() === 'w' ? 200 : 0 });
             }, confirm);
-            const plies: number[] = [];
+            const evalSpy = vi.spyOn(engine, 'evalPosition');
+            const progress: Array<Parameters<NonNullable<Parameters<typeof extractTrainingMomentsFromGames>[0]['onProgress']>>[0]> = [];
             const output = await extractTrainingMomentsFromGames({
                 games: [source], selectedGameIds: new Set([source.id]), engine,
-                stopAfterFirstVerified: true,
-                landingSearch: {
-                    mode: 'SCOUT',
-                    onCandidate: ({ decisionPly }) => plies.push(decisionPly),
-                },
-                options: baseOptions,
+                strategy: 'FIRST_PUZZLE', onProgress: item => progress.push(item), options: baseOptions,
             });
-
-            expect(new Set(plies)).toEqual(new Set(userSide === 'white' ? [0, 2] : [1, 3]));
-            expect(confirm).not.toHaveBeenCalled();
+            expect(progress.filter(item => item.phase === 'confirming').map(item => item.ply))
+                .toEqual(userSide === 'white' ? [0, 2] : [1, 3]);
+            expect(progress.map(item => item.phase)).toEqual(['scanning', 'scanning', 'scanning', 'scanning', 'confirming', 'confirming']);
+            expect(evalSpy.mock.calls.filter(([request]) => request.purpose === 'GAME_SCAN')).toHaveLength(5);
+            expect(confirm).toHaveBeenCalledTimes(2);
+            expect(new Set(progress.map(item => item.runId)).size).toBe(1);
+            expect(progress.every(item => item.userSide === userSide)).toBe(true);
+            expect(progress[1]!.previousFen).toBe(progress[0]!.fen);
+            expect(progress[1]!.positionHistory).toEqual([progress[0]!.fen]);
             expect(output.moments).toEqual([]);
-            expect(output.manifests).toEqual([]);
+            expect(output.manifests).toMatchObject([{ scope: 'TARGETED_DECISION', scanComplete: true,
+                extractionComplete: false, complete: false, scannedPlies: 4, expectedPlies: 4 }]);
             expect(output.checkpoint).toBeUndefined();
-        }
+        },
     );
 
-    it('verifies only the selected landing decision and never reports a partial game as complete', async () => {
-        const source = game({ id: 'landing-target', pgn: '1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 *' });
-        const targetBoard = new Chess();
-        targetBoard.loadPgn('1. e4 e5 *');
-        const targetFen = targetBoard.fen();
-        const confirmedFens: string[] = [];
-        const scannedFens: string[] = [];
-        const engine = new FixtureEngine(({ fen }) => {
-            scannedFens.push(fen);
+    it('ranks candidates, skips failed confirmations without rescanning, and keeps full-mode solution semantics', async () => {
+        const source = game({ id: 'ranked-first', pgn: '1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 *' });
+        const board = new Chess(); board.loadPgn(source.pgn);
+        const moves = board.history({ verbose: true });
+        const scanned: string[] = [];
+        const confirmed: string[] = [];
+        const engine = new FixtureEngine(({ fen, purpose }) => {
+            if (purpose === 'GAME_SCAN') scanned.push(fen);
             const chess = new Chess(fen);
             const move = chess.moves({ verbose: true })[0]!;
             const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
-            return result({ fen, bestMove: uci, pv: [uci], cp: chess.turn() === 'w' ? 200 : 0 });
+            const index = moves.findIndex(item => item.before === fen);
+            return result({ fen, bestMove: uci, pv: [uci], cp: chess.turn() === 'b' ? 0 : index === 2 ? 600 : index === 4 ? 400 : 200 });
         }, ({ fen }) => {
-            confirmedFens.push(fen);
-            return multi(fen, new Chess(fen).moves({ verbose: true }).slice(0, 3).map((move, index) => ({
-                move: `${move.from}${move.to}${move.promotion ?? ''}`,
-                cp: 200 - index * 200,
-            })));
+            confirmed.push(fen);
+            if (fen !== moves[0]!.before) throw new Error('Candidate evidence unavailable');
+            return multi(fen, new Chess(fen).moves({ verbose: true }).slice(0, 3)
+                .map((move, index) => ({ move: `${move.from}${move.to}${move.promotion ?? ''}`, cp: 200 - index * 200 })));
         });
-        const output = await extractTrainingMomentsFromGames({
-            games: [source], selectedGameIds: new Set([source.id]), engine,
-            stopAfterFirstVerified: true,
-            landingSearch: { mode: 'VERIFY', decisionPly: 2 },
-            options: baseOptions,
-        });
-        expect(confirmedFens).toEqual([targetFen]);
-        expect(output.moments.map((moment) => moment.decisionPly)).toEqual([2]);
-        expect(output.manifests).toEqual([]);
-        const laterBoard = new Chess();
-        laterBoard.loadPgn('1. e4 e5 2. Nf3 Nc6 *');
-        expect(scannedFens).not.toContain(laterBoard.fen());
+        const args = { games: [source], selectedGameIds: new Set([source.id]), engine, options: baseOptions };
+        const first = await extractTrainingMomentsFromGames({ ...args, strategy: 'FIRST_PUZZLE' });
+        expect(scanned).toHaveLength(7);
+        expect(new Set(scanned).size).toBe(7);
+        expect(confirmed).toEqual([moves[2]!.before, moves[4]!.before, moves[0]!.before]);
+        expect(first.moments.map(moment => moment.decisionPly)).toEqual([0]);
+        expect(first.manifests).toMatchObject([{ scope: 'TARGETED_DECISION', scanComplete: true, extractionComplete: false }]);
+        const full = await extractTrainingMomentsFromGames({ ...args, strategy: 'FULL_GAME' });
+        expect(full.moments.map(moment => moment.solution.solutionHash)).toEqual(first.moments.map(moment => moment.solution.solutionHash));
+        expect(full.manifests).toMatchObject([{ scope: 'FULL_GAME', complete: true }]);
     });
 
-    it('rejects landing selection combined with complete or resumable extraction', async () => {
-        const source = game({ id: 'landing-scope', pgn: '1. e4 *' });
-        const args = {
-            games: [source], selectedGameIds: new Set([source.id]),
-            engine: {} as StockfishEngine,
-            landingSearch: { mode: 'VERIFY' as const, decisionPly: 0 },
-        };
-        await expect(extractTrainingMomentsFromGames(args)).rejects.toThrow('non-resumable partial game');
+    it('reports a setup position beginning with Black at relative ply zero', async () => {
+        const start = '7k/8/5Q2/8/6K1/8/8/8 b - - 0 42';
+        const source = game({ id: 'black-setup-first', pgn: `[SetUp "1"]\n[FEN "${start}"]\n\n42... Kg8 *`, white: 'opponent', black: 'adam', userSide: 'black' });
+        const engine = new FixtureEngine(({ fen }) => {
+            const move = new Chess(fen).moves({ verbose: true })[0]!;
+            const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+            return result({ fen, bestMove: uci, pv: [uci], cp: 0 });
+        }, ({ fen }) => multi(fen, []));
+        const progress = vi.fn();
+        await extractTrainingMomentsFromGames({ games: [source], selectedGameIds: new Set([source.id]),
+            engine, strategy: 'FIRST_PUZZLE', onProgress: progress, options: baseOptions });
+        expect(progress.mock.calls[0]![0]).toMatchObject({ ply: 0, plyCount: 1, fen: start,
+            previousFen: undefined, positionHistory: [], userSide: 'black' });
+    });
+
+    it('cancels at the scan-to-confirmation boundary before starting a fresh engine request', async () => {
+        const source = game({ id: 'cancel-first', pgn: '1. e4 *' });
+        const controller = new AbortController();
+        const confirm = vi.fn(({ fen }: { fen: string }) => multi(fen, []));
+        const engine = new FixtureEngine(({ fen }) => {
+            const board = new Chess(fen); const move = board.moves({ verbose: true })[0]!;
+            const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+            return result({ fen, bestMove: uci, pv: [uci], cp: board.turn() === 'w' ? 200 : 0 });
+        }, confirm);
+        await expect(extractTrainingMomentsFromGames({ games: [source], selectedGameIds: new Set([source.id]),
+            engine, strategy: 'FIRST_PUZZLE', signal: controller.signal,
+            onProgress: item => { if (item.phase === 'confirming') controller.abort(); }, options: baseOptions,
+        })).rejects.toThrow('Analysis aborted');
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it.each(['FULL_GAME', 'FIRST_PUZZLE'] as const)(
+        '%s does not attribute an earlier player loss to an opponent with invalid evidence', async strategy => {
+            const source = game({ id: 'invalid-opponent', pgn: '1. e4 e5 2. Nf3 *' });
+            const board = new Chess(); board.loadPgn(source.pgn);
+            const moves = board.history({ verbose: true });
+            const engine = new FixtureEngine(({ fen }) => {
+                if (fen === moves[1]!.before) return result({ fen, bestMove: '', pv: [], cp: 0 });
+                const chess = new Chess(fen); const move = chess.moves({ verbose: true })[0]!;
+                const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+                return result({ fen, bestMove: uci, pv: [uci], cp: chess.turn() === 'b' ? 0 : fen === moves[2]!.before ? 400 : 250 });
+            }, ({ fen }) => multi(fen, new Chess(fen).moves({ verbose: true }).slice(0, 3).map((move, index) => ({
+                move: `${move.from}${move.to}${move.promotion ?? ''}`, cp: (fen === moves[2]!.before ? 400 : 250) - index * 200,
+            }))));
+            const output = await extractTrainingMomentsFromGames({ games: [source], selectedGameIds: new Set([source.id]),
+                engine, strategy, options: baseOptions });
+            const moment = output.moments.find(item => item.decisionPly === 2);
+            expect(moment).toBeDefined();
+            expect(moment!.sourceKinds).toEqual(['MY_MISTAKE']);
+            expect(moment!.lessonKinds).not.toContain('PUNISH_MISTAKE');
+        },
+    );
+
+    it('rejects FIRST_PUZZLE combined with resumable extraction', async () => {
+        const source = game({ id: 'first-scope', pgn: '1. e4 *' });
         await expect(extractTrainingMomentsFromGames({
-            ...args, stopAfterFirstVerified: true, shouldYield: () => true,
-        })).rejects.toThrow('non-resumable partial game');
-        await expect(extractTrainingMomentsFromGames({
-            ...args, games: [source, { ...source, id: 'another' }],
-            selectedGameIds: new Set([source.id, 'another']), stopAfterFirstVerified: true,
-        })).rejects.toThrow('non-resumable partial game');
+            games: [source], selectedGameIds: new Set([source.id]), engine: {} as StockfishEngine,
+            strategy: 'FIRST_PUZZLE', shouldYield: () => true,
+        })).rejects.toThrow('FIRST_PUZZLE does not support full-game checkpoints');
     });
 
     it('resumes a single-game extraction from a persisted ply checkpoint', async () => {
@@ -246,7 +303,7 @@ describe('canonical training-moment extraction v2', () => {
                     cp: 0,
                 });
             },
-            ({ fen }) => multi(fen, [])
+            ({ fen }) => multi(fen, []),
         );
         const args = {
             games: [source],
@@ -265,13 +322,14 @@ describe('canonical training-moment extraction v2', () => {
         expect(firstSlice.checkpoint).toMatchObject({
             version: 1,
             gameId: 'resumable-game',
-            nextPly: 1,
+            nextPly: 0,
+            pendingScan: true,
             expectedPlies: 4,
         });
 
         const resumed = await extractTrainingMomentsFromGames({
             ...args,
-            checkpoint: JSON.parse(JSON.stringify(firstSlice.checkpoint)),
+            checkpoint: parseExtractionCheckpoint(JSON.parse(JSON.stringify(firstSlice.checkpoint))),
         });
         const uninterrupted = await extractTrainingMomentsFromGames(args);
 
@@ -279,13 +337,34 @@ describe('canonical training-moment extraction v2', () => {
         expect(resumed.moments).toEqual(uninterrupted.moments);
         expect(resumed.manifests).toEqual(uninterrupted.manifests);
         expect(resumed.analysis?.get('resumable-game')?.moves).toEqual(
-            uninterrupted.analysis?.get('resumable-game')?.moves
+            uninterrupted.analysis?.get('resumable-game')?.moves,
         );
         expect(
-            resumed.analysis?.get('resumable-game')?.trainingExtraction
+            resumed.analysis?.get('resumable-game')?.trainingExtraction,
         ).toEqual(
-            uninterrupted.analysis?.get('resumable-game')?.trainingExtraction
+            uninterrupted.analysis?.get('resumable-game')?.trainingExtraction,
         );
+    });
+
+    it('keeps adjacent scan evidence across repeated server checkpoint round trips', async () => {
+        const source = game({ id: 'many-slices', pgn: '1. e4 e5 2. Nf3 Nc6 *' });
+        const engine = new FixtureEngine(({ fen }) => {
+            const move = new Chess(fen).moves({ verbose: true })[0]!;
+            const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+            return result({ fen, bestMove: uci, pv: [uci], cp: 0 });
+        }, ({ fen }) => multi(fen, []));
+        const scan = vi.spyOn(engine, 'evalPosition');
+        const args = { games: [source], selectedGameIds: new Set([source.id]), engine,
+            options: { ...baseOptions, returnAnalysis: true }, shouldYield: () => true };
+        let output = await extractTrainingMomentsFromGames(args);
+        for (let count = 0; output.checkpoint && count < 20; count++) {
+            output = await extractTrainingMomentsFromGames({ ...args,
+                checkpoint: parseExtractionCheckpoint(JSON.parse(JSON.stringify(output.checkpoint))) });
+        }
+        expect(output.checkpoint).toBeUndefined();
+        expect(output.manifests).toMatchObject([{ complete: true, scannedPlies: 4 }]);
+        expect(output.analysis?.get(source.id)?.moves).toHaveLength(4);
+        expect(scan.mock.calls.filter(([request]) => request.purpose === 'GAME_SCAN')).toHaveLength(5);
     });
 
     it('escalates near-threshold confirmation and records a saved-decision receipt', async () => {
@@ -298,7 +377,7 @@ describe('canonical training-moment extraction v2', () => {
                           fen,
                           bestMove: 'd2d4',
                           pv: ['d2d4'],
-                          cp: 100,
+                          cp: 110,
                       })
                     : result({
                           fen,
@@ -309,10 +388,10 @@ describe('canonical training-moment extraction v2', () => {
             ({ fen, nodes }) => {
                 requestedConfirmationNodes.push(nodes ?? 0);
                 return multi(fen, [
-                    { move: 'd2d4', cp: 100 },
+                    { move: 'd2d4', cp: 110 },
                     { move: 'g1f3', cp: 60 },
                 ]);
-            }
+            },
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -333,21 +412,17 @@ describe('canonical training-moment extraction v2', () => {
         expect(requestedConfirmationNodes).toEqual([200, 400, 800]);
         expect(output.moments).toHaveLength(1);
         expect(
-            output.analysis?.get('adaptive-confirmation')
-                ?.trainingExtraction.decisions
+            output.analysis?.get('adaptive-confirmation')?.trainingExtraction
+                .decisions,
         ).toMatchObject([
             {
                 ply: 0,
                 status: 'SAVED',
-                reason: 'SAVED',
+                reason: 'MISTAKE_CONFIRMED',
                 confirmation: {
                     stable: true,
                     termination: 'STABLE',
-                    passes: [
-                        { nodes: 200 },
-                        { nodes: 400 },
-                        { nodes: 800 },
-                    ],
+                    passes: [{ nodes: 200 }, { nodes: 400 }, { nodes: 800 }],
                 },
             },
         ]);
@@ -381,7 +456,7 @@ describe('canonical training-moment extraction v2', () => {
                         move: 'd2d4',
                         cp: scores.get(nodes ?? 0) ?? 100,
                     },
-                ])
+                ]),
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -401,11 +476,11 @@ describe('canonical training-moment extraction v2', () => {
 
         expect(output.moments).toHaveLength(0);
         expect(
-            output.analysis?.get('unstable-confirmation')
-                ?.trainingExtraction.decisions[0]
+            output.analysis?.get('unstable-confirmation')?.trainingExtraction
+                .decisions[0],
         ).toMatchObject({
             status: 'UNRESOLVED',
-            reason: 'VERIFICATION_UNSTABLE',
+            reason: 'MISTAKE_COMPARISON_UNRESOLVED',
             confirmation: {
                 stable: false,
                 termination: 'MAX_BUDGET_UNSTABLE',
@@ -447,7 +522,7 @@ describe('canonical training-moment extraction v2', () => {
                 multi(fen, [
                     { move: 'e2e3', pv: ['e2e3', 'e7e5'], cp: 100 },
                     { move: 'd2d3', pv: ['d2d3', 'd7d5'], cp: 95 },
-                ])
+                ]),
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -468,12 +543,12 @@ describe('canonical training-moment extraction v2', () => {
         });
         expect(output.moments[0]?.themes).toContain('quietMove');
         expect(output.moments[0]?.solution.solutionHash).toBe(
-            solutionSemanticsHash(output.moments[0]!.solution)
+            solutionSemanticsHash(output.moments[0]!.solution),
         );
         expect(
             validateTrainingMomentCandidates(
-                JSON.parse(JSON.stringify(output.moments))
-            ).ok
+                JSON.parse(JSON.stringify(output.moments)),
+            ).ok,
         ).toBe(true);
     });
 
@@ -501,7 +576,7 @@ describe('canonical training-moment extraction v2', () => {
                     { move: 'e2e3', cp: 100 },
                     { move: 'e2e3', cp: 100 },
                     { move: 'd2d3', cp: 95 },
-                ])
+                ]),
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -520,14 +595,15 @@ describe('canonical training-moment extraction v2', () => {
         expect(output.moments[0]?.solution.moveAssessments).toMatchObject([
             { decisionIndex: 0, moveUci: 'e2e3', grade: 'BEST' },
             { decisionIndex: 0, moveUci: 'd2d3', grade: 'BEST' },
+            { decisionIndex: 0, moveUci: 'e2e4', grade: 'REPEATED_MISTAKE' },
         ]);
         expect(
             new Set(
                 output.moments[0]?.solution.moveAssessments.map(
                     (assessment) =>
-                        `${assessment.decisionIndex}:${assessment.positionKey}:${assessment.moveUci}`
-                )
-            ).size
+                        `${assessment.decisionIndex}:${assessment.positionKey}:${assessment.moveUci}`,
+                ),
+            ).size,
         ).toBe(output.moments[0]?.solution.moveAssessments.length);
     });
 
@@ -556,9 +632,7 @@ describe('canonical training-moment extraction v2', () => {
             },
             ({ fen }) => {
                 if (fen !== targetRoot) {
-                    throw new Error(
-                        `Unexpected MultiPV FEN ${fen}`
-                    );
+                    throw new Error(`Unexpected MultiPV FEN ${fen}`);
                 }
                 return multi(fen, [
                     {
@@ -567,7 +641,7 @@ describe('canonical training-moment extraction v2', () => {
                         cp: 300,
                     },
                 ]);
-            }
+            },
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -591,13 +665,11 @@ describe('canonical training-moment extraction v2', () => {
         expect(output.moments[0]).toMatchObject({
             decisionPly: 7,
             originalMoveUci: 'f6g8',
-            positionHistory: expect.arrayContaining([
-                new Chess().fen(),
-            ]),
+            positionHistory: expect.arrayContaining([new Chess().fen()]),
             originalDecision: {
                 scoreAfter: {
-                    kind: 'tablebase',
-                    wdl: 'DRAW',
+                    kind: 'cp',
+                    cp: expect.any(Number),
                     pov: 'WHITE',
                 },
             },
@@ -605,8 +677,8 @@ describe('canonical training-moment extraction v2', () => {
         expect(output.moments[0]?.positionHistory).toHaveLength(7);
         expect(
             validateTrainingMomentCandidates(
-                JSON.parse(JSON.stringify(output.moments))
-            ).ok
+                JSON.parse(JSON.stringify(output.moments)),
+            ).ok,
         ).toBe(true);
     });
 
@@ -644,9 +716,7 @@ describe('canonical training-moment extraction v2', () => {
             },
             ({ fen }) => {
                 if (fen !== targetRoot) {
-                    throw new Error(
-                        `Unexpected MultiPV FEN ${fen}`
-                    );
+                    throw new Error(`Unexpected MultiPV FEN ${fen}`);
                 }
                 return multi(fen, [
                     {
@@ -655,7 +725,7 @@ describe('canonical training-moment extraction v2', () => {
                         cp: -300,
                     },
                 ]);
-            }
+            },
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -684,30 +754,26 @@ describe('canonical training-moment extraction v2', () => {
                 bestMoveUci: 'f6g8',
                 acceptedMovesUci: ['f6g8'],
                 scoreAtStart: {
-                    kind: 'tablebase',
-                    wdl: 'DRAW',
+                    kind: 'cp',
+                    cp: expect.any(Number),
                     pov: 'WHITE',
                 },
-                moveAssessments: [
-                    {
+                moveAssessments: expect.arrayContaining([
+                    expect.objectContaining({
                         moveUci: 'f6g8',
                         scoreAfter: {
-                            kind: 'tablebase',
-                            wdl: 'DRAW',
+                            kind: 'cp',
+                            cp: expect.any(Number),
                             pov: 'WHITE',
                         },
-                        evidence: {
-                            ruleTerminal:
-                                'THREEFOLD_REPETITION',
-                        },
-                    },
-                ],
+                    }),
+                ]),
             },
         });
         expect(
             validateTrainingMomentCandidates(
-                JSON.parse(JSON.stringify(output.moments))
-            ).ok
+                JSON.parse(JSON.stringify(output.moments)),
+            ).ok,
         ).toBe(true);
     });
 
@@ -745,9 +811,7 @@ describe('canonical training-moment extraction v2', () => {
             },
             ({ fen }) => {
                 if (fen !== targetRoot) {
-                    throw new Error(
-                        `Unexpected MultiPV FEN ${fen}`
-                    );
+                    throw new Error(`Unexpected MultiPV FEN ${fen}`);
                 }
                 return multi(fen, [
                     {
@@ -756,7 +820,7 @@ describe('canonical training-moment extraction v2', () => {
                         cp: -30,
                     },
                 ]);
-            }
+            },
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -768,9 +832,7 @@ describe('canonical training-moment extraction v2', () => {
                     pgn: '1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 e6 *',
                 }),
             ],
-            selectedGameIds: new Set([
-                'mixed-rule-engine',
-            ]),
+            selectedGameIds: new Set(['mixed-rule-engine']),
             engine,
             options: {
                 ...baseOptions,
@@ -781,24 +843,26 @@ describe('canonical training-moment extraction v2', () => {
 
         expect(output.moments).toHaveLength(1);
         expect(output.moments[0]?.solution.scoreAtStart).toEqual({
-            kind: 'tablebase',
-            wdl: 'DRAW',
+            kind: 'cp',
+            cp: expect.any(Number),
             pov: 'WHITE',
         });
         expect(
-            output.moments[0]?.solution.moveAssessments
+            output.moments[0]?.solution.moveAssessments.filter((item) =>
+                ['BEST', 'STRONG', 'GOOD'].includes(item.grade),
+            ),
         ).toMatchObject([
             {
                 moveUci: 'f6g8',
                 grade: 'BEST',
                 scoreAfter: {
-                    kind: 'tablebase',
-                    wdl: 'DRAW',
+                    kind: 'cp',
+                    cp: expect.any(Number),
                     pov: 'WHITE',
                 },
                 evidence: {
                     bestGapCp: 0,
-                    preservesOutcome: true,
+                    preservesOutcome: null,
                 },
             },
             {
@@ -811,14 +875,14 @@ describe('canonical training-moment extraction v2', () => {
                 },
                 evidence: {
                     bestGapCp: 30,
-                    preservesOutcome: true,
+                    preservesOutcome: null,
                 },
             },
         ]);
         expect(
             validateTrainingMomentCandidates(
-                JSON.parse(JSON.stringify(output.moments))
-            ).ok
+                JSON.parse(JSON.stringify(output.moments)),
+            ).ok,
         ).toBe(true);
     });
 
@@ -847,7 +911,7 @@ describe('canonical training-moment extraction v2', () => {
                         pv: ['g1g3'],
                         cp: 500,
                     },
-                ])
+                ]),
         );
         const evidence: TablebaseEvidence = {
             source: 'LICHESS_SYZYGY',
@@ -862,6 +926,7 @@ describe('canonical training-moment extraction v2', () => {
                 insufficientMaterial: false,
             },
             moves: [
+                { uci: 'g1g2', wdl: 'DRAW', categoryAfterMove: 'draw' },
                 {
                     uci: 'g1g3',
                     wdl: 'WIN',
@@ -933,8 +998,7 @@ describe('canonical training-moment extraction v2', () => {
                           pv: ['h8g8', 'f3a8'],
                           cp: 0,
                       }),
-            ({ fen }) =>
-                multi(fen, [{ move: 'f7f8', pv: ['f7f8'], mate: 1 }])
+            ({ fen }) => multi(fen, [{ move: 'f7f8', pv: ['f7f8'], mate: 1 }]),
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -963,8 +1027,8 @@ describe('canonical training-moment extraction v2', () => {
         expect(output.moments[0]?.themes).toContain('mateIn1');
         expect(
             validateTrainingMomentCandidates(
-                JSON.parse(JSON.stringify(output.moments))
-            ).ok
+                JSON.parse(JSON.stringify(output.moments)),
+            ).ok,
         ).toBe(true);
     });
 
@@ -994,7 +1058,7 @@ describe('canonical training-moment extraction v2', () => {
                         pv: ['a7a8n', 'h8g7'],
                         cp: 500,
                     },
-                ])
+                ]),
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -1046,7 +1110,7 @@ describe('canonical training-moment extraction v2', () => {
                         pv: ['d1d8', 'e8d8'],
                         cp: 500,
                     },
-                ])
+                ]),
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -1120,7 +1184,7 @@ describe('canonical training-moment extraction v2', () => {
                 if (!value) throw new Error(`Unexpected FEN ${fen}`);
                 return value;
             },
-            ({ fen }) => multi(fen, [{ move: 'd2d4', cp: 300 }])
+            ({ fen }) => multi(fen, [{ move: 'd2d4', cp: 300 }]),
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -1193,7 +1257,7 @@ describe('canonical training-moment extraction v2', () => {
                     { move: 'd2d4', pv: ['d2d4', 'e5d4'], cp: 300 },
                     { move: 'f1c4', pv: ['f1c4', 'b8c6'], cp: 280 },
                 ]);
-            }
+            },
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -1216,14 +1280,14 @@ describe('canonical training-moment extraction v2', () => {
             sourceKinds: ['MY_MISTAKE', 'MISSED_OPPORTUNITY'],
         });
         expect(output.moments[0]?.lessonKinds).toEqual(
-            expect.arrayContaining(['AVOID_MISTAKE', 'PUNISH_MISTAKE'])
+            expect.arrayContaining(['AVOID_MISTAKE', 'PUNISH_MISTAKE']),
         );
         expect(
             output.analysis
                 ?.get('merged')
                 ?.trainingExtraction.decisions.find(
-                    (decision) => decision.ply === 2
-                )
+                    (decision) => decision.ply === 2,
+                ),
         ).toMatchObject({
             ply: 2,
             status: 'SAVED',
@@ -1296,7 +1360,7 @@ describe('canonical training-moment extraction v2', () => {
                         cp: (nodes ?? 0) >= 500 ? 75 : 280,
                     },
                 ]);
-            }
+            },
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -1343,7 +1407,7 @@ describe('canonical training-moment extraction v2', () => {
                         cp: (nodes ?? 0) >= 500 ? 80 : 300,
                     },
                     { move: 'g1f3', pv: ['g1f3', 'd7d5'], cp: 75 },
-                ])
+                ]),
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -1366,7 +1430,7 @@ describe('canonical training-moment extraction v2', () => {
             },
             () => {
                 throw new Error('engine must not run');
-            }
+            },
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -1395,7 +1459,7 @@ describe('canonical training-moment extraction v2', () => {
         expect(output.manifests[0]?.errors).not.toHaveLength(0);
     });
 
-    it('never marks a replay complete when a decision could not be analyzed', async () => {
+    it('completes mandatory work with explicit unresolved engine evidence', async () => {
         const engine = new FixtureEngine(
             ({ fen }) =>
                 result({
@@ -1404,7 +1468,7 @@ describe('canonical training-moment extraction v2', () => {
                     pv: [],
                     cp: 0,
                 }),
-            ({ fen }) => multi(fen, [])
+            ({ fen }) => multi(fen, []),
         );
 
         const output = await extractTrainingMomentsFromGames({
@@ -1417,14 +1481,397 @@ describe('canonical training-moment extraction v2', () => {
         expect(output.moments).toHaveLength(0);
         expect(output.manifests).toEqual([
             expect.objectContaining({
-                complete: false,
+                complete: true,
                 scannedPlies: 1,
                 expectedPlies: 1,
-                termination: 'ANALYSIS_INCOMPLETE',
+                termination: 'COMPLETED',
+                decisionOutcomes: [
+                    {
+                        decisionPly: 0,
+                        status: 'UNRESOLVED',
+                        reason: 'ENGINE_EVIDENCE_INVALID',
+                    },
+                ],
             }),
         ]);
         expect(output.manifests[0]?.errors).toEqual([
-            expect.stringContaining('no usable principal variation'),
+            expect.stringContaining('missing exact engine evidence'),
         ]);
     });
+});
+
+describe('decision evidence pipeline regressions', () => {
+    it('scans exactly N+1 history contexts for a quiet N-ply source', async () => {
+        const requests: Array<AnalysisLimit & { fen: string }> = [];
+        const engine = new FixtureEngine(
+            (opts) => {
+                requests.push(opts);
+                const first = new Chess(opts.fen).moves({ verbose: true })[0]!;
+                return result({
+                    fen: opts.fen,
+                    bestMove: first.lan,
+                    pv: [first.lan],
+                    cp: 0,
+                });
+            },
+            () => {
+                throw Error('no candidate');
+            },
+        );
+        const output = await extractTrainingMomentsFromGames({
+            games: [game({ id: 'scan-count', pgn: '1. e4 e5 2. Nf3 Nc6 *' })],
+            selectedGameIds: new Set(['scan-count']),
+            engine,
+            options: baseOptions,
+        });
+        expect(output.manifests[0]?.complete).toBe(true);
+        expect(requests).toHaveLength(5);
+        expect(requests.map((item) => item.previousFens?.length)).toEqual([
+            0, 1, 2, 3, 4,
+        ]);
+        expect(
+            requests.every(
+                (item) =>
+                    item.purpose === 'GAME_SCAN' &&
+                    item.reuse === 'REUSE_ALLOWED',
+            ),
+        ).toBe(true);
+    });
+    it('keeps a cp-close but matched-WDL-bad original classified by the same model through persistence validation', async () => {
+        const start = new Chess().fen();
+        const engine = new FixtureEngine(
+            ({ fen }) => ({
+                ...result({
+                    fen,
+                    bestMove: fen === start ? 'd2d4' : 'e7e5',
+                    pv: [fen === start ? 'd2d4' : 'e7e5'],
+                    cp: fen === start ? 100 : -50,
+                }),
+                wdl:
+                    fen === start
+                        ? { win: 900, draw: 100, loss: 0 }
+                        : { win: 400, draw: 200, loss: 400 },
+            }),
+            ({ fen }) => ({
+                ...multi(fen, [{ move: 'd2d4', cp: 100 }]),
+                lines: [
+                    {
+                        multipv: 1,
+                        pvUci: ['d2d4'],
+                        score: { type: 'cp', value: 100 },
+                        wdl: { win: 900, draw: 100, loss: 0 },
+                    },
+                ],
+            }),
+        );
+        const output = await extractTrainingMomentsFromGames({
+            games: [game({ id: 'wdl-original', pgn: '1. e4 *' })],
+            selectedGameIds: new Set(['wdl-original']),
+            engine,
+            options: {
+                ...baseOptions,
+                confirmNodes: 200,
+                maxConfirmationNodes: 800,
+            },
+        });
+        expect(output.moments).toHaveLength(1);
+        const original = output.moments[0]!.solution.moveAssessments.find(
+            (item) => item.moveUci === 'e2e4',
+        );
+        expect(original).toMatchObject({
+            grade: 'REPEATED_MISTAKE',
+            evidence: {
+                evidenceModel: 'MATCHED_WDL',
+                bestGapCp: 50,
+                bestGapWinChance: 0.45,
+            },
+        });
+        expect(output.moments[0]!.solution.trainable).toBe(true);
+        expect(
+            validateTrainingMomentCandidates(
+                JSON.parse(JSON.stringify(output.moments)),
+            ),
+        ).toMatchObject({ ok: true });
+    });
+    it('escalates when the actual original GOOD/bad conclusion changes despite both passing the candidate signal', async () => {
+        const start = new Chess().fen();
+        const budgets: number[] = [];
+        const engine = new FixtureEngine(
+            ({ fen, nodes }) =>
+                result({
+                    fen,
+                    bestMove: fen === start ? 'd2d4' : 'e7e5',
+                    pv: [fen === start ? 'd2d4' : 'e7e5'],
+                    cp: fen === start ? 200 : nodes === 100 ? -120 : -75,
+                }),
+            ({ fen, nodes }) => {
+                budgets.push(nodes!);
+                return multi(fen, [{ move: 'd2d4', cp: 200 }]);
+            },
+        );
+        const output = await extractTrainingMomentsFromGames({
+            games: [game({ id: 'grade-boundary', pgn: '1. e4 *' })],
+            selectedGameIds: new Set(['grade-boundary']),
+            engine,
+            options: {
+                ...baseOptions,
+                nodesPerPosition: 100,
+                confirmNodes: 200,
+                maxConfirmationNodes: 800,
+            },
+        });
+        expect(budgets).toEqual([200, 400]);
+        expect(output.moments[0]?.solution.trainable).toBe(true);
+    });
+    it('resumes a completed paired confirmation without repeating scan, original search or metadata', async () => {
+        const start = new Chess().fen();
+        let paired = false;
+        let rootSearches = 0;
+        const engine = new FixtureEngine(
+            ({ fen }) =>
+                result({
+                    fen,
+                    bestMove: fen === start ? 'd2d4' : 'e7e5',
+                    pv: [fen === start ? 'd2d4' : 'e7e5'],
+                    cp: fen === start ? 250 : 0,
+                }),
+            ({ fen }) => {
+                rootSearches++;
+                paired = true;
+                return multi(fen, [{ move: 'd2d4', cp: 250 }]);
+            },
+        );
+        const args = {
+            games: [game({ id: 'paired-checkpoint', pgn: '1. e4 *' })],
+            selectedGameIds: new Set(['paired-checkpoint']),
+            engine,
+            options: { ...baseOptions, returnAnalysis: true },
+        };
+        const first = await extractTrainingMomentsFromGames({
+            ...args,
+            shouldYield: () => paired,
+        });
+        expect(first.checkpoint?.pendingConfirmation).toBeDefined();
+        expect(first.checkpoint?.gameAnalysis).toHaveLength(1);
+        const resumed = await extractTrainingMomentsFromGames({
+            ...args,
+            checkpoint: parseExtractionCheckpoint(JSON.parse(JSON.stringify(first.checkpoint))),
+        });
+        expect(rootSearches).toBe(1);
+        expect(resumed.analysis?.get('paired-checkpoint')?.moves).toHaveLength(
+            1,
+        );
+        expect(resumed.moments).toHaveLength(1);
+    });
+});
+
+it('requires concrete lesson support only for a saturated practical cp signal', async () => {
+    const start = new Chess().fen();
+    const engine = new FixtureEngine(
+        ({ fen }) => ({
+            ...result({
+                fen,
+                bestMove: fen === start ? 'd2d4' : 'e7e5',
+                pv: [fen === start ? 'd2d4' : 'e7e5'],
+                cp: fen === start ? 1000 : -750,
+            }),
+            wdl:
+                fen === start
+                    ? { win: 1000, draw: 0, loss: 0 }
+                    : { win: 0, draw: 0, loss: 1000 },
+        }),
+        ({ fen }) => ({
+            ...multi(fen, [{ move: 'd2d4', cp: 1000 }]),
+            lines: [
+                {
+                    multipv: 1,
+                    pvUci: ['d2d4'],
+                    score: { type: 'cp', value: 1000 },
+                    wdl: { win: 1000, draw: 0, loss: 0 },
+                },
+            ],
+        }),
+    );
+    const output = await extractTrainingMomentsFromGames({
+        games: [game({ id: 'saturated-no-lesson', pgn: '1. e4 *' })],
+        selectedGameIds: new Set(['saturated-no-lesson']),
+        engine,
+        options: { ...baseOptions, returnAnalysis: true },
+    });
+    expect(output.moments).toEqual([]);
+    expect(
+        output.analysis?.get('saturated-no-lesson')?.trainingExtraction
+            .decisions,
+    ).toMatchObject([{ reason: 'NO_SUPPORTED_PRACTICAL_LESSON' }]);
+    expect(output.manifests[0]?.decisionOutcomes).toMatchObject([
+        { status: 'UNRESOLVED' },
+    ]);
+});
+
+it('serializes independently graded nested user nodes with their own coverage and assessments', async () => {
+    const start = new Chess().fen();
+    const d4 = afterUci(start, 'd2d4');
+    const d5 = afterUci(d4, 'd7d5');
+    const engine = new FixtureEngine(
+        ({ fen }) =>
+            result({
+                fen,
+                bestMove: fen === start ? 'd2d4' : 'e7e5',
+                pv: [fen === start ? 'd2d4' : 'e7e5'],
+                cp: fen === start ? 200 : 0,
+            }),
+        ({ fen }) =>
+            fen === start
+                ? multi(fen, [{ move: 'd2d4', cp: 200 }])
+                : fen === d4
+                  ? multi(fen, [{ move: 'd7d5', cp: -200 }])
+                  : fen === d5
+                    ? multi(fen, [
+                          { move: 'g1f3', cp: 200 },
+                          { move: 'c2c4', cp: 180 },
+                      ])
+                    : multi(fen, []),
+    );
+    const output = await extractTrainingMomentsFromGames({
+        games: [game({ id: 'nested-contract', pgn: '1. e4 *' })],
+        selectedGameIds: new Set(['nested-contract']),
+        engine,
+        options: {
+            ...baseOptions,
+            verifyContinuations: true,
+            verificationMaxPlies: 3,
+        },
+    });
+    expect(output.moments[0]?.solution.continuation.status).toBe(
+        'GRADED_BRANCHES_READY',
+    );
+    expect(
+        output.moments[0]?.solution.moveAssessments.filter(
+            (item) => item.decisionIndex === 1,
+        ),
+    ).toHaveLength(2);
+    const solution = output.moments[0]!.solution;
+    const evidence = solution.evidence as { verifier: Record<string, unknown> };
+    const tree = solution.solutionTree as {
+        contextId: string;
+        branches: unknown[];
+        moveEvaluations: unknown[];
+    };
+    expect(evidence.verifier).not.toHaveProperty('root');
+    expect(evidence.verifier.rootContextId).toBe(tree.contextId);
+    expect(evidence.verifier).toMatchObject({
+        status: 'VERIFIED',
+        bounds: { positionsVisited: 3 },
+        continuation: { status: 'GRADED_BRANCHES_READY' },
+    });
+    expect(tree.moveEvaluations).toHaveLength(1);
+    expect(tree.branches).toHaveLength(1);
+    // Expanding the reference restores the former evidence representation;
+    // search metadata, the full nested tree and canonical grading are preserved.
+    const { rootContextId, ...metadata } = evidence.verifier;
+    expect(rootContextId).toBe(tree.contextId);
+    const expanded = {
+        ...solution,
+        evidence: { ...evidence, verifier: { ...metadata, root: tree } },
+    };
+    expect(solutionSemanticsHash(solution)).toBe(
+        solutionSemanticsHash(expanded),
+    );
+    expect(Buffer.byteLength(JSON.stringify(solution))).toBeLessThan(
+        Buffer.byteLength(JSON.stringify(expanded)),
+    );
+    expect(
+        validateTrainingMomentCandidates(
+            JSON.parse(JSON.stringify(output.moments)),
+        ),
+    ).toMatchObject({ ok: true });
+});
+
+it('rejects source continuation after an automatic draw without searching an ended game', async () => {
+    const fen = '8/8/8/8/8/2k5/4K3/6R1 w - - 150 76';
+    const engine = new FixtureEngine(
+        () => {
+            throw Error('Ended source must not search');
+        },
+        () => {
+            throw Error('Ended source must not search');
+        },
+    );
+    const output = await extractTrainingMomentsFromGames({
+        games: [
+            game({
+                id: 'ended-source',
+                pgn: `[SetUp "1"]\n[FEN "${fen}"]\n\n76. Rg2 *`,
+            }),
+        ],
+        selectedGameIds: new Set(['ended-source']),
+        engine,
+        options: baseOptions,
+    });
+    expect(output.manifests[0]).toMatchObject({
+        complete: false,
+        scannedPlies: 0,
+        decisionOutcomes: [
+            { decisionPly: 0, status: 'UNRESOLVED', reason: 'SOURCE_INVALID' },
+        ],
+    });
+});
+
+it('retains an original forced losing mate below a statistical cp reference when matched WDL confirms the loss', async () => {
+    const start = new Chess().fen();
+    const engine = new FixtureEngine(
+        ({ fen }) => ({
+            ...result({
+                fen,
+                bestMove: fen === start ? 'd2d4' : 'e7e5',
+                pv: [fen === start ? 'd2d4' : 'e7e5'],
+                ...(fen === start ? { cp: 200 } : { mate: 3 }),
+            }),
+            wdl:
+                fen === start
+                    ? { win: 900, draw: 100, loss: 0 }
+                    : { win: 1000, draw: 0, loss: 0 },
+        }),
+        ({ fen }) => ({
+            fen,
+            bestMoveUci: 'd2d4',
+            lines: [
+                {
+                    multipv: 1,
+                    pvUci: ['d2d4'],
+                    score: { type: 'cp', value: 200 },
+                    wdl: { win: 900, draw: 100, loss: 0 },
+                },
+            ],
+        }),
+    );
+    const output = await extractTrainingMomentsFromGames({
+        games: [game({ id: 'mixed-losing-mate', pgn: '1. e4 *' })],
+        selectedGameIds: new Set(['mixed-losing-mate']),
+        engine,
+        options: {
+            ...baseOptions,
+            confirmNodes: 200,
+            maxConfirmationNodes: 800,
+        },
+    });
+    expect(output.moments).toHaveLength(1);
+    expect(
+        output.moments[0]?.solution.moveAssessments.find(
+            (item) => item.moveUci === 'e2e4',
+        ),
+    ).toMatchObject({
+        grade: 'REPEATED_MISTAKE',
+        scoreAfter: { kind: 'mate', winner: 'BLACK' },
+        evidence: {
+            bestGapCp: null,
+            evidenceModel: 'MATCHED_WDL',
+            referenceOutdated: false,
+        },
+    });
+    expect(
+        validateTrainingMomentCandidates(
+            JSON.parse(JSON.stringify(output.moments)),
+        ),
+    ).toMatchObject({ ok: true });
 });

@@ -109,7 +109,7 @@ export type ProgressPositionRecord = {
             | 'AMBIGUOUS'
             | 'UNSTABLE'
             | 'INVALID';
-        acceptanceFrontier: unknown;
+        decision: unknown;
         trainable: boolean;
     } | null;
     observations: Array<{
@@ -247,25 +247,26 @@ function positionIsEligible(
         revision.id !== position.currentSolutionRevisionId ||
         !revision.trainable ||
         revision.verificationStatus !== 'VERIFIED' ||
-        !hasStableAcceptanceFrontier(revision.acceptanceFrontier)
+        !hasConfirmedDecision(revision.decision) ||
+        revision.configHash !== run.configHash
     ) {
         return false;
     }
+    // A same-policy unresolved rerun does not erase prior confirmed evidence.
     return position.observations.some(
         (observation) =>
-            observation.analysisRunId === run.id &&
             observation.solutionRevisionId === revision.id &&
             observation.observedSolutionHash === revision.solutionHash
     );
 }
 
-function hasStableAcceptanceFrontier(value: unknown) {
+function hasConfirmedDecision(value: unknown) {
     return (
         value !== null &&
         typeof value === 'object' &&
         !Array.isArray(value) &&
         'status' in value &&
-        value.status === 'STABLE'
+        value.status === 'CONFIRMED_MISTAKE'
     );
 }
 

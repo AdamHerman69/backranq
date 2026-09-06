@@ -12,7 +12,8 @@ import type {
     PracticeFeedInitialData,
     PracticeFeedMode,
     PracticeFilters,
-    RecordTrainingAttemptRequest,
+    TrainingAttemptWriteRequest,
+    EnrichTrainingAttemptRequest,
     TrainingPromptDto,
 } from '@/lib/training/api';
 import {
@@ -28,6 +29,7 @@ import {
     parseTrainingAttemptQueue,
     reconcileTrainingAttemptFlush,
     trainingQueueStorageKey,
+    trainingAttemptQueueIdentity,
     TRAINING_QUEUE_VERSION,
     type QueuedTrainingAttempt,
     type TrainingWriteFailure,
@@ -381,13 +383,15 @@ export function usePracticeFeed({
     const completionSinkRef = useRef<
         (completion: PuzzleSessionCompletion) => void
     >(() => undefined);
+    const refinementSinkRef = useRef<(prompt: TrainingPromptDto, request: EnrichTrainingAttemptRequest) => void>(() => undefined);
     const puzzleSession = usePuzzleSession({
         initialPrompt: serverInitial?.prompt ?? null,
-        unresolvedMode: 'RETRY',
+        unresolvedMode: 'REVEAL',
         // The prompt ships a local grading manifest. Loading a multi-megabyte
         // engine before an unknown move or explicit Analysis intent competes
         // with the only thing the user needs first: an interactive board.
         prewarmEngine: false,
+        onRefined: (prompt, request) => refinementSinkRef.current(prompt, request),
         onCompleted: (completion) =>
             completionSinkRef.current(completion),
     });
@@ -1031,7 +1035,7 @@ export function usePracticeFeed({
     const queueRecord = useCallback(
         (
             momentId: string,
-            request: RecordTrainingAttemptRequest,
+            request: TrainingAttemptWriteRequest,
             failure?: TrainingWriteFailure
         ) => {
             if (!ownerId || ownerIdRef.current !== ownerId) return null;
@@ -1056,15 +1060,13 @@ export function usePracticeFeed({
             );
             const stored = next.some(
                 (candidate) =>
-                    candidate.request.clientAttemptId ===
-                    request.clientAttemptId
+                    trainingAttemptQueueIdentity(candidate.request) === trainingAttemptQueueIdentity(request)
             );
             if (stored && writeQueue(ownerId, next)) {
                 applyOutboxState(next);
                 return next.find(
                     (candidate) =>
-                        candidate.request.clientAttemptId ===
-                        request.clientAttemptId
+                        trainingAttemptQueueIdentity(candidate.request) === trainingAttemptQueueIdentity(request)
                 ) ?? null;
             } else {
                 setHistoryError(
@@ -1105,7 +1107,7 @@ export function usePracticeFeed({
     const persistRecord = useCallback(
         async (
             momentId: string,
-            request: RecordTrainingAttemptRequest
+            request: TrainingAttemptWriteRequest
         ) => {
             const requestOwnerId = ownerId;
             if (!requestOwnerId || ownerIdRef.current !== requestOwnerId) {
@@ -1118,7 +1120,7 @@ export function usePracticeFeed({
             const controller = new AbortController();
             let retryAfterDirectFailure = false;
             attemptWriteControllersRef.current.add(controller);
-            directAttemptWritesRef.current.add(request.clientAttemptId);
+            directAttemptWritesRef.current.add(trainingAttemptQueueIdentity(request));
             try {
                 const recorded = await recordTrainingAttempt(
                     requestOwnerId,
@@ -1156,7 +1158,7 @@ export function usePracticeFeed({
                 return null;
             } finally {
                 attemptWriteControllersRef.current.delete(controller);
-                directAttemptWritesRef.current.delete(request.clientAttemptId);
+                directAttemptWritesRef.current.delete(trainingAttemptQueueIdentity(request));
                 // Enqueueing now precedes the direct request, so a retryable
                 // failure may leave queuedCount unchanged. Start one outbox
                 // pass explicitly; failed flushes do not schedule themselves.
@@ -1185,6 +1187,8 @@ export function usePracticeFeed({
         );
     };
 
+    refinementSinkRef.current = (prompt, request) => { void persistRecord(prompt.id, request); };
+
     const flushQueue = useCallback(async () => {
         if (
             !ownerId ||
@@ -1206,7 +1210,7 @@ export function usePracticeFeed({
                 const entry = queued[index]!;
                 if (
                     entry.state === 'NEEDS_ATTENTION' ||
-                    directAttemptWritesRef.current.has(entry.request.clientAttemptId)
+                    directAttemptWritesRef.current.has(trainingAttemptQueueIdentity(entry.request))
                 ) {
                     remainingEntries.push(entry);
                     continue;

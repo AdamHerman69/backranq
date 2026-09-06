@@ -1,3 +1,4 @@
+import { fixtureSolution } from '../helpers/extractionEvidence';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     getTrainingMomentPrompt,
@@ -49,7 +50,8 @@ const promptRow = {
         provider: 'LICHESS',
         playedAt: new Date('2026-01-01T00:00:00.000Z'),
     },
-    currentSolutionRevision: {
+    currentSolutionRevision: fixtureSolution({
+        originalDecision: {sourceKinds: ['MY_MISTAKE'], lessonKinds: ['AVOID_MISTAKE'], themes: ['fork'], scoreBefore: {kind: 'cp', cp: 80, pov: 'WHITE'}, scoreAfter: {kind: 'cp', cp: 0, pov: 'WHITE'}, cpLoss:80, winChanceLoss:0.1},
         bestMoveUci: 'e2e3',
         acceptedMovesUci: ['e2e3'],
         acceptanceFrontier: {
@@ -78,7 +80,7 @@ const promptRow = {
                 minRecoveredCp: 40,
                 minRecoveredWinChance: 0.05,
             },
-            unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
+            unknownMove: 'EVALUATE',
             matePolicy: 'EXACT',
             tablebasePolicy: 'EXACT',
         },
@@ -122,7 +124,7 @@ const promptRow = {
                 },
             },
         ],
-    },
+    }),
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     lastTrainedAt: null,
 };
@@ -235,7 +237,7 @@ describe('canonical training API boundary', () => {
         );
     });
 
-    it('refuses to serve a prompt whose accepted set is not complete', async () => {
+    it('serves a confirmed prompt with partial answer coverage', async () => {
         const findMany = vi.fn().mockResolvedValue([
             {
                 ...promptRow,
@@ -263,7 +265,7 @@ describe('canonical training API boundary', () => {
                 userId: 'user-1',
                 request: { limit: 10 },
             })
-        ).rejects.toThrow('invalid grading evidence');
+        ).resolves.toMatchObject({items: [expect.objectContaining({grading: expect.objectContaining({answerCoverage: expect.objectContaining({status: 'PARTIAL'})})})]});
     });
 
     it('interleaves bounded due and new streams without trusting database return order', async () => {

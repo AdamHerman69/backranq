@@ -39,6 +39,9 @@ export function solutionSemanticsHash(
     input: Pick<
         SolutionRevisionInput,
         | 'verificationStatus'
+        | 'decision'
+        | 'answerCoverage'
+        | 'continuation'
         | 'solutionShape'
         | 'gradingStrategy'
         | 'continuationShape'

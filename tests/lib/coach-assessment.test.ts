@@ -92,7 +92,7 @@ describe('CP-primary user move assessment', () => {
             value: 80,
         });
         expect(assessment.loss.cp).toBe(0);
-        expect(assessment.loss.winningChance).toBe(0);
+        expect(assessment.loss.winningChance).toBeNull();
         expect(assessment.shouldIntervene).toBe(false);
         expect(assessment.outcomeReason).toBeNull();
     });

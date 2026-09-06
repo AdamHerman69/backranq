@@ -1,3 +1,6 @@
+import { Chess } from 'chess.js';
+import { moveToUci } from '@/lib/chess/utils';
+import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
 import type { LandingPuzzleDto } from './contracts';
 
 const ROOT_FEN = '7k/5Q2/6K1/8/8/8/8/8 w - - 0 1';
@@ -12,9 +15,22 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
         sideToMove: 'w',
         grading: {
             version: 1,
+            decision: { status: 'CONFIRMED_MISTAKE', reason: 'MISSED_MATE_ALLOWED_STALEMATE' },
+            answerCoverage: {
+                version: 1,
+                contextId: assessmentPositionKey(ROOT_FEN, []),
+                status: 'PARTIAL',
+                legalMovesUci: new Chess(ROOT_FEN).moves({ verbose: true }).map(moveToUci),
+                assessedMovesUci: ['f7f8', 'f7e8', 'f7g7', 'f7h7'],
+                coveredMovesUci: [],
+                referenceId: 'warmup:clean-finish-v1',
+                policyVersion: 3,
+                reason: 'CURATED_IMMEDIATE_MATES',
+            },
+            continuation: { status: 'GRADED_BRANCHES_READY', explanationAvailable: true, gradedContinuationReady: true },
             trainingSide: 'w',
             positionHistory: [],
-            originalMoveUci: 'f7e7',
+            originalMoveUci: 'f7e6',
             originalScoreAfter: { kind: 'cp', cp: 0, pov: 'WHITE' },
             gradingPolicy: {
                 version: 3,
@@ -30,7 +46,7 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
                     minRecoveredCp: 50,
                     minRecoveredWinChance: 0.05,
                 },
-                unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
+                unknownMove: 'EVALUATE',
                 matePolicy: 'EXACT',
                 tablebasePolicy: 'EXACT',
             },
@@ -50,6 +66,8 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
             },
             solutionTree: {
                 fen: ROOT_FEN,
+                contextId: assessmentPositionKey(ROOT_FEN, []),
+                positionHistory: [],
                 ply: 0,
                 role: 'USER',
                 acceptedMovesUci: [
@@ -65,6 +83,8 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
                         best: true,
                         child: {
                             fen: AFTER_BEST_FEN,
+                            contextId: assessmentPositionKey(AFTER_BEST_FEN, [ROOT_FEN]),
+                            positionHistory: [ROOT_FEN],
                             ply: 1,
                             role: 'TERMINAL',
                             acceptedMovesUci: [],
@@ -78,6 +98,8 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
                         best: false,
                         child: {
                             fen: '4Q2k/8/6K1/8/8/8/8/8 b - - 1 1',
+                            contextId: assessmentPositionKey('4Q2k/8/6K1/8/8/8/8/8 b - - 1 1', [ROOT_FEN]),
+                            positionHistory: [ROOT_FEN],
                             ply: 1,
                             role: 'TERMINAL',
                             acceptedMovesUci: [],
@@ -91,6 +113,8 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
                         best: false,
                         child: {
                             fen: '7k/6Q1/6K1/8/8/8/8/8 b - - 1 1',
+                            contextId: assessmentPositionKey('7k/6Q1/6K1/8/8/8/8/8 b - - 1 1', [ROOT_FEN]),
+                            positionHistory: [ROOT_FEN],
                             ply: 1,
                             role: 'TERMINAL',
                             acceptedMovesUci: [],
@@ -104,6 +128,8 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
                         best: false,
                         child: {
                             fen: '7k/7Q/6K1/8/8/8/8/8 b - - 1 1',
+                            contextId: assessmentPositionKey('7k/7Q/6K1/8/8/8/8/8 b - - 1 1', [ROOT_FEN]),
+                            positionHistory: [ROOT_FEN],
                             ply: 1,
                             role: 'TERMINAL',
                             acceptedMovesUci: [],
@@ -116,6 +142,9 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
             },
             moveAssessments: [
                 {
+                    positionKey: assessmentPositionKey(ROOT_FEN, []),
+                    referenceId: 'warmup:clean-finish-v1',
+                    tierStable: true,
                     decisionIndex: 0,
                     fen: ROOT_FEN,
                     moveUci: 'f7f8',
@@ -129,6 +158,9 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
                     evidence: { kind: 'CURATED_WARMUP' },
                 },
                 ...['f7e8', 'f7g7', 'f7h7'].map((moveUci) => ({
+                    positionKey: assessmentPositionKey(ROOT_FEN, []),
+                    referenceId: 'warmup:clean-finish-v1',
+                    tierStable: true,
                     decisionIndex: 0,
                     fen: ROOT_FEN,
                     moveUci,
@@ -144,7 +176,7 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
             ],
             review: {
                 trainingSide: 'w',
-                originalMoveUci: 'f7e7',
+                originalMoveUci: 'f7e6',
                 submittedMoveUci: null,
                 bestMoveUci: 'f7f8',
                 acceptedMovesUci: [
@@ -153,7 +185,7 @@ export const WARMUP_PUZZLE: LandingPuzzleDto = {
                     'f7g7',
                     'f7h7',
                 ],
-                acceptedMovesComplete: true,
+                acceptedMovesComplete: false,
                 bestLineUci: ['f7f8'],
                 scoreAtStart: {
                     kind: 'mate',

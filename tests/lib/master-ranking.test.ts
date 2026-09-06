@@ -1,3 +1,4 @@
+import { fixtureSolution } from '../helpers/extractionEvidence';
 import { describe, expect, it } from 'vitest';
 import type { TrainingMomentCandidate } from '@/lib/training/contracts';
 import {
@@ -29,7 +30,7 @@ function candidate(
         },
         confidence: 0.98,
         phase: 'MIDDLEGAME',
-        solution: {
+        solution: fixtureSolution({
             solutionHash: 'solution-hash',
             verificationStatus: 'VERIFIED',
             solutionShape: 'UNIQUE',
@@ -67,14 +68,14 @@ function candidate(
                     minRecoveredCp: 40,
                     minRecoveredWinChance: 0.04,
                 },
-                unknownMove: 'REJECT_OUTSIDE_ACCEPTED_SET',
+                unknownMove: 'EVALUATE',
                 matePolicy: 'EXACT',
                 tablebasePolicy: 'EXACT',
             },
             evidence: {},
             generatorVersion: 'test',
             configHash: 'config',
-        },
+        }),
         ...overrides,
     };
 }
@@ -150,6 +151,7 @@ describe('Weekly Master candidate ranking', () => {
                 personId: 'person-a',
                 decisionPly: 12,
                 configHash: 'config',
+                evidenceHash: 'evidence-1',
             })
         ).not.toBe(
             masterCandidateKey({
@@ -157,7 +159,13 @@ describe('Weekly Master candidate ranking', () => {
                 personId: 'person-b',
                 decisionPly: 12,
                 configHash: 'config',
+                evidenceHash: 'evidence-1',
             })
         );
     });
+    it('pins a different candidate when physical evidence changes without changing the source', () => {
+        const source = { snapshotId: 'snapshot', personId: 'person', decisionPly: 12, configHash: 'config' };
+        expect(masterCandidateKey({...source,evidenceHash:'old'})).not.toBe(masterCandidateKey({...source,evidenceHash:'new'}));
+    });
+
 });
