@@ -66,7 +66,13 @@ export type PuzzleSessionOptions = {
     onCompleted?: (completion: PuzzleSessionCompletion) => void;
 };
 
-function reviewWithLocalReference(review: TrainingReviewDto, evaluation: LocalMoveEvaluation): TrainingReviewDto {
+export function reviewWithLocalReference(
+    review: TrainingReviewDto,
+    evaluation: LocalMoveEvaluation,
+    decisionIndex: number
+): TrainingReviewDto {
+    // The story and its arrows describe the root decision, never a later node.
+    if (decisionIndex !== 0) return review;
     const evidence = evaluation.clientEvidence;
     if (!evidence) return review;
     const reference = evidence.localReference;
@@ -412,7 +418,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                     grade === 'STRONG' ||
                     grade === 'GOOD',
                 review: {
-                    ...reviewWithLocalReference(activePrompt.grading.review, evaluation),
+                    ...reviewWithLocalReference(activePrompt.grading.review, evaluation, userSteps.length - 1),
                     submittedMoveUci: userSteps[0]?.moveUci ?? null,
                     comparison,
                 },
@@ -453,12 +459,13 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
                         const refinedGrade = aggregateTrainingGrade(userSteps.flatMap(step => step.stepIndex === submission.stepIndex ? [refinedStepGrade] : step.grade ? [step.grade] : []));
                         const accepted = ['BEST', 'STRONG', 'GOOD'].includes(refinedGrade);
                         const corrected = graded.accepted !== accepted;
-                        setResponse({ ...graded, grade: refinedGrade, accepted, refinement: corrected ? 'CORRECTED' : 'REFINED', review: { ...(userSteps.length === 1 ? reviewWithLocalReference(graded.review, refined) : graded.review), comparison: userSteps.length === 1 ? refined.comparison : graded.review.comparison } });
+                        setResponse({ ...graded, grade: refinedGrade, accepted, refinement: corrected ? 'CORRECTED' : 'REFINED', review: { ...(userSteps.length === 1 ? reviewWithLocalReference(graded.review, refined, userSteps.length - 1) : graded.review), comparison: userSteps.length === 1 ? refined.comparison : graded.review.comparison } });
                         dispatchPresentation({ type: 'REFINE_GRADE', sequenceId: presentationSequenceRef.current, moveUci: submission.moveUci, grade: refinedStepGrade });
                         onRefinedRef.current?.(activePrompt, { kind: 'ENRICH', clientAttemptId: attemptId, solutionRevisionId: activePrompt.solutionRevisionId, clientEvidenceId: crypto.randomUUID(), stepIndex: submission.stepIndex, evaluatedAt: new Date().toISOString(), clientEvidence: refined.clientEvidence, grade: refined.result.grade });
                     } else setResponse({ ...graded, refinement: 'UNRESOLVED' });
                 } catch {
-                    if (generationRef.current === generation) setResponse({ ...graded, refinement: 'UNRESOLVED' });
+                    if (generationRef.current !== generation) return;
+                    setResponse({ ...graded, refinement: 'UNRESOLVED' });
                 }
             }
             if (options.stopEngineOnTerminal) stopEngine();

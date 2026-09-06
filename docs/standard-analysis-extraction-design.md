@@ -2,7 +2,8 @@
 
 Stav: technický návrh k implementaci, 2026-09-05. Vychází z auditu revize
 `873912414c5498fa1c94e575ed9847884cad190b` a následného produktového upřesnění.
-Žádná z níže navržených změn zatím není implementována. Schválené principy jsou
+Dokument zachovává historický návrh; implementaci nyní popisují
+`standard-analysis-implementation.md` a `homepage-extractor-integration-verification.md`. Schválené principy jsou
 v [produktovém směru](audits/standard-analysis-product-direction.md), důkazy
 současných problémů v [auditu](audits/standard-analysis-audit.md).
 

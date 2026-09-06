@@ -43,7 +43,7 @@ function scheduleIdlePrewarm(callback: () => void): () => void {
  * Anonymous onboarding adapter. All chess behavior lives in the shared puzzle
  * runtime; this wrapper only selects the public unresolved/engine policy.
  */
-export function usePublicPuzzleSession(prompt: TrainingPromptDto) {
+export function usePublicPuzzleSession(prompt: TrainingPromptDto | null) {
     const session = usePuzzleSession({
         initialPrompt: prompt,
         unresolvedMode: 'REVEAL',
@@ -55,28 +55,44 @@ export function usePublicPuzzleSession(prompt: TrainingPromptDto) {
         getOrCreateEngine,
         stopEngine,
         terminal,
+        activatePrompt,
+        clearPrompt,
     } = session;
     const cancelPrewarmRef = useRef<(() => void) | null>(null);
     const prewarmRequestedRef = useRef(false);
+    const prewarmGenerationRef = useRef(0);
+
+    useEffect(() => {
+        prewarmGenerationRef.current += 1;
+        cancelPrewarmRef.current?.();
+        cancelPrewarmRef.current = null;
+        prewarmRequestedRef.current = false;
+        stopEngine();
+        if (prompt) activatePrompt(prompt);
+        else clearPrompt();
+    }, [activatePrompt, clearPrompt, prompt, stopEngine]);
 
     const requestEnginePrewarm = useCallback(() => {
+        if (!prompt) return;
         if (prewarmRequestedRef.current || engineClient) return;
         const connection = (navigator as NavigatorWithConnection).connection;
         if (!allowsPublicEnginePrewarm(connection)) return;
 
         prewarmRequestedRef.current = true;
+        const generation = prewarmGenerationRef.current;
         cancelPrewarmRef.current = scheduleIdlePrewarm(() => {
             cancelPrewarmRef.current = null;
+            if (generation !== prewarmGenerationRef.current) return;
             try {
                 const engine = getOrCreateEngine();
                 void engine.getIdentity().catch(() => {
-                    stopEngine();
+                    if (generation === prewarmGenerationRef.current) stopEngine();
                 });
             } catch {
                 // A submitted unknown move can retry engine creation directly.
             }
         });
-    }, [engineClient, getOrCreateEngine, stopEngine]);
+    }, [engineClient, getOrCreateEngine, prompt, stopEngine]);
 
     useEffect(() => {
         if (!terminal) return;
@@ -86,6 +102,7 @@ export function usePublicPuzzleSession(prompt: TrainingPromptDto) {
 
     useEffect(
         () => () => {
+            prewarmGenerationRef.current += 1;
             cancelPrewarmRef.current?.();
             cancelPrewarmRef.current = null;
         },

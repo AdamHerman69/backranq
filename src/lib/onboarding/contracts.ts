@@ -47,12 +47,25 @@ export type LandingPuzzleDto = {
     };
 };
 
+export type OnboardingScanPreview = {
+    gameId: string;
+    fen: string;
+    previousFen?: string;
+    orientation: 'white' | 'black';
+    whiteName: string;
+    blackName: string;
+    playedAt: string;
+};
+
 export type OnboardingAnalysisProgress = {
+    /** Identity of the shared extraction invocation; the search also has an outer run ID. */
+    runId?: string;
     phase: 'ENGINE_STARTING' | 'SCANNING' | 'CONFIRMING';
     gameIndex: number;
     gameCount: number;
     ply: number;
     plyCount: number;
+    preview?: OnboardingScanPreview;
 };
 
 export type OnboardingSearchError =

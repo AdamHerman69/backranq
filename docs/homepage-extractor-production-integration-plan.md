@@ -1,7 +1,7 @@
 # Integrace homepage a společného extraktoru do produkce
 
-Stav: plán, 2026-09-06. Implementace integrace, CR integrovaného výsledku ani
-nasazení v rámci tohoto plánovacího kroku neproběhly.
+Stav: integrace implementována a přezkoumána, 2026-09-06. Výsledky a postup
+vydání zachycuje `homepage-extractor-integration-verification.md`.
 
 ## Cíl a výchozí stav
 

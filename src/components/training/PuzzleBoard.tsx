@@ -23,6 +23,7 @@ import { cn } from '@/lib/utils';
 type PromotionPiece = 'q' | 'r' | 'b' | 'n';
 
 type PendingPromotion = {
+    interactionId?: string;
     fen: string;
     from: Square;
     to: Square;
@@ -77,6 +78,7 @@ function feedbackClass(tone: PuzzleBoardFeedback['tone']) {
 
 export function PuzzleBoard({
     positionFen,
+    interactionId,
     sideToMove,
     flipped,
     canMove,
@@ -85,10 +87,12 @@ export function PuzzleBoard({
     presentation,
     feedback,
     reducedMotion = false,
+    animationDurationMs = 180,
     ariaLabel,
     onMove,
 }: {
     positionFen: string;
+    interactionId?: string;
     sideToMove: 'w' | 'b';
     flipped: boolean;
     canMove: boolean;
@@ -97,10 +101,12 @@ export function PuzzleBoard({
     presentation?: BoardPresentationState;
     feedback?: PuzzleBoardFeedback | null;
     reducedMotion?: boolean;
+    animationDurationMs?: number;
     ariaLabel: string;
     onMove: (move: SubmittedBoardMove) => void;
 }) {
     const [selection, setSelection] = useState<{
+        interactionId?: string;
         fen: string;
         square: Square;
     } | null>(null);
@@ -108,11 +114,11 @@ export function PuzzleBoard({
         useState<PendingPromotion | null>(null);
     const [promotionInputReady, setPromotionInputReady] = useState(false);
     const selectedSquare =
-        canMove && selection?.fen === positionFen
+        canMove && selection?.fen === positionFen && selection.interactionId === interactionId
             ? selection.square
             : null;
     const activePromotion =
-        canMove && pendingPromotion?.fen === positionFen
+        canMove && pendingPromotion?.fen === positionFen && pendingPromotion.interactionId === interactionId
             ? pendingPromotion
             : null;
 
@@ -218,6 +224,7 @@ export function PuzzleBoard({
                 if (choices.length > 0) {
                     setPromotionInputReady(false);
                     setPendingPromotion({
+                        interactionId,
                         fen: positionFen,
                         from,
                         to,
@@ -230,7 +237,7 @@ export function PuzzleBoard({
             }
             return submitLegalMove(from, to);
         },
-        [canMove, positionFen, submitLegalMove]
+        [canMove, interactionId, positionFen, submitLegalMove]
     );
 
     const handleSquareTap = useCallback(
@@ -244,14 +251,14 @@ export function PuzzleBoard({
                 const chess = new Chess(positionFen);
                 setSelection(
                     chess.get(target)?.color === chess.turn()
-                        ? { fen: positionFen, square: target }
+                        ? { interactionId, fen: positionFen, square: target }
                         : null
                 );
             } catch {
                 setSelection(null);
             }
         },
-        [canMove, legalTargets, playOrPromote, positionFen, selectedSquare]
+        [canMove, interactionId, legalTargets, playOrPromote, positionFen, selectedSquare]
     );
     const reliableBoardTouch = useReliableBoardTouch({
         enabled: canMove,
@@ -292,8 +299,8 @@ export function PuzzleBoard({
                             dragActivationDistance: 12,
                             allowDrawingArrows: false,
                             arrows,
-                            showAnimations: !reducedMotion,
-                            animationDurationInMs: reducedMotion ? 0 : 180,
+                            showAnimations: !reducedMotion && animationDurationMs > 0,
+                            animationDurationInMs: reducedMotion ? 0 : animationDurationMs,
                             squareStyles,
                             squareRenderer: ({ square, children }) => (
                                 <div

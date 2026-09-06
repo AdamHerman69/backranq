@@ -40,6 +40,9 @@ jobs:
       - name: Verify browser Stockfish protocol and cancellation
         run: pnpm smoke:stockfish-browser
 
+      - name: Verify stale refinement cannot stop a newer puzzle engine
+        run: RUN_PUZZLE_SESSION_BROWSER_RACE=1 pnpm vitest run tests/lib/puzzle-session-refinement-race.test.ts
+
       - name: Run authenticated E2E suite
         run: pnpm test:e2e
 

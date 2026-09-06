@@ -72,6 +72,7 @@ const mocks = vi.hoisted(() => ({
     analyzeSnapshot: vi.fn(),
     publishCandidate: vi.fn(),
     markStale: vi.fn(),
+    validAnalysisConfig: vi.fn(),
 }));
 
 vi.mock('@/lib/prisma', () => ({
@@ -97,6 +98,7 @@ vi.mock('@/lib/master/config', () => ({
     WEEKLY_MASTER_LEASE_MS: 300_000,
     WEEKLY_MASTER_MAX_ATTEMPTS: 3,
     weeklyMasterConfig: () => testConfig,
+    hasCurrentMasterAnalysisConfig: mocks.validAnalysisConfig,
 }));
 vi.mock('@/lib/master/ranking', () => ({
     masterContentHash: () => 'config-hash',
@@ -239,6 +241,7 @@ function applyUpdate(data: UpdateRequest['data']) {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mocks.validAnalysisConfig.mockReturnValue(true);
     mocks.run = freshRun();
     mocks.loseCompletionLease = false;
     mocks.loseBoundedFailureLease = false;
@@ -707,6 +710,20 @@ describe('Weekly Master durable pipeline runner', () => {
         );
         expect(isWeeklyMasterTerminalError(error)).toBe(false);
         expect(mocks.upsertReceipt).not.toHaveBeenCalled();
+    });
+
+    it('rejects an obsolete nested analysis contract before any Master work', async () => {
+        mocks.validAnalysisConfig.mockReturnValue(false);
+
+        await expect(processWeeklyMasterRun('run-1', NOW)).rejects.toBeInstanceOf(
+            WeeklyMasterTerminalError
+        );
+
+        expect(mocks.validAnalysisConfig).toHaveBeenCalledWith(testConfig.analysis);
+        expect(mocks.run).toMatchObject({ status: 'FAILED', attempts: 3 });
+        expect(mocks.ensureRoster).not.toHaveBeenCalled();
+        expect(mocks.analyzeSnapshot).not.toHaveBeenCalled();
+        expect(mocks.publishCandidate).not.toHaveBeenCalled();
     });
 
     it('persists an invalid configuration as a permanent terminal failure', async () => {

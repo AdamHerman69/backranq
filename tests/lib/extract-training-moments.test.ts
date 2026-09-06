@@ -5,6 +5,7 @@ import {
     tacticalMoveFacts,
     type TrainingMomentExtractionOptions,
 } from '@/lib/analysis/extractTrainingMoments';
+import { parseExtractionCheckpoint } from '@/lib/analysis/extractionCheckpoint';
 import { negateScore, reverseWdl } from '@/lib/analysis/evaluation';
 import type {
     AnalysisLimit,
@@ -156,131 +157,130 @@ const baseOptions: TrainingMomentExtractionOptions = {
 
 describe('canonical decision evidence extraction', () => {
     it.each(['white', 'black'] as const)(
-        'scouts only the imported %s decisions without confirming or fabricating moments',
+        'FIRST_PUZZLE scans once then confirms only the imported %s decisions',
         async (userSide) => {
-            const source = game({
-                id: 'landing-scout',
-                pgn: '1. e4 e5 2. Nf3 Nc6 *',
+            const source = game({ id: 'first-puzzle-side', pgn: '1. e4 e5 2. Nf3 Nc6 *',
                 white: userSide === 'white' ? 'adam' : 'opponent',
-                black: userSide === 'black' ? 'adam' : 'opponent',
-                userSide,
-            });
-            const confirm = vi.fn(() => {
-                throw new Error('Scout must not confirm candidates');
-            });
+                black: userSide === 'black' ? 'adam' : 'opponent', userSide });
+            const confirm = vi.fn(() => { throw new Error('Inconclusive confirmation'); });
             const engine = new FixtureEngine(({ fen }) => {
                 const chess = new Chess(fen);
                 const move = chess.moves({ verbose: true })[0]!;
                 const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
-                return result({
-                    fen,
-                    bestMove: uci,
-                    pv: [uci],
-                    cp: chess.turn() === 'w' ? 200 : 0,
-                });
+                return result({ fen, bestMove: uci, pv: [uci], cp: chess.turn() === 'w' ? 200 : 0 });
             }, confirm);
-            const plies: number[] = [];
+            const evalSpy = vi.spyOn(engine, 'evalPosition');
+            const progress: Array<Parameters<NonNullable<Parameters<typeof extractTrainingMomentsFromGames>[0]['onProgress']>>[0]> = [];
             const output = await extractTrainingMomentsFromGames({
-                games: [source],
-                selectedGameIds: new Set([source.id]),
-                engine,
-                stopAfterFirstVerified: true,
-                landingSearch: {
-                    mode: 'SCOUT',
-                    onCandidate: ({ decisionPly }) => plies.push(decisionPly),
-                },
-                options: baseOptions,
+                games: [source], selectedGameIds: new Set([source.id]), engine,
+                strategy: 'FIRST_PUZZLE', onProgress: item => progress.push(item), options: baseOptions,
             });
-
-            expect(new Set(plies)).toEqual(
-                new Set(userSide === 'white' ? [0, 2] : [1, 3]),
-            );
-            expect(confirm).not.toHaveBeenCalled();
+            expect(progress.filter(item => item.phase === 'confirming').map(item => item.ply))
+                .toEqual(userSide === 'white' ? [0, 2] : [1, 3]);
+            expect(progress.map(item => item.phase)).toEqual(['scanning', 'scanning', 'scanning', 'scanning', 'confirming', 'confirming']);
+            expect(evalSpy.mock.calls.filter(([request]) => request.purpose === 'GAME_SCAN')).toHaveLength(5);
+            expect(confirm).toHaveBeenCalledTimes(2);
+            expect(new Set(progress.map(item => item.runId)).size).toBe(1);
+            expect(progress.every(item => item.userSide === userSide)).toBe(true);
+            expect(progress[1]!.previousFen).toBe(progress[0]!.fen);
+            expect(progress[1]!.positionHistory).toEqual([progress[0]!.fen]);
             expect(output.moments).toEqual([]);
-            expect(output.manifests).toEqual([]);
+            expect(output.manifests).toMatchObject([{ scope: 'TARGETED_DECISION', scanComplete: true,
+                extractionComplete: false, complete: false, scannedPlies: 4, expectedPlies: 4 }]);
             expect(output.checkpoint).toBeUndefined();
         },
     );
 
-    it('verifies only the selected landing decision and never reports a partial game as complete', async () => {
-        const source = game({
-            id: 'landing-target',
-            pgn: '1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 *',
+    it('ranks candidates, skips failed confirmations without rescanning, and keeps full-mode solution semantics', async () => {
+        const source = game({ id: 'ranked-first', pgn: '1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 *' });
+        const board = new Chess(); board.loadPgn(source.pgn);
+        const moves = board.history({ verbose: true });
+        const scanned: string[] = [];
+        const confirmed: string[] = [];
+        const engine = new FixtureEngine(({ fen, purpose }) => {
+            if (purpose === 'GAME_SCAN') scanned.push(fen);
+            const chess = new Chess(fen);
+            const move = chess.moves({ verbose: true })[0]!;
+            const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+            const index = moves.findIndex(item => item.before === fen);
+            return result({ fen, bestMove: uci, pv: [uci], cp: chess.turn() === 'b' ? 0 : index === 2 ? 600 : index === 4 ? 400 : 200 });
+        }, ({ fen }) => {
+            confirmed.push(fen);
+            if (fen !== moves[0]!.before) throw new Error('Candidate evidence unavailable');
+            return multi(fen, new Chess(fen).moves({ verbose: true }).slice(0, 3)
+                .map((move, index) => ({ move: `${move.from}${move.to}${move.promotion ?? ''}`, cp: 200 - index * 200 })));
         });
-        const targetBoard = new Chess();
-        targetBoard.loadPgn('1. e4 e5 *');
-        const targetFen = targetBoard.fen();
-        const confirmedFens: string[] = [];
-        const scannedFens: string[] = [];
-        const engine = new FixtureEngine(
-            ({ fen }) => {
-                scannedFens.push(fen);
-                const chess = new Chess(fen);
-                const move = chess.moves({ verbose: true })[0]!;
-                const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
-                return result({
-                    fen,
-                    bestMove: uci,
-                    pv: [uci],
-                    cp: chess.turn() === 'w' ? 200 : 0,
-                });
-            },
-            ({ fen }) => {
-                confirmedFens.push(fen);
-                return multi(
-                    fen,
-                    new Chess(fen)
-                        .moves({ verbose: true })
-                        .slice(0, 3)
-                        .map((move, index) => ({
-                            move: `${move.from}${move.to}${move.promotion ?? ''}`,
-                            cp: 200 - index * 200,
-                        })),
-                );
-            },
-        );
-        const output = await extractTrainingMomentsFromGames({
-            games: [source],
-            selectedGameIds: new Set([source.id]),
-            engine,
-            stopAfterFirstVerified: true,
-            landingSearch: { mode: 'VERIFY', decisionPly: 2 },
-            options: baseOptions,
-        });
-        expect(confirmedFens).toEqual([targetFen]);
-        expect(output.moments.map((moment) => moment.decisionPly)).toEqual([2]);
-        expect(output.manifests).toEqual([]);
-        const laterBoard = new Chess();
-        laterBoard.loadPgn('1. e4 e5 2. Nf3 Nc6 *');
-        expect(scannedFens).not.toContain(laterBoard.fen());
+        const args = { games: [source], selectedGameIds: new Set([source.id]), engine, options: baseOptions };
+        const first = await extractTrainingMomentsFromGames({ ...args, strategy: 'FIRST_PUZZLE' });
+        expect(scanned).toHaveLength(7);
+        expect(new Set(scanned).size).toBe(7);
+        expect(confirmed).toEqual([moves[2]!.before, moves[4]!.before, moves[0]!.before]);
+        expect(first.moments.map(moment => moment.decisionPly)).toEqual([0]);
+        expect(first.manifests).toMatchObject([{ scope: 'TARGETED_DECISION', scanComplete: true, extractionComplete: false }]);
+        const full = await extractTrainingMomentsFromGames({ ...args, strategy: 'FULL_GAME' });
+        expect(full.moments.map(moment => moment.solution.solutionHash)).toEqual(first.moments.map(moment => moment.solution.solutionHash));
+        expect(full.manifests).toMatchObject([{ scope: 'FULL_GAME', complete: true }]);
     });
 
-    it('rejects landing selection combined with complete or resumable extraction', async () => {
-        const source = game({ id: 'landing-scope', pgn: '1. e4 *' });
-        const args = {
-            games: [source],
-            selectedGameIds: new Set([source.id]),
-            engine: {} as StockfishEngine,
-            landingSearch: { mode: 'VERIFY' as const, decisionPly: 0 },
-        };
-        await expect(extractTrainingMomentsFromGames(args)).rejects.toThrow(
-            'non-resumable partial game',
-        );
-        await expect(
-            extractTrainingMomentsFromGames({
-                ...args,
-                stopAfterFirstVerified: true,
-                shouldYield: () => true,
-            }),
-        ).rejects.toThrow('non-resumable partial game');
-        await expect(
-            extractTrainingMomentsFromGames({
-                ...args,
-                games: [source, { ...source, id: 'another' }],
-                selectedGameIds: new Set([source.id, 'another']),
-                stopAfterFirstVerified: true,
-            }),
-        ).rejects.toThrow('non-resumable partial game');
+    it('reports a setup position beginning with Black at relative ply zero', async () => {
+        const start = '7k/8/5Q2/8/6K1/8/8/8 b - - 0 42';
+        const source = game({ id: 'black-setup-first', pgn: `[SetUp "1"]\n[FEN "${start}"]\n\n42... Kg8 *`, white: 'opponent', black: 'adam', userSide: 'black' });
+        const engine = new FixtureEngine(({ fen }) => {
+            const move = new Chess(fen).moves({ verbose: true })[0]!;
+            const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+            return result({ fen, bestMove: uci, pv: [uci], cp: 0 });
+        }, ({ fen }) => multi(fen, []));
+        const progress = vi.fn();
+        await extractTrainingMomentsFromGames({ games: [source], selectedGameIds: new Set([source.id]),
+            engine, strategy: 'FIRST_PUZZLE', onProgress: progress, options: baseOptions });
+        expect(progress.mock.calls[0]![0]).toMatchObject({ ply: 0, plyCount: 1, fen: start,
+            previousFen: undefined, positionHistory: [], userSide: 'black' });
+    });
+
+    it('cancels at the scan-to-confirmation boundary before starting a fresh engine request', async () => {
+        const source = game({ id: 'cancel-first', pgn: '1. e4 *' });
+        const controller = new AbortController();
+        const confirm = vi.fn(({ fen }: { fen: string }) => multi(fen, []));
+        const engine = new FixtureEngine(({ fen }) => {
+            const board = new Chess(fen); const move = board.moves({ verbose: true })[0]!;
+            const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+            return result({ fen, bestMove: uci, pv: [uci], cp: board.turn() === 'w' ? 200 : 0 });
+        }, confirm);
+        await expect(extractTrainingMomentsFromGames({ games: [source], selectedGameIds: new Set([source.id]),
+            engine, strategy: 'FIRST_PUZZLE', signal: controller.signal,
+            onProgress: item => { if (item.phase === 'confirming') controller.abort(); }, options: baseOptions,
+        })).rejects.toThrow('Analysis aborted');
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it.each(['FULL_GAME', 'FIRST_PUZZLE'] as const)(
+        '%s does not attribute an earlier player loss to an opponent with invalid evidence', async strategy => {
+            const source = game({ id: 'invalid-opponent', pgn: '1. e4 e5 2. Nf3 *' });
+            const board = new Chess(); board.loadPgn(source.pgn);
+            const moves = board.history({ verbose: true });
+            const engine = new FixtureEngine(({ fen }) => {
+                if (fen === moves[1]!.before) return result({ fen, bestMove: '', pv: [], cp: 0 });
+                const chess = new Chess(fen); const move = chess.moves({ verbose: true })[0]!;
+                const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+                return result({ fen, bestMove: uci, pv: [uci], cp: chess.turn() === 'b' ? 0 : fen === moves[2]!.before ? 400 : 250 });
+            }, ({ fen }) => multi(fen, new Chess(fen).moves({ verbose: true }).slice(0, 3).map((move, index) => ({
+                move: `${move.from}${move.to}${move.promotion ?? ''}`, cp: (fen === moves[2]!.before ? 400 : 250) - index * 200,
+            }))));
+            const output = await extractTrainingMomentsFromGames({ games: [source], selectedGameIds: new Set([source.id]),
+                engine, strategy, options: baseOptions });
+            const moment = output.moments.find(item => item.decisionPly === 2);
+            expect(moment).toBeDefined();
+            expect(moment!.sourceKinds).toEqual(['MY_MISTAKE']);
+            expect(moment!.lessonKinds).not.toContain('PUNISH_MISTAKE');
+        },
+    );
+
+    it('rejects FIRST_PUZZLE combined with resumable extraction', async () => {
+        const source = game({ id: 'first-scope', pgn: '1. e4 *' });
+        await expect(extractTrainingMomentsFromGames({
+            games: [source], selectedGameIds: new Set([source.id]), engine: {} as StockfishEngine,
+            strategy: 'FIRST_PUZZLE', shouldYield: () => true,
+        })).rejects.toThrow('FIRST_PUZZLE does not support full-game checkpoints');
     });
 
     it('resumes a single-game extraction from a persisted ply checkpoint', async () => {
@@ -329,7 +329,7 @@ describe('canonical decision evidence extraction', () => {
 
         const resumed = await extractTrainingMomentsFromGames({
             ...args,
-            checkpoint: JSON.parse(JSON.stringify(firstSlice.checkpoint)),
+            checkpoint: parseExtractionCheckpoint(JSON.parse(JSON.stringify(firstSlice.checkpoint))),
         });
         const uninterrupted = await extractTrainingMomentsFromGames(args);
 
@@ -344,6 +344,27 @@ describe('canonical decision evidence extraction', () => {
         ).toEqual(
             uninterrupted.analysis?.get('resumable-game')?.trainingExtraction,
         );
+    });
+
+    it('keeps adjacent scan evidence across repeated server checkpoint round trips', async () => {
+        const source = game({ id: 'many-slices', pgn: '1. e4 e5 2. Nf3 Nc6 *' });
+        const engine = new FixtureEngine(({ fen }) => {
+            const move = new Chess(fen).moves({ verbose: true })[0]!;
+            const uci = `${move.from}${move.to}${move.promotion ?? ''}`;
+            return result({ fen, bestMove: uci, pv: [uci], cp: 0 });
+        }, ({ fen }) => multi(fen, []));
+        const scan = vi.spyOn(engine, 'evalPosition');
+        const args = { games: [source], selectedGameIds: new Set([source.id]), engine,
+            options: { ...baseOptions, returnAnalysis: true }, shouldYield: () => true };
+        let output = await extractTrainingMomentsFromGames(args);
+        for (let count = 0; output.checkpoint && count < 20; count++) {
+            output = await extractTrainingMomentsFromGames({ ...args,
+                checkpoint: parseExtractionCheckpoint(JSON.parse(JSON.stringify(output.checkpoint))) });
+        }
+        expect(output.checkpoint).toBeUndefined();
+        expect(output.manifests).toMatchObject([{ complete: true, scannedPlies: 4 }]);
+        expect(output.analysis?.get(source.id)?.moves).toHaveLength(4);
+        expect(scan.mock.calls.filter(([request]) => request.purpose === 'GAME_SCAN')).toHaveLength(5);
     });
 
     it('escalates near-threshold confirmation and records a saved-decision receipt', async () => {
@@ -1634,7 +1655,7 @@ describe('decision evidence pipeline regressions', () => {
         expect(first.checkpoint?.gameAnalysis).toHaveLength(1);
         const resumed = await extractTrainingMomentsFromGames({
             ...args,
-            checkpoint: first.checkpoint,
+            checkpoint: parseExtractionCheckpoint(JSON.parse(JSON.stringify(first.checkpoint))),
         });
         expect(rootSearches).toBe(1);
         expect(resumed.analysis?.get('paired-checkpoint')?.moves).toHaveLength(

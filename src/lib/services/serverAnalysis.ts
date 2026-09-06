@@ -1,8 +1,8 @@
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import {
     extractTrainingMomentsFromGames,
-    type TrainingMomentExtractionCheckpoint,
 } from '@/lib/analysis/extractTrainingMoments';
+import { parseExtractionCheckpoint } from '@/lib/analysis/extractionCheckpoint';
 import { dbGameToNormalized } from '@/lib/api/games';
 import { ServerStockfishClient } from '@/lib/analysis/serverStockfishClient';
 import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
@@ -357,37 +357,6 @@ export async function analyzeGameJob(
 async function rejectStaleAnalysisDelivery(jobId: string): Promise<never> {
     await recordStaleAnalysisDelivery();
     throw new StaleAnalysisDeliveryError(jobId);
-}
-
-function parseExtractionCheckpoint(
-    value: unknown
-): TrainingMomentExtractionCheckpoint {
-    if (!isRecord(value)) {
-        throw new Error('Analysis checkpoint is not an object');
-    }
-    if (
-        value.version !== 1 ||
-        typeof value.gameId !== 'string' ||
-        typeof value.sourceGameId !== 'string' ||
-        typeof value.sourcePgnHash !== 'string' ||
-        typeof value.configHash !== 'string' ||
-        typeof value.nextPly !== 'number' ||
-        typeof value.expectedPlies !== 'number' ||
-        !Array.isArray(value.moments) ||
-        !Array.isArray(value.gameAnalysis) ||
-        !Array.isArray(value.whiteMoveAccuracies) ||
-        !Array.isArray(value.blackMoveAccuracies) ||
-        !Array.isArray(value.extractionErrors) ||
-        !Array.isArray(value.decisionReceipts) ||
-        !Array.isArray(value.lookaheadOwnedUserDecisionPlies)
-    ) {
-        throw new Error('Analysis checkpoint has an invalid shape');
-    }
-    return value as unknown as TrainingMomentExtractionCheckpoint;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function consumeAnalysisJobReservation(args: {
