@@ -1,12 +1,30 @@
 import { expect, test, type Page } from '@playwright/test';
+import { buildSync } from 'esbuild';
+import type { Chess } from 'chess.js';
 
 import { COACH_OFFLINE_ACCESS_STORAGE_KEY } from '@/lib/coach/offlineAccess';
 import { COACH_OFFLINE_OWNER_STORAGE_KEY } from '@/lib/coach/offlineOwner';
 
 import { clickMove, square } from './support/board';
 
+// The deterministic judge still speaks legal UCI for the actual requested
+// position. Bundle the same rules library into the fixture's init script.
+const chessFixtureBundle = buildSync({
+    stdin: {
+        contents: "export { Chess } from 'chess.js';",
+        resolveDir: process.cwd(),
+    },
+    bundle: true,
+    format: 'iife',
+    globalName: 'CoachFixtureChess',
+    write: false,
+}).outputFiles[0]!.text;
+
 async function installDeterministicCoachEngine(page: Page) {
-    await page.addInitScript(() => {
+    const installWorker = () => {
+        const FixtureChess = (window as unknown as {
+            CoachFixtureChess: { Chess: typeof Chess };
+        }).CoachFixtureChess.Chess;
         type WorkerMessage = {
             type?: string;
             id?: string;
@@ -221,7 +239,7 @@ async function installDeterministicCoachEngine(page: Page) {
                     fen.startsWith(
                         'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/'
                     );
-                const roots =
+                const preferredRoots =
                     message.rootMoves?.length
                         ? message.rootMoves
                         : side === 'w'
@@ -247,6 +265,15 @@ async function installDeterministicCoachEngine(page: Page) {
                                   'c7c5',
                                   'b8c6',
                               ];
+                const legalRoots = new FixtureChess(fen)
+                    .moves({ verbose: true })
+                    .map((move) => move.lan);
+                const roots = [
+                    ...new Set([
+                        ...preferredRoots,
+                        ...(message.rootMoves?.length ? [] : legalRoots),
+                    ]),
+                ].filter((move) => legalRoots.includes(move));
                 const baseCp = afterF3 ? 300 : afterE4 ? -30 : 30;
                 const baseWdl = afterF3
                     ? { win: 850, draw: 100, loss: 50 }
@@ -309,6 +336,13 @@ async function installDeterministicCoachEngine(page: Page) {
             writable: true,
             value: DeterministicCoachWorker,
         });
+    };
+    // Keep rules and worker installation in one script: Playwright does not
+    // guarantee ordering between separate init scripts.
+    await page.addInitScript({
+        content: `${chessFixtureBundle}
+            ;globalThis.CoachFixtureChess = CoachFixtureChess;
+            ;(${installWorker.toString()})();`,
     });
 }
 
@@ -334,6 +368,9 @@ test.describe('offline coach game', () => {
             ]
         );
         await page.goto('/~offline/coach');
+        expect(await page.evaluate(() => window.Worker.name)).toBe(
+            'DeterministicCoachWorker'
+        );
     });
 
     async function startCoach(page: Page) {

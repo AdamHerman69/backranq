@@ -48,6 +48,10 @@ Druhé kolo a následná opakovaná kontrola oprav neobsahovaly otevřený bloku
   přeskočeno; nejsou počítané jako úspěšné.
 - Celá authenticated E2E sada: **73 prošlo, 5 přeskočeno**. Po poslední
   mobilní změně samostatně opakována homepage/mobile sada a vizuální kontrola.
+- Finální Coach/offline sada: **19 prošlo, 1 přeskočeno**. První lokální i CI
+  běh odhalil dva testy s nelegálním tahem simulovaného enginu; fixture nyní
+  vybírá legální tahy podle skutečné pozice a ověřuje instalaci simulace.
+  Produkční validace nebyla oslabena. Oba scénáře i celá sada znovu prošly.
 - Browser/server audit dvou celých partií: **20 shodných momentů**, stejné
   solution hashes, odpovědi, tiery, skóre a best lines; **366 hledání** na každém
   runtime. Naměřené latence vznikaly pod proměnlivou lokální zátěží a nejsou
