@@ -8,9 +8,11 @@
 
 let enginePromise = null;
 let engine = null;
+let engineSessionId = null;
 let needsNewGameBoundary = false;
-const runtimeRevision = 'stockfish-18.0.8-bridge-v5';
+const runtimeRevision = 'stockfish-18.0.8-bridge-v8';
 let identity = {
+    artifactId: 'stockfish-js-wasm-sha256:5243fd9b276cab7dfe3ad1d43ab9ead73568fac76468c614242977a210c4a391:a8fbc05ec6920b56d7485826dcb02c5ffd2826bcbf751cf973046f237a9096f1',
     name: 'Stockfish 18',
     version: '18.0.8',
     flavor: 'lite-single-nnue-wasm',
@@ -40,6 +42,7 @@ function ensureEngine() {
         // safe and keeps the service-worker runtime cache internally coherent.
         workerUrl.hash = encodeURIComponent(wasmUrl.href);
         const raw = new Worker(workerUrl);
+        engineSessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const listeners = new Set();
         const protocolWaiters = new Set();
         let ready = false;
@@ -281,6 +284,30 @@ function validCompleteLines(job, lines) {
     });
 }
 
+function retainEvidenceSnapshots(snapshots) {
+    const points = new Map();
+    const bounds = new Map();
+    for (const snapshot of snapshots) for (const line of snapshot.lines) {
+        const move = line.pvUci[0];
+        if (snapshot.bundleComplete) {
+            points.set(move, [...(points.get(move) ?? []), snapshot].slice(-3));
+            bounds.delete(move);
+        } else {
+            const active = bounds.get(move) ?? new Map();
+            const key = `${line.bound}:${line.score.type}:${line.score.type === 'mate' ? Math.sign(line.score.value) : ''}`;
+            const previous = active.get(key);
+            if (!previous || line.score.type !== 'cp' ||
+                (line.bound === 'LOWER' ? line.score.value >= previous.line.score.value : line.score.value <= previous.line.score.value)) {
+                active.set(key, { snapshot, line });
+            }
+            bounds.set(move, active);
+        }
+    }
+    const retained = new Set([...points.values()].flat());
+    for (const active of bounds.values()) for (const item of active.values()) retained.add(item.snapshot);
+    return snapshots.filter(snapshot => retained.has(snapshot));
+}
+
 function buildSnapshot(job) {
     const depthBuckets = Array.from(job.linesByDepth.entries()).sort(
         ([depthA], [depthB]) => depthB - depthA
@@ -370,6 +397,8 @@ function setActive(job) {
         legalRootMoves: job.legalRootMoves,
         positionCommand: job.positionCommand,
         completeSnapshot: null,
+        snapshots: [],
+        snapshotIndex: 0,
         boundLines: new Map(),
         minDepth:
             job.minDepth == null ? null : Math.max(1, Math.trunc(job.minDepth)),
@@ -525,6 +554,7 @@ function finishJob(bestMoveUci) {
         postMessage({
             type: 'done',
             id: job.id,
+            sessionId: engineSessionId,
             bestMoveUci: bestMoveUci || '',
             final: buildSnapshot(job),
         });
@@ -542,8 +572,9 @@ function attachEngineListener(e) {
     if (listenedEngine === e) return;
     listenedEngine = e;
     e.addMessageListener((line) => {
-        if (!activeJob) return;
+        if (!activeJob || e !== engine) return;
         if (line === 'readyok') return;
+        if (activeJob.cancelReason && !line.startsWith('bestmove ')) return;
 
         if (line.startsWith('info ')) {
             const parsed = parseInfoLine(line);
@@ -555,7 +586,18 @@ function attachEngineListener(e) {
             if (parsed.timeMs != null) activeJob.lastTimeMs = Math.max(activeJob.lastTimeMs ?? 0, parsed.timeMs);
             const boundedRoot = parsed.pvUci?.[0];
             if (parsed.boundedScore && parsed.bound && boundedRoot && (!activeJob.legalRootMoves || activeJob.legalRootMoves.includes(boundedRoot))) {
+                for (const bucket of activeJob.linesByDepth.values()) for (const [slot, point] of bucket) {
+                    if (point.pvUci[0] === boundedRoot) bucket.delete(slot);
+                }
+                if (parsed.depth != null) activeJob.linesByDepth.get(parsed.depth)?.delete(parsed.multipv);
                 activeJob.boundLines.set(boundedRoot, { moveUci: boundedRoot, score: parsed.boundedScore, bound: parsed.bound, depth: parsed.depth, nodes: parsed.nodes, timeMs: parsed.timeMs });
+                if (Number.isInteger(parsed.depth) && parsed.depth > 0) {
+                    const snapshot = { snapshotIndex: activeJob.snapshotIndex++, depth: parsed.depth, bundleComplete: false,
+                        lines: [{ multipv: parsed.multipv, score: parsed.boundedScore, bound: parsed.bound, pvUci: parsed.pvUci,
+                            depth: parsed.depth, nodes: parsed.nodes, timeMs: parsed.timeMs, wdl: parsed.wdl }] };
+                    activeJob.snapshots = retainEvidenceSnapshots([...activeJob.snapshots, snapshot]);
+                    postMessage({ type: 'snapshot', id: activeJob.id, sessionId: engineSessionId, snapshot });
+                }
             }
 
             if (parsed.pvUci) {
@@ -565,6 +607,7 @@ function attachEngineListener(e) {
                 const previous = linesAtDepth.get(parsed.multipv);
                 if (
                     parsed.score &&
+                    parsed.depth != null &&
                     (!previous ||
                         (parsed.depth ?? 0) >= (previous.depth ?? 0))
                 ) {
@@ -583,6 +626,17 @@ function attachEngineListener(e) {
                     const completeLines = Array.from(linesAtDepth.values()).sort((a, b) => a.multipv - b.multipv);
                     if (validCompleteLines(activeJob, completeLines) && (!activeJob.completeSnapshot || depth >= activeJob.completeSnapshot.depth)) {
                         activeJob.completeSnapshot = { depth, lines: completeLines };
+                        const previousSnapshot = activeJob.snapshots.findLast(snapshot => snapshot.bundleComplete);
+                        const semanticBundle = (lines) => JSON.stringify(lines.map(line => [line.multipv, line.score, line.wdl, line.pvUci, line.depth]));
+                        if (!previousSnapshot || semanticBundle(completeLines) !== semanticBundle(previousSnapshot.lines)
+                            || completeLines.some(line => activeJob.boundLines.has(line.pvUci[0]))) {
+                            const snapshot = { snapshotIndex: activeJob.snapshotIndex++, depth, lines: completeLines, bundleComplete: true };
+                            activeJob.snapshots.push(snapshot);
+                            activeJob.snapshots = retainEvidenceSnapshots(activeJob.snapshots);
+                            for (const line of completeLines) activeJob.boundLines.delete(line.pvUci[0]);
+                            postMessage({ type: 'snapshot', id: activeJob.id, sessionId: engineSessionId, snapshot });
+                        }
+                        for (const key of activeJob.linesByDepth.keys()) if (key < depth - 2) activeJob.linesByDepth.delete(key);
                     }
                 }
             }

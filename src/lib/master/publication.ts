@@ -1,4 +1,4 @@
-import { ATTEMPT_GRADES, type AttemptGrade } from '@/lib/training/contracts';
+import { parsePracticeMomentRevision } from '@/lib/training/practiceContract';
 import { Prisma } from '@prisma/client';
 import type { TrainingPromptDto } from '@/lib/training/api';
 import { toTrainingPromptDto } from '@/lib/training/apiMappers';
@@ -28,78 +28,18 @@ type PublicationCandidate = Prisma.MasterCandidateGetPayload<{
     include: typeof candidateInclude;
 }>;
 
-function moveAssessments(value: Prisma.JsonValue) {
-    if (!Array.isArray(value)) return [];
-    return value
-        .filter(
-            (item): item is Prisma.JsonObject =>
-                item != null && typeof item === 'object' && !Array.isArray(item)
-        )
-        .map((item) => ({
-            positionKey: typeof item.positionKey === 'string' ? item.positionKey : '',
-            referenceId: typeof item.referenceId === 'string' ? item.referenceId : '',
-            tierStable: item.tierStable === true,
-            decisionIndex:
-                typeof item.decisionIndex === 'number'
-                    ? item.decisionIndex
-                    : 0,
-            fen: typeof item.fen === 'string' ? item.fen : '',
-            moveUci:
-                typeof item.moveUci === 'string' ? item.moveUci : '',
-            source:
-                item.source === 'TABLEBASE'
-                    ? ('TABLEBASE' as const)
-                    : ('PRECOMPUTED' as const),
-            status: 'VERIFIED' as const,
-            grade: ATTEMPT_GRADES.includes(item.grade as AttemptGrade)
-                ? item.grade as AttemptGrade
-                : null,
-            scoreAfter: item.scoreAfter ?? null,
-            evidence: item.evidence ?? null,
-        }))
-        .filter((item): item is typeof item & { grade: AttemptGrade } => Boolean(item.fen && item.moveUci && item.grade));
-}
-
-export function masterCandidateToTrainingPrompt(
-    candidate: PublicationCandidate
-): TrainingPromptDto {
-    const contract = (candidate.evidence as Prisma.JsonObject)?.solutionContract as Prisma.JsonObject;
-    if (!contract) throw new Error('Master candidate requires current extraction evidence');
+export function masterCandidateToTrainingPrompt(candidate: PublicationCandidate): TrainingPromptDto {
+    const manifest = parsePracticeMomentRevision(candidate.manifest);
     return toTrainingPromptDto({
-        id: candidate.id,
-        currentSolutionRevisionId: candidate.id,
-        fen: candidate.fen,
-        sideToMove: candidate.sideToMove,
-        positionHistory: candidate.positionHistory,
-        originalMoveUci: candidate.originalMoveUci,
-        scoreBefore: candidate.scoreBefore,
-        scoreAfter: candidate.scoreAfter,
-        cpLoss: candidate.cpLoss,
-        winChanceLoss: candidate.winChanceLoss,
-        sourceKinds: candidate.sourceKinds,
-        lessonKinds: candidate.lessonKinds,
-        themes: candidate.themes,
-        gameId: candidate.snapshot.sourceGameId,
-        decisionPly: candidate.decisionPly,
-        game: {
-            provider: candidate.snapshot.sourceGame.provider,
-            playedAt: candidate.snapshot.playedAt,
-        },
-        currentSolutionRevision: {
-            decision: contract.decision,
-            answerCoverage: contract.answerCoverage,
-            continuation: contract.continuation,
-            originalDecision: contract.originalDecision,
-            bestMoveUci: candidate.bestMoveUci,
-            acceptedMovesUci: candidate.acceptedMovesUci,
-            acceptanceFrontier: candidate.acceptanceFrontier,
-            solutionShape: candidate.solutionShape,
-            bestLine: candidate.bestLine,
-            scoreAtStart: candidate.scoreAtStart,
-            gradingPolicy: candidate.gradingPolicy,
-            solutionTree: candidate.solutionTree,
-            moveAssessments: moveAssessments(candidate.moveAssessments),
-        },
+        id: candidate.id, currentSolutionRevisionId: candidate.id, fen: candidate.fen,
+        sideToMove: candidate.sideToMove, positionHistory: candidate.positionHistory,
+        originalMoveUci: candidate.originalMoveUci, sourceKinds: candidate.sourceKinds,
+        lessonKinds: candidate.lessonKinds, themes: candidate.themes,
+        // The immutable extraction source is the Master snapshot, not its mutable provider row.
+        gameId: candidate.snapshotId, decisionPly: candidate.decisionPly,
+        game: { provider: candidate.snapshot.sourceGame.provider, playedAt: candidate.snapshot.playedAt },
+        currentSolutionRevision: { trainable: candidate.trainable,
+            manifest: { ...manifest, momentId: candidate.id, revisionId: candidate.id } },
     });
 }
 

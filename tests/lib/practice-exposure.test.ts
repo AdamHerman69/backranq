@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Prisma } from '@prisma/client';
 import {
     parsePracticeExposureWrite,
     recordPracticeExposure,
@@ -20,6 +21,47 @@ const common = {
 };
 
 describe('Practice exposure evidence', () => {
+    it.each([
+        'PracticeExposure_userId_fkey',
+        'PracticeExposure_trainingMomentId_userId_fkey',
+        'PracticeExposure_solutionRevision_moment_fkey',
+        'PracticeExposure_attemptId_userId_fkey',
+    ])('returns not found when a checked parent is deleted before insert: %s', async (constraint) => {
+        const create = vi.fn().mockRejectedValue(new Prisma.PrismaClientKnownRequestError('Parent deleted', {
+            code: 'P2003', clientVersion: '6.19.3',
+            meta: { modelName: 'PracticeExposure', constraint },
+        }));
+        const result = await recordPracticeExposure({
+            db: {
+                trainingMoment: { findFirst: vi.fn().mockResolvedValue({ id: common.momentId }) },
+                trainingAttempt: { findFirst: vi.fn().mockResolvedValue({ id: '10000000-0000-4000-8000-000000000005' }) },
+                practiceExposure: { create },
+            } as never,
+            userId: 'user-1',
+            event: { ...common, kind: 'TERMINAL', terminalReason: 'MOVE_SUBMITTED', attemptId: '10000000-0000-4000-8000-000000000005' },
+        });
+        expect(create).toHaveBeenCalledOnce();
+        expect(result).toEqual({ ok: false, reason: 'NOT_FOUND' });
+    });
+
+    it.each([
+        ['P2003', 'unrelated_fkey', 'PracticeExposure'],
+        ['P2003', 'PracticeExposure_trainingMomentId_userId_fkey', 'OtherModel'],
+        ['P2010', 'PracticeExposure_trainingMomentId_userId_fkey', 'PracticeExposure'],
+    ])('does not hide unrelated database failures: %s / %s / %s', async (code, constraint, modelName) => {
+        const error = new Prisma.PrismaClientKnownRequestError('Database failed', {
+            code, clientVersion: '6.19.3', meta: { modelName, constraint },
+        });
+        await expect(recordPracticeExposure({
+            db: {
+                trainingMoment: { findFirst: vi.fn().mockResolvedValue({ id: common.momentId }) },
+                trainingAttempt: { findFirst: vi.fn() },
+                practiceExposure: { create: vi.fn().mockRejectedValue(error) },
+            } as never,
+            userId: 'user-1', event: { ...common, kind: 'SHOWN' },
+        })).rejects.toBe(error);
+    });
+
     it('accepts the single Progress entry contract and rejects arbitrary surfaces', () => {
         expect(
             parsePracticeExposureWrite(

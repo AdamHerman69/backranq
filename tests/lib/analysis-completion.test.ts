@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { practicePositionFixture } from '../helpers/practice-position';
 
 const engineHarness = vi.hoisted(() => ({
     instances: [] as Array<{
@@ -14,6 +15,7 @@ vi.mock('@/lib/analysis/stockfishClient', () => ({
         cancelAll = vi.fn();
         terminate = vi.fn();
         getIdentity = vi.fn().mockResolvedValue({
+            artifactId: 'fixture-artifact',
             name: 'Mock Stockfish',
             source: 'test',
             options: {},
@@ -76,7 +78,7 @@ function browserExtractionResult(gameDbId: string, externalId: string) {
     };
 }
 
-function stubBrowserAnalysisApi(gameDbId: string, externalId: string) {
+function stubBrowserAnalysisApi(gameDbId: string, externalId: string, savedUpserted: number | null = 0) {
     vi.stubGlobal(
         'fetch',
         vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -95,7 +97,9 @@ function stubBrowserAnalysisApi(gameDbId: string, externalId: string) {
             if (url === `/api/games/${gameDbId}` && !init?.method) {
                 return Promise.resolve(
                     jsonResponse({
+                        ownerId: 'user-a', reassessment: { sourcePgnHash: 'a'.repeat(64), decisionPlies: [2] },
                         game: {
+                            id: gameDbId,
                             provider: 'LICHESS',
                             externalId,
                             url: null,
@@ -126,7 +130,7 @@ function stubBrowserAnalysisApi(gameDbId: string, externalId: string) {
                 return Promise.resolve(
                     jsonResponse({
                         ownerId: 'user-a',
-                        trainingMoments: { upserted: 0 },
+                        trainingMoments: savedUpserted === null ? {} : { upserted: savedUpserted },
                     })
                 );
             }
@@ -586,8 +590,28 @@ describe('owner-scoped analysis persistence', () => {
         });
 
         const engine = engineHarness.instances[0]!;
+        expect(engineHarness.extract).toHaveBeenCalledWith(expect.objectContaining({
+            reassessDecisionPliesByGameId: { [`lichess:${externalId}`]: [2] },
+        }));
         expect(engine.cancelAll).toHaveBeenCalledTimes(1);
         expect(engine.terminate).toHaveBeenCalledTimes(1);
+        backgroundAnalysis.setOwner(null);
+    });
+
+    it('persists canonical negative outcomes without counting them as generated Practice positions', async () => {
+        const gameDbId = 'reassessment-only'; const externalId = 'reassessment-external';
+        stubBrowserAnalysisApi(gameDbId, externalId, null);
+        const manifest = practicePositionFixture({ fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+            originalMoveUci: 'e2e4', bestMoveUci: 'e2e4' });
+        expect(manifest.decision.status).toBe('NOT_A_MISTAKE');
+        engineHarness.extract.mockResolvedValue({ ...browserExtractionResult(gameDbId, externalId),
+            moments: [{ sourceGameId: gameDbId, solution: { manifest, configHash: manifest.executionProfileId } }] });
+        backgroundAnalysis.setOwner('user-a');
+        backgroundAnalysis.enqueueGameDbIds('user-a', [gameDbId]);
+        await vi.waitFor(() => expect(backgroundAnalysis.snapshot()).toMatchObject({ state: 'idle',
+            lastCompletion: { trainingMomentsGenerated: 0, succeeded: 1 } }));
+        const saved = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url).endsWith('/analysis') && init?.method === 'PUT');
+        expect(JSON.parse(String(saved?.[1]?.body)).trainingMoments).toHaveLength(1);
         backgroundAnalysis.setOwner(null);
     });
 

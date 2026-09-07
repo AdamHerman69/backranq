@@ -56,7 +56,7 @@ export type ProgressPositionsSummary = {
 
 export type AttemptBreakdownSummary = {
     key: string;
-    gradedAttempts: number;
+    resolvedAttempts: number;
     solvedAttempts: number;
 };
 
@@ -72,25 +72,25 @@ export type ProgressAttemptsSummary = {
     currentByProvider: CountMap;
     currentByTimeClass: CountMap;
     currentPractice: {
-        graded: number;
+        resolved: number;
         revealed: number;
-        unresolved: number;
+        unavailable: number;
         solved: number;
         rootObserved: number;
         rootSolved: number;
         rootRepeated: number;
-        gradeCounts: CountMap;
+        tierCounts: CountMap;
     };
     previousPractice: {
-        graded: number;
+        resolved: number;
         solved: number;
     };
     firstOutcome: {
         positions: number;
-        graded: number;
+        resolved: number;
         revealed: number;
         solved: number;
-        gradeCounts: CountMap;
+        tierCounts: CountMap;
     };
     delayedRecheck: {
         eligibleBaselines: number;
@@ -342,8 +342,7 @@ export async function readProgressPositionsSummary(args: {
                   AND moment."sourcePgnHash" = run."inputPgnHash"
                   AND revision."id" = moment."currentSolutionRevisionId"
                   AND revision."trainable"
-                  AND revision."verificationStatus" = 'VERIFIED'::"VerificationStatus"
-                  AND revision."decision" @> '{"status":"CONFIRMED_MISTAKE"}'::jsonb
+                  AND revision."manifest" @> '{"decision":{"status":"CONFIRMED_MISTAKE","selection":"INCLUDED"}}'::jsonb
                   AND revision."configHash" = run."configHash"
                   AND EXISTS (
                       SELECT 1 FROM "TrainingMomentObservation" observation
@@ -361,21 +360,23 @@ export async function readProgressPositionsSummary(args: {
                     attempt."trainingMomentId",
                     attempt."completedAt",
                     attempt."status",
-                    attempt."grade",
+                    attempt."quality",
+                    attempt."tier",
+                    attempt."originalRelation",
                     attempt."contextConfigHash",
                     attempt."contextSolutionHash"
                 FROM "TrainingAttempt" attempt
                 WHERE attempt."userId" = ${args.userId}::uuid
                   AND attempt."completedAt" IS NOT NULL
                   AND attempt."completedAt" <= ${args.asOf}
-                  AND attempt."status" IN ('GRADED'::"AttemptStatus", 'REVEALED'::"AttemptStatus")
+                  AND attempt."status" IN ('RESOLVED'::"AttemptStatus", 'REVEALED'::"AttemptStatus")
             ), position_root_steps AS MATERIALIZED (
                 SELECT DISTINCT ON (step."attemptId")
                     step."attemptId",
-                    step."grade"
+                    step."quality",
+                    step."originalRelation"
                 FROM "TrainingAttemptStep" step
                 JOIN position_attempts attempt ON attempt."id" = step."attemptId"
-                WHERE step."actor" = 'USER'::"AttemptStepActor"
                 ORDER BY step."attemptId", step."stepIndex"
             ), attempts AS MATERIALIZED (
                 SELECT
@@ -383,10 +384,13 @@ export async function readProgressPositionsSummary(args: {
                     attempt."trainingMomentId",
                     attempt."completedAt",
                     attempt."status",
-                    attempt."grade",
+                    attempt."quality",
+                    attempt."tier",
+                    attempt."originalRelation",
                     attempt."contextConfigHash",
                     attempt."contextSolutionHash",
-                    root."grade" AS root_grade
+                    root."quality" AS root_quality,
+                    root."originalRelation" AS root_original_relation
                 FROM position_attempts attempt
                 LEFT JOIN position_root_steps root ON root."attemptId" = attempt."id"
             ), semantic AS MATERIALIZED (
@@ -400,12 +404,12 @@ export async function readProgressPositionsSummary(args: {
                     "trainingMomentId",
                     count(*) AS terminal_count,
                     count(*) FILTER (
-                        WHERE "status" = 'GRADED'::"AttemptStatus"
-                          AND root_grade = 'REPEATED_MISTAKE'::"AttemptGrade"
-                    ) AS graded_repeated_count,
-                    count(*) FILTER (WHERE root_grade = 'REPEATED_MISTAKE'::"AttemptGrade") AS persistent_repeated_count,
-                    min("completedAt") FILTER (WHERE root_grade = 'REPEATED_MISTAKE'::"AttemptGrade") AS first_repeated_at,
-                    max("completedAt") FILTER (WHERE root_grade = 'REPEATED_MISTAKE'::"AttemptGrade") AS last_repeated_at
+                        WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                          AND root_quality = 'BELOW_STANDARD'::"AttemptQuality" AND root_original_relation = 'SAME_MOVE'::"AttemptOriginalRelation"
+                    ) AS resolved_repeated_count,
+                    count(*) FILTER (WHERE root_quality = 'BELOW_STANDARD'::"AttemptQuality" AND root_original_relation = 'SAME_MOVE'::"AttemptOriginalRelation") AS persistent_repeated_count,
+                    min("completedAt") FILTER (WHERE root_quality = 'BELOW_STANDARD'::"AttemptQuality" AND root_original_relation = 'SAME_MOVE'::"AttemptOriginalRelation") AS first_repeated_at,
+                    max("completedAt") FILTER (WHERE root_quality = 'BELOW_STANDARD'::"AttemptQuality" AND root_original_relation = 'SAME_MOVE'::"AttemptOriginalRelation") AS last_repeated_at
                 FROM semantic
                 GROUP BY "trainingMomentId"
             ), latest_semantic AS (
@@ -417,24 +421,26 @@ export async function readProgressPositionsSummary(args: {
                     position.*,
                     latest."completedAt" AS latest_at,
                     latest."status" AS latest_status,
-                    latest."grade" AS latest_grade,
-                    latest.root_grade AS latest_root_grade,
-                    stats.graded_repeated_count,
+                    latest."quality" AS latest_quality,
+                    latest."tier" AS latest_tier,
+                    latest."originalRelation" AS latest_original_relation,
+                    latest.root_quality AS latest_root_quality,
+                    stats.resolved_repeated_count,
                     (
                         stats.persistent_repeated_count >= 2
                         AND stats.last_repeated_at - stats.first_repeated_at >= interval '1 day'
                     ) AS persistent,
                     CASE
-                        WHEN latest."status" = 'GRADED'::"AttemptStatus"
-                            AND latest.root_grade = 'REPEATED_MISTAKE'::"AttemptGrade" THEN 'LATEST_ORIGINAL_MOVE_REPEATED'
+                        WHEN latest."status" = 'RESOLVED'::"AttemptStatus"
+                            AND latest.root_quality = 'BELOW_STANDARD'::"AttemptQuality" AND latest.root_original_relation = 'SAME_MOVE'::"AttemptOriginalRelation" THEN 'LATEST_ORIGINAL_MOVE_REPEATED'
                         WHEN latest."status" = 'REVEALED'::"AttemptStatus" THEN 'REVEALED_WITHOUT_LATER_SOLVE'
-                        WHEN latest."status" = 'GRADED'::"AttemptStatus"
-                            AND (latest."grade" IS NULL OR latest."grade" NOT IN ('BEST'::"AttemptGrade", 'STRONG'::"AttemptGrade", 'GOOD'::"AttemptGrade"))
+                        WHEN latest."status" = 'RESOLVED'::"AttemptStatus"
+                            AND (latest."quality" IS NULL OR latest."quality" <> 'GOOD'::"AttemptQuality")
                             AND stats.persistent_repeated_count >= 2
                             AND stats.last_repeated_at - stats.first_repeated_at >= interval '1 day'
                             THEN 'PERSISTENT_ORIGINAL_MOVE_REPETITION'
-                        WHEN latest."status" = 'GRADED'::"AttemptStatus"
-                            AND (latest."grade" IS NULL OR latest."grade" NOT IN ('BEST'::"AttemptGrade", 'STRONG'::"AttemptGrade", 'GOOD'::"AttemptGrade"))
+                        WHEN latest."status" = 'RESOLVED'::"AttemptStatus"
+                            AND (latest."quality" IS NULL OR latest."quality" <> 'GOOD'::"AttemptQuality")
                             THEN 'LATEST_FULL_POSITION_NOT_SOLVED'
                         ELSE NULL
                     END AS reason,
@@ -499,8 +505,8 @@ export async function readProgressPositionsSummary(args: {
                                 'sourceGameId', "gameId"::text,
                                 'reason', reason,
                                 'latestTerminalAt', to_char(latest_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
-                                'latestGrade', CASE WHEN latest_status = 'REVEALED'::"AttemptStatus" THEN 'REVEALED' ELSE latest_grade::text END,
-                                'exactOriginalMoveRepeatCount', graded_repeated_count,
+                                'latestStatus', latest_status::text, 'latestQuality', latest_quality::text, 'latestTier', latest_tier::text, 'latestOriginalRelation', latest_original_relation::text,
+                                'exactOriginalMoveRepeatCount', resolved_repeated_count,
                                 'impact', jsonb_build_object('basis', impact_basis, 'bucket', impact_bucket),
                                 'phase', COALESCE("phase"::text, 'UNKNOWN'),
                                 'provider', "provider"::text,
@@ -520,8 +526,8 @@ export async function readProgressPositionsSummary(args: {
                                 'sourceGameId', "gameId"::text,
                                 'reason', reason,
                                 'latestTerminalAt', to_char(latest_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
-                                'latestGrade', CASE WHEN latest_status = 'REVEALED'::"AttemptStatus" THEN 'REVEALED' ELSE latest_grade::text END,
-                                'exactOriginalMoveRepeatCount', graded_repeated_count,
+                                'latestStatus', latest_status::text, 'latestQuality', latest_quality::text, 'latestTier', latest_tier::text, 'latestOriginalRelation', latest_original_relation::text,
+                                'exactOriginalMoveRepeatCount', resolved_repeated_count,
                                 'impact', jsonb_build_object('basis', impact_basis, 'bucket', impact_bucket),
                                 'phase', COALESCE("phase"::text, 'UNKNOWN'),
                                 'provider', "provider"::text,
@@ -573,7 +579,9 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
                     attempt."trainingMomentId",
                     attempt."completedAt",
                     attempt."status",
-                    attempt."grade",
+                    attempt."quality",
+                    attempt."tier",
+                    attempt."originalRelation",
                     attempt."contextConfigHash",
                     attempt."contextSolutionHash",
                     attempt."contextProvider",
@@ -601,17 +609,17 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
                   AND attempt."completedAt" IS NOT NULL
                   AND attempt."completedAt" <= ${args.asOf}
                   AND attempt."status" IN (
-                      'GRADED'::"AttemptStatus",
+                      'RESOLVED'::"AttemptStatus",
                       'REVEALED'::"AttemptStatus",
-                      'UNRESOLVED'::"AttemptStatus"
+                      'UNAVAILABLE'::"AttemptStatus"
                   )
             ), root_steps AS MATERIALIZED (
                 SELECT DISTINCT ON (step."attemptId")
                     step."attemptId",
-                    step."grade"
+                    step."quality",
+                    step."originalRelation"
                 FROM "TrainingAttemptStep" step
                 JOIN selected_attempts attempt ON attempt."id" = step."attemptId"
-                WHERE step."actor" = 'USER'::"AttemptStepActor"
                 ORDER BY step."attemptId", step."stepIndex"
             ), attempts AS MATERIALIZED (
                 SELECT
@@ -619,7 +627,9 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
                     attempt."trainingMomentId",
                     attempt."completedAt",
                     attempt."status",
-                    attempt."grade",
+                    attempt."quality",
+                    attempt."tier",
+                    attempt."originalRelation",
                     attempt."contextConfigHash",
                     attempt."contextSolutionHash",
                     attempt."contextProvider",
@@ -631,7 +641,8 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
                     attempt.impact_key,
                     attempt.source_mix_key,
                     attempt.filtered,
-                    root."grade" AS root_grade
+                    root."quality" AS root_quality,
+                    root."originalRelation" AS root_original_relation
                 FROM selected_attempts attempt
                 LEFT JOIN root_steps root ON root."attemptId" = attempt."id"
             ), current_attempts AS MATERIALIZED (
@@ -651,12 +662,12 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
                   AND (${args.from}::timestamptz IS NULL OR "completedAt" >= ${args.from})
             ), filtered_terminal AS MATERIALIZED (
                 SELECT * FROM attempts
-                WHERE filtered AND "status" IN ('GRADED'::"AttemptStatus", 'REVEALED'::"AttemptStatus")
+                WHERE filtered AND "status" IN ('RESOLVED'::"AttemptStatus", 'REVEALED'::"AttemptStatus")
             ), ordered_terminal AS MATERIALIZED (
                 SELECT terminal.*,
                     lead("completedAt") OVER terminal_order AS next_completed_at,
                     lead("status") OVER terminal_order AS next_status,
-                    lead("grade") OVER terminal_order AS next_grade
+                    lead("quality") OVER terminal_order AS next_quality
                 FROM filtered_terminal terminal
                 WINDOW terminal_order AS (
                     PARTITION BY "trainingMomentId", "contextSolutionHash", "contextConfigHash"
@@ -673,13 +684,13 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
             ), baselines AS MATERIALIZED (
                 SELECT DISTINCT ON ("trainingMomentId") *
                 FROM ordered_terminal
-                WHERE "status" = 'GRADED'::"AttemptStatus"
-                  AND "grade" IN ('BEST'::"AttemptGrade", 'STRONG'::"AttemptGrade", 'GOOD'::"AttemptGrade")
+                WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                  AND "quality" = 'GOOD'::"AttemptQuality"
                 ORDER BY "trainingMomentId", "completedAt", "id"
             ), delayed AS MATERIALIZED (
                 SELECT baseline.*, baseline.next_completed_at AS recheck_at,
                     baseline.next_status AS recheck_status,
-                    baseline.next_grade AS recheck_grade
+                    baseline.next_quality AS recheck_quality
                 FROM baselines baseline
                 WHERE ${args.asOf} - baseline."completedAt" >= interval '7 days'
                   AND (
@@ -687,43 +698,43 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
                       OR baseline.next_completed_at - baseline."completedAt" >= interval '7 days'
                   )
             ), attempt_dimensions AS MATERIALIZED (
-                SELECT 'phase' AS dimension, COALESCE("contextPhase"::text, 'UNKNOWN') AS key, "grade" FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'impact', impact_key, "grade" FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'provider', "contextProvider"::text, "grade" FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'timeClass', "contextTimeClass"::text, "grade" FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
+                SELECT 'phase' AS dimension, COALESCE("contextPhase"::text, 'UNKNOWN') AS key, "quality" FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'impact', impact_key, "quality" FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'provider', "contextProvider"::text, "quality" FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'timeClass', "contextTimeClass"::text, "quality" FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
                 UNION ALL
-                SELECT 'source', source.key, attempt."grade"
+                SELECT 'source', source.key, attempt."quality"
                 FROM current_attempts attempt
                 CROSS JOIN LATERAL (
                     SELECT value::text AS key FROM unnest(attempt."contextSourceKinds") value
                     UNION ALL SELECT 'UNKNOWN' WHERE cardinality(attempt."contextSourceKinds") = 0
                 ) source
-                WHERE attempt."status" = 'GRADED'::"AttemptStatus"
+                WHERE attempt."status" = 'RESOLVED'::"AttemptStatus"
             ), attempt_breakdowns AS (
                 SELECT dimension, jsonb_agg(jsonb_build_object(
                     'key', key,
-                    'gradedAttempts', graded,
+                    'resolvedAttempts', resolved,
                     'solvedAttempts', solved
                 ) ORDER BY key) AS rows
                 FROM (
-                    SELECT dimension, key, count(*) graded,
-                        count(*) FILTER (WHERE "grade" IN ('BEST'::"AttemptGrade", 'STRONG'::"AttemptGrade", 'GOOD'::"AttemptGrade")) solved
+                    SELECT dimension, key, count(*) resolved,
+                        count(*) FILTER (WHERE "quality" = 'GOOD'::"AttemptQuality") solved
                     FROM attempt_dimensions
                     GROUP BY dimension, key
                 ) grouped
                 GROUP BY dimension
             ), current_mix_rows AS MATERIALIZED (
-                SELECT 'provider' dimension, "contextProvider"::text key FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'timeClass', "contextTimeClass"::text FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'source', source_mix_key FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'phase', COALESCE("contextPhase"::text, 'UNKNOWN') FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'impact', impact_key FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
+                SELECT 'provider' dimension, "contextProvider"::text key FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'timeClass', "contextTimeClass"::text FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'source', source_mix_key FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'phase', COALESCE("contextPhase"::text, 'UNKNOWN') FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'impact', impact_key FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
             ), previous_mix_rows AS MATERIALIZED (
-                SELECT 'provider' dimension, "contextProvider"::text key FROM previous_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'timeClass', "contextTimeClass"::text FROM previous_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'source', source_mix_key FROM previous_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'phase', COALESCE("contextPhase"::text, 'UNKNOWN') FROM previous_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
-                UNION ALL SELECT 'impact', impact_key FROM previous_attempts WHERE "status" = 'GRADED'::"AttemptStatus"
+                SELECT 'provider' dimension, "contextProvider"::text key FROM previous_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'timeClass', "contextTimeClass"::text FROM previous_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'source', source_mix_key FROM previous_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'phase', COALESCE("contextPhase"::text, 'UNKNOWN') FROM previous_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
+                UNION ALL SELECT 'impact', impact_key FROM previous_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus"
             ), current_mix AS (
                 SELECT dimension, jsonb_agg(jsonb_build_object('key', key, 'count', amount) ORDER BY key) rows
                 FROM (SELECT dimension, key, count(*) amount FROM current_mix_rows GROUP BY dimension, key) grouped GROUP BY dimension
@@ -738,47 +749,43 @@ function progressAttemptsSummaryQuery(args: ProgressAttemptsSummaryArgs) {
                 'currentByProvider', COALESCE((SELECT jsonb_object_agg("contextProvider"::text, amount) FROM (SELECT "contextProvider", count(*) amount FROM unfiltered_current GROUP BY "contextProvider") grouped), '{}'::jsonb),
                 'currentByTimeClass', COALESCE((SELECT jsonb_object_agg("contextTimeClass"::text, amount) FROM (SELECT "contextTimeClass", count(*) amount FROM unfiltered_current GROUP BY "contextTimeClass") grouped), '{}'::jsonb),
                 'currentPractice', jsonb_build_object(
-                    'graded', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" IS NOT NULL),
+                    'resolved', (SELECT count(*) FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "quality" <> 'UNKNOWN'::"AttemptQuality"),
                     'revealed', (SELECT count(*) FROM current_attempts WHERE "status" = 'REVEALED'::"AttemptStatus"),
-                    'unresolved', (SELECT count(*) FROM current_attempts WHERE "status" = 'UNRESOLVED'::"AttemptStatus"),
-                    'solved', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" IN ('BEST'::"AttemptGrade", 'STRONG'::"AttemptGrade", 'GOOD'::"AttemptGrade")),
-                    'rootObserved', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" IS NOT NULL AND root_grade IS NOT NULL),
-                    'rootSolved', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" IS NOT NULL AND root_grade IN ('BEST'::"AttemptGrade", 'STRONG'::"AttemptGrade", 'GOOD'::"AttemptGrade")),
-                    'rootRepeated', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" IS NOT NULL AND root_grade = 'REPEATED_MISTAKE'::"AttemptGrade"),
-                    'gradeCounts', jsonb_build_object(
-                        'BEST', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'BEST'::"AttemptGrade"),
-                        'STRONG', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'STRONG'::"AttemptGrade"),
-                        'GOOD', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'GOOD'::"AttemptGrade"),
-                        'IMPROVED', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'IMPROVED'::"AttemptGrade"),
-                        'REPEATED_MISTAKE', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'REPEATED_MISTAKE'::"AttemptGrade"),
-                        'DIFFERENT_MISTAKE', (SELECT count(*) FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'DIFFERENT_MISTAKE'::"AttemptGrade")
+                    'unavailable', (SELECT count(*) FROM current_attempts WHERE "status" = 'UNAVAILABLE'::"AttemptStatus"),
+                    'solved', (SELECT count(*) FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "quality" = 'GOOD'::"AttemptQuality"),
+                    'rootObserved', (SELECT count(*) FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "quality" <> 'UNKNOWN'::"AttemptQuality" AND root_quality <> 'UNKNOWN'::"AttemptQuality"),
+                    'rootSolved', (SELECT count(*) FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "quality" <> 'UNKNOWN'::"AttemptQuality" AND root_quality = 'GOOD'::"AttemptQuality"),
+                    'rootRepeated', (SELECT count(*) FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "quality" <> 'UNKNOWN'::"AttemptQuality" AND root_quality = 'BELOW_STANDARD'::"AttemptQuality" AND root_original_relation = 'SAME_MOVE'::"AttemptOriginalRelation"),
+                    'tierCounts', jsonb_build_object(
+                        'BEST', (SELECT count(*) FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "tier" = 'BEST'::"AttemptTier"),
+                        'STRONG', (SELECT count(*) FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "tier" = 'STRONG'::"AttemptTier"),
+                        'GOOD', (SELECT count(*) FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "tier" = 'GOOD'::"AttemptTier"),
+                        'SUBPAR', (SELECT count(*) FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "tier" = 'SUBPAR'::"AttemptTier")
                     )
                 ),
                 'previousPractice', jsonb_build_object(
-                    'graded', (SELECT count(*) FROM previous_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" IS NOT NULL),
-                    'solved', (SELECT count(*) FROM previous_attempts WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" IN ('BEST'::"AttemptGrade", 'STRONG'::"AttemptGrade", 'GOOD'::"AttemptGrade"))
+                    'resolved', (SELECT count(*) FROM previous_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "quality" <> 'UNKNOWN'::"AttemptQuality"),
+                    'solved', (SELECT count(*) FROM previous_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "quality" = 'GOOD'::"AttemptQuality")
                 ),
                 'firstOutcome', jsonb_build_object(
                     'positions', (SELECT count(*) FROM first_current),
-                    'graded', (SELECT count(*) FROM first_current WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" IS NOT NULL),
+                    'resolved', (SELECT count(*) FROM first_current WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "quality" <> 'UNKNOWN'::"AttemptQuality"),
                     'revealed', (SELECT count(*) FROM first_current WHERE "status" = 'REVEALED'::"AttemptStatus"),
-                    'solved', (SELECT count(*) FROM first_current WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" IN ('BEST'::"AttemptGrade", 'STRONG'::"AttemptGrade", 'GOOD'::"AttemptGrade")),
-                    'gradeCounts', jsonb_build_object(
-                        'BEST', (SELECT count(*) FROM first_current WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'BEST'::"AttemptGrade"),
-                        'STRONG', (SELECT count(*) FROM first_current WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'STRONG'::"AttemptGrade"),
-                        'GOOD', (SELECT count(*) FROM first_current WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'GOOD'::"AttemptGrade"),
-                        'IMPROVED', (SELECT count(*) FROM first_current WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'IMPROVED'::"AttemptGrade"),
-                        'REPEATED_MISTAKE', (SELECT count(*) FROM first_current WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'REPEATED_MISTAKE'::"AttemptGrade"),
-                        'DIFFERENT_MISTAKE', (SELECT count(*) FROM first_current WHERE "status" = 'GRADED'::"AttemptStatus" AND "grade" = 'DIFFERENT_MISTAKE'::"AttemptGrade")
+                    'solved', (SELECT count(*) FROM first_current WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "quality" = 'GOOD'::"AttemptQuality"),
+                    'tierCounts', jsonb_build_object(
+                        'BEST', (SELECT count(*) FROM first_current WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "tier" = 'BEST'::"AttemptTier"),
+                        'STRONG', (SELECT count(*) FROM first_current WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "tier" = 'STRONG'::"AttemptTier"),
+                        'GOOD', (SELECT count(*) FROM first_current WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "tier" = 'GOOD'::"AttemptTier"),
+                        'SUBPAR', (SELECT count(*) FROM first_current WHERE "status" = 'RESOLVED'::"AttemptStatus" AND "tier" = 'SUBPAR'::"AttemptTier")
                     )
                 ),
                 'delayedRecheck', jsonb_build_object(
                     'eligibleBaselines', (SELECT count(*) FROM delayed),
                     'observedRechecks', (SELECT count(*) FROM delayed WHERE recheck_at IS NOT NULL AND recheck_at - "completedAt" <= interval '30 days'),
-                    'observedSolved', (SELECT count(*) FROM delayed WHERE recheck_at IS NOT NULL AND recheck_at - "completedAt" <= interval '30 days' AND recheck_status = 'GRADED'::"AttemptStatus" AND recheck_grade IN ('BEST'::"AttemptGrade", 'STRONG'::"AttemptGrade", 'GOOD'::"AttemptGrade"))
+                    'observedSolved', (SELECT count(*) FROM delayed WHERE recheck_at IS NOT NULL AND recheck_at - "completedAt" <= interval '30 days' AND recheck_status = 'RESOLVED'::"AttemptStatus" AND recheck_quality = 'GOOD'::"AttemptQuality")
                 ),
-                'currentConfig', COALESCE((SELECT jsonb_agg(jsonb_build_object('key', "contextConfigHash", 'count', amount) ORDER BY "contextConfigHash") FROM (SELECT "contextConfigHash", count(*) amount FROM current_attempts WHERE "status" = 'GRADED'::"AttemptStatus" GROUP BY "contextConfigHash") grouped), '[]'::jsonb),
-                'previousConfig', COALESCE((SELECT jsonb_agg(jsonb_build_object('key', "contextConfigHash", 'count', amount) ORDER BY "contextConfigHash") FROM (SELECT "contextConfigHash", count(*) amount FROM previous_attempts WHERE "status" = 'GRADED'::"AttemptStatus" GROUP BY "contextConfigHash") grouped), '[]'::jsonb),
+                'currentConfig', COALESCE((SELECT jsonb_agg(jsonb_build_object('key', "contextConfigHash", 'count', amount) ORDER BY "contextConfigHash") FROM (SELECT "contextConfigHash", count(*) amount FROM current_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" GROUP BY "contextConfigHash") grouped), '[]'::jsonb),
+                'previousConfig', COALESCE((SELECT jsonb_agg(jsonb_build_object('key', "contextConfigHash", 'count', amount) ORDER BY "contextConfigHash") FROM (SELECT "contextConfigHash", count(*) amount FROM previous_attempts WHERE "status" = 'RESOLVED'::"AttemptStatus" GROUP BY "contextConfigHash") grouped), '[]'::jsonb),
                 'currentMix', COALESCE((SELECT jsonb_object_agg(dimension, rows) FROM current_mix), '{}'::jsonb),
                 'previousMix', COALESCE((SELECT jsonb_object_agg(dimension, rows) FROM previous_mix), '{}'::jsonb),
                 'breakdowns', COALESCE((SELECT jsonb_object_agg(dimension, rows) FROM attempt_breakdowns), '{}'::jsonb)

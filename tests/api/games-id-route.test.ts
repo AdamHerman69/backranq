@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createJsonRequest, readJson } from '../helpers/route';
+import { hashSourcePgn } from '@/lib/chess/pgn';
 import {
     mockAuthModule,
     mockPrismaModule,
@@ -97,11 +98,19 @@ describe('GET /api/games/[id]', () => {
             analyzedAt: '2026-07-04T12:00:00.000Z',
         };
         prismaMock.analyzedGame.findFirst.mockResolvedValue(game);
+        prismaMock.trainingMoment.findMany.mockResolvedValue([{ decisionPly: 6 }, { decisionPly: 12 }]);
 
         const response = await route.GET(createGetRequest(), routeParams());
 
         expect(response.status).toBe(200);
-        await expect(readJson(response)).resolves.toEqual({ game });
+        await expect(readJson(response)).resolves.toEqual({ game, ownerId: 'user-1', reassessment: {
+            sourcePgnHash: hashSourcePgn(game.pgn), decisionPlies: [6, 12],
+        } });
+        expect(response.headers.get('cache-control')).toBe('private, no-store');
+        expect(prismaMock.trainingMoment.findMany).toHaveBeenCalledWith({
+            where: { userId: 'user-1', gameId: GAME_ID, sourcePgnHash: hashSourcePgn(game.pgn), archivedAt: null, currentSolutionRevisionId: { not: null } },
+            select: { decisionPly: true }, orderBy: { decisionPly: 'asc' },
+        });
         expect(prismaMock.analyzedGame.findFirst).toHaveBeenCalledWith(
             expect.objectContaining({
                 where: { id: GAME_ID, userId: 'user-1' },

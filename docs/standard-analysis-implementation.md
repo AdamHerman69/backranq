@@ -1,5 +1,11 @@
 Implementace schváleného návrhu extrakce — 2026-09-06
 
+Cílový kontrakt v4, reuse potvrzovacích výsledků a rychlé Practice jsou popsány
+v [nové specifikaci](extractor-practice-target-spec.md) a
+[implementačním plánu](extractor-practice-implementation-plan.md).
+Tyto dokumenty jsou plán, nikoli záznam dokončené implementace. Následující
+text popisuje dosavadní implementaci.
+
 Výchozí revize: `873912414c5498fa1c94e575ed9847884cad190b`.
 Rozsah odpovídá `standard-analysis-extraction-design.md`: společná extrakce,
 browser/server engine, persistence, předání do Practice a historie pokusů.

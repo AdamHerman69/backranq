@@ -1,8 +1,9 @@
-import type { TrainingAttemptWriteRequest } from '@/lib/training/api';
+import type { TrainingAttemptWriteRequest } from './attemptApi';
+import { parseRecordTrainingAttemptRequest, parseEnrichTrainingAttemptRequest } from './apiValidation';
+import { canonicalJson } from './practiceContract';
 import { TrainingClientError } from '@/lib/training/client';
-import { parseTrainingCompletionTime } from '@/lib/training/completionTime';
 
-export const TRAINING_QUEUE_VERSION = 5 as const;
+export const TRAINING_QUEUE_VERSION = 6 as const;
 export const TRAINING_QUEUE_MAX_ENTRIES = 100;
 
 export type TrainingAttemptOutboxError = {
@@ -34,11 +35,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isAttemptRequest(value: unknown): value is TrainingAttemptWriteRequest {
-    if (!isRecord(value)) return false;
-    if (typeof value.clientAttemptId !== 'string' || typeof value.solutionRevisionId !== 'string') return false;
-    return value.kind === 'RECORD'
-        ? parseTrainingCompletionTime(value.completedAt) !== null && (value.status === 'GRADED' || value.status === 'REVEALED') && Array.isArray(value.steps)
-        : value.kind === 'ENRICH' && parseTrainingCompletionTime(value.evaluatedAt) !== null && typeof value.clientEvidenceId === 'string' && isRecord(value.clientEvidence);
+    return parseRecordTrainingAttemptRequest(value) !== null || parseEnrichTrainingAttemptRequest(value) !== null;
 
 }
 
@@ -87,23 +84,26 @@ export function parseTrainingAttemptQueue(
         }
         entries.push(value as QueuedTrainingAttempt);
     }
-    return entries;
+    return orderTrainingAttemptQueue(entries);
 }
 
 export function enqueueTrainingAttempt(
     entries: readonly QueuedTrainingAttempt[],
     next: QueuedTrainingAttempt
 ): QueuedTrainingAttempt[] {
-    const duplicate = entries.some(
+    const duplicate = entries.find(
         (entry) =>
+            entry.ownerId === next.ownerId &&
             entry.momentId === next.momentId &&
             entry.request.clientAttemptId === next.request.clientAttemptId &&
             trainingAttemptQueueIdentity(entry.request) === trainingAttemptQueueIdentity(next.request)
     );
-    if (duplicate || entries.length >= TRAINING_QUEUE_MAX_ENTRIES) {
+    if (duplicate && canonicalJson(duplicate.request) !== canonicalJson(next.request)) throw new Error('Played event identity conflict');
+    if (entries.length >= TRAINING_QUEUE_MAX_ENTRIES && !duplicate) throw new Error('Practice offline queue is full');
+    if (duplicate) {
         return [...entries];
     }
-    return [...entries, next];
+    return orderTrainingAttemptQueue([...entries, next]);
 }
 
 export function classifyTrainingWriteFailure(
@@ -205,5 +205,17 @@ function sameQueuedTrainingAttempt(
 }
 
 export function trainingAttemptQueueIdentity(request: TrainingAttemptWriteRequest): string {
-    return `${request.clientAttemptId}:${request.kind}:${request.kind === 'ENRICH' ? request.clientEvidenceId : ''}`;
+    return `${request.clientAttemptId}:${request.momentRevisionId}:${request.kind}:${request.kind === 'ENRICH' ? request.eventId : request.kind === 'RECORD' ? request.stepIndex : ''}`;
+}
+
+/** Keep each attempt's causal writes together: RECORD precedes that move's ENRICH. */
+export function orderTrainingAttemptQueue(entries: readonly QueuedTrainingAttempt[]): QueuedTrainingAttempt[] {
+    const groups = new Map<string, QueuedTrainingAttempt[]>();
+    for (const entry of entries) {
+        const key = `${entry.ownerId}:${entry.momentId}:${entry.request.clientAttemptId}`;
+        groups.set(key, [...(groups.get(key) ?? []), entry]);
+    }
+    const ordinal = (request: TrainingAttemptWriteRequest) => request.kind === 'REVEAL' ? Number.MAX_SAFE_INTEGER : request.stepIndex;
+    return [...groups.values()].flatMap(group => group.sort((a, b) => ordinal(a.request) - ordinal(b.request) ||
+        (a.request.kind === 'RECORD' ? -1 : b.request.kind === 'RECORD' ? 1 : a.request.kind === 'ENRICH' && b.request.kind === 'ENRICH' ? a.request.sequence - b.request.sequence : 0)));
 }

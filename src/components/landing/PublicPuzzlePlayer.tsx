@@ -15,11 +15,13 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { usePublicPuzzleSession } from '@/lib/hooks/usePublicPuzzleSession';
+import type { PuzzleEngineHandoff } from '@/lib/onboarding/puzzleEngineHandoff';
 import type { LandingPuzzleDto } from '@/lib/onboarding/contracts';
 import { legalMoveFromInput } from '@/lib/training/boardInput';
 import { bestMoveReviewArrows } from '@/lib/training/boardPresentation';
 import { feedbackForTrainingState } from '@/lib/training/trainerState';
 import { cn } from '@/lib/utils';
+import { formatLiveEvaluation } from '@/lib/training/presentation';
 import {
     PersonalGameScanHeader,
     PersonalGameScanPlaceholder,
@@ -31,6 +33,7 @@ import {
 export function PublicPuzzlePlayer({
     puzzle,
     personalScan,
+    engineHandoff,
     onTerminal,
     onAttemptStarted,
     statusSlot,
@@ -38,12 +41,13 @@ export function PublicPuzzlePlayer({
 }: {
     puzzle: LandingPuzzleDto;
     personalScan?: ScanState;
+    engineHandoff?: PuzzleEngineHandoff | null;
     onTerminal?: () => void;
     onAttemptStarted?: () => void;
     statusSlot?: ReactNode;
     compactLayout?: boolean;
 }) {
-    const session = usePublicPuzzleSession(personalScan ? null : puzzle.prompt);
+    const session = usePublicPuzzleSession(personalScan ? null : puzzle.prompt, engineHandoff);
     const playback = useScanPlayback(personalScan);
     const scanPreview = playback.displayed?.progress.preview;
     const sessionActive = !personalScan && session.prompt === puzzle.prompt;
@@ -120,7 +124,7 @@ export function PublicPuzzlePlayer({
             session.presentation.stage !== 'USER_MOVE'
         ) {
             return {
-                message: feedback.message,
+                message: session.liveEvaluation ? formatLiveEvaluation(session.liveEvaluation.score, session.prompt?.sideToMove ?? 'w') : feedback.message,
                 tone: 'neutral' as const,
                 busy: true,
             };
@@ -252,6 +256,11 @@ export function PublicPuzzlePlayer({
                     </div>
                     {personalScan && !scanPreview ? <PersonalGameScanPlaceholder personal={personalScan} /> : null}
                     </div>
+                    {sessionActive && session.refinement === 'CORRECTED' ? (
+                        <p className="mt-2 text-sm text-muted-foreground" role="status">
+                            Further analysis corrected the initial verdict. Your attempt is preserved.
+                        </p>
+                    ) : null}
                     {personalScan ? <PersonalGameScanStatus personal={personalScan} playback={playback} /> :
                     <div className="mt-3 flex flex-wrap gap-2">
                         {sessionActive && session.canReveal ? (

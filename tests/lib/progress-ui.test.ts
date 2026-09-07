@@ -47,9 +47,9 @@ function actionSnapshot(
             fresh: overrides.fresh ?? 0,
         },
         practice: {
-            gradedAttempts: 0,
+            resolvedAttempts: 0,
             revealedAttempts: 0,
-            unresolvedExcluded: 0,
+            unavailableExcluded: 0,
         },
         actions: {
             needsAnotherLook: attemptedPositionId

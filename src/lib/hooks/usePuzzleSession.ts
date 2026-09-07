@@ -1,62 +1,27 @@
 'use client';
 
-import {
-    useCallback,
-    useEffect,
-    useMemo,
-    useReducer,
-    useRef,
-    useState,
-} from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Chess } from 'chess.js';
-
 import { StockfishClient } from '@/lib/analysis/stockfishClient';
-import type {
-    GradedPracticeResult,
-    PracticeResult,
-    RecordTrainingAttemptRequest,
-    EnrichTrainingAttemptRequest,
-    RecordedTrainingAttemptStepDto,
-    RevealedPracticeResult,
-    TrainingPromptDto,
-    TrainingReviewDto,
-    TrainingSolutionTreeNodeDto,
-} from '@/lib/training/api';
+import { AnalysisWorkPlanner } from '@/lib/analysis/analysisWorkPlanner';
+import type { GradedPracticeResult, PracticeResult, RecordTrainingAttemptRequest, EnrichTrainingAttemptRequest,
+    RevealedPracticeResult, TrainingPromptDto, TrainingReviewDto, TrainingSolutionTreeNodeDto } from '@/lib/training/api';
 import { newClientId } from '@/lib/training/clientIds';
-import {
-    aggregateTrainingGrade,
-    gradeKnownLocalMove,
-    gradeUnknownLocalMove,
-    localContinuationForMove,
-    type LocalMoveEvaluation,
-} from '@/lib/training/localGrading';
+import { createLocalAnalysisSession, gradeKnownLocalMove, gradeUnknownLocalMove, localContinuationForMove,
+    type LocalMoveEvaluation, type LocalGradingUpdate } from '@/lib/training/localGrading';
 import { buildPostMoveStory } from '@/lib/training/postMoveStory';
-import {
-    boardPresentationDelay,
-    boardPresentationReducer,
-    initialBoardPresentation,
-} from '@/lib/training/boardPresentation';
-import {
-    reviewFromTrainingResponse,
-    type TrainerAttemptPhase,
-} from '@/lib/training/trainerState';
-
-type Submission = {
-    node: TrainingSolutionTreeNodeDto;
-    stepIndex: number;
-    moveUci: string;
-    timeSpentMs: number;
-    fenBefore: string;
-    fenAfterMove: string;
-    presentationSequenceId: number;
-};
+import { boardPresentationReducer, initialBoardPresentation } from '@/lib/training/boardPresentation';
+import { reviewFromTrainingResponse, type TrainerAttemptPhase } from '@/lib/training/trainerState';
+import type { PovScore } from '@/lib/training/contracts';
+import { lookupAnswer } from '@/lib/training/answerIndex';
+import type { PracticeMomentRevision, Tier } from '@/lib/training/practiceContract';
+import { practiceScoreToWhitePov, referenceProjectionForPracticeComparison } from '@/lib/training/practiceReview';
 
 export type PuzzleSessionCompletion = {
     prompt: TrainingPromptDto;
     terminalReason: 'MOVE_SUBMITTED' | 'REVEALED';
     request: RecordTrainingAttemptRequest;
 };
-
 export type PuzzleSessionOptions = {
     initialPrompt?: TrainingPromptDto | null;
     unresolvedMode?: 'RETRY' | 'REVEAL';
@@ -65,749 +30,300 @@ export type PuzzleSessionOptions = {
     onRefined?: (prompt: TrainingPromptDto, request: EnrichTrainingAttemptRequest) => void;
     onCompleted?: (completion: PuzzleSessionCompletion) => void;
 };
-
-export function reviewWithLocalReference(
-    review: TrainingReviewDto,
-    evaluation: LocalMoveEvaluation,
-    decisionIndex: number
-): TrainingReviewDto {
-    // The story and its arrows describe the root decision, never a later node.
-    if (decisionIndex !== 0) return review;
-    const evidence = evaluation.clientEvidence;
-    if (!evidence) return review;
-    const reference = evidence.localReference;
-    const accepted = evaluation.result.status === 'GRADED' && evaluation.result.accepted;
-    return { ...review, bestMoveUci: reference.bestMoveUci, bestLineUci: [reference.bestMoveUci], scoreAtStart: reference.bestScore, acceptedMovesUci: [...new Set([reference.bestMoveUci, ...(accepted ? [evidence.metrics.moveUci] : [])])], acceptedMovesComplete: false };
+type Submission = { node: TrainingSolutionTreeNodeDto; stepIndex: number; moveUci: string; fenAfterMove: string;
+    sequenceId: number; generation: number; attemptId: string; prompt: TrainingPromptDto; eventSequence: number;
+    lastEventId: string | null; lastEvaluationKey: string | null; lastSupportedQuality: 'GOOD' | 'BELOW_STANDARD' | null };
+function rootNode(prompt: TrainingPromptDto | null): TrainingSolutionTreeNodeDto | null {
+    const node = prompt?.grading.continuation.nodes.find(item => item.contextId === prompt.grading.source.contextId && item.role === 'USER');
+    if (node) return { ...node, ply: 0 };
+    if (!prompt) return null;
+    const source = prompt.grading.source;
+    return { id: source.contextId, contextId: source.contextId, fen: source.fen, positionHistory: source.positionHistory,
+        trainingSide: source.trainingSide, role: 'USER', answerIndex: prompt.grading.rootAnswerIndex, ply: 0 };
 }
-
-function gradingSource(
-    steps: readonly RecordedTrainingAttemptStepDto[]
-): 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE' {
-    const sources = steps.flatMap((step) =>
-        step.source ? [step.source] : []
-    );
-    if (sources.includes('CLIENT_EVALUATED')) return 'CLIENT_EVALUATED';
-    if (sources.includes('TABLEBASE')) return 'TABLEBASE';
-    return 'PRECOMPUTED';
-}
-
-function prefersReducedMotion(): boolean {
-    return (
-        typeof window !== 'undefined' &&
-        window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
-    );
-}
-
-function nextPaint(): Promise<void> {
-    if (
-        typeof window === 'undefined' ||
-        typeof window.requestAnimationFrame !== 'function'
-    ) {
-        return Promise.resolve();
-    }
-    return new Promise((resolve) => {
-        window.requestAnimationFrame(() => {
-            window.requestAnimationFrame(() => resolve());
-        });
-    });
-}
-
-async function waitForBoardPresentation(
-    stage: 'MOVE' | 'GRADE'
-): Promise<void> {
-    await nextPaint();
-    const delay = boardPresentationDelay(stage, prefersReducedMotion());
-    if (delay === 0) return;
-    await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+export function reviewWithLocalReference(review: TrainingReviewDto, evaluation: LocalMoveEvaluation, decisionIndex: number, manifest: PracticeMomentRevision): TrainingReviewDto {
+    if (decisionIndex !== 0 || !evaluation.patch) return review;
+    const patch = evaluation.patch;
+    const reference = patch.assessments.find(item => item.id === patch.frame.referenceAssessmentId);
+    if (!reference) return review;
+    // The grading path already validated immutable patch conflicts. Merge raw
+    // records here so paid-only root evidence and physical sequences survive.
+    const evidence = { searches: { ...manifest.evidence.searches, ...patch.evidence.searches },
+        observations: { ...manifest.evidence.observations, ...patch.evidence.observations },
+        exact: { ...manifest.evidence.exact, ...patch.evidence.exact } };
+    const projection = referenceProjectionForPracticeComparison({ assessment: evaluation.assessment, reference,
+        frame: patch.frame, evidence, legalMovesUci: manifest.rootAnswerIndex.legalMovesUci,
+        trainingSide: manifest.source.trainingSide, referenceMoveUci: reference.moveUci });
+    const pv = projection.pvUci ?? (reference.moveUci === review.bestMoveUci ? review.bestLineUci : [reference.moveUci]);
+    return { ...review, bestMoveUci: reference.moveUci, bestLineUci: pv, scoreAtStart: practiceScoreToWhitePov(projection.score),
+        acceptedMovesUci: patch.assessments.filter(item => item.quality === 'GOOD' && item.qualitySupport === 'SUPPORTED').map(item => item.moveUci), acceptedMovesComplete: false };
 }
 
 export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
-    const [prompt, setPrompt] = useState<TrainingPromptDto | null>(
-        options.initialPrompt ?? null
-    );
-    const [solveFen, setSolveFen] = useState<string | null>(
-        options.initialPrompt?.fen ?? null
-    );
-    const [displayFen, setDisplayFen] = useState<string | null>(
-        options.initialPrompt?.fen ?? null
-    );
-    const [phase, setPhase] =
-        useState<TrainerAttemptPhase>('READY');
-    const [response, setResponse] = useState<
-        PracticeResult | RevealedPracticeResult | null
-    >(null);
+    const [prompt, setPrompt] = useState<TrainingPromptDto | null>(options.initialPrompt ?? null);
+    const [solveFen, setSolveFen] = useState<string | null>(options.initialPrompt?.fen ?? null);
+    const [displayFen, setDisplayFen] = useState<string | null>(options.initialPrompt?.fen ?? null);
+    const [phase, setPhase] = useState<TrainerAttemptPhase>('READY');
+    const [response, setResponse] = useState<PracticeResult | RevealedPracticeResult | null>(null);
     const [reviewFallback, setReviewFallback] = useState(false);
     const [presentationSettled, setPresentationSettled] = useState(true);
-    const [presentation, dispatchPresentation] = useReducer(
-        boardPresentationReducer,
-        undefined,
-        () => initialBoardPresentation()
-    );
-    const [engineClient, setEngineClient] =
-        useState<StockfishClient | null>(null);
-
-    const promptRef = useRef<TrainingPromptDto | null>(
-        options.initialPrompt ?? null
-    );
-    const currentNodeRef = useRef<TrainingSolutionTreeNodeDto | null>(
-        options.initialPrompt?.grading.solutionTree ?? null
-    );
-    const stepsRef = useRef<RecordedTrainingAttemptStepDto[]>([]);
-    const lastSubmissionRef = useRef<Submission | null>(null);
-    const clientAttemptIdRef = useRef<string | null>(null);
-    const promptStartedAtRef = useRef(Date.now());
+    const [presentation, dispatchPresentation] = useReducer(boardPresentationReducer, undefined, () => initialBoardPresentation());
+    const [engineClient, setEngineClient] = useState<StockfishClient | null>(null);
+    const [liveEvaluation, setLiveEvaluation] = useState<{ score: PovScore; depth: number } | null>(null);
+    const promptRef = useRef(prompt);
+    const nodeRef = useRef(rootNode(prompt));
     const engineRef = useRef<StockfishClient | null>(null);
     const generationRef = useRef(0);
-    const moveSubmissionInFlightRef = useRef(false);
-    const gradingInFlightRef = useRef(false);
-    const presentationSequenceRef = useRef(0);
-    const onCompletedRef = useRef(options.onCompleted);
-    onCompletedRef.current = options.onCompleted;
-    const onRefinedRef = useRef(options.onRefined);
-    onRefinedRef.current = options.onRefined;
+    const sequenceRef = useRef(0);
+    const attemptIdRef = useRef<string | null>(null);
+    const userStepIndexRef = useRef(0);
+    const startedAt = useRef(Date.now());
+    const locked = useRef(false);
+    const abortRef = useRef<AbortController | null>(null);
+    const plannerRef = useRef<AnalysisWorkPlanner | null>(null);
+    const analysisRef = useRef(createLocalAnalysisSession());
+    const submissionRef = useRef<Submission | null>(null);
+    const rootReviewRef = useRef<TrainingReviewDto | null>(null);
+    const rootGradeRef = useRef<Tier | null>(null);
+    const reviewPositionRef = useRef<'DECISION' | 'ATTEMPT' | null>(null);
+    const onCompleted = useRef(options.onCompleted); onCompleted.current = options.onCompleted;
+    const onRefined = useRef(options.onRefined); onRefined.current = options.onRefined;
 
     const getOrCreateEngine = useCallback(() => {
         if (engineRef.current) return engineRef.current;
-        const engine = new StockfishClient();
-        engineRef.current = engine;
-        setEngineClient(engine);
-        return engine;
+        const engine = new StockfishClient(); engineRef.current = engine; setEngineClient(engine); return engine;
     }, []);
-
     const stopEngine = useCallback(() => {
-        engineRef.current?.terminate();
-        engineRef.current = null;
-        setEngineClient(null);
+        engineRef.current?.terminate(); engineRef.current = null; setEngineClient(null);
     }, []);
-
-    const activatePrompt = useCallback((next: TrainingPromptDto) => {
-        engineRef.current?.cancelAll();
+    const reset = useCallback((next: TrainingPromptDto | null) => {
         generationRef.current += 1;
-        presentationSequenceRef.current += 1;
-        promptRef.current = next;
-        currentNodeRef.current = next.grading.solutionTree;
-        stepsRef.current = [];
-        lastSubmissionRef.current = null;
-        clientAttemptIdRef.current = null;
-        moveSubmissionInFlightRef.current = false;
-        gradingInFlightRef.current = false;
-        promptStartedAtRef.current = Date.now();
-        setPrompt(next);
-        setSolveFen(next.fen);
-        setDisplayFen(next.fen);
-        setPhase('READY');
-        setResponse(null);
-        setReviewFallback(false);
-        setPresentationSettled(true);
-        dispatchPresentation({
-            type: 'RESET',
-            sequenceId: presentationSequenceRef.current,
-        });
-    }, []);
-
-    const clearPrompt = useCallback(() => {
+        abortRef.current?.abort(); plannerRef.current?.cancelGeneration();
         engineRef.current?.cancelAll();
-        generationRef.current += 1;
-        presentationSequenceRef.current += 1;
-        promptRef.current = null;
-        currentNodeRef.current = null;
-        stepsRef.current = [];
-        lastSubmissionRef.current = null;
-        clientAttemptIdRef.current = null;
-        moveSubmissionInFlightRef.current = false;
-        gradingInFlightRef.current = false;
-        setPrompt(null);
-        setSolveFen(null);
-        setDisplayFen(null);
-        setPhase('READY');
-        setResponse(null);
-        setReviewFallback(false);
-        setPresentationSettled(true);
-        dispatchPresentation({
-            type: 'RESET',
-            sequenceId: presentationSequenceRef.current,
-        });
+        analysisRef.current = createLocalAnalysisSession(); plannerRef.current = null;
+        promptRef.current = next; nodeRef.current = rootNode(next); attemptIdRef.current = null;
+        submissionRef.current = null; rootReviewRef.current = null; rootGradeRef.current = null; reviewPositionRef.current = null; userStepIndexRef.current = 0; locked.current = false; startedAt.current = Date.now();
+        setPrompt(next); setSolveFen(next?.fen ?? null); setDisplayFen(next?.fen ?? null);
+        setPhase('READY'); setResponse(null); setReviewFallback(false); setLiveEvaluation(null); setPresentationSettled(true);
+        dispatchPresentation({ type: 'RESET', sequenceId: ++sequenceRef.current });
     }, []);
+    const activatePrompt = useCallback((next: TrainingPromptDto, transferredEngine?: StockfishClient | null) => {
+        reset(next);
+        if (transferredEngine && engineRef.current !== transferredEngine) {
+            engineRef.current?.terminate();
+            engineRef.current = transferredEngine; setEngineClient(transferredEngine);
+        }
+    }, [reset]);
+    const clearPrompt = useCallback(() => reset(null), [reset]);
 
     useEffect(() => {
-        if (!options.prewarmEngine || !prompt || engineRef.current) return;
-        const timeoutId = window.setTimeout(() => {
-            try {
-                const engine = getOrCreateEngine();
-                void engine.getIdentity().catch(() => {
-                    if (engineRef.current === engine) {
-                        stopEngine();
-                    }
-                });
-            } catch {
-                // Unknown moves can retry engine creation when submitted.
-            }
+        if (!options.prewarmEngine || !prompt || document.hidden) return;
+        const generation = generationRef.current;
+        const timer = window.setTimeout(() => {
+            if (generation !== generationRef.current || document.hidden) return;
+            try { void getOrCreateEngine().getIdentity().catch(() => undefined); } catch { /* A played move can retry startup. */ }
         }, 0);
-        return () => window.clearTimeout(timeoutId);
-    }, [getOrCreateEngine, options.prewarmEngine, prompt, stopEngine]);
+        return () => window.clearTimeout(timer);
+    }, [getOrCreateEngine, options.prewarmEngine, prompt]);
+    useEffect(() => () => {
+        generationRef.current += 1; abortRef.current?.abort(); plannerRef.current?.cancelGeneration(); engineRef.current?.terminate();
+    }, []);
 
-    useEffect(
-        () => () => {
-            generationRef.current += 1;
-            engineRef.current?.terminate();
-            engineRef.current = null;
-        },
-        []
-    );
+    const emitEnrichment = useCallback((submission: Submission, value: LocalMoveEvaluation | null) => {
+        if (submission.generation !== generationRef.current) return;
+        const supported = value?.result.status === 'GRADED';
+        const key = JSON.stringify([supported, value?.assessment, value?.patch]);
+        if (submission.lastEvaluationKey === key) return;
+        submission.lastEvaluationKey = key;
+        const eventId = newClientId();
+        onRefined.current?.(submission.prompt, {
+            kind: 'ENRICH', clientAttemptId: submission.attemptId, momentRevisionId: submission.prompt.solutionRevisionId,
+            stepIndex: submission.stepIndex, eventId, sequence: ++submission.eventSequence, supersedesEventId: submission.lastEventId,
+            evaluatedAt: new Date().toISOString(), resolution: supported ? 'RESOLVED' : 'UNAVAILABLE',
+            assessmentId: value?.assessment?.id ?? null, evaluation: value?.patch ?? null,
+        });
+        submission.lastEventId = eventId;
+    }, []);
 
-    const retryEngineForGeneration = useCallback((generation: number) => {
-        if (generationRef.current !== generation) throw new Error('Practice position changed');
-        stopEngine();
-        return getOrCreateEngine();
-    }, [getOrCreateEngine, stopEngine]);
-
-    const revealAfterUnresolved = useCallback(
-        (submission: Submission, comparison: LocalMoveEvaluation['comparison']) => {
-            const activePrompt = promptRef.current;
-            if (!activePrompt) return;
-            const clientAttemptId =
-                clientAttemptIdRef.current ?? newClientId();
-            clientAttemptIdRef.current = clientAttemptId;
-            const revealed: RevealedPracticeResult = {
-                attemptId: clientAttemptId,
-                status: 'REVEALED',
-                review: {
-                    ...activePrompt.grading.review,
-                    submittedMoveUci: submission.moveUci,
-                    comparison,
-                },
-            };
-            setResponse(revealed);
-            setSolveFen(submission.fenAfterMove);
-            setDisplayFen(submission.fenAfterMove);
+    const applyEvaluation = useCallback((value: LocalMoveEvaluation, submission: Submission, persist: boolean) => {
+        if (submission.generation !== generationRef.current) return;
+        if (value.result.status !== 'GRADED') {
+            if (persist) emitEnrichment(submission, null);
+            if (value.invalidatedKnownQuality) {
+                if (submission.stepIndex === 0) {
+                    rootGradeRef.current = null;
+                    if (rootReviewRef.current) rootReviewRef.current = { ...rootReviewRef.current, comparison: null };
+                }
+                if (reviewPositionRef.current === 'ATTEMPT' && rootReviewRef.current?.submittedMoveUci)
+                    dispatchPresentation({ type: 'REVIEW_ATTEMPT', sequenceId: submission.sequenceId, moveUci: rootReviewRef.current.submittedMoveUci, grade: rootGradeRef.current });
+                else if (!reviewPositionRef.current) dispatchPresentation({ type: 'CHECKING', sequenceId: submission.sequenceId });
+            }
             setReviewFallback(true);
-            setPhase('REVEALED');
-            setPresentationSettled(true);
-            dispatchPresentation({
-                type: 'SETTLE',
-                sequenceId: submission.presentationSequenceId,
-            });
-            onCompletedRef.current?.({
-                prompt: activePrompt,
-                terminalReason: 'REVEALED',
-                request: { kind: 'RECORD', completedAt: new Date().toISOString(), clientAttemptId, solutionRevisionId: activePrompt.solutionRevisionId, status: 'REVEALED', steps: [...stepsRef.current, { stepIndex: submission.stepIndex, actor: 'USER', fenBefore: submission.fenBefore, moveUci: submission.moveUci, timeSpentMs: submission.timeSpentMs }] },
-            });
-            if (options.stopEngineOnTerminal) stopEngine();
-        },
-        [options.stopEngineOnTerminal, stopEngine]
-    );
-
-    const applyEvaluation = useCallback(
-        async (
-            evaluation: LocalMoveEvaluation,
-            submission: Submission,
-            generation: number
-        ) => {
-            const activePrompt = promptRef.current;
-            if (
-                !activePrompt ||
-                !clientAttemptIdRef.current ||
-                generationRef.current !== generation
-            ) {
-                return;
-            }
-            if (evaluation.result.status === 'UNRESOLVED') {
-                if (options.unresolvedMode === 'REVEAL') {
-                    revealAfterUnresolved(submission, evaluation.comparison);
-                    return;
-                }
-                setResponse({
-                    attemptId: clientAttemptIdRef.current,
-                    status: 'UNRESOLVED',
-                    reason: evaluation.result.reason,
-                });
-                setSolveFen(submission.fenAfterMove);
-                setDisplayFen(submission.fenAfterMove);
-                setPhase('UNRESOLVED');
-                setPresentationSettled(true);
-                dispatchPresentation({
-                    type: 'SETTLE',
-                    sequenceId: submission.presentationSequenceId,
-                });
-                return;
-            }
-
-            setReviewFallback(false);
-            dispatchPresentation({
-                type: 'GRADE_REVEAL',
-                sequenceId: submission.presentationSequenceId,
-                moveUci: submission.moveUci,
-                grade: evaluation.result.grade,
-            });
-            const userStep: RecordedTrainingAttemptStepDto = {
-                stepIndex: submission.stepIndex,
-                actor: 'USER',
-                fenBefore: submission.fenBefore,
-                moveUci: submission.moveUci,
-                grade: evaluation.result.grade,
-                source: evaluation.source,
-                ...(evaluation.clientEvidence ? { clientEvidence: evaluation.clientEvidence } : {}),
-                comparison: evaluation.comparison,
-                timeSpentMs: submission.timeSpentMs,
-            };
-            const stepsWithUser = [...stepsRef.current, userStep];
-            const continuation = evaluation.result.accepted && activePrompt.grading.continuation.gradedContinuationReady
-                ? localContinuationForMove({
-                      node: submission.node,
-                      moveUci: submission.moveUci,
-                  })
-                : null;
-            if (continuation) {
-                await waitForBoardPresentation('GRADE');
-                if (generationRef.current !== generation) return;
-                stepsRef.current = [
-                    ...stepsWithUser,
-                    {
-                        stepIndex: submission.stepIndex + 1,
-                        actor: 'ENGINE',
-                        fenBefore: submission.fenAfterMove,
-                        moveUci: continuation.opponentMoveUci,
-                    },
-                ];
-                currentNodeRef.current = continuation.nextUserNode;
-                setResponse({
-                    attemptId: clientAttemptIdRef.current,
-                    status: 'AWAITING_CONTINUATION',
-                    nextStepIndex: submission.stepIndex + 2,
-                    opponentMove: {
-                        moveUci: continuation.opponentMoveUci,
-                        fenAfter: continuation.fenAfterOpponentMove,
-                    },
-                });
-                dispatchPresentation({
-                    type: 'OPPONENT_MOVE',
-                    sequenceId: submission.presentationSequenceId,
-                    moveUci: continuation.opponentMoveUci,
-                });
-                setSolveFen(continuation.fenAfterOpponentMove);
-                setDisplayFen(continuation.fenAfterOpponentMove);
-                await waitForBoardPresentation('MOVE');
-                if (generationRef.current !== generation) return;
-                moveSubmissionInFlightRef.current = false;
-                setPhase('AWAITING_MOVE');
-                setPresentationSettled(true);
-                dispatchPresentation({
-                    type: 'SETTLE',
-                    sequenceId: submission.presentationSequenceId,
-                });
-                promptStartedAtRef.current = Date.now();
-                return;
-            }
-
-            stepsRef.current = stepsWithUser;
-            const userSteps = stepsWithUser.filter(
-                (step) => step.actor === 'USER'
-            );
-            const grade = aggregateTrainingGrade(
-                userSteps.flatMap((step) => (step.grade ? [step.grade] : []))
-            );
-            const comparison =
-                userSteps.length === 1 ? evaluation.comparison : null;
-            const graded: GradedPracticeResult = {
-                attemptId: clientAttemptIdRef.current,
-                status: 'GRADED',
-                refinement: evaluation.refinementNeeded ? 'PENDING' : undefined,
-                grade,
-                accepted:
-                    grade === 'BEST' ||
-                    grade === 'STRONG' ||
-                    grade === 'GOOD',
-                review: {
-                    ...reviewWithLocalReference(activePrompt.grading.review, evaluation, userSteps.length - 1),
-                    submittedMoveUci: userSteps[0]?.moveUci ?? null,
-                    comparison,
-                },
-            };
-            await waitForBoardPresentation('GRADE');
-            if (generationRef.current !== generation) return;
-            setResponse(graded);
-            setSolveFen(submission.fenAfterMove);
-            setDisplayFen(submission.fenAfterMove);
-            setPhase('GRADED');
-            setPresentationSettled(true);
-            dispatchPresentation({
-                type: 'SETTLE',
-                sequenceId: submission.presentationSequenceId,
-            });
-            onCompletedRef.current?.({
-                prompt: activePrompt,
-                terminalReason: 'MOVE_SUBMITTED',
-                request: {
-                    kind: 'RECORD',
-                    completedAt: new Date().toISOString(),
-                    clientAttemptId: clientAttemptIdRef.current,
-                    solutionRevisionId: activePrompt.solutionRevisionId,
-                    status: 'GRADED',
-                    grade,
-                    gradingSource: gradingSource(userSteps),
-                    comparison,
-                    steps: stepsWithUser,
-                },
-            });
-            if (evaluation.refinementNeeded) {
-                const attemptId = clientAttemptIdRef.current;
-                try {
-                    const refined = await gradeUnknownLocalMove({ engine: getOrCreateEngine(), retryEngine: () => retryEngineForGeneration(generation), manifest: activePrompt.grading, node: submission.node, moveUci: submission.moveUci });
-                    if (generationRef.current !== generation) return;
-                    if (refined.result.status === 'GRADED' && refined.clientEvidence) {
-                        const refinedStepGrade = refined.result.grade;
-                        const refinedGrade = aggregateTrainingGrade(userSteps.flatMap(step => step.stepIndex === submission.stepIndex ? [refinedStepGrade] : step.grade ? [step.grade] : []));
-                        const accepted = ['BEST', 'STRONG', 'GOOD'].includes(refinedGrade);
-                        const corrected = graded.accepted !== accepted;
-                        setResponse({ ...graded, grade: refinedGrade, accepted, refinement: corrected ? 'CORRECTED' : 'REFINED', review: { ...(userSteps.length === 1 ? reviewWithLocalReference(graded.review, refined, userSteps.length - 1) : graded.review), comparison: userSteps.length === 1 ? refined.comparison : graded.review.comparison } });
-                        dispatchPresentation({ type: 'REFINE_GRADE', sequenceId: presentationSequenceRef.current, moveUci: submission.moveUci, grade: refinedStepGrade });
-                        onRefinedRef.current?.(activePrompt, { kind: 'ENRICH', clientAttemptId: attemptId, solutionRevisionId: activePrompt.solutionRevisionId, clientEvidenceId: crypto.randomUUID(), stepIndex: submission.stepIndex, evaluatedAt: new Date().toISOString(), clientEvidence: refined.clientEvidence, grade: refined.result.grade });
-                    } else setResponse({ ...graded, refinement: 'UNRESOLVED' });
-                } catch {
-                    if (generationRef.current !== generation) return;
-                    setResponse({ ...graded, refinement: 'UNRESOLVED' });
-                }
-            }
-            if (options.stopEngineOnTerminal) stopEngine();
-        },
-        [
-            getOrCreateEngine,
-            retryEngineForGeneration,
-            options.stopEngineOnTerminal,
-            options.unresolvedMode,
-            revealAfterUnresolved,
-            stopEngine,
-        ]
-    );
-
-    const submitMove = useCallback(
-        async ({
-            moveUci,
-            fenAfterMove,
-        }: {
-            moveUci: string;
-            fenAfterMove: string;
-        }) => {
-            const activePrompt = promptRef.current;
-            const node = currentNodeRef.current;
-            if (
-                !activePrompt ||
-                !solveFen ||
-                !node ||
-                node.role !== 'USER' ||
-                moveSubmissionInFlightRef.current ||
-                (phase !== 'READY' && phase !== 'AWAITING_MOVE')
-            ) {
-                return;
-            }
-            moveSubmissionInFlightRef.current = true;
-            const generation = generationRef.current;
-            const presentationSequenceId =
-                ++presentationSequenceRef.current;
-            clientAttemptIdRef.current ??= newClientId();
-            const submission: Submission = {
-                node,
-                stepIndex: stepsRef.current.length,
-                moveUci,
-                timeSpentMs: Math.max(
-                    0,
-                    Math.min(Date.now() - promptStartedAtRef.current, 86_400_000)
-                ),
-                fenBefore: solveFen,
-                fenAfterMove,
-                presentationSequenceId,
-            };
-            lastSubmissionRef.current = submission;
-            setSolveFen(fenAfterMove);
-            setDisplayFen(fenAfterMove);
-            setResponse(null);
-            setReviewFallback(false);
-            setPhase('SUBMITTING');
-            setPresentationSettled(false);
-            dispatchPresentation({
-                type: 'RESET',
-                sequenceId: presentationSequenceId,
-            });
-            dispatchPresentation({
-                type: 'USER_MOVE',
-                sequenceId: presentationSequenceId,
-                moveUci,
-            });
-
-            const known = gradeKnownLocalMove({
-                manifest: activePrompt.grading,
-                node,
-                moveUci,
-            });
-            if (known) {
-                await waitForBoardPresentation('MOVE');
-                if (generationRef.current !== generation) return;
-                await applyEvaluation(known, submission, generation);
-                return;
-            }
-
-            gradingInFlightRef.current = true;
-            try {
-                await waitForBoardPresentation('MOVE');
-                if (generationRef.current !== generation) return;
-                dispatchPresentation({
-                    type: 'CHECKING',
-                    sequenceId: presentationSequenceId,
-                });
-                const evaluated = await gradeUnknownLocalMove({
-                    engine: getOrCreateEngine(),
-                    retryEngine: () => retryEngineForGeneration(generation),
-                    manifest: activePrompt.grading,
-                    node,
-                    moveUci,
-                    positionHistory: [
-                        ...activePrompt.grading.positionHistory,
-                        ...stepsRef.current.map((step) => step.fenBefore),
-                    ],
-                });
-                if (generationRef.current !== generation) return;
-                await applyEvaluation(evaluated, submission, generation);
-            } catch {
-                if (generationRef.current !== generation) return;
-                stopEngine();
-                if (options.unresolvedMode === 'REVEAL') {
-                    revealAfterUnresolved(submission, null);
-                    return;
-                }
-                setResponse({
-                    attemptId: clientAttemptIdRef.current,
-                    status: 'UNRESOLVED',
-                    reason: 'ENGINE_UNAVAILABLE',
-                });
-                setPhase('UNRESOLVED');
-                setPresentationSettled(true);
-                dispatchPresentation({
-                    type: 'SETTLE',
-                    sequenceId: presentationSequenceId,
-                });
-            } finally {
-                if (generationRef.current === generation) {
-                    gradingInFlightRef.current = false;
-                }
-            }
-        },
-        [
-            applyEvaluation,
-            getOrCreateEngine,
-            retryEngineForGeneration,
-            options.unresolvedMode,
-            phase,
-            revealAfterUnresolved,
-            solveFen,
-            stopEngine,
-        ]
-    );
-
-    const retryGrading = useCallback(async () => {
-        const activePrompt = promptRef.current;
-        const submission = lastSubmissionRef.current;
-        if (
-            !activePrompt ||
-            !submission ||
-            phase !== 'UNRESOLVED' ||
-            gradingInFlightRef.current
-        ) {
+            setResponse({ status: 'REVEALED', attemptId: submission.attemptId,
+                review: rootReviewRef.current ?? { ...submission.prompt.review, submittedMoveUci: submission.moveUci, comparison: null } });
+            setPhase('REVEALED'); setPresentationSettled(true);
+            if (!reviewPositionRef.current) dispatchPresentation({ type: 'SETTLE', sequenceId: submission.sequenceId });
             return;
         }
-        const generation = generationRef.current;
-        gradingInFlightRef.current = true;
-        setPhase('SUBMITTING');
-        setPresentationSettled(false);
-        dispatchPresentation({
-            type: 'CHECKING',
-            sequenceId: submission.presentationSequenceId,
-        });
-        try {
-            const evaluated = await gradeUnknownLocalMove({
-                engine: getOrCreateEngine(),
-                retryEngine: () => retryEngineForGeneration(generation),
-                manifest: activePrompt.grading,
-                node: submission.node,
-                moveUci: submission.moveUci,
-                positionHistory: [
-                    ...activePrompt.grading.positionHistory,
-                    ...stepsRef.current.map((step) => step.fenBefore),
-                ],
-            });
-            if (generationRef.current !== generation) return;
-            await applyEvaluation(evaluated, submission, generation);
-        } catch {
-            if (generationRef.current === generation) {
-                stopEngine();
-                setPhase('UNRESOLVED');
-                setPresentationSettled(true);
-                dispatchPresentation({
-                    type: 'SETTLE',
-                    sequenceId: submission.presentationSequenceId,
-                });
-            }
-        } finally {
-            if (generationRef.current === generation) {
-                gradingInFlightRef.current = false;
-            }
+        if (persist) emitEnrichment(submission, value);
+        const grade: Tier = value.result.tier ?? (value.result.quality === 'GOOD' ? 'GOOD' : 'SUBPAR');
+        const previousQuality = submission.lastSupportedQuality;
+        submission.lastSupportedQuality = value.result.quality;
+        // The review contract is rooted in prompt.fen. Later USER evaluations
+        // remain in their recorded step and must not replace root metrics/move.
+        if (submission.stepIndex === 0) {
+            rootReviewRef.current = { ...reviewWithLocalReference(submission.prompt.review, value, 0, submission.prompt.grading),
+                submittedMoveUci: submission.moveUci, comparison: value.comparison };
+            rootGradeRef.current = grade;
         }
-    }, [applyEvaluation, getOrCreateEngine, retryEngineForGeneration, phase, stopEngine]);
+        const graded: GradedPracticeResult = {
+            attemptId: submission.attemptId, status: 'GRADED', quality: value.result.quality,
+            tier: value.result.tier, originalRelation: value.result.originalRelation, accepted: value.result.accepted,
+            review: rootReviewRef.current ?? submission.prompt.review,
+        };
+        setResponse({ ...graded, ...(previousQuality !== null ? { refinement: previousQuality !== graded.quality ? 'CORRECTED' as const : 'REFINED' as const } : {}) });
+        setPhase('GRADED'); setPresentationSettled(true); setReviewFallback(false);
+        // Refinement updates the verdict without changing the user's selected
+        // review position or putting an after-move marker on the decision FEN.
+        if (reviewPositionRef.current === 'ATTEMPT' && rootReviewRef.current?.submittedMoveUci)
+            dispatchPresentation({ type: 'REVIEW_ATTEMPT', sequenceId: submission.sequenceId, moveUci: rootReviewRef.current.submittedMoveUci, grade: rootGradeRef.current });
+        else if (!reviewPositionRef.current) {
+            dispatchPresentation({ type: 'GRADE_REVEAL', sequenceId: submission.sequenceId, moveUci: submission.moveUci, grade });
+            dispatchPresentation({ type: 'SETTLE', sequenceId: submission.sequenceId });
+        }
+        // Supported quality is immediately actionable; no grade animation timer delays Next.
+        const continuation = value.result.accepted ? localContinuationForMove({ manifest: submission.prompt.grading,
+            node: submission.node, moveUci: submission.moveUci }) : null;
+        if (continuation) {
+            reviewPositionRef.current = null;
+            nodeRef.current = continuation.nextUserNode;
+            plannerRef.current = null;
+            setSolveFen(continuation.fenAfterOpponentMove); setDisplayFen(continuation.fenAfterOpponentMove);
+            setPhase('AWAITING_MOVE'); locked.current = false; startedAt.current = Date.now();
+            dispatchPresentation({ type: 'OPPONENT_MOVE', sequenceId: submission.sequenceId, moveUci: continuation.opponentMoveUci });
+            dispatchPresentation({ type: 'SETTLE', sequenceId: submission.sequenceId });
+        }
+    }, [emitEnrichment]);
+
+    const runEvaluation = useCallback(async (submission: Submission, detail = false) => {
+        if (submission.generation !== generationRef.current) return;
+        const generation = submission.generation;
+        const abort = new AbortController(); abortRef.current = abort;
+        // One budget includes initialization, all passes and the one permitted runtime retry.
+        const planner = detail ? new AnalysisWorkPlanner({ maxNodes: 200_000, maxWallMs: 2_000 }) : plannerRef.current ?? new AnalysisWorkPlanner({ maxNodes: 1_500_000, maxWallMs: 8_000 });
+        if (!detail) plannerRef.current = planner;
+        let emittedSupport = false;
+        try {
+            const value = await gradeUnknownLocalMove({ engine: getOrCreateEngine,
+                retryEngine: () => { if (generation !== generationRef.current) throw new Error('Practice changed'); stopEngine(); return getOrCreateEngine(); },
+                manifest: submission.prompt.grading, node: submission.node, moveUci: submission.moveUci,
+                session: analysisRef.current, planner, signal: abort.signal, attemptId: submission.attemptId, refine: detail,
+                onUpdate(update: LocalGradingUpdate) {
+                    if (generation !== generationRef.current || abort.signal.aborted) return;
+                    if (update.kind === 'LIVE') setLiveEvaluation({ score: update.score, depth: update.depth });
+                    else { emittedSupport = update.kind === 'SUPPORTED'; applyEvaluation(update.evaluation, submission, true); }
+                } });
+            if (generation !== generationRef.current || abort.signal.aborted) return;
+            if (!emittedSupport && (!detail || value.result.status === 'GRADED' || value.invalidatedKnownQuality)) applyEvaluation(value, submission, true);
+            else if (!emittedSupport && detail) setResponse(previous => previous?.status === 'GRADED' ? { ...previous, refinement: 'UNRESOLVED' } : previous);
+        } catch {
+            if (generation !== generationRef.current || abort.signal.aborted) return;
+            if (!emittedSupport && detail) setResponse(previous => previous?.status === 'GRADED' ? { ...previous, refinement: 'UNRESOLVED' } : previous);
+            if (!emittedSupport && !detail) applyEvaluation({ result: { status: 'UNRESOLVED', reason: 'ENGINE_UNAVAILABLE' },
+                source: 'CLIENT_EVALUATED', assessment: null, patch: null, refinementNeeded: false, scoreAfter: null, comparison: null }, submission, true);
+        } finally {
+            if (generation === generationRef.current && options.stopEngineOnTerminal && nodeRef.current?.contextId === submission.node.contextId) stopEngine();
+        }
+    }, [applyEvaluation, getOrCreateEngine, options.stopEngineOnTerminal, stopEngine]);
+
+    const submitMove = useCallback(async ({ moveUci, fenAfterMove }: { moveUci: string; fenAfterMove: string }) => {
+        const activePrompt = promptRef.current; const node = nodeRef.current;
+        if (!activePrompt || !node || locked.current || (phase !== 'READY' && phase !== 'AWAITING_MOVE')) return;
+        // Do not trust a board callback's claimed resulting position.
+        try {
+            const chess = new Chess(node.fen); chess.move({ from: moveUci.slice(0, 2), to: moveUci.slice(2, 4), promotion: moveUci[4] });
+            if (chess.fen() !== fenAfterMove) return;
+        } catch { return; }
+        locked.current = true;
+        attemptIdRef.current ??= newClientId();
+        const submission: Submission = { node, stepIndex: userStepIndexRef.current++, moveUci, fenAfterMove, sequenceId: ++sequenceRef.current,
+            generation: generationRef.current, attemptId: attemptIdRef.current, prompt: activePrompt, eventSequence: 0, lastEventId: null, lastEvaluationKey: null, lastSupportedQuality: null };
+        submissionRef.current = submission;
+        reviewPositionRef.current = null;
+        const known = gradeKnownLocalMove({ manifest: activePrompt.grading, node, moveUci, session: analysisRef.current });
+        const lookup = node.answerIndex ? lookupAnswer(node.answerIndex, moveUci, activePrompt.grading.assessments, activePrompt.grading.coverageGroups) : null;
+        // RECORD precedes any await/engine work: later quality enriches this exact event.
+        onCompleted.current?.({ prompt: activePrompt, terminalReason: 'MOVE_SUBMITTED', request: {
+            kind: 'RECORD', clientAttemptId: submission.attemptId, momentRevisionId: activePrompt.solutionRevisionId,
+            contextId: node.contextId, stepIndex: submission.stepIndex, moveUci, playedAt: new Date().toISOString(),
+            initialAssessmentId: known?.assessment?.id ?? null, initialCoverageGroupId: known && lookup?.kind === 'GROUP' ? lookup.coverageGroup.id : null, resolution: known ? 'RESOLVED' : 'PENDING',
+            timeSpentMs: Math.min(86_400_000, Math.max(0, Date.now() - startedAt.current)),
+        } });
+        setSolveFen(fenAfterMove); setDisplayFen(fenAfterMove); setReviewFallback(false); setLiveEvaluation(null); setResponse(null);
+        dispatchPresentation({ type: 'RESET', sequenceId: submission.sequenceId });
+        dispatchPresentation({ type: 'USER_MOVE', sequenceId: submission.sequenceId, moveUci });
+        if (known) {
+            applyEvaluation(known, submission, false);
+            if ((!known.assessment || known.assessment.tierSupport !== 'SUPPORTED') && !localContinuationForMove({ manifest: activePrompt.grading, node, moveUci })) {
+                setResponse(previous => previous?.status === 'GRADED' ? { ...previous, refinement: 'PENDING' } : previous);
+                await new Promise<void>(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+                await runEvaluation(submission, true);
+            }
+            return;
+        }
+        setPhase('SUBMITTING'); setResponse(null); setPresentationSettled(false);
+        dispatchPresentation({ type: 'CHECKING', sequenceId: submission.sequenceId });
+        // Let the pending board frame paint before synchronous evidence replay.
+        // The same budget includes this scheduling delay and all later work.
+        plannerRef.current ??= new AnalysisWorkPlanner({ maxNodes: 1_500_000, maxWallMs: 8_000 });
+        await new Promise<void>(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+        await runEvaluation(submission);
+    }, [applyEvaluation, phase, runEvaluation]);
 
     const reveal = useCallback(() => {
         const activePrompt = promptRef.current;
-        if (
-            !activePrompt ||
-            !(
-                phase === 'READY' ||
-                phase === 'AWAITING_MOVE' ||
-                phase === 'UNRESOLVED'
-            ) ||
-            gradingInFlightRef.current ||
-            (moveSubmissionInFlightRef.current && phase !== 'UNRESOLVED')
-        ) {
-            return;
-        }
-        moveSubmissionInFlightRef.current = true;
-        const clientAttemptId =
-            clientAttemptIdRef.current ?? newClientId();
-        const presentationSequenceId =
-            ++presentationSequenceRef.current;
-        clientAttemptIdRef.current = clientAttemptId;
-        const firstSubmittedMove =
-            stepsRef.current.find((step) => step.actor === 'USER')?.moveUci ??
-            lastSubmissionRef.current?.moveUci ??
-            null;
-        const revealed: RevealedPracticeResult = {
-            attemptId: clientAttemptId,
-            status: 'REVEALED',
-            review: {
-                ...activePrompt.grading.review,
-                submittedMoveUci: firstSubmittedMove,
-                comparison: null,
-            },
-        };
-        setResponse(revealed);
-        setDisplayFen(activePrompt.fen);
-        setReviewFallback(false);
-        setPhase('REVEALED');
-        setPresentationSettled(true);
-        dispatchPresentation({
-            type: 'RESET',
-            sequenceId: presentationSequenceId,
-        });
-        dispatchPresentation({
-            type: 'REVIEW_DECISION',
-            sequenceId: presentationSequenceId,
-        });
-        onCompletedRef.current?.({
-            prompt: activePrompt,
-            terminalReason: 'REVEALED',
-            request: {
-                kind: 'RECORD',
-                completedAt: new Date().toISOString(),
-                clientAttemptId,
-                solutionRevisionId: activePrompt.solutionRevisionId,
-                status: 'REVEALED',
-                steps: stepsRef.current,
-            },
-        });
+        if (!activePrompt || locked.current || (phase !== 'READY' && phase !== 'AWAITING_MOVE')) return;
+        locked.current = true; attemptIdRef.current ??= newClientId();
+        setResponse({ status: 'REVEALED', attemptId: attemptIdRef.current, review: rootReviewRef.current ?? activePrompt.review });
+        setDisplayFen(activePrompt.fen); setPhase('REVEALED'); setReviewFallback(false); setPresentationSettled(true);
+        dispatchPresentation({ type: 'RESET', sequenceId: ++sequenceRef.current });
+        onCompleted.current?.({ prompt: activePrompt, terminalReason: 'REVEALED', request: {
+            kind: 'REVEAL', clientAttemptId: attemptIdRef.current, momentRevisionId: activePrompt.solutionRevisionId, revealedAt: new Date().toISOString(),
+        } });
         if (options.stopEngineOnTerminal) stopEngine();
     }, [options.stopEngineOnTerminal, phase, stopEngine]);
-
-    const grade =
-        response?.status === 'GRADED'
-            ? (response as GradedPracticeResult).grade
-            : null;
-    const review = reviewFromTrainingResponse(response);
-    const showReviewPosition = useCallback(
-        (position: 'DECISION' | 'ATTEMPT') => {
-            const activePrompt = promptRef.current;
-            if (!activePrompt || !review) return;
-            const sequenceId = presentationSequenceRef.current;
-            if (position === 'DECISION' || !review.submittedMoveUci) {
-                setDisplayFen(activePrompt.fen);
-                dispatchPresentation({
-                    type: 'REVIEW_DECISION',
-                    sequenceId,
-                });
-                return;
-            }
-            try {
-                const chess = new Chess(activePrompt.fen);
-                const move = review.submittedMoveUci.trim().toLowerCase();
-                chess.move({
-                    from: move.slice(0, 2),
-                    to: move.slice(2, 4),
-                    promotion: move.slice(4, 5) || undefined,
-                });
-                setDisplayFen(chess.fen());
-                dispatchPresentation({
-                    type: 'REVIEW_ATTEMPT',
-                    sequenceId,
-                    moveUci: review.submittedMoveUci,
-                    grade,
-                });
-            } catch {
-                setDisplayFen(activePrompt.fen);
-                dispatchPresentation({
-                    type: 'REVIEW_DECISION',
-                    sequenceId,
-                });
-            }
-        },
-        [grade, review]
-    );
-    const story = useMemo(
-        () =>
-            prompt && review
-                ? buildPostMoveStory({ prompt, review, grade })
-                : null,
-        [grade, prompt, review]
-    );
+    const grade: Tier | null = response?.status === 'GRADED' ? response.tier ?? (response.quality === 'GOOD' ? 'GOOD' : 'SUBPAR') : null;
+    const review = phase === 'GRADED' || phase === 'REVEALED' ? reviewFromTrainingResponse(response) : null;
+    const showReviewPosition = useCallback((position: 'DECISION' | 'ATTEMPT') => {
+        const activePrompt = promptRef.current;
+        if (!activePrompt || !review) return;
+        if (position === 'DECISION' || !review.submittedMoveUci) {
+            reviewPositionRef.current = 'DECISION';
+            setDisplayFen(activePrompt.fen); dispatchPresentation({ type: 'REVIEW_DECISION', sequenceId: sequenceRef.current }); return;
+        }
+        try {
+            const chess = new Chess(activePrompt.fen); const move = review.submittedMoveUci;
+            chess.move({ from: move.slice(0, 2), to: move.slice(2, 4), promotion: move[4] }); setDisplayFen(chess.fen());
+            reviewPositionRef.current = 'ATTEMPT';
+            dispatchPresentation({ type: 'REVIEW_ATTEMPT', sequenceId: sequenceRef.current, moveUci: move, grade: rootGradeRef.current });
+        } catch { setDisplayFen(activePrompt.fen); }
+    }, [review]);
+    const story = useMemo(() => prompt && review ? buildPostMoveStory({ prompt, review, grade: rootGradeRef.current }) : null, [prompt, review]);
     const attemptTerminal = phase === 'GRADED' || phase === 'REVEALED';
-    const beginPresentation = useCallback(
-        () => setPresentationSettled(false),
-        []
-    );
-    const settlePresentation = useCallback(
-        () => setPresentationSettled(true),
-        []
-    );
-
-    return {
-        prompt,
+    const beginPresentation = useCallback(() => setPresentationSettled(false), []);
+    const settlePresentation = useCallback(() => setPresentationSettled(true), []);
+    const retryGrading = useCallback(async () => {
+        // Exhausted automatic budgets remain exhausted. Review is always available.
+        if (submissionRef.current && phase === 'UNRESOLVED') await runEvaluation(submissionRef.current);
+    }, [phase, runEvaluation]);
+    return { prompt, positionFen: solveFen, solveFen, displayFen, phase, grade,
+        quality: response?.status === 'GRADED' ? response.quality : 'UNKNOWN',
+        originalRelation: response?.status === 'GRADED' ? response.originalRelation : 'UNKNOWN', liveEvaluation,
         refinement: response?.status === 'GRADED' ? response.refinement : undefined,
-        positionFen: solveFen,
-        solveFen,
-        displayFen,
-        phase,
-        grade,
-        unresolved:
-            response?.status === 'UNRESOLVED'
-                ? { reason: response.reason }
-                : null,
-        review,
-        reviewFallback,
-        story,
-        attemptTerminal,
-        presentationSettled,
-        presentation,
-        terminal: attemptTerminal && presentationSettled,
-        engineClient,
-        canMove: phase === 'READY' || phase === 'AWAITING_MOVE',
-        canReveal:
-            phase === 'READY' ||
-            phase === 'AWAITING_MOVE' ||
-            phase === 'UNRESOLVED',
-        activatePrompt,
-        clearPrompt,
-        getOrCreateEngine,
-        stopEngine,
-        submitMove,
-        retryGrading,
-        reveal,
-        showReviewPosition,
-        beginPresentation,
-        settlePresentation,
-    };
+        unresolved: response?.status === 'UNRESOLVED' ? { reason: response.reason } : null,
+        review, reviewFallback, story, attemptTerminal, presentationSettled, presentation,
+        terminal: attemptTerminal && presentationSettled, engineClient,
+        canMove: phase === 'READY' || phase === 'AWAITING_MOVE', canReveal: phase === 'READY' || phase === 'AWAITING_MOVE',
+        activatePrompt, clearPrompt, getOrCreateEngine, stopEngine, submitMove, retryGrading, reveal, showReviewPosition,
+        beginPresentation, settlePresentation };
 }

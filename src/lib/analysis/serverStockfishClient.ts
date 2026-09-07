@@ -1,10 +1,15 @@
 import { Chess } from 'chess.js';
+import { STOCKFISH_ARTIFACT_ID } from './stockfishMetadata';
 import {
     isStructurallyCompleteMultiPvBundle,
     resolveEngineSearchContext,
     resolvedEngineLimit,
     engineSearchCacheKey,
     createSearchEvidence,
+    createAnalysisSnapshot,
+    createBoundAnalysisSnapshot,
+    retainAnalysisSnapshots,
+    type AnalysisSnapshot,
     terminalEngineResult,
     type EngineSearchContext,
     type BoundedEngineLine,
@@ -38,6 +43,8 @@ type ActiveJob = {
     multiPv: number;
     context: EngineSearchContext;
     limit: AnalysisLimit & { multiPv?: number };
+    snapshots: AnalysisSnapshot[];
+    snapshotIndex: number;
     completeSnapshot?: { depth: number; lines: MultiPvLine[] };
     boundLines: Map<string, BoundedEngineLine>;
     resolve: (value: MultiPvResult) => void;
@@ -169,6 +176,7 @@ export function parseUciInfoLine(line: string): ParsedInfoLine {
  */
 export class ServerStockfishClient implements StockfishEngine {
     private terminated = false;
+    private sessionId = uid();
     private cacheMulti = new Map<string, MultiPvResult>();
     private requests = new Set<{ reject: (error: Error) => void; abortCleanup?: () => void }>();
     private enginePromise: Promise<StockfishInstance> | null = null;
@@ -185,6 +193,7 @@ export class ServerStockfishClient implements StockfishEngine {
     private readonly defaultTimeoutMs: number;
     private readonly runtimeFactory: () => Promise<StockfishInstance>;
     private identity: EngineIdentity = {
+        artifactId: STOCKFISH_ARTIFACT_ID,
         name: 'Stockfish 18',
         version: '18.0.8',
         source: 'stockfish@18.0.8/server/stockfish-18-lite-single',
@@ -246,6 +255,7 @@ export class ServerStockfishClient implements StockfishEngine {
             timeMs: res.searchEvidence?.reported.timeMs ?? first?.timeMs,
             terminal: res.terminal,
             searchEvidence: res.searchEvidence,
+            snapshots: res.snapshots,
         };
     }
 
@@ -314,7 +324,8 @@ export class ServerStockfishClient implements StockfishEngine {
                     throw new Error('Engine terminated');
                 }
                 this.engine = engine;
-                engine.listener = (line) => this.onLine(String(line));
+                this.sessionId = uid();
+                engine.listener = (line) => { if (this.engine === engine) this.onLine(String(line)); };
                 engine.errorListener = (error) =>
                     this.handleRuntimeFailure(engine, error);
 
@@ -482,6 +493,8 @@ export class ServerStockfishClient implements StockfishEngine {
                 resolve,
                 reject,
                 linesByDepth: new Map(),
+                snapshots: [],
+                snapshotIndex: 0,
                 boundLines: new Map(),
                 timeout,
                 bestMoveUci: '',
@@ -640,6 +653,7 @@ export class ServerStockfishClient implements StockfishEngine {
 
         const job = this.active;
         if (!job || line === 'readyok') return;
+        if (job.settled && !line.startsWith('bestmove ')) return;
 
         if (line.startsWith('info ')) {
             const parsed = parseUciInfoLine(line);
@@ -650,7 +664,20 @@ export class ServerStockfishClient implements StockfishEngine {
             if (parsed.timeMs != null) job.latestTimeMs = Math.max(job.latestTimeMs ?? 0, parsed.timeMs);
             const boundedRoot = parsed.pvUci?.[0];
             if (parsed.boundedScore && parsed.bound && boundedRoot && (job.context.rootMoves ?? job.context.legalRootMoves).includes(boundedRoot)) {
+                for (const bucket of job.linesByDepth.values()) for (const [slot, point] of bucket) {
+                    if (point.pvUci[0] === boundedRoot) bucket.delete(slot);
+                }
+                if (parsed.depth != null) job.linesByDepth.get(parsed.depth)?.delete(parsed.multipv);
                 job.boundLines.set(boundedRoot, { moveUci: boundedRoot, score: parsed.boundedScore, bound: parsed.bound, depth: parsed.depth, nodes: parsed.nodes, timeMs: parsed.timeMs });
+                const snapshot = createBoundAnalysisSnapshot(job.id, job.snapshotIndex, this.identity, job.context, job.limit,
+                    [{ multipv: parsed.multipv, score: parsed.boundedScore, bound: parsed.bound, pvUci: parsed.pvUci!,
+                        depth: parsed.depth, nodes: parsed.nodes, timeMs: parsed.timeMs, wdl: parsed.wdl }], this.sessionId);
+                if (snapshot) {
+                    job.snapshotIndex++;
+                    job.snapshots = retainAnalysisSnapshots([...job.snapshots, snapshot]);
+                    try { job.limit.onSnapshot?.(structuredClone(snapshot)); }
+                    catch (error) { this.stopAndReject(job, error instanceof Error ? error : new Error(String(error))); return; }
+                }
             }
 
             const depth = parsed.depth ?? job.latestDepth ?? 0;
@@ -659,6 +686,7 @@ export class ServerStockfishClient implements StockfishEngine {
             const previous = linesAtDepth.get(parsed.multipv);
             if (
                 parsed.score &&
+                parsed.depth != null &&
                 parsed.pvUci?.length &&
                 (!previous ||
                     (parsed.depth ?? 0) >= (previous.depth ?? 0))
@@ -678,6 +706,26 @@ export class ServerStockfishClient implements StockfishEngine {
                 const completeLines = Array.from(linesAtDepth.values()).sort((a, b) => a.multipv - b.multipv);
                 if (isStructurallyCompleteMultiPvBundle(completeLines, job.multiPv, job.context.rootMoves ?? job.context.legalRootMoves) && (!job.completeSnapshot || depth >= job.completeSnapshot.depth)) {
                     job.completeSnapshot = { depth, lines: completeLines };
+                    const previousSnapshot = job.snapshots.findLast(snapshot => snapshot.bundleComplete);
+                    const semanticBundle = (lines: MultiPvLine[]) => JSON.stringify(lines.map(line => [line.multipv, line.score, line.wdl, line.pvUci, line.depth]));
+                    if (!previousSnapshot || semanticBundle(completeLines) !== semanticBundle(previousSnapshot.lines)
+                        || completeLines.some(line => job.boundLines.has(line.pvUci[0]))) {
+                        const snapshot = createAnalysisSnapshot(job.id, job.snapshotIndex, this.identity, job.context, job.limit, completeLines, this.sessionId);
+                        if (snapshot) {
+                            job.snapshotIndex += 1;
+                            job.snapshots.push(snapshot);
+                            job.snapshots = retainAnalysisSnapshots(job.snapshots);
+                            for (const line of completeLines) job.boundLines.delete(line.pvUci[0]);
+                            try {
+                                job.limit.onSnapshot?.(structuredClone(snapshot));
+                            } catch (error) {
+                                this.stopAndReject(job, error instanceof Error ? error : new Error(String(error)));
+                                return;
+                            }
+                        }
+                    }
+                    // Keep protocol buckets bounded independently of retained observations.
+                    for (const key of job.linesByDepth.keys()) if (key < depth - 2) job.linesByDepth.delete(key);
                 }
             }
             return;
@@ -713,7 +761,7 @@ export class ServerStockfishClient implements StockfishEngine {
             if (lines.length === 0) {
                 const terminalFallback = legalRoots.includes(job.bestMoveUci) ? exactMateInOneFallback(job) : null;
                 if (!terminalFallback && job.boundLines.size > 0) {
-                    job.resolve({ fen: job.fen, bestMoveUci: '', lines: [], boundLines: Array.from(job.boundLines.values()), alternativesComplete: false, identity: this.identity, searchEvidence: createSearchEvidence(job.id, this.identity, job.context, job.limit, { nodes: job.latestNodes, timeMs: job.latestTimeMs }) });
+                    job.resolve({ fen: job.fen, bestMoveUci: '', lines: [], snapshots: structuredClone(job.snapshots), boundLines: Array.from(job.boundLines.values()), alternativesComplete: false, identity: this.identity, searchEvidence: createSearchEvidence(job.id, this.identity, job.context, job.limit, { nodes: job.latestNodes, timeMs: job.latestTimeMs }, this.sessionId) });
                 } else if (!terminalFallback) {
                     job.reject(new ExactPvUnavailableError());
                 } else {
@@ -731,7 +779,7 @@ export class ServerStockfishClient implements StockfishEngine {
                                 MultiPV: job.multiPv,
                             },
                         },
-                        searchEvidence: createSearchEvidence(job.id, this.identity, job.context, job.limit, { nodes: job.latestNodes, timeMs: job.latestTimeMs }),
+                        searchEvidence: createSearchEvidence(job.id, this.identity, job.context, job.limit, { nodes: job.latestNodes, timeMs: job.latestTimeMs }, this.sessionId),
                     });
                 }
             } else {
@@ -742,6 +790,7 @@ export class ServerStockfishClient implements StockfishEngine {
                             ?.pvUci[0] ||
                         '',
                     lines,
+                    snapshots: structuredClone(job.snapshots),
                     boundLines: Array.from(job.boundLines.values()),
                     alternativesComplete: isStructurallyCompleteMultiPvBundle(lines, job.multiPv, legalRoots),
                     identity: {
@@ -751,7 +800,7 @@ export class ServerStockfishClient implements StockfishEngine {
                             MultiPV: job.multiPv,
                         },
                     },
-                    searchEvidence: createSearchEvidence(job.id, this.identity, job.context, job.limit, { nodes: job.latestNodes, timeMs: job.latestTimeMs }),
+                    searchEvidence: createSearchEvidence(job.id, this.identity, job.context, job.limit, { nodes: job.latestNodes, timeMs: job.latestTimeMs }, this.sessionId),
                 });
             }
         }

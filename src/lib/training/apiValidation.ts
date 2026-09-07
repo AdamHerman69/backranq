@@ -1,3 +1,4 @@
+import type { RecordTrainingAttemptRequest, EnrichTrainingAttemptRequest } from './attemptApi';
 import {
     TRAINING_API_MAX_ID_LENGTH,
     PRACTICE_FEED_MAX_LIMIT,
@@ -5,24 +6,19 @@ import {
     PRACTICE_FEED_MODES,
     type PracticeFeedFocus,
     type PracticeFeedRequest,
-    type RecordTrainingAttemptRequest,
-    type EnrichTrainingAttemptRequest,
-    type TrainingClientMoveEvidence,
-    type RecordedTrainingAttemptStepDto,
-    type TrainingComparisonDto,
     type TrainingPhase,
 } from '@/lib/training/api';
 import {
-    ATTEMPT_GRADES,
     TRAINING_LESSON_KINDS,
     TRAINING_SOURCE_KINDS,
     type TrainingLessonKind,
     type TrainingSourceKind,
 } from '@/lib/training/contracts';
-import { isPovScore } from '@/lib/training/apiMappers';
 import { parseTrainingCompletionTime } from '@/lib/training/completionTime';
 
 export const MAX_TRAINING_API_BODY_BYTES = 65_536;
+// Attempt enrichment may carry several bounded searches with full game history.
+export const MAX_TRAINING_ATTEMPT_BODY_BYTES = 1_048_576;
 export const MAX_TRAINING_ATTEMPT_TIME_MS = 24 * 60 * 60 * 1_000;
 export const MAX_TRAINING_CONTINUATION_STEPS = 64;
 
@@ -233,248 +229,59 @@ function parseTimeSpentMs(value: unknown): number | null | 'INVALID' {
     return value;
 }
 
-export function parseRecordTrainingAttemptRequest(
-    value: unknown,
-    receivedAt = new Date()
-): RecordTrainingAttemptRequest | null {
-    if (
-        !isObject(value) ||
-        value.kind !== 'RECORD' ||
-        !hasOnlyKeys(value, [
-            'kind',
-            'completedAt',
-            'clientAttemptId',
-            'solutionRevisionId',
-            'status',
-            'grade',
-            'gradingSource',
-            'comparison',
-            'steps',
-        ])
-    ) {
-        return null;
-    }
-    const clientAttemptId =
-        typeof value.clientAttemptId === 'string'
-            ? value.clientAttemptId.trim().toLowerCase()
-            : '';
-    const completedAt = parseTrainingCompletionTime(value.completedAt, receivedAt);
-    const solutionRevisionId =
-        typeof value.solutionRevisionId === 'string'
-            ? value.solutionRevisionId.trim().toLowerCase()
-            : '';
-    if (
-        !completedAt ||
-        !isTrainingApiUuid(clientAttemptId) ||
-        !isTrainingApiUuid(solutionRevisionId) ||
-        (value.status !== 'GRADED' &&
-            value.status !== 'REVEALED') ||
-        !Array.isArray(value.steps) ||
-        value.steps.length >
-            MAX_TRAINING_CONTINUATION_STEPS + 1
-    ) {
-        return null;
-    }
-    const grade =
-        typeof value.grade === 'string' &&
-        (ATTEMPT_GRADES as readonly string[]).includes(value.grade)
-            ? (value.grade as RecordTrainingAttemptRequest['grade'])
-            : undefined;
-    if (value.grade !== undefined && !grade) return null;
-    const gradingSource =
-        value.gradingSource === 'PRECOMPUTED' ||
-        value.gradingSource === 'CLIENT_EVALUATED' ||
-        value.gradingSource === 'TABLEBASE'
-            ? value.gradingSource
-            : undefined;
-    if (value.gradingSource !== undefined && !gradingSource) {
-        return null;
-    }
-    const comparison = parseComparison(value.comparison);
-    if (comparison === 'INVALID') return null;
-    const steps: RecordedTrainingAttemptStepDto[] = [];
-    for (const rawStep of value.steps) {
-        const step = parseRecordedStep(rawStep);
-        if (!step) return null;
-        steps.push(step);
-    }
-    return {
-        kind: 'RECORD',
-        completedAt: completedAt.toISOString(),
-        clientAttemptId,
-        solutionRevisionId,
-        status: value.status,
-        ...(grade ? { grade } : {}),
-        ...(gradingSource ? { gradingSource } : {}),
-        ...(comparison === undefined ? {} : { comparison }),
-        steps,
-    };
+function boundedId(value: unknown): value is string {
+    return typeof value === 'string' && value.length > 0 && value.length <= 256;
 }
-
-function parseComparison(
-    value: unknown
-): TrainingComparisonDto | null | undefined | 'INVALID' {
-    if (value === undefined) return undefined;
-    if (value === null) return null;
-    if (
-        !isObject(value) ||
-        !hasOnlyKeys(value, [
-            'submittedScoreAfter',
-            'bestGapCp',
-            'bestGapWinChance',
-            'recoveredCp',
-            'recoveredWinChance',
-            'preservesOutcome',
-        ])
-    ) {
-        return 'INVALID';
-    }
-    const numericKeys = [
-        'bestGapCp',
-        'bestGapWinChance',
-        'recoveredCp',
-        'recoveredWinChance',
-    ] as const;
-    for (const key of numericKeys) {
-        const item = value[key];
-        if (
-            item !== null &&
-            (typeof item !== 'number' ||
-                !Number.isFinite(item) ||
-                item < 0)
-        ) {
-            return 'INVALID';
-        }
-    }
-    if (
-        value.submittedScoreAfter !== null &&
-        !isPovScore(value.submittedScoreAfter)
-    ) {
-        return 'INVALID';
-    }
-    if (
-        value.preservesOutcome !== null &&
-        typeof value.preservesOutcome !== 'boolean'
-    ) {
-        return 'INVALID';
-    }
-    return value as TrainingComparisonDto;
+function eventIdentity(value: Record<string, unknown>): boolean {
+    return typeof value.clientAttemptId === 'string' && isTrainingApiUuid(value.clientAttemptId) &&
+        typeof value.momentRevisionId === 'string' && isTrainingApiUuid(value.momentRevisionId);
 }
-
-function parseRecordedStep(
-    value: unknown
-): RecordedTrainingAttemptStepDto | null {
-    if (
-        !isObject(value) ||
-        !hasOnlyKeys(value, [
-            'stepIndex',
-            'actor',
-            'fenBefore',
-            'moveUci',
-            'grade',
-            'source',
-            'comparison',
-            'timeSpentMs',
-            'clientEvidence',
-        ]) ||
-        !Number.isSafeInteger(value.stepIndex) ||
-        (value.stepIndex as number) < 0 ||
-        (value.stepIndex as number) >
-            MAX_TRAINING_CONTINUATION_STEPS ||
-        (value.actor !== 'USER' && value.actor !== 'ENGINE') ||
-        typeof value.fenBefore !== 'string' ||
-        value.fenBefore.length > 128
-    ) {
-        return null;
-    }
-    const moveUci =
-        typeof value.moveUci === 'string'
-            ? value.moveUci.trim().toLowerCase()
-            : '';
-    const timeSpentMs = parseTimeSpentMs(value.timeSpentMs);
-    if (!UCI_RE.test(moveUci) || timeSpentMs === 'INVALID') {
-        return null;
-    }
-    const grade =
-        typeof value.grade === 'string' &&
-        (ATTEMPT_GRADES as readonly string[]).includes(value.grade)
-            ? (value.grade as RecordedTrainingAttemptStepDto['grade'])
-            : undefined;
-    if (value.grade !== undefined && !grade) return null;
-    const source =
-        value.source === 'PRECOMPUTED' ||
-        value.source === 'CLIENT_EVALUATED' ||
-        value.source === 'TABLEBASE'
-            ? value.source
-            : undefined;
-    if (value.source !== undefined && !source) return null;
-    const comparison = parseComparison(value.comparison);
-    const clientEvidence = value.clientEvidence === undefined ? undefined : parseTrainingClientEvidence(value.clientEvidence);
-    if (comparison === 'INVALID' || clientEvidence === null) return null;
-    if ((source === 'CLIENT_EVALUATED') !== (clientEvidence !== undefined)) return null;
-    return {
-        ...(clientEvidence ? { clientEvidence } : {}),
-        stepIndex: value.stepIndex as number,
-        actor: value.actor,
-        fenBefore: value.fenBefore,
-        moveUci,
-        ...(grade ? { grade } : {}),
-        ...(source ? { source } : {}),
-        ...(comparison === undefined ? {} : { comparison }),
-        ...(timeSpentMs == null ? {} : { timeSpentMs }),
-    };
+function stepIndex(value: unknown): boolean {
+    return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= MAX_TRAINING_CONTINUATION_STEPS;
 }
-
-export function parseTrainingClientEvidence(value: unknown): TrainingClientMoveEvidence | null {
-    if (!isObject(value) || !hasOnlyKeys(value, ['version', 'contextId', 'referenceId', 'policyVersion', 'metrics', 'scoreAfter', 'searches', 'localReference', 'tierStable']) || value.version !== 1) return null;
-    for (const key of ['contextId', 'referenceId']) {
-        if (typeof value[key] !== 'string' || value[key].length < 1 || value[key].length > 256) return null;
+export function parseRecordTrainingAttemptRequest(value: unknown, receivedAt = new Date()): RecordTrainingAttemptRequest | null {
+    if (!isObject(value) || !eventIdentity(value)) return null;
+    if (value.kind === 'REVEAL') {
+        if (!hasOnlyKeys(value, ['kind', 'clientAttemptId', 'momentRevisionId', 'revealedAt'])) return null;
+        const at = parseTrainingCompletionTime(value.revealedAt, receivedAt);
+        return at ? { ...value, revealedAt: at.toISOString() } as RecordTrainingAttemptRequest : null;
     }
-    if (!Number.isSafeInteger(value.policyVersion) || (value.policyVersion as number) < 1) return null;
-    if (value.scoreAfter !== null && !isPovScore(value.scoreAfter)) return null;
-    if (typeof value.tierStable !== 'boolean') return null;
-    const reference = value.localReference;
-    if (!isObject(reference) || !hasOnlyKeys(reference, ['id','bestMoveUci','bestScore','canonicalBestMoveUci','canonicalScore','canonicalReferenceOutdated']) ||
-        typeof reference.id !== 'string' || reference.id.length < 1 || reference.id.length > 256 || reference.id === value.referenceId ||
-        typeof reference.bestMoveUci !== 'string' || !UCI_RE.test(reference.bestMoveUci) ||
-        typeof reference.canonicalBestMoveUci !== 'string' || !UCI_RE.test(reference.canonicalBestMoveUci) ||
-        !isPovScore(reference.bestScore) || !isPovScore(reference.canonicalScore) || typeof reference.canonicalReferenceOutdated !== 'boolean') return null;
-    const m = value.metrics;
-    if (!isObject(m) || !hasOnlyKeys(m, ['moveUci','originalMoveUci','stable','bestGapCp','bestGapWinChance','recoveredCp','recoveredWinChance','preservesOutcome','evidenceModel','referenceOutdated']) ||
-        typeof m.moveUci !== 'string' || !UCI_RE.test(m.moveUci) ||
-        typeof m.originalMoveUci !== 'string' || (m.originalMoveUci !== '' && !UCI_RE.test(m.originalMoveUci)) ||
-        typeof m.stable !== 'boolean' || !['MATCHED_WDL','CP_ONLY','EXACT_OUTCOME'].includes(String(m.evidenceModel)) ||
-        (m.referenceOutdated !== undefined && typeof m.referenceOutdated !== 'boolean') ||
-        (m.preservesOutcome != null && typeof m.preservesOutcome !== 'boolean')) return null;
-    for (const key of ['bestGapCp','bestGapWinChance','recoveredCp','recoveredWinChance']) {
-        const n = m[key];
-        if (n != null && (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > (key.endsWith('WinChance') ? 1 : 100000))) return null;
-    }
-    if (!Array.isArray(value.searches) || value.searches.length < 2 || value.searches.length > 3) return null;
-    for (const search of value.searches) {
-        if (!boundedClientJson(search) || !isObject(search) || !hasOnlyKeys(search,['nodes','best','submitted','original','canonical']) || !Number.isSafeInteger(search.nodes) || (search.nodes as number) < 1 || (search.nodes as number) > 400000) return null;
-    }
-    // Payload size is bounded by the route. Search reports are untrusted client provenance.
-    return value as TrainingClientMoveEvidence;
+    if (value.kind !== 'RECORD' || !hasOnlyKeys(value, ['kind', 'clientAttemptId', 'momentRevisionId', 'stepIndex', 'contextId', 'moveUci', 'playedAt', 'timeSpentMs', 'initialAssessmentId', 'initialCoverageGroupId', 'resolution']) ||
+        !stepIndex(value.stepIndex) || !boundedId(value.contextId) || typeof value.moveUci !== 'string' || !UCI_RE.test(value.moveUci) ||
+        !['PENDING','RESOLVED','UNAVAILABLE'].includes(String(value.resolution)) ||
+        (value.initialAssessmentId !== null && !boundedId(value.initialAssessmentId)) ||
+        (value.initialCoverageGroupId !== null && !boundedId(value.initialCoverageGroupId)) ||
+        (value.resolution === 'RESOLVED' ? Number(value.initialAssessmentId !== null) + Number(value.initialCoverageGroupId !== null) !== 1 : value.initialAssessmentId !== null || value.initialCoverageGroupId !== null)) return null;
+    const at = parseTrainingCompletionTime(value.playedAt, receivedAt);
+    const time = value.timeSpentMs === null ? null : parseTimeSpentMs(value.timeSpentMs);
+    if (!at || time === 'INVALID') return null;
+    return { ...value, playedAt: at.toISOString(), timeSpentMs: time } as RecordTrainingAttemptRequest;
 }
 
 export function parseEnrichTrainingAttemptRequest(value: unknown, receivedAt = new Date()): EnrichTrainingAttemptRequest | null {
-    if (!isObject(value) || value.kind !== 'ENRICH' || !hasOnlyKeys(value,['kind','clientAttemptId','solutionRevisionId','clientEvidenceId','stepIndex','evaluatedAt','clientEvidence','grade'])) return null;
-    for (const key of ['clientAttemptId','solutionRevisionId','clientEvidenceId']) {
-        if (typeof value[key] !== 'string' || !isTrainingApiUuid(value[key])) return null;
-    }
-    if (!Number.isSafeInteger(value.stepIndex) || (value.stepIndex as number) < 0 || (value.stepIndex as number) > MAX_TRAINING_CONTINUATION_STEPS || !(ATTEMPT_GRADES as readonly unknown[]).includes(value.grade)) return null;
-    const evaluatedAt = parseTrainingCompletionTime(value.evaluatedAt, receivedAt);
-    const clientEvidence = parseTrainingClientEvidence(value.clientEvidence);
-    if (!evaluatedAt || !clientEvidence) return null;
-    return { ...value, evaluatedAt: evaluatedAt.toISOString(), clientEvidence } as EnrichTrainingAttemptRequest;
+    if (!isObject(value) || value.kind !== 'ENRICH' || !eventIdentity(value) ||
+        !hasOnlyKeys(value, ['kind','clientAttemptId','momentRevisionId','stepIndex','eventId','sequence','supersedesEventId','evaluatedAt','resolution','assessmentId','evaluation']) ||
+        !stepIndex(value.stepIndex) || typeof value.eventId !== 'string' || !isTrainingApiUuid(value.eventId) ||
+        !Number.isSafeInteger(value.sequence) || (value.sequence as number) < 1 ||
+        (value.sequence === 1 ? value.supersedesEventId !== null : typeof value.supersedesEventId !== 'string' || !isTrainingApiUuid(value.supersedesEventId)) ||
+        value.supersedesEventId === value.eventId) return null;
+    const at = parseTrainingCompletionTime(value.evaluatedAt, receivedAt);
+    if (!at) return null;
+    if (value.resolution === 'UNAVAILABLE') {
+        if (value.assessmentId !== null || value.evaluation !== null) return null;
+    } else if (value.resolution === 'RESOLVED') {
+        if (!boundedId(value.assessmentId) || !isObject(value.evaluation) ||
+            !hasOnlyKeys(value.evaluation, ['frame','assessments','evidence']) || !isObject(value.evaluation.frame) ||
+            !Array.isArray(value.evaluation.assessments) || !isObject(value.evaluation.evidence) || !boundedClientJson(value.evaluation)) return null;
+    } else return null;
+    // Full evidence and policy validation needs the owned immutable revision and happens in the service.
+    return { ...value, evaluatedAt: at.toISOString() } as EnrichTrainingAttemptRequest;
 }
-
 function boundedClientJson(value: unknown, depth = 0): boolean {
-    if (depth > 8) return false;
+    if (depth > 16) return false;
     if (value === null || typeof value === 'boolean') return true;
     if (typeof value === 'number') return Number.isFinite(value);
-    if (typeof value === 'string') return value.length <= 1024;
-    if (Array.isArray(value)) return value.length <= 256 && value.every(item => boundedClientJson(item, depth + 1));
-    return isObject(value) && Object.keys(value).length <= 32 && Object.values(value).every(item => boundedClientJson(item, depth + 1));
+    if (typeof value === 'string') return value.length <= 4096;
+    if (Array.isArray(value)) return value.length <= 512 && value.every(item => boundedClientJson(item, depth + 1));
+    return isObject(value) && Object.keys(value).length <= 512 && Object.values(value).every(item => boundedClientJson(item, depth + 1));
 }

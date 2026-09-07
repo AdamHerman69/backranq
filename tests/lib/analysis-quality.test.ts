@@ -19,7 +19,6 @@ describe('analysis quality contract', () => {
             nodesPerPosition: 100_000,
             confirmNodes: 200_000,
             maxConfirmationNodes: 1_600_000,
-            verificationNodesPerPosition: 100_000,
         });
     });
 

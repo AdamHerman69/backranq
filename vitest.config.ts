@@ -10,6 +10,8 @@ export default defineConfig({
         },
     },
     test: {
+        // Chess evidence fixtures are CPU and memory intensive; bound concurrent isolates.
+        maxWorkers: 4,
         clearMocks: true,
         environment: 'node',
         globals: false,

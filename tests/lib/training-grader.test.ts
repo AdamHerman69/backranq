@@ -1,161 +1,53 @@
 import { describe, expect, it } from 'vitest';
+import { practiceV4Fixture } from '../helpers/practice-v4';
+import { assessMove } from '@/lib/training/assessmentPolicy';
+import type { PracticeMomentRevision } from '@/lib/training/practiceContract';
 
-import { normalizeGradingPolicy } from '@/lib/training/config';
-import {
-    gradeTrainingMove,
-    type TrainingMoveMetrics,
-} from '@/lib/training/grader';
-
-const policy = normalizeGradingPolicy(undefined, 'PRACTICAL');
-
-function metrics(
-    overrides: Partial<TrainingMoveMetrics> = {}
-): TrainingMoveMetrics {
-    return {
-        moveUci: 'e2e4',
-        originalMoveUci: 'a2a3',
-        stable: true,
-        bestGapCp: 0,
-        bestGapWinChance: null,
-        recoveredCp: 120,
-        recoveredWinChance: null,
-        preservesOutcome: true,
-        ...overrides,
-    };
+function grade(revision: PracticeMomentRevision, moveUci: string, originalMoveUci = revision.source.originalMoveUci) {
+    return assessMove(revision.frames[0], { id: 'test-assessment', moveUci, originalMoveUci, referenceMoveUci: 'e2e4', trainingSide: 'WHITE', evidence: revision.evidence }, revision.policySnapshot);
 }
-
-describe('gradeTrainingMove', () => {
-    it('evaluates original move quality before repeated-mistake identity', () => {
-        expect(gradeTrainingMove(metrics({ moveUci: 'a2a3', bestGapCp: 10 }), policy)).toMatchObject({ grade: 'BEST', accepted: true });
+describe('v4 shared grading separates quality, tier and original identity', () => {
+    it('a repeated original move can itself be GOOD', () => {
+        const revision = practiceV4Fixture(); const result = grade(revision, 'e2e4', 'e2e4');
+        expect(result.quality).toBe('GOOD'); expect(result.tier).toBe('BEST'); expect(result.originalRelation).toBe('SAME_MOVE');
     });
-    it('does not use cp outcome classes as exact-outcome gates', () => {
-        expect(gradeTrainingMove(metrics({ preservesOutcome: null, evidenceModel: 'CP_ONLY' }), policy)).toMatchObject({ grade: 'BEST' });
+    it('equivalent good alternatives do not require exact bestmove identity', () => {
+        const result = grade(practiceV4Fixture(), 'd2d4');
+        expect(result.quality).toBe('GOOD'); expect(result.qualitySupport).toBe('SUPPORTED');
     });
-    it('grades a practically optimal move as BEST', () => {
-        expect(gradeTrainingMove(metrics({ bestGapCp: 10 }), policy)).toEqual({
-            status: 'GRADED',
-            grade: 'BEST',
-            accepted: true,
-        });
+    it('a meaningful improvement can remain BELOW_STANDARD', () => {
+        const revision = practiceV4Fixture();
+        for (const observation of Object.values(revision.evidence.observations)) {
+            if (observation.lines[1]) observation.lines[1].score = { kind: 'CP', cp: -200, pov: 'WHITE' };
+            if (observation.lines[2]) observation.lines[2].score = { kind: 'CP', cp: -500, pov: 'WHITE' };
+        }
+        const result = grade(revision, 'd2d4');
+        expect(result.quality).toBe('BELOW_STANDARD'); expect(result.originalRelation).toBe('BETTER');
+        expect(result.tier).toBe('SUBPAR'); expect(result.metrics.recoveredCp).toBe(300);
     });
-
-    it('accepts a good equivalent without requiring exact bestmove equality', () => {
-        expect(gradeTrainingMove(metrics({ bestGapCp: 35 }), policy)).toEqual({
-            status: 'GRADED',
-            grade: 'STRONG',
-            accepted: true,
-        });
+    it('reports repeated and different mistakes through independent originalRelation', () => {
+        const revision = practiceV4Fixture();
+        expect(grade(revision, 'a2a3').originalRelation).toBe('SAME_MOVE');
+        for (const observation of Object.values(revision.evidence.observations)) if (observation.lines[1]) observation.lines[1].score = { kind: 'CP', cp: -500, pov: 'WHITE' };
+        const result = grade(revision, 'd2d4');
+        expect(result.quality).toBe('BELOW_STANDARD'); expect(result.originalRelation).toBe('WORSE');
     });
-
-    it('reports a meaningful improvement separately from success', () => {
-        expect(
-            gradeTrainingMove(
-                metrics({ bestGapCp: 150, recoveredCp: 60 }),
-                policy
-            )
-        ).toEqual({
-            status: 'GRADED',
-            grade: 'IMPROVED',
-            accepted: false,
-        });
+    it('does not call missing or unstable evidence a wrong answer', () => {
+        const revision = practiceV4Fixture();
+        expect(grade(revision, 'b1c3').quality).toBe('UNKNOWN');
+        revision.evidence.observations = { 'observation-2': revision.evidence.observations['observation-2'] };
+        expect(grade(revision, 'a2a3').quality).toBe('UNKNOWN');
     });
-
-    it('recognizes the original move as a repeated mistake', () => {
-        expect(
-            gradeTrainingMove(
-                metrics({ moveUci: ' A2A3 ', bestGapCp: 250 }),
-                policy
-            )
-        ).toEqual({
-            status: 'GRADED',
-            grade: 'REPEATED_MISTAKE',
-            accepted: false,
-        });
+    it('accepts saturated winning positions within adaptive cp tolerance', () => {
+        const revision = practiceV4Fixture(); revision.frames[0].model = 'MATCHED_WDL';
+        for (const search of Object.values(revision.evidence.searches)) search.engineIdentity.wdlModel = 'stockfish-18';
+        for (const observation of Object.values(revision.evidence.observations)) {
+            observation.lines[0].score = { kind: 'CP', cp: 1000, pov: 'WHITE' };
+            if (observation.lines[1]) observation.lines[1].score = { kind: 'CP', cp: 800, pov: 'WHITE' };
+            for (const line of observation.lines) line.wdl = { win: 1000, draw: 0, loss: 0 };
+        }
+        expect(grade(revision, 'd2d4').quality).toBe('GOOD');
+        for (const observation of Object.values(revision.evidence.observations)) if (observation.lines[1]) observation.lines[1].score = { kind: 'CP', cp: 500, pov: 'WHITE' };
+        expect(grade(revision, 'd2d4').quality).toBe('BELOW_STANDARD');
     });
-
-    it('distinguishes another serious mistake from the original one', () => {
-        expect(
-            gradeTrainingMove(
-                metrics({ bestGapCp: 250, recoveredCp: 10 }),
-                policy
-            )
-        ).toEqual({
-            status: 'GRADED',
-            grade: 'DIFFERENT_MISTAKE',
-            accepted: false,
-        });
-    });
-
-    it('does not call unstable or missing evidence wrong', () => {
-        expect(
-            gradeTrainingMove(metrics({ stable: false }), policy)
-        ).toEqual({
-            status: 'UNRESOLVED',
-            reason: 'UNSTABLE_EVIDENCE',
-        });
-        expect(
-            gradeTrainingMove(
-                metrics({
-                    bestGapCp: null,
-                    bestGapWinChance: null,
-                }),
-                policy
-            )
-        ).toEqual({
-            status: 'UNRESOLVED',
-            reason: 'MISSING_OUTCOME_EVIDENCE',
-        });
-        expect(
-            gradeTrainingMove(
-                metrics({
-                    evidenceModel: 'EXACT_OUTCOME',
-                    preservesOutcome: null,
-                }),
-                policy
-            )
-        ).toEqual({
-            status: 'UNRESOLVED',
-            reason: 'MISSING_OUTCOME_EVIDENCE',
-        });
-    });
-
-    it('requires the cp tolerance even when matched WDL is saturated', () => {
-        expect(
-            gradeTrainingMove(
-                metrics({
-                    bestGapCp: 500,
-                    bestGapWinChance: 0.01,
-                }),
-                policy
-            )
-        ).toEqual({
-            status: 'GRADED',
-            grade: 'IMPROVED',
-            accepted: false,
-        });
-    });
-
-    it('requires outcome preservation when the policy says so', () => {
-        expect(
-            gradeTrainingMove(
-                metrics({
-                    bestGapCp: 0,
-                    recoveredCp: 0,
-                    evidenceModel: 'EXACT_OUTCOME',
-                    bestGapWinChance: 1,
-                    preservesOutcome: false,
-                }),
-                policy
-            )
-        ).toEqual({
-            status: 'GRADED',
-            grade: 'DIFFERENT_MISTAKE',
-            accepted: false,
-        });
-    });
-});
-
-it('does not turn a missing cp comparison into a bad verdict for a small matched WDL gap',()=>{
-    expect(gradeTrainingMove(metrics({evidenceModel:'MATCHED_WDL',bestGapCp:null,bestGapWinChance:0.05}),policy)).toEqual({status:'UNRESOLVED',reason:'MISSING_OUTCOME_EVIDENCE'});
-    expect(gradeTrainingMove(metrics({evidenceModel:'MATCHED_WDL',bestGapCp:null,bestGapWinChance:0.2}),policy)).toMatchObject({status:'GRADED',accepted:false});
 });

@@ -78,9 +78,9 @@ export function deriveProgressNextAction(
     snapshot: ProgressSnapshot
 ): ProgressNextAction {
     const hasPracticeEvidence =
-        snapshot.practice.gradedAttempts +
+        snapshot.practice.resolvedAttempts +
             snapshot.practice.revealedAttempts +
-            snapshot.practice.unresolvedExcluded >
+            snapshot.practice.unavailableExcluded >
         0;
     const hasCurrentInventory =
         snapshot.inventory.eligiblePositions > 0;
@@ -329,12 +329,12 @@ export function sortBreakdownRows(rows: ProgressBreakdownRow[]) {
             (row) =>
                 row.positions > 0 ||
                 row.sourceGames > 0 ||
-                row.gradedAttempts > 0
+                row.resolvedAttempts > 0
         )
         .sort(
             (a, b) =>
                 b.positions - a.positions ||
-                b.gradedAttempts - a.gradedAttempts ||
+                b.resolvedAttempts - a.resolvedAttempts ||
                 a.key.localeCompare(b.key)
         );
 }

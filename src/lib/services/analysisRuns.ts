@@ -32,7 +32,6 @@ type AnalysisRunTransactionClient = Pick<
     | 'analyzedGame'
     | 'trainingMoment'
     | 'solutionRevision'
-    | 'solutionMoveAssessment'
     | 'trainingMomentObservation'
     | 'user'
     | 'notificationPreference'
@@ -507,7 +506,7 @@ export async function completeAnalysisRunWithGameAnalysisInTransaction(
         tx: args.tx,
         userId: run.userId,
         gameId: run.gameId,
-        practicePositions: args.trainingMoments.length,
+        practicePositions: trainingMoments.upserted,
         completedAt,
     });
     const updatedRun = await args.tx.analysisRun.findUniqueOrThrow({

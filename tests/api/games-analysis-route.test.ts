@@ -1,4 +1,6 @@
-import { fixtureSolution, TEST_REFERENCE_ID } from '../helpers/extractionEvidence';
+import { emptyExtractionWork } from '@/lib/analysis/extractionWork';
+import { practiceV4Fixture, rebuildPracticeFixture } from '../helpers/practice-v4';
+import { originalDecisionForPracticeManifest } from '@/lib/training/practiceSourceBinding';
 import type { GameAnalysis } from '@/lib/analysis/classification';
 import type { ExtractionCompletionManifest } from '@/lib/analysis/extractTrainingMoments';
 import { hashSourcePgn } from '@/lib/chess/pgn';
@@ -11,7 +13,6 @@ import {
     type TrainingMomentCandidate,
 } from '@/lib/training/contracts';
 import { solutionSemanticsHash } from '@/lib/training/contractHashes.server';
-import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
 import { createExtractionConfigSnapshot } from '@/lib/analysis/extractionConfig';
 import { resolveTrainingMomentExtractionOptions } from '@/lib/analysis/extractTrainingMoments';
 import { emptyExtractionReasonCounts } from '@/lib/analysis/extractionReceipt';
@@ -55,9 +56,7 @@ const defaultConfigSnapshot = createExtractionConfigSnapshot({
     })),
 });
 const defaultConfigHash = hashAnalysisConfig(defaultConfigSnapshot);
-const rootFen =
-    'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-const rootAssessmentKey = assessmentPositionKey(rootFen, []);
+
 
 const validAnalysis: GameAnalysis = {
     gameId: 'lichess:source-game-1',
@@ -65,7 +64,8 @@ const validAnalysis: GameAnalysis = {
     whiteAccuracy: 91.2,
     blackAccuracy: 84.5,
     trainingExtraction: {
-        version: 1,
+        version: 2,
+        engineWork: emptyExtractionWork(),
         trainingSide: 'WHITE',
         thresholds: {
             minWinChanceLoss: 0.03,
@@ -110,74 +110,32 @@ const validAnalysis: GameAnalysis = {
     ],
 };
 
-const solutionCore: Omit<
-    SolutionRevisionInput,
-    'solutionHash' | 'evidence' | 'generatorVersion' | 'configHash'
-> = fixtureSolution({
-    verificationStatus: 'VERIFIED',
-    solutionShape: 'UNIQUE',
-    gradingStrategy: 'PRECOMPUTED',
-    continuationShape: 'CONDITIONAL_LINE',
-    trainable: true,
-    bestMoveUci: 'd2d4',
-    acceptedMovesUci: ['d2d4'],
-    acceptanceFrontier: {
-        version: 1,
-        status: 'STABLE',
-        targetCutoffCp: 100,
-        effectiveCutoffCp: 80,
-        boundaryGapCp: 40,
-        moves: [{ moveUci: 'd2d4', tier: 'BEST' }],
-        firstRejectedMoveUci: 'e2e4',
-    },
-    moveAssessments: [
-        {
-            positionKey: rootAssessmentKey,
-            decisionIndex: 0,
-            fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
-            moveUci: 'd2d4',
-            source: 'PRECOMPUTED',
-            grade: 'BEST',
-            scoreAfter: { kind: 'cp', cp: 40, pov: 'WHITE' },
-            evidence: { depth: 20 },
-        },
-    ],
-    bestLineUci: ['d2d4', 'd7d5'],
-    solutionTree: {
-        fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
-        ply: 0,
-        role: 'USER',
-        evidenceSource: 'ENGINE',
-        acceptedMovesUci: ['d2d4'],
-        alternativesComplete: true,
-        branches: [],
-        stopReason: 'NO_STABLE_LINE',
-    },
-    scoreAtStart: { kind: 'cp', cp: 40, pov: 'WHITE' },
-    playedMoveScore: { kind: 'cp', cp: -80, pov: 'WHITE' },
-    targetOutcome: {
-        kind: 'MAXIMIZE_WINNING_CHANCE',
-        score: { kind: 'cp', cp: 40, pov: 'WHITE' },
-    },
-    gradingPolicy: {
-        version: 3,
-        pov: 'TRAINING_SIDE',
-        best: { maxCpLoss: 15, maxWinChanceLoss: 0.02 },
-        strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
-        success: {
-            maxCpLoss: 100,
-            maxWinChanceLoss: 0.1,
-            preserveOutcome: true,
-        },
-        improvement: {
-            minRecoveredCp: 50,
-            minRecoveredWinChance: 0.05,
-        },
-        unknownMove: 'EVALUATE',
-        matePolicy: 'EXACT',
-        tablebasePolicy: 'EXACT',
-    },
-});
+const practiceManifest = practiceV4Fixture();
+practiceManifest.source = { ...practiceManifest.source, gameId: ownedGame.id, sourcePgnHash, originalMoveUci: 'e2e4' };
+practiceManifest.rootAnswerIndex.preferredMoveUci = 'd2d4';
+practiceManifest.frames[0].referenceAssessmentId = 'assessment-d2d4';
+practiceManifest.executionProfileId = defaultConfigHash;
+practiceManifest.executionProfileSnapshot = { id: defaultConfigHash, minimumConfirmationNodes: defaultConfigSnapshot.extractor.confirmNodes ?? 1 };
+practiceManifest.policySnapshot = defaultConfigSnapshot.extractor.gradingPolicy;
+for (const search of Object.values(practiceManifest.evidence.searches)) {
+    if (search.reason === 'VERIFY_REFERENCE') {
+        search.request.rootScopeUci = ['d2d4'];
+    } else {
+        search.request.limit.nodes = practiceManifest.executionProfileSnapshot.minimumConfirmationNodes;
+        search.reportedNodes = practiceManifest.executionProfileSnapshot.minimumConfirmationNodes;
+    }
+}
+for (const observation of Object.values(practiceManifest.evidence.observations)) {
+    if (practiceManifest.evidence.searches[observation.searchId].reason === 'VERIFY_REFERENCE') {
+        observation.rootScopeUci = ['d2d4'];
+        observation.lines = [{ ...observation.lines[0], moveUci: 'd2d4', pvUci: ['d2d4'], score: { kind: 'CP', pov: 'WHITE', cp: 20 } }];
+    } else {
+        observation.nodes *= practiceManifest.executionProfileSnapshot.minimumConfirmationNodes / 100_000;
+    }
+    observation.lines = observation.lines.map(line => line.moveUci === 'e2e4' ? { ...line, score: { kind: 'CP' as const, pov: 'WHITE' as const, cp: -200 } } : line).sort((a,b) => (b.score.kind === 'CP' ? b.score.cp : 0) - (a.score.kind === 'CP' ? a.score.cp : 0));
+}
+rebuildPracticeFixture(practiceManifest);
+const solutionCore: SolutionRevisionInput = { manifest: practiceManifest, configHash: defaultConfigHash };
 
 const validTrainingMoment: TrainingMomentCandidate = {
     sourceGameId: 'game-1',
@@ -192,26 +150,15 @@ const validTrainingMoment: TrainingMomentCandidate = {
     sourceKinds: ['MY_MISTAKE'],
     lessonKinds: ['AVOID_MISTAKE'],
     themes: ['quietMove'],
-    originalDecision: {
-        scoreBefore: { kind: 'cp', cp: 40, pov: 'WHITE' },
-        scoreAfter: { kind: 'cp', cp: -80, pov: 'WHITE' },
-        cpLoss: 120,
-        winChanceLoss: 0.1,
-    },
+    originalDecision: originalDecisionForPracticeManifest(practiceManifest),
     confidence: 0.75,
     phase: 'OPENING',
-    solution: {
-        ...solutionCore,
-        solutionHash: solutionSemanticsHash(solutionCore),
-        evidence: { fixture: true },
-        generatorVersion: 'test-extractor-v2',
-        configHash: defaultConfigHash,
-    },
+    solution: solutionCore,
 };
 
 const validManifest: ExtractionCompletionManifest = {
     scope: 'FULL_GAME', scanComplete: true, extractionComplete: true,
-    decisionOutcomes: [{decisionPly: 0, status: 'UNRESOLVED', reason: 'BELOW_CANDIDATE_SIGNAL'}],
+    decisionOutcomes: [],
     version: 1,
     complete: true,
     sourceGameId: 'game-1',
@@ -221,6 +168,8 @@ const validManifest: ExtractionCompletionManifest = {
     termination: 'COMPLETED',
     errors: [],
 };
+
+const confirmedManifest: ExtractionCompletionManifest = { ...validManifest, decisionOutcomes: [{ decisionPly: 0, status: practiceManifest.decision.status, reason: practiceManifest.decision.reason }] };
 
 async function importRoute(): Promise<AnalysisRouteModule> {
     vi.resetModules();
@@ -495,6 +444,16 @@ describe('PUT /api/games/[id]/analysis', () => {
         expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 
+    it('rejects contradictory diagnostic and canonical decisions before opening a transaction', async () => {
+        const route = await importRoute();
+        const response = await route.PUT(createPutRequest({ analysis: validAnalysis, trainingMoments: [validTrainingMoment], extractionManifest: { ...confirmedManifest, decisionOutcomes: [{ decisionPly: 0, status: 'NOT_A_MISTAKE', reason: 'CONTRADICTORY_DIAGNOSTIC' }] } }), routeParams());
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({ error: 'Extraction diagnostics contradict canonical practice decisions' });
+        expect((prismaMock as PrismaMockWithTransaction).$transaction).not.toHaveBeenCalled();
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
+        expect(prismaMock.trainingMoment.upsert).not.toHaveBeenCalled();
+    });
+
     it('rejects invalid training moments before any write', async () => {
         const route = await importRoute();
         const response = await route.PUT(
@@ -520,21 +479,10 @@ describe('PUT /api/games/[id]/analysis', () => {
 
     it('rejects a self-hashed solution with an illegal line before any write', async () => {
         const route = await importRoute();
-        const illegalSolutionCore = {
-            ...solutionCore,
-            bestLineUci: ['d2d4', 'a1a8'],
-        } satisfies typeof solutionCore;
-        const illegalMoment: TrainingMomentCandidate = {
-            ...validTrainingMoment,
-            solution: {
-                ...illegalSolutionCore,
-                solutionHash:
-                    solutionSemanticsHash(illegalSolutionCore),
-                evidence: { fixture: true },
-                generatorVersion: 'test-extractor-v2',
-                configHash: defaultConfigHash,
-            },
-        };
+        const illegalSolutionCore = structuredClone(solutionCore);
+        illegalSolutionCore.manifest.continuation.explanationLines = [{ startContextId: practiceManifest.source.contextId, movesUci: ['d2d4', 'a1a8'], stopReason: 'TEST' }];
+        illegalSolutionCore.manifest.semanticHash = solutionSemanticsHash(illegalSolutionCore);
+        const illegalMoment: TrainingMomentCandidate = { ...validTrainingMoment, solution: illegalSolutionCore };
 
         const response = await route.PUT(
             createPutRequest({
@@ -558,53 +506,10 @@ describe('PUT /api/games/[id]/analysis', () => {
 
     it('rejects duplicate canonical decisions even when their solution hashes differ', async () => {
         const route = await importRoute();
-        const alternateSolutionCore: typeof solutionCore = {
-            ...solutionCore,
-            bestMoveUci: 'g1f3',
-            acceptedMovesUci: ['g1f3'],
-            moveAssessments: [
-                {
-                    positionKey: rootAssessmentKey,
-                    referenceId: TEST_REFERENCE_ID, tierStable: true,
-                    decisionIndex: 0,
-                    fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
-                    moveUci: 'g1f3',
-                    source: 'PRECOMPUTED',
-                    grade: 'BEST',
-                    scoreAfter: {
-                        kind: 'cp',
-                        cp: 40,
-                        pov: 'WHITE',
-                    },
-                    evidence: {
-                        bestGapCp: 0,
-                        bestGapWinChance: 0,
-                    },
-                },
-            ],
-            bestLineUci: ['g1f3', 'g8f6'],
-            solutionTree: {
-                fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
-                ply: 0,
-                role: 'USER',
-                evidenceSource: 'ENGINE',
-                acceptedMovesUci: ['g1f3'],
-                alternativesComplete: false,
-                branches: [],
-                stopReason: 'NO_STABLE_LINE',
-            },
-        };
-        const alternateMoment: TrainingMomentCandidate = {
-            ...validTrainingMoment,
-            solution: {
-                ...alternateSolutionCore,
-                solutionHash:
-                    solutionSemanticsHash(alternateSolutionCore),
-                evidence: { fixture: 'alternate' },
-                generatorVersion: 'test-extractor-v2',
-                configHash: defaultConfigHash,
-            },
-        };
+        const alternateSolutionCore = structuredClone(solutionCore);
+        alternateSolutionCore.manifest.continuation.explanationLines = [{ startContextId: practiceManifest.source.contextId, movesUci: ['d2d4'], stopReason: 'TEST' }];
+        alternateSolutionCore.manifest.semanticHash = solutionSemanticsHash(alternateSolutionCore);
+        const alternateMoment: TrainingMomentCandidate = { ...validTrainingMoment, solution: alternateSolutionCore };
 
         const response = await route.PUT(
             createPutRequest({
@@ -619,7 +524,7 @@ describe('PUT /api/games/[id]/analysis', () => {
         );
 
         await expect(readJson(response)).resolves.toEqual({
-            error: 'Invalid training moments',
+            error: 'Duplicate training decision',
         });
         expect(response.status).toBe(400);
         expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
@@ -780,7 +685,7 @@ describe('PUT /api/games/[id]/analysis', () => {
         );
 
         await expect(readJson(response)).resolves.toEqual({
-            error: 'Practice positions do not match source game positions',
+            error: 'Invalid training moments',
         });
         expect(response.status).toBe(400);
         expect(
@@ -849,10 +754,10 @@ describe('PUT /api/games/[id]/analysis', () => {
                 }),
             },
             trainingMoment: {
+                upsert: vi.fn(),
                 updateMany: vi.fn().mockResolvedValue({ count: 3 }),
             },
             solutionRevision: {},
-            solutionMoveAssessment: {},
             trainingMomentObservation: {},
         };
 
@@ -865,7 +770,7 @@ describe('PUT /api/games/[id]/analysis', () => {
             createPutRequest({
                 analysis: validAnalysis,
                 trainingMoments: [],
-                extractionManifest: validManifest,
+                extractionManifest: { ...validManifest, decisionOutcomes: [{ decisionPly: 0, status: 'UNRESOLVED', reason: 'MISTAKE_COMPARISON_UNRESOLVED' }] },
             }),
             routeParams()
         );
@@ -924,15 +829,8 @@ describe('PUT /api/games/[id]/analysis', () => {
                 lastError: null,
             }),
         });
-        expect(tx.trainingMoment.updateMany).toHaveBeenCalledWith({
-            where: expect.objectContaining({
-                userId: 'user-1',
-                gameId: 'game-1',
-                archivedAt: null,
-                currentSolutionRevision: { is: { configHash: { not: expect.any(String) } } },
-            }),
-            data: { status: 'UNSTABLE' },
-        });
+        expect(tx.trainingMoment.updateMany).not.toHaveBeenCalled();
+        expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
         expect(prismaMock.analyzedGame.update).not.toHaveBeenCalled();
         expect(prismaMock.trainingMoment.upsert).not.toHaveBeenCalled();
     });
@@ -963,6 +861,7 @@ describe('PUT /api/games/[id]/analysis', () => {
                 gameId: 'game-1',
                 status: 'RUNNING',
                 configHash: defaultConfigHash,
+                configSnapshot: defaultConfigSnapshot,
                 inputPgnHash: sourcePgnHash,
                 startedAt: new Date('2026-07-04T12:29:00.000Z'),
             };
@@ -999,11 +898,8 @@ describe('PUT /api/games/[id]/analysis', () => {
                     create: vi.fn().mockResolvedValue({
                         id: 'revision-1',
                         momentId: 'moment-1',
-                        solutionHash: validTrainingMoment.solution.solutionHash,
+                        solutionHash: validTrainingMoment.solution.manifest.semanticHash,
                     }),
-                },
-                solutionMoveAssessment: {
-                    createMany: vi.fn().mockResolvedValue({ count: 1 }),
                 },
                 trainingMomentObservation: {
                     findUnique: vi.fn().mockResolvedValue(null),
@@ -1019,7 +915,7 @@ describe('PUT /api/games/[id]/analysis', () => {
                 createPutRequest({
                     analysis,
                     trainingMoments: [moment],
-                    extractionManifest: validManifest,
+                    extractionManifest: confirmedManifest,
                 }),
                 routeParams()
             );
@@ -1054,6 +950,7 @@ describe('PUT /api/games/[id]/analysis', () => {
             executionMode: 'LOCAL_BROWSER',
             status: 'RUNNING',
             configHash: defaultConfigHash,
+            configSnapshot: defaultConfigSnapshot,
             inputPgnHash: sourcePgnHash,
             startedAt: new Date('2026-07-04T12:29:00.000Z'),
         };
@@ -1079,7 +976,6 @@ describe('PUT /api/games/[id]/analysis', () => {
                 updateMany: vi.fn(),
             },
             solutionRevision: {},
-            solutionMoveAssessment: {},
             trainingMomentObservation: {},
         };
 
@@ -1092,7 +988,7 @@ describe('PUT /api/games/[id]/analysis', () => {
             createPutRequest({
                 analysis: validAnalysis,
                 trainingMoments: [validTrainingMoment],
-                extractionManifest: validManifest,
+                extractionManifest: confirmedManifest,
             }),
             routeParams()
         );

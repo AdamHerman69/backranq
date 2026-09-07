@@ -23,7 +23,7 @@ export default defineConfig({
         trace: 'retain-on-failure',
     },
     webServer: {
-        command: `pnpm start --hostname localhost --port ${port}`,
+        command: `pnpm start --hostname ${new URL(baseURL).hostname} --port ${port}`,
         url: baseURL,
         reuseExistingServer: false,
         timeout: 120_000,

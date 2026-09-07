@@ -640,12 +640,13 @@ describe('analysis job state transitions', () => {
             fence: { lockedAt, dispatchedCount: 1 },
             expectedVersion: 0,
             checkpoint: {
-                version: 1,
+                version: 2,
                 gameId: 'game-1',
                 sourceGameId: 'game-1',
                 sourcePgnHash: 'pgn-hash',
                 configHash: 'config-hash',
                 nextPly: 12,
+                reassessDecisionPlies: [],
                 expectedPlies: 60,
                 moments: [],
                 gameAnalysis: [],
@@ -654,6 +655,7 @@ describe('analysis job state transitions', () => {
                 extractionErrors: [],
                 decisionReceipts: [],
                 scanEvidence: [],
+                analysisPool: { version: 2, searches: [], retainedSnapshotIds: [], cost: { queriesByReason: {}, searches: [] } },
             },
         });
 

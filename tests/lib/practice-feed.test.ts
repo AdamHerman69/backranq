@@ -26,6 +26,7 @@ function prompt(
         fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
         sideToMove: 'w',
         grading: {} as TrainingPromptDto['grading'],
+        review: {} as TrainingPromptDto['review'],
     };
 }
 

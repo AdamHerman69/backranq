@@ -256,44 +256,7 @@ const promptSelect = {
             playedAt: true,
         },
     },
-    currentSolutionRevision: {
-        select: {
-            bestMoveUci: true,
-            acceptedMovesUci: true,
-            acceptanceFrontier: true,
-            decision: true,
-            answerCoverage: true,
-            continuation: true,
-            originalDecision: true,
-            solutionShape: true,
-            bestLine: true,
-            scoreAtStart: true,
-            gradingPolicy: true,
-            solutionTree: true,
-            moveAssessments: {
-                where: { status: 'VERIFIED' },
-                orderBy: [
-                    { decisionIndex: 'asc' as const },
-                    { moveUci: 'asc' as const },
-                ],
-                select: {
-                    positionKey: true,
-                    referenceId: true,
-                    tierStable: true,
-                    decisionIndex: true,
-                    fen: true,
-                    moveUci: true,
-                    source: true,
-                    status: true,
-                    grade: true,
-                    scoreAfter: true,
-                    evidence: true,
-                },
-            },
-        },
-    },
-    createdAt: true,
-    lastTrainedAt: true,
+    currentSolutionRevision: { select: { manifest: true, trainable: true } },
 } satisfies Prisma.TrainingMomentSelect;
 
 export class InvalidPracticeFeedCursorError extends Error {
@@ -409,8 +372,7 @@ export async function listPracticeFeed(args: {
             currentSolutionRevision: {
                 is: {
                     trainable: true,
-                    verificationStatus: 'VERIFIED',
-                    decision: { path: ['status'], equals: 'CONFIRMED_MISTAKE' },
+                    manifest: { path: ['decision', 'status'], equals: 'CONFIRMED_MISTAKE' },
                 },
             },
         },
@@ -465,8 +427,7 @@ export async function getTrainingMomentPrompt(args: {
             currentSolutionRevision: {
                 is: {
                     trainable: true,
-                    verificationStatus: 'VERIFIED',
-                    decision: { path: ['status'], equals: 'CONFIRMED_MISTAKE' },
+                    manifest: { path: ['decision', 'status'], equals: 'CONFIRMED_MISTAKE' },
                 },
             },
         },

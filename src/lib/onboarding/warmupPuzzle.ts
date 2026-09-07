@@ -1,225 +1,69 @@
 import { Chess } from 'chess.js';
-import { moveToUci } from '@/lib/chess/utils';
-import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
+import { ruleTerminalEvaluation } from '@/lib/analysis/ruleEvaluation';
+import { createAssessmentEvaluator, deriveDecisionAssessment } from '@/lib/training/assessmentPolicy';
+import { deriveAnswerIndex } from '@/lib/training/answerIndex';
+import {
+    DEFAULT_ASSESSMENT_POLICY, legalMovesUci, practiceContextId,
+    type ComparisonFrame, type EvidenceStore, type PracticeMomentRevision,
+} from '@/lib/training/practiceContract';
+import { reviewForPracticeManifest } from '@/lib/training/practiceReview';
 import type { LandingPuzzleDto } from './contracts';
 
 const ROOT_FEN = '7k/5Q2/6K1/8/8/8/8/8 w - - 0 1';
-const AFTER_BEST_FEN = '5Q1k/8/6K1/8/8/8/8/8 b - - 1 1';
+const ORIGINAL_MOVE = 'f7e6';
+const PREFERRED_MOVE = 'f7f8';
+const ID = 'warmup:clean-finish-v4';
+const contextId = practiceContextId(ROOT_FEN, [], 'WHITE');
+const evidenceId = `${ID}:terminal-rules`;
+const legal = legalMovesUci(ROOT_FEN);
+const terminalResults = legal.flatMap(moveUci => {
+    const board = new Chess(ROOT_FEN);
+    board.move({ from: moveUci.slice(0, 2), to: moveUci.slice(2, 4), promotion: moveUci[4] });
+    const terminal = ruleTerminalEvaluation(board.fen(), [ROOT_FEN]);
+    if (!terminal?.terminal) return [];
+    return [{ moveUci, outcome: terminal.terminal.outcome === 'LOSS' ? 'WIN' as const : 'DRAW' as const,
+        distance: terminal.terminal.kind === 'CHECKMATE' ? 1 : null }];
+});
+const evidence: EvidenceStore = { searches: {}, observations: {}, exact: {
+    [evidenceId]: { id: evidenceId, contextId, fen: ROOT_FEN, positionHistory: [], trainingSide: 'WHITE',
+        source: 'RULE', provider: 'chess.js/FIDE', rules: 'FIDE', complete: true,
+        rootScopeUci: terminalResults.map(result => result.moveUci), results: terminalResults },
+} };
+const frame: ComparisonFrame = { id: `${ID}:frame`, contextId, policyId: DEFAULT_ASSESSMENT_POLICY.id,
+    engineFingerprint: 'FIDE-rules', model: 'EXACT_OUTCOME', referenceAssessmentId: `${ID}:${PREFERRED_MOVE}`,
+    status: 'CURRENT', supersededById: null };
+const evaluate = createAssessmentEvaluator(evidence);
+const assessments = terminalResults.map(result => evaluate(frame, {
+    id: `${ID}:${result.moveUci}`, moveUci: result.moveUci, trainingSide: 'WHITE', referenceMoveUci: PREFERRED_MOVE,
+    originalMoveUci: ORIGINAL_MOVE,
+}));
+const rootAnswerIndex = deriveAnswerIndex({ contextId, frameId: frame.id, legalMovesUci: legal,
+    preferredMoveUci: PREFERRED_MOVE, assessments, coverageGroups: [] });
 
+/** Only terminal moves are classified. Other legal queen/king moves remain unknown. */
+export const WARMUP_MANIFEST: PracticeMomentRevision = {
+    contractVersion: 4, momentId: ID, revisionId: ID,
+    // SHA256 of canonicalPracticeSemantics, verified by the focused warmup test.
+    semanticHash: '8b18024093a8eb2c6927e0004c1a4640fb60f425e795306e4dd8cbefa3748531',
+    source: { gameId: 'curated-warmup', sourcePgnHash: 'curated-clean-finish-v4', decisionPly: 0,
+        contextId, fen: ROOT_FEN, positionHistory: [], trainingSide: 'WHITE', originalMoveUci: ORIGINAL_MOVE },
+    policyId: DEFAULT_ASSESSMENT_POLICY.id, policySnapshot: { ...DEFAULT_ASSESSMENT_POLICY },
+    executionProfileId: 'warmup-exact-rules-v4', executionProfileSnapshot: { id: 'warmup-exact-rules-v4', minimumConfirmationNodes: 1 },
+    generatorVersion: 'backranq-practice-v4',
+    decision: deriveDecisionAssessment({ original: assessments.find(a => a.moveUci === ORIGINAL_MOVE)!,
+        reference: assessments.find(a => a.moveUci === PREFERRED_MOVE)!, frame, evidence, minimumConfirmationNodes: 1 }),
+    rootAnswerIndex,
+    continuation: { mode: 'SINGLE_DECISION',
+        explanationLines: [{ startContextId: contextId, movesUci: [PREFERRED_MOVE], stopReason: 'CHECKMATE' }],
+        nodes: [{ id: contextId, contextId, fen: ROOT_FEN, positionHistory: [], trainingSide: 'WHITE',
+            role: 'USER', answerIndex: rootAnswerIndex }], edges: [] },
+    frames: [frame], assessments, coverageGroups: [], evidence,
+};
 export const WARMUP_PUZZLE: LandingPuzzleDto = {
-    id: 'warmup:clean-finish-v1',
-    prompt: {
-        id: 'warmup:clean-finish-v1',
-        solutionRevisionId: 'warmup:clean-finish-v1',
-        fen: ROOT_FEN,
-        sideToMove: 'w',
-        grading: {
-            version: 1,
-            decision: { status: 'CONFIRMED_MISTAKE', reason: 'MISSED_MATE_ALLOWED_STALEMATE' },
-            answerCoverage: {
-                version: 1,
-                contextId: assessmentPositionKey(ROOT_FEN, []),
-                status: 'PARTIAL',
-                legalMovesUci: new Chess(ROOT_FEN).moves({ verbose: true }).map(moveToUci),
-                assessedMovesUci: ['f7f8', 'f7e8', 'f7g7', 'f7h7'],
-                coveredMovesUci: [],
-                referenceId: 'warmup:clean-finish-v1',
-                policyVersion: 3,
-                reason: 'CURATED_IMMEDIATE_MATES',
-            },
-            continuation: { status: 'GRADED_BRANCHES_READY', explanationAvailable: true, gradedContinuationReady: true },
-            trainingSide: 'w',
-            positionHistory: [],
-            originalMoveUci: 'f7e6',
-            originalScoreAfter: { kind: 'cp', cp: 0, pov: 'WHITE' },
-            gradingPolicy: {
-                version: 3,
-                pov: 'TRAINING_SIDE',
-                best: { maxCpLoss: 20, maxWinChanceLoss: 0.03 },
-                strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
-                success: {
-                    maxCpLoss: 100,
-                    maxWinChanceLoss: 0.1,
-                    preserveOutcome: true,
-                },
-                improvement: {
-                    minRecoveredCp: 50,
-                    minRecoveredWinChance: 0.05,
-                },
-                unknownMove: 'EVALUATE',
-                matePolicy: 'EXACT',
-                tablebasePolicy: 'EXACT',
-            },
-            acceptanceFrontier: {
-                version: 1,
-                status: 'STABLE',
-                targetCutoffCp: 100,
-                effectiveCutoffCp: 0,
-                boundaryGapCp: null,
-                moves: [
-                    { moveUci: 'f7f8', tier: 'BEST' },
-                    { moveUci: 'f7e8', tier: 'BEST' },
-                    { moveUci: 'f7g7', tier: 'BEST' },
-                    { moveUci: 'f7h7', tier: 'BEST' },
-                ],
-                firstRejectedMoveUci: null,
-            },
-            solutionTree: {
-                fen: ROOT_FEN,
-                contextId: assessmentPositionKey(ROOT_FEN, []),
-                positionHistory: [],
-                ply: 0,
-                role: 'USER',
-                acceptedMovesUci: [
-                    'f7f8',
-                    'f7e8',
-                    'f7g7',
-                    'f7h7',
-                ],
-                alternativesComplete: true,
-                branches: [
-                    {
-                        moveUci: 'f7f8',
-                        best: true,
-                        child: {
-                            fen: AFTER_BEST_FEN,
-                            contextId: assessmentPositionKey(AFTER_BEST_FEN, [ROOT_FEN]),
-                            positionHistory: [ROOT_FEN],
-                            ply: 1,
-                            role: 'TERMINAL',
-                            acceptedMovesUci: [],
-                            alternativesComplete: true,
-                            stopReason: 'CHECKMATE',
-                            branches: [],
-                        },
-                    },
-                    {
-                        moveUci: 'f7e8',
-                        best: false,
-                        child: {
-                            fen: '4Q2k/8/6K1/8/8/8/8/8 b - - 1 1',
-                            contextId: assessmentPositionKey('4Q2k/8/6K1/8/8/8/8/8 b - - 1 1', [ROOT_FEN]),
-                            positionHistory: [ROOT_FEN],
-                            ply: 1,
-                            role: 'TERMINAL',
-                            acceptedMovesUci: [],
-                            alternativesComplete: true,
-                            stopReason: 'CHECKMATE',
-                            branches: [],
-                        },
-                    },
-                    {
-                        moveUci: 'f7g7',
-                        best: false,
-                        child: {
-                            fen: '7k/6Q1/6K1/8/8/8/8/8 b - - 1 1',
-                            contextId: assessmentPositionKey('7k/6Q1/6K1/8/8/8/8/8 b - - 1 1', [ROOT_FEN]),
-                            positionHistory: [ROOT_FEN],
-                            ply: 1,
-                            role: 'TERMINAL',
-                            acceptedMovesUci: [],
-                            alternativesComplete: true,
-                            stopReason: 'CHECKMATE',
-                            branches: [],
-                        },
-                    },
-                    {
-                        moveUci: 'f7h7',
-                        best: false,
-                        child: {
-                            fen: '7k/7Q/6K1/8/8/8/8/8 b - - 1 1',
-                            contextId: assessmentPositionKey('7k/7Q/6K1/8/8/8/8/8 b - - 1 1', [ROOT_FEN]),
-                            positionHistory: [ROOT_FEN],
-                            ply: 1,
-                            role: 'TERMINAL',
-                            acceptedMovesUci: [],
-                            alternativesComplete: true,
-                            stopReason: 'CHECKMATE',
-                            branches: [],
-                        },
-                    },
-                ],
-            },
-            moveAssessments: [
-                {
-                    positionKey: assessmentPositionKey(ROOT_FEN, []),
-                    referenceId: 'warmup:clean-finish-v1',
-                    tierStable: true,
-                    decisionIndex: 0,
-                    fen: ROOT_FEN,
-                    moveUci: 'f7f8',
-                    source: 'PRECOMPUTED',
-                    grade: 'BEST',
-                    scoreAfter: {
-                        kind: 'mate',
-                        plies: 0,
-                        winner: 'WHITE',
-                    },
-                    evidence: { kind: 'CURATED_WARMUP' },
-                },
-                ...['f7e8', 'f7g7', 'f7h7'].map((moveUci) => ({
-                    positionKey: assessmentPositionKey(ROOT_FEN, []),
-                    referenceId: 'warmup:clean-finish-v1',
-                    tierStable: true,
-                    decisionIndex: 0,
-                    fen: ROOT_FEN,
-                    moveUci,
-                    source: 'PRECOMPUTED' as const,
-                    grade: 'BEST' as const,
-                    scoreAfter: {
-                        kind: 'mate' as const,
-                        plies: 0,
-                        winner: 'WHITE' as const,
-                    },
-                    evidence: { kind: 'CURATED_WARMUP' },
-                })),
-            ],
-            review: {
-                trainingSide: 'w',
-                originalMoveUci: 'f7e6',
-                submittedMoveUci: null,
-                bestMoveUci: 'f7f8',
-                acceptedMovesUci: [
-                    'f7f8',
-                    'f7e8',
-                    'f7g7',
-                    'f7h7',
-                ],
-                acceptedMovesComplete: false,
-                bestLineUci: ['f7f8'],
-                scoreAtStart: {
-                    kind: 'mate',
-                    plies: 1,
-                    winner: 'WHITE',
-                },
-                originalDecision: {
-                    scoreBefore: {
-                        kind: 'mate',
-                        plies: 1,
-                        winner: 'WHITE',
-                    },
-                    scoreAfter: { kind: 'cp', cp: 0, pov: 'WHITE' },
-                    cpLoss: null,
-                    winChanceLoss: null,
-                },
-                comparison: null,
-                sourceKinds: ['MISSED_OPPORTUNITY'],
-                lessonKinds: ['CONVERT_ADVANTAGE'],
-                themes: ['mate'],
-                source: {
-                    gameId: 'curated-warmup',
-                    provider: 'lichess',
-                    playedAt: '2026-01-01T00:00:00.000Z',
-                    decisionPly: 0,
-                },
-            },
-        },
-    },
-    context: {
-        kind: 'WARMUP',
-        headline: 'Quick warm-up: find the clean finish',
-        teaser: 'A pre-analyzed position while we prepare one from your games.',
-        sourceUrl: null,
-        playedAt: null,
-    },
+    id: ID,
+    prompt: { id: ID, solutionRevisionId: ID, fen: ROOT_FEN, sideToMove: 'w', grading: WARMUP_MANIFEST,
+        review: reviewForPracticeManifest({ manifest: WARMUP_MANIFEST, provider: 'lichess',
+            playedAt: '2026-01-01T00:00:00.000Z', sourceKinds: ['MISSED_OPPORTUNITY'], lessonKinds: [], themes: ['mate'] }) },
+    context: { kind: 'WARMUP', headline: 'Quick warm-up: find the clean finish',
+        teaser: 'A pre-analyzed position while we prepare one from your games.', sourceUrl: null, playedAt: null },
 };

@@ -215,11 +215,6 @@ describe.skipIf(!RUN_LIVE_PROVIDER_TESTS)(
                             confirmNodes: CONFIRM_NODES,
                             engineTimeoutMs: ANALYSIS_TIMEOUT_MS,
                             multiPv: 3,
-                            maxAcceptedMoves: 3,
-                            verifyContinuations: true,
-                            verificationNodesPerPosition: ANALYSIS_NODES,
-                            verificationMaxPositions: 12,
-                            verificationMaxPlies: 8,
                             returnAnalysis: true,
                         },
                     });
@@ -246,11 +241,11 @@ describe.skipIf(!RUN_LIVE_PROVIDER_TESTS)(
                                     game.id === moment.sourceGameId
                             )
                         ).toBe(true);
-                        expect(moment.solution.bestMoveUci).toMatch(
+                        expect(moment.solution.manifest.rootAnswerIndex.preferredMoveUci).toMatch(
                             /^[a-h][1-8][a-h][1-8][qrbn]?$/
                         );
                         expect(
-                            moment.solution.acceptedMovesUci.length
+                            moment.solution.manifest.assessments.filter(a => a.quality === 'GOOD' && a.qualitySupport === 'SUPPORTED').length
                         ).toBeGreaterThan(0);
                     }
                     console.info(

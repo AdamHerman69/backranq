@@ -40,8 +40,12 @@ function attempt(args: {
     id: string;
     daysAgo: number;
     status?: ProgressAttemptRecord['status'];
-    grade?: ProgressAttemptRecord['grade'];
-    rootGrade?: ProgressAttemptRecord['grade'];
+    quality?: ProgressAttemptRecord['quality'];
+    tier?: ProgressAttemptRecord['tier'];
+    originalRelation?: ProgressAttemptRecord['originalRelation'];
+    rootQuality?: ProgressAttemptRecord['quality'];
+    rootTier?: ProgressAttemptRecord['tier'];
+    rootOriginalRelation?: ProgressAttemptRecord['originalRelation'];
     rootMove?: string;
     solutionHash?: string;
     configHash?: string;
@@ -57,7 +61,7 @@ function attempt(args: {
         | 'contextSolutionHash'
     >;
 }): ProgressAttemptRecord {
-    const status = args.status ?? 'GRADED';
+    const status = args.status ?? 'RESOLVED';
     return {
         id: args.id,
         trainingMomentId: 'unassigned-position',
@@ -66,7 +70,9 @@ function attempt(args: {
         completedAt: daysAgo(args.daysAgo),
         userMoveUci: args.rootMove ?? 'e2e4',
         status,
-        grade: args.grade ?? null,
+        quality: args.quality ?? (status === 'RESOLVED' ? 'GOOD' : 'UNKNOWN'),
+        tier: args.tier ?? null,
+        originalRelation: args.originalRelation ?? 'UNKNOWN',
         contextPhase:
             args.context
                 ? args.context.contextPhase
@@ -92,13 +98,14 @@ function attempt(args: {
             args.solutionHash ??
             'solution-one',
         steps:
-            status === 'GRADED'
+            status === 'RESOLVED'
                 ? [
                       {
                           stepIndex: 0,
-                          actor: 'USER',
                           moveUci: args.rootMove ?? 'e2e4',
-                          grade: args.rootGrade ?? args.grade ?? null,
+                          quality: args.rootQuality ?? args.quality ?? 'GOOD',
+                          tier: args.rootTier ?? args.tier ?? null,
+                          originalRelation: args.rootOriginalRelation ?? args.originalRelation ?? 'UNKNOWN',
                       },
                   ]
                 : [],
@@ -133,8 +140,7 @@ function position(
             id: 'revision-current',
             solutionHash: 'solution-one',
             configHash: 'config-1',
-            verificationStatus: 'VERIFIED',
-            decision: { status: 'CONFIRMED_MISTAKE' },
+            manifest: { decision: { status: 'CONFIRMED_MISTAKE', selection: 'INCLUDED' } },
             trainable: true,
         },
         observations: [
@@ -184,6 +190,18 @@ function snapshot(args: {
 }
 
 describe('aggregateProgressSnapshot', () => {
+    it('counts supported quality without a tier and leaves pending or unavailable moves neutral', () => {
+        const result = snapshot({ positions: [position('quality-only', [
+            attempt({ id: 'good', daysAgo: 3, quality: 'GOOD', tier: null }),
+            { ...attempt({ id: 'pending', daysAgo: 2, status: 'PENDING' }), completedAt: null },
+            attempt({ id: 'unavailable', daysAgo: 1, status: 'UNAVAILABLE' }),
+        ])] });
+        expect(result.practice.resolvedAttempts).toBe(1);
+        expect(result.practice.fullPositionSolve).toMatchObject({ x: 1, n: 1 });
+        expect(result.practice.tierCounts).toEqual({ BEST: 0, STRONG: 0, GOOD: 0, SUBPAR: 0 });
+        expect(result.firstRecordedTerminalOutcome.resolvedFullSolve).toMatchObject({ x: 1, n: 1 });
+        expect(result.practice.unavailableExcluded).toBe(1);
+    });
     it('uses strict current-run source hashes for analysis and Position eligibility', () => {
         const staleGame = game({
             sourcePgnHash: 'new-source-hash',
@@ -211,8 +229,7 @@ describe('aggregateProgressSnapshot', () => {
                         id: 'revision-current',
                         solutionHash: 'solution-one',
                         configHash: 'config-1',
-                        verificationStatus: 'VERIFIED',
-                        decision: { status: 'UNRESOLVED' },
+                        manifest: { decision: { status: 'UNRESOLVED', selection: 'EXCLUDED' } },
                         trainable: true,
                     },
                 }),
@@ -316,15 +333,15 @@ describe('aggregateProgressSnapshot', () => {
         ).toBe(states.imported);
     });
 
-    it('excludes revealed and unresolved attempts and scores a conditional root independently', () => {
+    it('excludes revealed and unavailable attempts and scores a conditional root independently', () => {
         const result = snapshot({
             positions: [
                 position('position-1', [
                     attempt({
                         id: 'conditional',
                         daysAgo: 4,
-                        grade: 'DIFFERENT_MISTAKE',
-                        rootGrade: 'BEST',
+                        quality: 'BELOW_STANDARD', originalRelation: 'WORSE',
+                        rootQuality: 'GOOD', rootTier: 'BEST',
                     }),
                     attempt({
                         id: 'reveal',
@@ -334,15 +351,15 @@ describe('aggregateProgressSnapshot', () => {
                     attempt({
                         id: 'unresolved',
                         daysAgo: 2,
-                        status: 'UNRESOLVED',
+                        status: 'UNAVAILABLE',
                     }),
                 ]),
             ],
         });
 
-        expect(result.practice.gradedAttempts).toBe(1);
+        expect(result.practice.resolvedAttempts).toBe(1);
         expect(result.practice.revealedAttempts).toBe(1);
-        expect(result.practice.unresolvedExcluded).toBe(1);
+        expect(result.practice.unavailableExcluded).toBe(1);
         expect(result.practice.fullPositionSolve).toMatchObject({
             x: 0,
             n: 1,
@@ -367,14 +384,14 @@ describe('aggregateProgressSnapshot', () => {
                     attempt({
                         id: 'solved-later',
                         daysAgo: 3,
-                        grade: 'BEST',
+                        quality: 'GOOD', tier: 'BEST',
                     }),
                 ]),
                 position('solved-first', [
                     attempt({
                         id: 'best-first',
                         daysAgo: 7,
-                        grade: 'GOOD',
+                        quality: 'GOOD', tier: 'GOOD',
                     }),
                 ]),
             ],
@@ -382,29 +399,29 @@ describe('aggregateProgressSnapshot', () => {
 
         expect(result.firstRecordedTerminalOutcome).toMatchObject({
             positions: 2,
-            graded: 1,
+            resolved: 1,
             revealed: 1,
             metObjective: { x: 1, n: 2 },
-            gradedFullSolve: { x: 1, n: 1 },
+            resolvedFullSolve: { x: 1, n: 1 },
         });
     });
 
-    it('derives exact repetition from the classified root grade, not move equality', () => {
+    it('derives exact repetition from the classified root quality and original relation, not move equality', () => {
         const result = snapshot({
             positions: [
                 position('position-1', [
                     attempt({
                         id: 'same-move-not-repeat',
                         daysAgo: 5,
-                        grade: 'DIFFERENT_MISTAKE',
-                        rootGrade: 'DIFFERENT_MISTAKE',
+                        quality: 'BELOW_STANDARD', originalRelation: 'WORSE',
+                        rootQuality: 'BELOW_STANDARD', rootOriginalRelation: 'WORSE',
                         rootMove: 'e2e4',
                     }),
                     attempt({
                         id: 'classified-repeat',
                         daysAgo: 3,
-                        grade: 'REPEATED_MISTAKE',
-                        rootGrade: 'REPEATED_MISTAKE',
+                        quality: 'BELOW_STANDARD', originalRelation: 'SAME_MOVE',
+                        rootQuality: 'BELOW_STANDARD', rootOriginalRelation: 'SAME_MOVE',
                         rootMove: 'd2d4',
                     }),
                 ]),
@@ -423,14 +440,14 @@ describe('aggregateProgressSnapshot', () => {
                     attempt({
                         id: 'repeat-1',
                         daysAgo: 4,
-                        grade: 'REPEATED_MISTAKE',
-                        rootGrade: 'REPEATED_MISTAKE',
+                        quality: 'BELOW_STANDARD', originalRelation: 'SAME_MOVE',
+                        rootQuality: 'BELOW_STANDARD', rootOriginalRelation: 'SAME_MOVE',
                     }),
                     attempt({
                         id: 'repeat-2',
                         daysAgo: 3.5,
-                        grade: 'REPEATED_MISTAKE',
-                        rootGrade: 'REPEATED_MISTAKE',
+                        quality: 'BELOW_STANDARD', originalRelation: 'SAME_MOVE',
+                        rootQuality: 'BELOW_STANDARD', rootOriginalRelation: 'SAME_MOVE',
                     }),
                 ]),
             ],
@@ -441,14 +458,14 @@ describe('aggregateProgressSnapshot', () => {
                     attempt({
                         id: 'repeat-1',
                         daysAgo: 4,
-                        grade: 'REPEATED_MISTAKE',
-                        rootGrade: 'REPEATED_MISTAKE',
+                        quality: 'BELOW_STANDARD', originalRelation: 'SAME_MOVE',
+                        rootQuality: 'BELOW_STANDARD', rootOriginalRelation: 'SAME_MOVE',
                     }),
                     attempt({
                         id: 'repeat-2',
                         daysAgo: 2,
-                        grade: 'REPEATED_MISTAKE',
-                        rootGrade: 'REPEATED_MISTAKE',
+                        quality: 'BELOW_STANDARD', originalRelation: 'SAME_MOVE',
+                        rootQuality: 'BELOW_STANDARD', rootOriginalRelation: 'SAME_MOVE',
                     }),
                 ]),
             ],
@@ -472,12 +489,12 @@ describe('aggregateProgressSnapshot', () => {
                     attempt({
                         id: 'initial-failure',
                         daysAgo: 25,
-                        grade: 'DIFFERENT_MISTAKE',
+                        quality: 'BELOW_STANDARD', originalRelation: 'WORSE',
                     }),
                     attempt({
                         id: 'baseline-solve',
                         daysAgo: 20,
-                        grade: 'BEST',
+                        quality: 'GOOD', tier: 'BEST',
                     }),
                     attempt({
                         id: 'first-recheck-reveal',
@@ -487,20 +504,20 @@ describe('aggregateProgressSnapshot', () => {
                     attempt({
                         id: 'later-recheck-solve',
                         daysAgo: 8,
-                        grade: 'GOOD',
+                        quality: 'GOOD', tier: 'GOOD',
                     }),
                 ]),
                 position('changed-policy', [
                     attempt({
                         id: 'policy-baseline',
                         daysAgo: 20,
-                        grade: 'BEST',
+                        quality: 'GOOD', tier: 'BEST',
                         configHash: 'config-1',
                     }),
                     attempt({
                         id: 'policy-recheck',
                         daysAgo: 10,
-                        grade: 'GOOD',
+                        quality: 'GOOD', tier: 'GOOD',
                         configHash: 'config-2',
                     }),
                 ]),
@@ -529,7 +546,7 @@ describe('aggregateProgressSnapshot', () => {
                         attempt({
                             id: 'recent-attempt',
                             daysAgo: 2,
-                            grade: 'BEST',
+                            quality: 'GOOD', tier: 'BEST',
                         }),
                     ],
                     { gameId: 'old-game' }
@@ -537,13 +554,13 @@ describe('aggregateProgressSnapshot', () => {
             ],
         });
 
-        expect(result.practice.gradedAttempts).toBe(1);
+        expect(result.practice.resolvedAttempts).toBe(1);
         expect(result.breakdowns.phase).toEqual([
             expect.objectContaining({
                 key: 'MIDDLEGAME',
                 positions: 0,
                 sourceGames: 0,
-                gradedAttempts: 1,
+                resolvedAttempts: 1,
             }),
         ]);
         expect(result.breakdowns.provider).toEqual([
@@ -551,7 +568,7 @@ describe('aggregateProgressSnapshot', () => {
                 key: 'LICHESS',
                 positions: 0,
                 sourceGames: 0,
-                gradedAttempts: 1,
+                resolvedAttempts: 1,
             }),
         ]);
     });
@@ -560,7 +577,7 @@ describe('aggregateProgressSnapshot', () => {
         const oldAttempt = attempt({
             id: 'old-semantics',
             daysAgo: 3,
-            grade: 'BEST',
+            quality: 'GOOD', tier: 'BEST',
             solutionHash: 'solution-old',
             configHash: 'config-old',
             context: {
@@ -583,8 +600,7 @@ describe('aggregateProgressSnapshot', () => {
                         id: 'revision-current',
                         solutionHash: 'solution-new',
                         configHash: 'config-new',
-                        verificationStatus: 'VERIFIED',
-                        decision: { status: 'CONFIRMED_MISTAKE' },
+                        manifest: { decision: { status: 'CONFIRMED_MISTAKE', selection: 'INCLUDED' } },
                         trainable: true,
                     },
                     observations: [
@@ -620,36 +636,36 @@ describe('aggregateProgressSnapshot', () => {
             expect.objectContaining({
                 key: 'ENDGAME',
                 positions: 1,
-                gradedAttempts: 0,
+                resolvedAttempts: 0,
             }),
             expect.objectContaining({
                 key: 'OPENING',
                 positions: 0,
-                gradedAttempts: 1,
+                resolvedAttempts: 1,
             }),
         ]);
         expect(result.breakdowns.provider).toEqual([
             expect.objectContaining({
                 key: 'CHESSCOM',
                 positions: 0,
-                gradedAttempts: 1,
+                resolvedAttempts: 1,
             }),
             expect.objectContaining({
                 key: 'LICHESS',
                 positions: 1,
-                gradedAttempts: 0,
+                resolvedAttempts: 0,
             }),
         ]);
         expect(result.breakdowns.impact).toEqual([
             expect.objectContaining({
                 key: 'CENTIPAWN_FALLBACK_MAJOR',
                 positions: 0,
-                gradedAttempts: 1,
+                resolvedAttempts: 1,
             }),
             expect.objectContaining({
                 key: 'WIN_CHANCE_MEANINGFUL',
                 positions: 1,
-                gradedAttempts: 0,
+                resolvedAttempts: 0,
             }),
         ]);
     });
@@ -715,7 +731,7 @@ describe('aggregateProgressSnapshot', () => {
         const archivedAttempt = attempt({
             id: 'archived-attempt',
             daysAgo: 2,
-            grade: 'BEST',
+            quality: 'GOOD', tier: 'BEST',
         });
         archivedAttempt.trainingMomentId = 'archived-position';
 
@@ -726,12 +742,12 @@ describe('aggregateProgressSnapshot', () => {
 
         expect(result.inventory.eligiblePositions).toBe(0);
         expect(result.practice).toMatchObject({
-            gradedAttempts: 1,
+            resolvedAttempts: 1,
             fullPositionSolve: { x: 1, n: 1 },
         });
         expect(result.firstRecordedTerminalOutcome).toMatchObject({
             positions: 1,
-            graded: 1,
+            resolved: 1,
             metObjective: { x: 1, n: 1 },
         });
     });
@@ -740,17 +756,17 @@ describe('aggregateProgressSnapshot', () => {
         const baseline = attempt({
             id: 'baseline',
             daysAgo: 20,
-            grade: 'BEST',
+            quality: 'GOOD', tier: 'BEST',
         });
         const earlyFollowUp = attempt({
             id: 'early-follow-up',
             daysAgo: 19,
-            grade: 'GOOD',
+            quality: 'GOOD', tier: 'GOOD',
         });
         const laterFollowUp = attempt({
             id: 'later-follow-up',
             daysAgo: 10,
-            grade: 'GOOD',
+            quality: 'GOOD', tier: 'GOOD',
         });
         for (const item of [
             baseline,
@@ -777,14 +793,14 @@ describe('aggregateProgressSnapshot', () => {
             attempt({
                 id: `current-${index}`,
                 daysAgo: 1 + index / 100,
-                grade: 'BEST',
+                quality: 'GOOD', tier: 'BEST',
             })
         );
         const previous = Array.from({ length: 50 }, (_, index) =>
             attempt({
                 id: `previous-${index}`,
                 daysAgo: 29 + index / 100,
-                grade: 'BEST',
+                quality: 'GOOD', tier: 'BEST',
             })
         );
         for (const [index, item] of [
@@ -821,7 +837,7 @@ describe('aggregateProgressSnapshot', () => {
                 const item = attempt({
                     id: `${prefix}-${index}`,
                     daysAgo: baseDays + index / 100,
-                    grade: 'BEST',
+                    quality: 'GOOD', tier: 'BEST',
                     context: {
                         contextPhase: phase,
                         contextCpLoss: 200,
@@ -908,7 +924,7 @@ describe('aggregateProgressSnapshot', () => {
         const historicalAttempt = attempt({
             id: 'before-time-class-correction',
             daysAgo: 3,
-            grade: 'BEST',
+            quality: 'GOOD', tier: 'BEST',
             context: {
                 contextPhase: 'MIDDLEGAME',
                 contextCpLoss: 120,
@@ -932,7 +948,7 @@ describe('aggregateProgressSnapshot', () => {
             ],
         });
 
-        expect(result.practice.gradedAttempts).toBe(0);
+        expect(result.practice.resolvedAttempts).toBe(0);
         expect(result.inventory).toMatchObject({
             eligiblePositions: 1,
             fresh: 0,
@@ -943,7 +959,7 @@ describe('aggregateProgressSnapshot', () => {
         const oldLichessAttempt = attempt({
             id: 'old-lichess-practice',
             daysAgo: 2,
-            grade: 'GOOD',
+            quality: 'GOOD', tier: 'GOOD',
         });
         oldLichessAttempt.trainingMomentId = 'old-lichess-position';
         const result = snapshot({
@@ -971,6 +987,6 @@ describe('aggregateProgressSnapshot', () => {
             terminalAttempts: 1,
         });
         expect(result.availability.filteredEmpty).toBe(false);
-        expect(result.practice.gradedAttempts).toBe(1);
+        expect(result.practice.resolvedAttempts).toBe(1);
     });
 });

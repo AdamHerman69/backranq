@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { practicePositionFixture } from '../helpers/practice-position';
+import { canonicalJson, canonicalPracticeSemantics } from '@/lib/training/practiceContract';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { aggregateProgressSnapshot } from '@/lib/progress/aggregate';
@@ -26,7 +29,8 @@ const asOf = new Date('2026-08-23T12:00:00.000Z');
 const playedAt = new Date('2026-07-01T12:00:00.000Z');
 const sourcePgnHash = 'progress-source-hash';
 const configHash = 'progress-config-hash';
-const solutionHash = 'progress-solution-hash';
+const canonicalManifest = practicePositionFixture({ fen: '8/8/8/8/8/8/8/K6k w - - 0 1', originalMoveUci: 'a1a2', bestMoveUci: 'a1b1', gameId: ids.game, momentId: ids.moment, revisionId: ids.revision, sourcePgnHash, decisionPly: 12, configHash, scores: { a1b1: 100, a1a2: -80 } });
+const solutionHash = canonicalManifest.semanticHash;
 const attemptTimes = {
     repeatedOne: new Date('2026-07-10T12:00:00.000Z'),
     repeatedTwo: new Date('2026-07-12T12:00:00.000Z'),
@@ -119,20 +123,8 @@ async function seedProgressFixture() {
             analysisRunId: ids.run,
             revision: 1,
             solutionHash,
-            verificationStatus: 'VERIFIED',
-            solutionShape: 'UNIQUE',
-            gradingStrategy: 'PRECOMPUTED',
-            continuationShape: 'SINGLE_DECISION',
             trainable: true,
-            bestMoveUci: 'a1b1',
-            acceptedMovesUci: ['a1b1'],
-            acceptanceFrontier: { status: 'STABLE' },
-            decision: {status:'CONFIRMED_MISTAKE',reason:'TEST'},
-            answerCoverage: {status:'PARTIAL'}, continuation:{status:'NONE'},
-            originalDecision:{scoreBefore:{cp:100},scoreAfter:{cp:-80}},
-            bestLine: ['a1b1'],
-            targetOutcome: {},
-            gradingPolicy: {},
+            manifest: canonicalManifest,
             generatorVersion: 'progress-integration-v1',
             configHash,
         },
@@ -155,40 +147,42 @@ async function seedProgressFixture() {
             id: ids.repeatedOne,
             clientAttemptId: 'progress-repeated-one',
             completedAt: attemptTimes.repeatedOne,
-            status: 'GRADED' as const,
-            grade: 'REPEATED_MISTAKE' as const,
-            rootGrade: 'REPEATED_MISTAKE' as const,
+            status: 'RESOLVED' as const,
+            quality: 'BELOW_STANDARD' as const,
+            rootQuality: 'BELOW_STANDARD' as const,
         },
         {
             id: ids.repeatedTwo,
             clientAttemptId: 'progress-repeated-two',
             completedAt: attemptTimes.repeatedTwo,
-            status: 'GRADED' as const,
-            grade: 'REPEATED_MISTAKE' as const,
-            rootGrade: 'REPEATED_MISTAKE' as const,
+            status: 'RESOLVED' as const,
+            quality: 'BELOW_STANDARD' as const,
+            rootQuality: 'BELOW_STANDARD' as const,
         },
         {
             id: ids.baseline,
             clientAttemptId: 'progress-baseline',
             completedAt: attemptTimes.baseline,
-            status: 'GRADED' as const,
-            grade: 'BEST' as const,
-            rootGrade: 'BEST' as const,
+            status: 'RESOLVED' as const,
+            quality: 'GOOD' as const,
+            rootQuality: 'GOOD' as const,
         },
         {
             id: ids.recheck,
             clientAttemptId: 'progress-recheck',
             completedAt: attemptTimes.recheck,
             status: 'REVEALED' as const,
-            grade: null,
-            rootGrade: 'REPEATED_MISTAKE' as const,
+            quality: 'UNKNOWN' as const,
+            rootQuality: 'BELOW_STANDARD' as const,
         },
     ];
     await db.trainingAttempt.createMany({
-        data: attempts.map(({ rootGrade, ...attempt }) => {
-            void rootGrade;
+        data: attempts.map(({ rootQuality, ...attempt }) => {
+            void rootQuality;
             return {
                 ...attempt,
+                tier: attempt.quality === 'GOOD' ? 'BEST' as const : attempt.quality === 'BELOW_STANDARD' ? 'SUBPAR' as const : null,
+                originalRelation: attempt.quality === 'BELOW_STANDARD' ? 'SAME_MOVE' as const : 'UNKNOWN' as const,
                 trainingMomentId: ids.moment,
                 userId: ids.user,
                 solutionRevisionId: ids.revision,
@@ -209,14 +203,14 @@ async function seedProgressFixture() {
     });
     await db.trainingAttemptStep.createMany({
         data: attempts
-            .filter((attempt) => attempt.rootGrade !== null)
+            .filter((attempt) => attempt.rootQuality !== null)
             .map((attempt) => ({
                 attemptId: attempt.id,
                 stepIndex: 0,
-                actor: 'USER' as const,
                 fenBefore: '8/8/8/8/8/8/8/K6k w - - 0 1',
                 moveUci: 'a1a2',
-                grade: attempt.rootGrade,
+                quality: attempt.rootQuality, tier: null, originalRelation: 'SAME_MOVE' as const,
+                contextId: canonicalManifest.source.contextId, playedAt: attempt.completedAt, initialAssessmentId: 'root-assessment', initialCoverageGroupId: null, initialResolution: 'RESOLVED' as const, resolution: 'RESOLVED' as const, payloadHash: `step-${attempt.id}`,
             })),
     });
 }
@@ -262,56 +256,13 @@ async function seedProgressScaleFixture() {
             ${playedAt}
         FROM generated
     `);
-    await db.$executeRaw(Prisma.sql`
-        WITH generated AS (
-            SELECT
-                n,
-                (
-                    substr(md5('scale-moment-' || n::text), 1, 8) || '-' ||
-                    substr(md5('scale-moment-' || n::text), 9, 4) || '-' ||
-                    substr(md5('scale-moment-' || n::text), 13, 4) || '-' ||
-                    substr(md5('scale-moment-' || n::text), 17, 4) || '-' ||
-                    substr(md5('scale-moment-' || n::text), 21, 12)
-                )::uuid AS moment_id,
-                (
-                    substr(md5('scale-revision-' || n::text), 1, 8) || '-' ||
-                    substr(md5('scale-revision-' || n::text), 9, 4) || '-' ||
-                    substr(md5('scale-revision-' || n::text), 13, 4) || '-' ||
-                    substr(md5('scale-revision-' || n::text), 17, 4) || '-' ||
-                    substr(md5('scale-revision-' || n::text), 21, 12)
-                )::uuid AS revision_id
-            FROM generate_series(1, 1000) n
-        )
-        INSERT INTO "SolutionRevision" (
-            "id", "momentId", "analysisRunId", "revision", "solutionHash",
-            "verificationStatus", "solutionShape", "gradingStrategy",
-            "continuationShape", "trainable", "bestMoveUci",
-            "acceptedMovesUci", "acceptanceFrontier", "bestLine",
-            "targetOutcome", "gradingPolicy", "generatorVersion", "configHash",
-            "decision", "answerCoverage", "continuation", "originalDecision"
-        )
-        SELECT
-            revision_id,
-            moment_id,
-            ${ids.run}::uuid,
-            1,
-            'progress-scale-solution-' || n::text,
-            'VERIFIED'::"VerificationStatus",
-            'UNIQUE'::"SolutionShape",
-            'PRECOMPUTED'::"GradingStrategy",
-            'SINGLE_DECISION'::"ContinuationShape",
-            TRUE,
-            'a1b1',
-            ARRAY['a1b1'],
-            '{"status":"STABLE"}'::jsonb,
-            '["a1b1"]'::jsonb,
-            '{}'::jsonb,
-            '{}'::jsonb,
-            'progress-scale-v1',
-            ${configHash},
-            '{"status":"CONFIRMED_MISTAKE"}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb
-        FROM generated
-    `);
+    const stableId = (key: string) => { const hex = createHash('md5').update(key).digest('hex'); return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`; };
+    await db.solutionRevision.createMany({ data: Array.from({ length: 1000 }, (_, index) => {
+        const n = index + 1;
+        const manifest = { ...canonicalManifest, momentId: stableId(`scale-moment-${n}`), revisionId: stableId(`scale-revision-${n}`), source: { ...canonicalManifest.source, decisionPly: 1000 + n } };
+        manifest.semanticHash = createHash('sha256').update(canonicalJson(canonicalPracticeSemantics(manifest))).digest('hex');
+        return { id: manifest.revisionId, momentId: manifest.momentId, analysisRunId: ids.run, revision: 1, solutionHash: manifest.semanticHash, manifest, trainable: true, generatorVersion: manifest.generatorVersion, configHash };
+    }) });
     await db.$executeRaw(Prisma.sql`
         WITH generated AS (
             SELECT
@@ -364,7 +315,7 @@ async function seedProgressScaleFixture() {
             moment_id,
             ${ids.run}::uuid,
             revision_id,
-            'progress-scale-solution-' || n::text
+            (SELECT "solutionHash" FROM "SolutionRevision" WHERE "id" = generated.revision_id)
         FROM generated
     `);
     await db.$executeRaw(Prisma.sql`
@@ -402,7 +353,7 @@ async function seedProgressScaleFixture() {
         INSERT INTO "TrainingAttempt" (
             "id", "trainingMomentId", "userId", "solutionRevisionId",
             "clientAttemptId", "clientPayloadHash", "attemptedAt",
-            "userMoveUci", "status", "grade", "completedAt",
+            "userMoveUci", "status", "quality", "completedAt",
             "contextPhase", "contextCpLoss", "contextWinChanceLoss",
             "contextSourceKinds", "contextProvider", "contextTimeClass",
             "contextConfigHash", "contextSolutionHash"
@@ -418,12 +369,12 @@ async function seedProgressScaleFixture() {
             CASE WHEN i % 10 = 0 THEN NULL ELSE 'a1a2' END,
             CASE
                 WHEN i % 10 = 0 THEN 'REVEALED'::"AttemptStatus"
-                ELSE 'GRADED'::"AttemptStatus"
+                ELSE 'RESOLVED'::"AttemptStatus"
             END,
             CASE
-                WHEN i % 10 = 0 THEN NULL::"AttemptGrade"
-                WHEN i % 3 = 0 THEN 'REPEATED_MISTAKE'::"AttemptGrade"
-                ELSE 'BEST'::"AttemptGrade"
+                WHEN i % 10 = 0 THEN 'UNKNOWN'::"AttemptQuality"
+                WHEN i % 3 = 0 THEN 'BELOW_STANDARD'::"AttemptQuality"
+                ELSE 'GOOD'::"AttemptQuality"
             END,
             ${asOf} - ((i % 80) * interval '1 day') - ((i % 86400) * interval '1 second'),
             'ENDGAME'::"GamePhase",
@@ -433,7 +384,7 @@ async function seedProgressScaleFixture() {
             'LICHESS'::"GameSource",
             'RAPID'::"TimeClass",
             ${configHash},
-            'progress-scale-solution-' || moment_number::text
+            (SELECT "solutionHash" FROM "SolutionRevision" WHERE "id" = identified.revision_id)
         FROM identified
     `);
     await db.$executeRawUnsafe('ANALYZE "TrainingAttempt"');
@@ -465,14 +416,16 @@ function oracle(scope: 90 | 'all') {
     const attempt = (args: {
         id: string;
         completedAt: Date;
-        status: 'GRADED' | 'REVEALED';
-        grade:
-            | 'BEST'
-            | 'REPEATED_MISTAKE'
-            | null;
-        rootGrade: 'BEST' | 'REPEATED_MISTAKE' | null;
+        status: 'RESOLVED' | 'REVEALED';
+        quality:
+            | 'GOOD'
+            | 'BELOW_STANDARD'
+            | 'UNKNOWN';
+        rootQuality: 'GOOD' | 'BELOW_STANDARD' | null;
     }) => ({
         ...args,
+        tier: args.quality === 'GOOD' ? 'BEST' as const : args.quality === 'BELOW_STANDARD' ? 'SUBPAR' as const : null,
+        originalRelation: args.quality === 'BELOW_STANDARD' ? 'SAME_MOVE' as const : 'UNKNOWN' as const,
         trainingMomentId: ids.moment,
         solutionRevisionId: ids.revision,
         attemptedAt: args.completedAt,
@@ -487,13 +440,12 @@ function oracle(scope: 90 | 'all') {
         contextConfigHash: configHash,
         contextSolutionHash: solutionHash,
         steps:
-            args.rootGrade !== null
+            args.rootQuality !== null
                 ? [
                       {
                           stepIndex: 0,
-                          actor: 'USER' as const,
-                          moveUci: 'a1a2',
-                          grade: args.rootGrade,
+                                    moveUci: 'a1a2',
+                          quality: args.rootQuality, tier: null, originalRelation: 'SAME_MOVE' as const,
                       },
                   ]
                 : [],
@@ -547,8 +499,7 @@ function oracle(scope: 90 | 'all') {
                     id: ids.revision,
                     solutionHash,
                     configHash,
-                    verificationStatus: 'VERIFIED',
-                    decision: { status: 'CONFIRMED_MISTAKE' },
+                    manifest: canonicalManifest,
 
                     trainable: true,
                 },
@@ -565,30 +516,30 @@ function oracle(scope: 90 | 'all') {
             attempt({
                 id: ids.repeatedOne,
                 completedAt: attemptTimes.repeatedOne,
-                status: 'GRADED',
-                grade: 'REPEATED_MISTAKE',
-                rootGrade: 'REPEATED_MISTAKE',
+                status: 'RESOLVED',
+                quality: 'BELOW_STANDARD',
+                rootQuality: 'BELOW_STANDARD',
             }),
             attempt({
                 id: ids.repeatedTwo,
                 completedAt: attemptTimes.repeatedTwo,
-                status: 'GRADED',
-                grade: 'REPEATED_MISTAKE',
-                rootGrade: 'REPEATED_MISTAKE',
+                status: 'RESOLVED',
+                quality: 'BELOW_STANDARD',
+                rootQuality: 'BELOW_STANDARD',
             }),
             attempt({
                 id: ids.baseline,
                 completedAt: attemptTimes.baseline,
-                status: 'GRADED',
-                grade: 'BEST',
-                rootGrade: 'BEST',
+                status: 'RESOLVED',
+                quality: 'GOOD',
+                rootQuality: 'GOOD',
             }),
             attempt({
                 id: ids.recheck,
                 completedAt: attemptTimes.recheck,
                 status: 'REVEALED',
-                grade: null,
-                rootGrade: 'REPEATED_MISTAKE',
+                quality: 'UNKNOWN' as const,
+                rootQuality: 'BELOW_STANDARD',
             }),
         ],
     });
@@ -695,7 +646,7 @@ integration('Progress PostgreSQL aggregate reader', () => {
             console.info(
                 `Progress scale: ${JSON.stringify({
                     attempts:
-                        snapshot.practice.gradedAttempts +
+                        snapshot.practice.resolvedAttempts +
                         snapshot.practice.revealedAttempts,
                     positions: snapshot.inventory.eligiblePositions,
                     readerMs: Math.round(readerMs * 100) / 100,
@@ -705,7 +656,7 @@ integration('Progress PostgreSQL aggregate reader', () => {
                 })}`
             );
             expect(
-                snapshot.practice.gradedAttempts +
+                snapshot.practice.resolvedAttempts +
                     snapshot.practice.revealedAttempts
             ).toBe(100_003);
             expect(snapshot.inventory.eligiblePositions).toBe(1_001);

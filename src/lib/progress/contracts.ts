@@ -115,34 +115,32 @@ export type ProgressAvailability = {
     filteredEmpty: boolean;
 };
 
-export type ProgressGradeCounts = {
+export type ProgressTierCounts = {
     BEST: number;
     STRONG: number;
     GOOD: number;
-    IMPROVED: number;
-    REPEATED_MISTAKE: number;
-    DIFFERENT_MISTAKE: number;
+    SUBPAR: number;
 };
 
 export type ProgressFirstOutcome = {
-    basis: 'FIRST_RECORDED_GRADED_OR_REVEALED_PER_POSITION';
+    basis: 'FIRST_RECORDED_RESOLVED_OR_REVEALED_PER_POSITION';
     positions: number;
-    graded: number;
+    resolved: number;
     revealed: number;
     metObjective: ProgressRate;
-    gradedFullSolve: ProgressRate;
-    gradeCounts: ProgressGradeCounts;
+    resolvedFullSolve: ProgressRate;
+    tierCounts: ProgressTierCounts;
 };
 
 export type ProgressPracticePerformance = {
     basis: 'TERMINAL_COMPLETED_AT';
-    gradedAttempts: number;
+    resolvedAttempts: number;
     revealedAttempts: number;
-    unresolvedExcluded: number;
+    unavailableExcluded: number;
     fullPositionSolve: ProgressRate;
     rootDecisionSuccess: ProgressRate;
     exactOriginalMoveRepeated: ProgressRate;
-    gradeCounts: ProgressGradeCounts;
+    tierCounts: ProgressTierCounts;
     fullPositionSolveTrend: ProgressTrend;
 };
 
@@ -163,9 +161,10 @@ export type ProgressPositionAction = {
         | 'LATEST_FULL_POSITION_NOT_SOLVED'
         | 'REVEALED_WITHOUT_LATER_SOLVE';
     latestTerminalAt: string;
-    latestGrade:
-        | keyof ProgressGradeCounts
-        | 'REVEALED';
+    latestStatus: 'RESOLVED' | 'REVEALED';
+    latestQuality: 'GOOD' | 'BELOW_STANDARD' | 'UNKNOWN';
+    latestTier: keyof ProgressTierCounts | null;
+    latestOriginalRelation: 'SAME_MOVE' | 'BETTER' | 'EQUIVALENT' | 'WORSE' | 'UNKNOWN';
     exactOriginalMoveRepeatCount: number;
     impact: {
         basis: 'WIN_CHANCE' | 'CENTIPAWN_FALLBACK' | 'UNKNOWN';
@@ -214,7 +213,7 @@ export type ProgressBreakdownRow = {
     key: string;
     positions: number;
     sourceGames: number;
-    gradedAttempts: number;
+    resolvedAttempts: number;
     fullPositionSolve: ProgressRate;
 };
 
@@ -226,7 +225,7 @@ export type ProgressBreakdowns = {
     source: ProgressBreakdownRow[];
     basis: {
         positionAndSourceGameCounts: 'CURRENT_LIBRARY_SOURCE_GAME_PLAYED_AT';
-        gradedAttemptCounts: 'TERMINAL_COMPLETED_AT_FROZEN_ATTEMPT_CONTEXT';
+        resolvedAttemptCounts: 'TERMINAL_COMPLETED_AT_FROZEN_ATTEMPT_CONTEXT';
     };
     multiLabelDisclosure: {
         source: true;
@@ -303,9 +302,9 @@ export type ProgressSnapshot = {
         };
         exclusions: [
             'REVEALED_NOT_SOLVED',
-            'UNRESOLVED_NOT_WRONG',
+            'UNAVAILABLE_NOT_WRONG',
             'PENDING_NOT_TERMINAL',
-            'SKIPPED_NOT_GRADED',
+            'PENDING_NOT_RESOLVED',
         ];
     };
 };

@@ -1,4 +1,4 @@
-import { fixtureSolution } from '../helpers/extractionEvidence';
+import { practiceV4Fixture } from '../helpers/practice-v4';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -111,272 +111,40 @@ describe('training moment contracts', () => {
         );
     });
 
-    it('hashes equivalent solution semantics independently of accepted-move order', () => {
-        const base = fixtureSolution({
-            verificationStatus: 'VERIFIED' as const,
-            solutionShape: 'MULTIPLE' as const,
-            gradingStrategy: 'DYNAMIC' as const,
-            continuationShape: 'SINGLE_DECISION' as const,
-            trainable: true,
-            bestMoveUci: 'E2E4',
-            acceptedMovesUci: ['d2d4', 'e2e4'],
-            acceptanceFrontier: {
-                version: 1 as const,
-                status: 'STABLE' as const,
-                targetCutoffCp: 100,
-                effectiveCutoffCp: 80,
-                boundaryGapCp: 40,
-                moves: [
-                    { moveUci: 'e2e4', tier: 'BEST' as const },
-                    { moveUci: 'd2d4', tier: 'GOOD' as const },
-                ],
-                firstRejectedMoveUci: 'g1f3',
-            },
-            moveAssessments: [
-                {
-                    positionKey: 'root',
-                    decisionIndex: 0,
-                    fen: 'fen',
-                    moveUci: 'e2e4',
-                    source: 'PRECOMPUTED' as const,
-                    grade: 'BEST' as const,
-                    scoreAfter: null,
-                    evidence: { depth: 20 },
-                },
-                {
-                    positionKey: 'root',
-                    decisionIndex: 0,
-                    fen: 'fen',
-                    moveUci: 'd2d4',
-                    source: 'PRECOMPUTED' as const,
-                    grade: 'GOOD' as const,
-                    scoreAfter: null,
-                    evidence: { depth: 20 },
-                },
-            ],
-            bestLineUci: ['E2E4', 'e7e5'],
-            solutionTree: {
-                fen: 'fen',
-                ply: 0,
-                role: 'USER',
-                acceptedMovesUci: ['e2e4'],
-                selectedMoveUci: 'e2e4',
-                alternativesComplete: true,
-                tablebase: {
-                    fetchedAt: '2026-01-01T00:00:00.000Z',
-                    dtz: 7,
-                },
-                branches: [
-                    {
-                        moveUci: 'e2e4',
-                        best: true,
-                        evaluation: { source: 'ENGINE', nodes: 100_000 },
-                        child: {
-                            fen: 'after',
-                            ply: 1,
-                            role: 'TERMINAL',
-                            acceptedMovesUci: [],
-                            alternativesComplete: true,
-                            branches: [],
-                            stopReason: 'MAX_PLIES',
-                        },
-                    },
-                ],
-            },
-            scoreAtStart: {
-                kind: 'cp' as const,
-                cp: 20,
-                pov: 'WHITE' as const,
-            },
-            playedMoveScore: null,
-            targetOutcome: { preserve: 'DRAW' },
-            gradingPolicy: normalizeGradingPolicy(undefined),
-        });
-
-        expect(solutionSemanticsHash(base)).toBe(
-            solutionSemanticsHash({
-                ...base,
-                bestMoveUci: 'e2e4',
-                acceptedMovesUci: ['e2e4', 'd2d4', 'd2d4'],
-                moveAssessments: base.moveAssessments.slice().reverse(),
-                bestLineUci: ['e2e4', 'e7e5'],
-                solutionTree: {
-                    ...base.solutionTree,
-                    tablebase: {
-                        fetchedAt: '2030-12-31T23:59:59.000Z',
-                        dtz: 99,
-                    },
-                    branches: [
-                        {
-                            ...base.solutionTree.branches[0],
-                            evaluation: {
-                                source: 'ENGINE',
-                                nodes: 9_999_999,
-                                depth: 40,
-                            },
-                        },
-                    ],
-                },
-            })
-        );
-        expect(solutionSemanticsHash(base)).toBe(
-            solutionSemanticsHash({
-                ...base,
-                moveAssessments: base.moveAssessments.map(
-                    (assessment) => ({
-                        ...assessment,
-                        evidence: {
-                            depth: 99,
-                            nodes: 9_999_999,
-                            provider: 'different-engine-host',
-                            elapsedMs: 12_345,
-                        },
-                    })
-                ),
-            })
-        );
-        expect(
-            solutionSemanticsHash({
-                ...base,
-                solutionTree: {
-                    ...base.solutionTree,
-                    selectedMoveUci: 'd2d4',
-                    branches: [
-                        {
-                            ...base.solutionTree.branches[0],
-                            moveUci: 'd2d4',
-                        },
-                    ],
-                },
-            })
-        ).not.toBe(solutionSemanticsHash(base));
-        expect(
-            solutionSemanticsHash({
-                ...base,
-                moveAssessments: base.moveAssessments.map(
-                    (assessment, index) =>
-                        index === 0
-                            ? {
-                                  ...assessment,
-                                  evidence: {
-                                      ...(assessment.evidence as Record<string, unknown>),
-                                      bestGapCp: 21,
-                                      bestGapWinChance: 0.04,
-                                      recoveredCp: 90,
-                                      recoveredWinChance: 0.2,
-                                      preservesOutcome: true,
-                                  },
-                              }
-                            : assessment
-                ),
-            })
-        ).not.toBe(solutionSemanticsHash(base));
-        expect(
-            solutionSemanticsHash({
-                ...base,
-                moveAssessments: base.moveAssessments.map(
-                    (assessment, index) =>
-                        index === 0
-                            ? {
-                                  ...assessment,
-                                  evidence: {
-                                      ...(assessment.evidence as Record<string, unknown>),
-                                      evaluation: {
-                                          source: 'ENGINE',
-                                          score: {
-                                              type: 'cp',
-                                              value: 20,
-                                          },
-                                          wdl: {
-                                              win: 400,
-                                              draw: 500,
-                                              loss: 100,
-                                          },
-                                      },
-                                  },
-                              }
-                            : assessment
-                ),
-            })
-        ).not.toBe(solutionSemanticsHash(base));
+    it('hashes grading semantics independently of physical IDs and assessment array order', () => {
+        const manifest = practiceV4Fixture();
+        const base = { manifest, configHash: 'config' };
+        const reordered = structuredClone(base);
+        reordered.manifest.assessments.reverse();
+        reordered.manifest.momentId = 'another-physical-moment';
+        reordered.manifest.revisionId = 'another-physical-revision';
+        expect(solutionSemanticsHash(reordered)).toBe(solutionSemanticsHash(base));
+        reordered.manifest.policySnapshot.minToleranceCp = 110;
+        expect(solutionSemanticsHash(reordered)).not.toBe(solutionSemanticsHash(base));
     });
 });
 
 describe('training config normalization', () => {
-    it('defaults to broad coverage with practical outcome grading', () => {
-        const config = resolveTrainingConfig();
-
-        expect(config).toMatchObject({
-            version: 3,
-            coveragePreset: 'ALL_CONFIRMED',
-            minWinChanceLoss: 0.03,
-            fallbackMinCpLoss: 30,
-            gradingTolerance: 'PRACTICAL',
-            gradingPolicy: {
-                pov: 'TRAINING_SIDE',
-                unknownMove: 'EVALUATE',
-                matePolicy: 'EXACT',
-                tablebasePolicy: 'EXACT',
-            },
-        });
+    it('defaults to broad scan coverage with adaptive practice-v4 grading', () => {
+        expect(resolveTrainingConfig()).toMatchObject({ version: 4, coveragePreset: 'ALL_CONFIRMED',
+            minWinChanceLoss: 0.03, fallbackMinCpLoss: 30, gradingTolerance: 'PRACTICAL',
+            gradingPolicy: { version: 4, minToleranceCp: 100, maxToleranceCp: 300, winningToleranceFraction: 0.6, maxExpectedScoreLoss: 0.1 } });
     });
-
-    it('clamps numeric settings and never makes best looser than success', () => {
-        const policy = normalizeGradingPolicy(
-            {
-                best: {
-                    maxCpLoss: 300,
-                    maxWinChanceLoss: 0.8,
-                },
-                success: {
-                    maxCpLoss: -100,
-                    maxWinChanceLoss: -1,
-                    preserveOutcome: false,
-                },
-                improvement: {
-                    minRecoveredCp: Number.POSITIVE_INFINITY,
-                    minRecoveredWinChance: 4,
-                },
-            },
-            'STRICT'
-        );
-
-        expect(policy.best).toEqual({
-            maxCpLoss: 300,
-            maxWinChanceLoss: 0.8,
-        });
-        expect(policy.success).toEqual({
-            maxCpLoss: 300,
-            maxWinChanceLoss: 0.8,
-            preserveOutcome: false,
-        });
-        expect(policy.improvement).toEqual({
-            minRecoveredCp: 50,
-            minRecoveredWinChance: 1,
-        });
+    it('rejects malformed policies instead of silently changing the declared contract', () => {
+        const policy = normalizeGradingPolicy(undefined);
+        expect(() => normalizeGradingPolicy({ ...policy, bestMaxLossCp: 500 })).toThrow('Invalid v4');
+        expect(() => normalizeGradingPolicy({ ...policy, maxExpectedScoreLoss: 2 })).toThrow('Invalid v4');
+        expect(() => normalizeGradingPolicy({ ...policy, minToleranceCp: Number.NaN })).toThrow('Invalid v4');
     });
-
-    it('uses preset-specific extraction and grading defaults', () => {
-        const config = resolveTrainingConfig({
-            coveragePreset: 'HIGH_CONFIDENCE',
-            gradingTolerance: 'LENIENT',
-        });
-
-        expect(config).toMatchObject({
-            coveragePreset: 'HIGH_CONFIDENCE',
-            minWinChanceLoss: 0.12,
-            fallbackMinCpLoss: 150,
-            gradingTolerance: 'LENIENT',
-        });
+    it('preserves preset-specific scan and grading defaults', () => {
+        const strict = resolveTrainingConfig({ coveragePreset: 'HIGH_CONFIDENCE', gradingTolerance: 'STRICT' });
+        const lenient = resolveTrainingConfig({ gradingTolerance: 'LENIENT' });
+        expect(strict.minWinChanceLoss).toBe(0.12);
+        expect(strict.gradingPolicy.minToleranceCp).toBeLessThan(lenient.gradingPolicy.minToleranceCp);
+        expect(strict.gradingPolicy.id).not.toBe(lenient.gradingPolicy.id);
     });
-
     it('produces the same hash for raw and already-resolved equivalent config', () => {
-        const raw = {
-            coveragePreset: 'BALANCED' as const,
-            gradingTolerance: 'STRICT' as const,
-        };
-        const resolved = resolveTrainingConfig(raw);
-
-        expect(trainingConfigHash(raw)).toBe(trainingConfigHash(resolved));
+        const raw = { coveragePreset: 'BALANCED' as const, gradingTolerance: 'STRICT' as const };
+        expect(trainingConfigHash(raw)).toBe(trainingConfigHash(resolveTrainingConfig(raw)));
     });
 });

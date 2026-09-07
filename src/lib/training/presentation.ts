@@ -173,3 +173,11 @@ export function themeLabel(theme: string): string {
         )
         .join(' ');
 }
+
+export function formatLiveEvaluation(score: PovScore, trainingSide: 'w' | 'b'): string {
+    if (score.kind === 'cp') {
+        const pawns = (trainingSide === 'w' ? score.cp : -score.cp) / 100;
+        return `Evaluating… ${pawns >= 0 ? '+' : ''}${pawns.toFixed(2)} (live estimate)`;
+    }
+    return `Evaluating… ${formatScoreForTrainingSide(score, trainingSide)} (live estimate)`;
+}

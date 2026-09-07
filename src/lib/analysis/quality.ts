@@ -1,7 +1,7 @@
 export const ANALYSIS_QUALITIES = ['STANDARD', 'THOROUGH'] as const;
 
 export type AnalysisQuality = (typeof ANALYSIS_QUALITIES)[number];
-export const ANALYSIS_QUALITY_PROFILE_VERSION = 1;
+export const ANALYSIS_QUALITY_PROFILE_VERSION = 2;
 
 export type AnalysisQualityProfile = {
     quality: AnalysisQuality;
@@ -11,7 +11,6 @@ export type AnalysisQualityProfile = {
     nodesPerPosition: number;
     confirmationNodes: number;
     maxConfirmationNodes: number;
-    verificationNodesPerPosition: number;
 };
 
 export const DEFAULT_ANALYSIS_QUALITY: AnalysisQuality = 'THOROUGH';
@@ -28,7 +27,6 @@ export const ANALYSIS_QUALITY_PROFILES: Record<
         nodesPerPosition: 100_000,
         confirmationNodes: 200_000,
         maxConfirmationNodes: 800_000,
-        verificationNodesPerPosition: 100_000,
     },
     THOROUGH: {
         quality: 'THOROUGH',
@@ -38,7 +36,6 @@ export const ANALYSIS_QUALITY_PROFILES: Record<
         nodesPerPosition: 100_000,
         confirmationNodes: 200_000,
         maxConfirmationNodes: 1_600_000,
-        verificationNodesPerPosition: 100_000,
     },
 };
 

@@ -62,64 +62,39 @@ enum TrainingLessonKind {
   IMPROVE_POSITION
 }
 
-enum VerificationStatus {
-  VERIFIED
-  AMBIGUOUS
-  UNSTABLE
-  INVALID
-}
-
-enum SolutionShape {
-  UNIQUE
-  MULTIPLE
-  OPEN
-}
-
-enum GradingStrategy {
-  PRECOMPUTED
-  OUTCOME_TOLERANCE
-  DYNAMIC
-  TABLEBASE
-}
-
-enum ContinuationShape {
-  SINGLE_DECISION
-  CONDITIONAL_LINE
-}
-
 enum AttemptStatus {
   PENDING
-  GRADED
+  RESOLVED
   REVEALED
-  SKIPPED
-  UNRESOLVED
+  UNAVAILABLE
 }
 
-enum AttemptGrade {
+enum AttemptTier {
   BEST
   STRONG
   GOOD
-  IMPROVED
-  REPEATED_MISTAKE
-  DIFFERENT_MISTAKE
+  SUBPAR
+}
+
+enum AttemptQuality {
+  GOOD
+  BELOW_STANDARD
+  UNKNOWN
+}
+
+enum AttemptOriginalRelation {
+  SAME_MOVE
+  BETTER
+  EQUIVALENT
+  WORSE
+  UNKNOWN
 }
 
 enum MoveAssessmentSource {
-  PRECOMPUTED
-  DYNAMIC
-  CLIENT_EVALUATED
+  SERVER_ENGINE
+  CLIENT_ENGINE
+  RULE
   TABLEBASE
-}
-
-enum MoveAssessmentStatus {
-  PENDING
-  VERIFIED
-  FAILED
-}
-
-enum AttemptStepActor {
-  USER
-  ENGINE
 }
 
 enum PracticeFocus {
@@ -156,13 +131,10 @@ enum PracticeDueSweepStatus {
 
 enum TrainingAttemptStatusEventReason {
   SUBMITTED
-  RETRY
-  GRADED
+  RESOLVED
   REVEALED
-  ENGINE_UNAVAILABLE
-  UNSTABLE_EVIDENCE
-  MISSING_OUTCOME_EVIDENCE
-  STALE_PENDING
+  UNAVAILABLE
+  CORRECTED
 }
 
 enum PracticeReviewOutcome {
@@ -1188,38 +1160,20 @@ model TrainingMoment {
 }
 
 model SolutionRevision {
-  id                 String             @id @default(uuid()) @db.Uuid
-  momentId           String             @db.Uuid
-  analysisRunId      String             @db.Uuid
-  revision           Int
-  solutionHash       String
-  verificationStatus VerificationStatus
-  solutionShape      SolutionShape
-  gradingStrategy    GradingStrategy
-  continuationShape  ContinuationShape
-  trainable          Boolean            @default(true)
-  bestMoveUci        String
-  acceptedMovesUci   String[]           @default([])
-  acceptanceFrontier Json
-  decision           Json
-  answerCoverage     Json
-  continuation       Json
-  originalDecision   Json
-  bestLine           Json
-  solutionTree       Json               @default("{}")
-  scoreAtStart       Json?
-  playedMoveScore    Json?
-  targetOutcome      Json               @default("{}")
-  gradingPolicy      Json
-  evidence           Json               @default("{}")
-  generatorVersion   String
-  configHash         String
-  createdAt          DateTime           @default(now())
+  id               String   @id @default(uuid()) @db.Uuid
+  momentId         String   @db.Uuid
+  analysisRunId    String   @db.Uuid
+  revision         Int
+  solutionHash     String
+  manifest         Json
+  trainable        Boolean  @default(false)
+  generatorVersion String
+  configHash       String
+  createdAt        DateTime @default(now())
 
   moment            TrainingMoment              @relation("MomentSolutionRevisions", fields: [momentId], references: [id], onDelete: Cascade)
   currentForMoment  TrainingMoment?             @relation("CurrentSolutionRevision")
   analysisRun       AnalysisRun                 @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
-  moveAssessments   SolutionMoveAssessment[]
   observations      TrainingMomentObservation[]
   attempts          TrainingAttempt[]
   practiceExposures PracticeExposure[]
@@ -1250,72 +1204,43 @@ model TrainingMomentObservation {
   @@index([solutionRevisionId])
 }
 
-model SolutionMoveAssessment {
-  id                 String               @id @default(uuid()) @db.Uuid
-  solutionRevisionId String               @db.Uuid
-  positionKey        String
-  referenceId        String
-  tierStable         Boolean
-  decisionIndex      Int
-  fen                String
-  moveUci            String
-  source             MoveAssessmentSource
-  status             MoveAssessmentStatus @default(PENDING)
-  grade              AttemptGrade?
-  scoreAfter         Json?
-  evidence           Json                 @default("{}")
-  attempts           Int                  @default(0)
-  lockedAt           DateTime?
-  lockedUntil        DateTime?
-  lastError          String?              @db.Text
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @default(now()) @updatedAt
-
-  solutionRevision SolutionRevision @relation(fields: [solutionRevisionId], references: [id], onDelete: Cascade)
-
-  @@unique([solutionRevisionId, decisionIndex, positionKey, moveUci], map: "SolutionMoveAssessment_revision_decision_position_move_key")
-  @@index([solutionRevisionId, decisionIndex])
-  @@index([status, lockedUntil, createdAt])
-}
-
 model TrainingAttempt {
-  id                          String                @id @default(uuid()) @db.Uuid
-  trainingMomentId            String                @db.Uuid
-  userId                      String                @db.Uuid
-  solutionRevisionId          String                @db.Uuid
+  id                          String                  @id @default(uuid()) @db.Uuid
+  trainingMomentId            String                  @db.Uuid
+  userId                      String                  @db.Uuid
+  solutionRevisionId          String                  @db.Uuid
   clientAttemptId             String
   clientPayloadHash           String
-  attemptedAt                 DateTime              @default(now())
+  attemptedAt                 DateTime                @default(now())
   userMoveUci                 String?
   timeSpentMs                 Int?
-  status                      AttemptStatus         @default(PENDING)
-  grade                       AttemptGrade?
+  status                      AttemptStatus           @default(PENDING)
+  quality                     AttemptQuality          @default(UNKNOWN)
+  tier                        AttemptTier?
   gradingSource               MoveAssessmentSource?
-  gradingEvidence             Json                  @default("{}")
-  bestGapCp                   Int?
-  bestGapWinChance            Float?
-  recoveredCp                 Int?
-  recoveredWinChance          Float?
+  originalRelation            AttemptOriginalRelation @default(UNKNOWN)
+  revealPayloadHash           String?
+  revealedAt                  DateTime?
   completedAt                 DateTime?
   contextPhase                GamePhase?
   contextCpLoss               Float?
   contextWinChanceLoss        Float?
-  contextSourceKinds          TrainingSourceKind[]  @default([])
-  contextLessonKinds          TrainingLessonKind[]  @default([])
-  contextThemes               String[]              @default([])
-  contextThemeTaxonomyVersion String                @default("backranq-theme-v1")
+  contextSourceKinds          TrainingSourceKind[]    @default([])
+  contextLessonKinds          TrainingLessonKind[]    @default([])
+  contextThemes               String[]                @default([])
+  contextThemeTaxonomyVersion String                  @default("backranq-theme-v1")
   contextProvider             GameSource
   contextTimeClass            TimeClass
   contextConfigHash           String
   contextSolutionHash         String
 
-  trainingMoment    TrainingMoment               @relation(fields: [trainingMomentId, userId], references: [id, userId], onDelete: Cascade)
-  user              User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  solutionRevision  SolutionRevision             @relation(fields: [solutionRevisionId, trainingMomentId], references: [id, momentId], onDelete: Cascade)
-  steps             TrainingAttemptStep[]
-  practiceExposures PracticeExposure[]
-  statusEvents      TrainingAttemptStatusEvent[]
-  reviewEvents      PracticeReviewEvent[]
+  trainingMoment      TrainingMoment                      @relation(fields: [trainingMomentId, userId], references: [id, userId], onDelete: Cascade)
+  user                User                                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  solutionRevision    SolutionRevision                    @relation(fields: [solutionRevisionId, trainingMomentId], references: [id, momentId], onDelete: Cascade)
+  steps               TrainingAttemptStep[]
+  practiceExposures   PracticeExposure[]
+  statusEvents        TrainingAttemptStatusEvent[]
+  reviewEvents        PracticeReviewEvent[]
   assessmentRevisions TrainingAttemptAssessmentRevision[]
 
   @@unique([userId, clientAttemptId])
@@ -1331,39 +1256,55 @@ model TrainingAttempt {
 }
 
 model TrainingAttemptStep {
-  id          String           @id @default(uuid()) @db.Uuid
-  attemptId   String           @db.Uuid
-  stepIndex   Int
-  actor       AttemptStepActor
-  fenBefore   String
-  moveUci     String
-  grade       AttemptGrade?
-  evidence    Json             @default("{}")
-  timeSpentMs Int?
-  createdAt   DateTime         @default(now())
+  id                     String                  @id @default(uuid()) @db.Uuid
+  attemptId              String                  @db.Uuid
+  stepIndex              Int
+  contextId              String
+  fenBefore              String
+  moveUci                String
+  playedAt               DateTime
+  timeSpentMs            Int?
+  initialAssessmentId    String?
+  initialCoverageGroupId String?
+  initialResolution      AttemptStatus
+  payloadHash            String
+  resolution             AttemptStatus
+  quality                AttemptQuality          @default(UNKNOWN)
+  tier                   AttemptTier?
+  originalRelation       AttemptOriginalRelation @default(UNKNOWN)
+  latestSequence         Int                     @default(0)
+  latestEventId          String?
+  createdAt              DateTime                @default(now())
 
-  attempt TrainingAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  attempt             TrainingAttempt                     @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  assessmentRevisions TrainingAttemptAssessmentRevision[]
 
   @@unique([attemptId, stepIndex])
   @@index([attemptId])
 }
 
-/// Append-only refinement of one played event, pinned to the attempt's revision.
+/// Immutable evaluation event; the step stores only its latest valid projection.
 model TrainingAttemptAssessmentRevision {
-  id               String               @id @default(uuid()) @db.Uuid
-  attemptId        String               @db.Uuid
-  clientEvidenceId String
-  payloadHash      String
-  grade            AttemptGrade
-  gradingSource    MoveAssessmentSource
-  comparison       Json
-  evidence         Json
-  corrected        Boolean
-  createdAt        DateTime             @default(now())
+  id                String                  @id @default(uuid()) @db.Uuid
+  eventId           String                  @unique
+  attemptId         String                  @db.Uuid
+  stepIndex         Int
+  sequence          Int
+  supersedesEventId String?
+  payloadHash       String
+  resolution        AttemptStatus
+  assessmentId      String?
+  evaluation        Json?
+  quality           AttemptQuality          @default(UNKNOWN)
+  tier              AttemptTier?
+  originalRelation  AttemptOriginalRelation @default(UNKNOWN)
+  evaluatedAt       DateTime
+  createdAt         DateTime                @default(now())
 
-  attempt TrainingAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  attempt TrainingAttempt     @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  step    TrainingAttemptStep @relation(fields: [attemptId, stepIndex], references: [attemptId, stepIndex], onDelete: Cascade)
 
-  @@unique([attemptId, clientEvidenceId])
+  @@unique([attemptId, stepIndex, sequence])
   @@index([attemptId, createdAt])
 }
 
@@ -1409,7 +1350,8 @@ model TrainingAttemptStatusEvent {
   userId     String                           @db.Uuid
   eventKey   String
   status     AttemptStatus
-  grade      AttemptGrade?
+  quality    AttemptQuality                   @default(UNKNOWN)
+  tier       AttemptTier?
   reason     TrainingAttemptStatusEventReason
   occurredAt DateTime
   recordedAt DateTime                         @default(now())
@@ -1482,7 +1424,7 @@ model PracticeDueSweepUser {
   @@index([userId, createdAt])
 }
 
-/// Append-only evidence used to derive PracticeReviewState.
+/// Rebuilt scheduler projection; immutable assessment events retain corrections.
 model PracticeReviewEvent {
   id                 String                @id @default(uuid()) @db.Uuid
   stateId            String                @db.Uuid
@@ -1490,7 +1432,8 @@ model PracticeReviewEvent {
   userId             String                @db.Uuid
   eventKey           String
   outcome            PracticeReviewOutcome
-  grade              AttemptGrade?
+  quality            AttemptQuality        @default(UNKNOWN)
+  tier               AttemptTier?
   occurredAt         DateTime
   recordedAt         DateTime              @default(now())
   intervalBeforeDays Int
@@ -1783,21 +1726,8 @@ model MasterCandidate {
   sourceKinds           TrainingSourceKind[]  @default([])
   lessonKinds           TrainingLessonKind[]  @default([])
   themes                String[]              @default([])
-  verificationStatus    VerificationStatus
-  solutionShape         SolutionShape
-  gradingStrategy       GradingStrategy
-  continuationShape     ContinuationShape
-  bestMoveUci           String
-  acceptedMovesUci      String[]              @default([])
-  acceptanceFrontier    Json
-  bestLine              Json
-  solutionTree          Json                  @default("{}")
-  moveAssessments       Json                  @default("[]")
-  scoreAtStart          Json?
-  playedMoveScore       Json?
-  targetOutcome         Json                  @default("{}")
-  gradingPolicy         Json
-  evidence              Json                  @default("{}")
+  manifest              Json
+  trainable             Boolean               @default(false)
   solutionHash          String
   generatorVersion      String
   configHash            String

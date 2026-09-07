@@ -1,4 +1,4 @@
-import { isRecord } from '@/lib/api/validation';
+import { parsePracticeMomentRevision } from '@/lib/training/practiceContract';
 import { prisma } from '@/lib/prisma';
 import type { WeeklyMasterAdminSnapshot } from '@/lib/master/adminContracts';
 import { WEEKLY_MASTER_SLOT_KEY } from '@/lib/master/config';
@@ -10,21 +10,12 @@ function iso(value: Date | null | undefined): string | null {
     return value ? value.toISOString() : null;
 }
 
-function evidenceSummary(args: {
-    evidence: unknown;
-    cpLoss: number | null;
-    winChanceLoss: number | null;
-    verificationStatus: string;
-}): string {
-    const parts: string[] = [args.verificationStatus.replaceAll('_', ' ')];
-    if (args.cpLoss !== null) parts.push(`${Math.round(args.cpLoss)} cp loss`);
-    if (args.winChanceLoss !== null) {
-        parts.push(`${Math.round(args.winChanceLoss * 100)}% win-chance loss`);
-    }
-    if (isRecord(args.evidence)) {
-        const depth = args.evidence.depth;
-        if (typeof depth === 'number') parts.push(`depth ${Math.round(depth)}`);
-    }
+function evidenceSummary(args: { manifest: unknown }): string {
+    const manifest = parsePracticeMomentRevision(args.manifest);
+    const original = manifest.assessments.find(a => a.id === manifest.decision.originalAssessmentId);
+    const parts = [manifest.decision.status, manifest.rootAnswerIndex.readiness.replaceAll('_', ' ')];
+    if (original?.metrics.lossCp != null) parts.push(`${Math.round(original.metrics.lossCp)} cp loss`);
+    if (original?.metrics.lossExpectedScore != null) parts.push(`${Math.round(original.metrics.lossExpectedScore * 100)}% expected-score loss`);
     return parts.join(' · ');
 }
 
@@ -145,15 +136,13 @@ export async function getWeeklyMasterAdminSnapshot(
                 decisionPly: true,
                 fen: true,
                 originalMoveUci: true,
-                bestMoveUci: true,
+                manifest: true,
                 totalScore: true,
                 status: true,
                 hardGatePassed: true,
                 rejectionReasons: true,
-                evidence: true,
                 cpLoss: true,
                 winChanceLoss: true,
-                verificationStatus: true,
                 person: { select: { attributionLabel: true } },
                 publication: { select: { id: true } },
                 snapshot: {
@@ -389,7 +378,7 @@ export async function getWeeklyMasterAdminSnapshot(
             decisionPly: candidate.decisionPly,
             fen: candidate.fen,
             originalMoveUci: candidate.originalMoveUci,
-            bestMoveUci: candidate.bestMoveUci,
+            bestMoveUci: parsePracticeMomentRevision(candidate.manifest).rootAnswerIndex.preferredMoveUci,
             score: candidate.totalScore,
             status: String(candidate.status),
             hardGatePassed: candidate.hardGatePassed,

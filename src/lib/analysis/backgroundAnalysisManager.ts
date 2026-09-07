@@ -19,6 +19,8 @@ import {
     type AnalysisCompletionSummary,
 } from '@/lib/analysis/analysisCompletion';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
+import { readPracticeReassessmentTargets } from '@/lib/training/reassessmentTargets';
+import { isTrainableSolution } from '@/lib/training/contracts';
 
 export type BackgroundAnalysisSnapshot = {
     ownerId: string | null;
@@ -619,6 +621,9 @@ class BackgroundAnalysisManager {
         if (!resolveGameAnalysisProvenance(g)) {
             throw new Error('Game has invalid immutable analysis provenance');
         }
+        const reassessDecisionPlies = readPracticeReassessmentTargets(json, {
+            ownerId: opts.run.ownerId, gameId: opts.gameDbId, pgn: gameRaw.pgn,
+        });
 
         const [engine, tablebase, extraction] = await Promise.all([
             this.ensureEngine(opts.run),
@@ -636,6 +641,7 @@ class BackgroundAnalysisManager {
         const out = await extraction.extractTrainingMomentsFromGames({
             games: [g],
             selectedGameIds: new Set([g.id]),
+            reassessDecisionPliesByGameId: { [g.id]: reassessDecisionPlies },
             engine,
             tablebase,
             canonicalSourceGameIdByGameId: {
@@ -710,7 +716,7 @@ class BackgroundAnalysisManager {
                 trainingMomentsGenerated:
                     typeof savedJson.trainingMoments?.upserted === 'number'
                         ? savedJson.trainingMoments.upserted
-                        : trainingMomentsForGame.length,
+                        : trainingMomentsForGame.filter(moment => isTrainableSolution(moment.solution)).length,
             };
         } else {
             throw new Error('Analysis produced no result');

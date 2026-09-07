@@ -257,7 +257,7 @@ test.describe('signed-out IA', () => {
         await expect(page.getByText(/Welcome back/)).toHaveCount(0);
     });
 
-    test('landing animates the played move before revealing its quality on the board', async ({
+    test('landing updates the played position and immediately shows its known quality', async ({
         page,
     }) => {
         await page.goto('/');
@@ -280,7 +280,6 @@ test.describe('signed-out IA', () => {
         expect(await board.getAttribute('data-board-fen')).not.toBe(
             decisionFen
         );
-        await expect(board).not.toHaveAttribute('data-board-marker', /.+/);
         await expect(board).toHaveAttribute('data-board-marker', 'BEST');
         await expect(
             board.getByRole('img', { name: 'Best move on f8' })

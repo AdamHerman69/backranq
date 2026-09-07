@@ -27,6 +27,8 @@ import {
 import { recordStaleAnalysisDelivery } from '@/lib/services/analysisOps';
 import { recordAnalysisFailed } from '@/lib/notifications/service';
 import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
+import { loadPracticeReassessmentTargets } from '@/lib/training/reassessmentTargets.server';
+import { isTrainableSolution } from '@/lib/training/contracts';
 
 export type AnalyzeGameJobResult = {
     jobId: string;
@@ -167,10 +169,12 @@ export async function analyzeGameJob(
         if (!run.configHash) {
             throw new Error('Analysis run config hash is required');
         }
+        const reassessment = await loadPracticeReassessmentTargets({ db: prisma, userId: job.userId, gameId: job.gameId, pgn: job.game.pgn });
         const sliceStartedAt = Date.now();
         const out = await extractTrainingMomentsFromGames({
             games: [normalized],
             selectedGameIds: new Set([normalized.id]),
+            reassessDecisionPliesByGameId: { [normalized.id]: reassessment.decisionPlies },
             engine,
             tablebase: new LichessTablebaseClient(),
             canonicalSourceGameIdByGameId: {
@@ -197,7 +201,7 @@ export async function analyzeGameJob(
                 jobId: job.id,
                 gameId: job.gameId,
                 status: 'CONTINUATION_SCHEDULED',
-                trainingMoments: out.checkpoint.moments.length,
+                trainingMoments: out.checkpoint.moments.filter(moment => isTrainableSolution(moment.solution)).length,
                 retryAt: yielded.scheduledFor ?? new Date(),
             };
         }
@@ -264,7 +268,7 @@ export async function analyzeGameJob(
                 jobId: job.id,
                 gameId: job.gameId,
                 status: 'SUCCEEDED',
-                trainingMoments: trainingMomentsForGame.length,
+                trainingMoments: trainingMomentsForGame.filter(moment => isTrainableSolution(moment.solution)).length,
                 settlementPending: true,
                 error: errorMessage(error),
             };
@@ -273,7 +277,7 @@ export async function analyzeGameJob(
             jobId: job.id,
             gameId: job.gameId,
             status: 'SUCCEEDED',
-            trainingMoments: trainingMomentsForGame.length,
+            trainingMoments: trainingMomentsForGame.filter(moment => isTrainableSolution(moment.solution)).length,
         };
     } catch (error) {
         if (error instanceof StaleAnalysisDeliveryError) throw error;

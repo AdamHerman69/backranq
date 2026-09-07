@@ -1,168 +1,52 @@
 import { describe, expect, it } from 'vitest';
+import { practiceV4Fixture } from '../helpers/practice-v4';
+import { assessMove } from '@/lib/training/assessmentPolicy';
+import { deriveAnswerIndex, lookupAnswer } from '@/lib/training/answerIndex';
+import { type PracticeMomentRevision, validatePracticeMomentRevision } from '@/lib/training/practiceContract';
 
-import type { MultiPvLine } from '@/lib/analysis/stockfishClient';
-import {
-    acceptanceFrontierFromMultiPv,
-    confirmAcceptanceFrontier,
-} from '@/lib/training/acceptanceFrontier';
-import { normalizeGradingPolicy } from '@/lib/training/config';
-
-const policy = normalizeGradingPolicy(undefined);
-
-function lines(losses: number[]): MultiPvLine[] {
-    return losses.map((loss, index) => ({
-        multipv: index + 1,
-        pvUci: [
-            [
-                'a2a3',
-                'b2b3',
-                'c2c3',
-                'd2d3',
-                'e2e3',
-                'f2f3',
-                'g2g3',
-                'h2h3',
-            ][index]!,
-        ],
-        score: { type: 'cp', value: 500 - loss },
-    }));
+function project(revision: PracticeMomentRevision) {
+    const frame = revision.frames[0];
+    const assessments = revision.assessments.map(a => assessMove(frame, { id: a.id, moveUci: a.moveUci, trainingSide: revision.source.trainingSide, referenceMoveUci: revision.rootAnswerIndex.preferredMoveUci, originalMoveUci: revision.source.originalMoveUci, evidence: revision.evidence }));
+    return { assessments, index: deriveAnswerIndex({ contextId: frame.contextId, frameId: frame.id, legalMovesUci: revision.rootAnswerIndex.legalMovesUci, preferredMoveUci: revision.rootAnswerIndex.preferredMoveUci, assessments, coverageGroups: [] }) };
 }
-
-describe('authoritative accepted-move frontier', () => {
-    it('assigns BEST, STRONG, and GOOD tiers as one monotone prefix', () => {
-        const frontier = acceptanceFrontierFromMultiPv({
-            lines: lines([0, 20, 50, 90, 100, 160]),
-            requestedMultiPv: 6,
-            policy,
-        });
-
-        expect(frontier).toMatchObject({
-            status: 'STABLE',
-            targetCutoffCp: 100,
-            boundaryGapCp: null,
-            firstRejectedMoveUci: 'f2f3',
-            moves: [
-                { moveUci: 'a2a3', tier: 'BEST' },
-                { moveUci: 'b2b3', tier: 'BEST' },
-                { moveUci: 'c2c3', tier: 'STRONG' },
-                { moveUci: 'd2d3', tier: 'GOOD' },
-                { moveUci: 'e2e3', tier: 'GOOD' },
-            ],
-        });
+describe('v4 supported answer index replaces accepted-frontier authority', () => {
+    it('retains supported quality even if exact tier is unsettled', () => {
+        const revision = practiceV4Fixture(); const { index, assessments } = project(revision);
+        const alternative = lookupAnswer(index, 'd2d4', assessments, []);
+        expect(alternative.quality).toBe('GOOD'); expect(alternative.assessment?.tier).toBeNull();
+        expect(index.readiness).toBe('PARTIAL');
     });
-
-    it('does not silently expand tolerance for a near-equal cluster', () => {
-        const frontier = acceptanceFrontierFromMultiPv({
-            lines: lines([0, 90, 100, 110, 160]),
-            requestedMultiPv: 5,
-            policy,
-        });
-
-        expect(frontier.status).toBe('STABLE');
-        expect(frontier.moves.map((move) => move.moveUci)).toEqual([
-            'a2a3',
-            'b2b3',
-            'c2c3',
-        ]);
-        expect(frontier.firstRejectedMoveUci).toBe('d2d3');
+    it('does not expand a boundary to absorb an uncertain cluster', () => {
+        const revision = practiceV4Fixture();
+        for (const observation of Object.values(revision.evidence.observations)) if (observation.lines[1]) observation.lines[1].score = { kind: 'CP', cp: -60, pov: 'WHITE' };
+        const { index, assessments } = project(revision);
+        expect(lookupAnswer(index, 'e2e4', assessments, []).quality).toBe('GOOD');
+        expect(lookupAnswer(index, 'd2d4', assessments, []).kind).toBe('PENDING');
+        expect(lookupAnswer(index, 'a2a3', assessments, []).quality).toBe('BELOW_STANDARD');
     });
-
-    it('retains individually supported answers despite an unresolved cluster', () => {
-        const frontier = acceptanceFrontierFromMultiPv({
-            lines: lines([0, 90, 100, 115, 130, 145]),
-            requestedMultiPv: 6,
-            policy,
-        });
-
-        expect(frontier.status).toBe('STABLE');
-        expect(frontier.effectiveCutoffCp).toBeNull();
+    it('reordering comparable accepted alternatives cannot change membership', () => {
+        const revision = practiceV4Fixture(); const baseline = project(revision);
+        for (const observation of Object.values(revision.evidence.observations)) if (observation.lines.length === 3) observation.lines = [observation.lines[1], observation.lines[0], observation.lines[2]];
+        const reordered = project(revision);
+        for (const move of revision.rootAnswerIndex.legalMovesUci) expect(lookupAnswer(reordered.index, move, reordered.assessments, []).quality).toBe(lookupAnswer(baseline.index, move, baseline.assessments, []).quality);
     });
-
-    it('rejects a MultiPV snapshot whose advertised ranking contradicts its scores', () => {
-        const frontier = acceptanceFrontierFromMultiPv({
-            lines: lines([0, 90, 40, 160]),
-            requestedMultiPv: 4,
-            policy,
-        });
-
-        expect(frontier.status).toBe('UNSTABLE');
+    it('rejects duplicated root moves instead of counting them as coverage', () => {
+        const revision = practiceV4Fixture();
+        revision.evidence.observations['observation-2'].lines[1] = structuredClone(revision.evidence.observations['observation-2'].lines[0]);
+        expect(validatePracticeMomentRevision(revision).success).toBe(false);
     });
-
-    it('rejects duplicate root moves instead of treating them as coverage', () => {
-        const duplicated = lines([0, 40, 150]);
-        duplicated[1] = {
-            ...duplicated[1]!,
-            pvUci: duplicated[0]!.pvUci,
-        };
-
-        expect(
-            acceptanceFrontierFromMultiPv({
-                lines: duplicated,
-                requestedMultiPv: 3,
-                policy,
-            }).status
-        ).toBe('UNSTABLE');
+    it('missing top-K answers never receive a negative conclusion', () => {
+        const revision = practiceV4Fixture(); const { index, assessments } = project(revision);
+        expect(index.legalMovesUci).toHaveLength(20);
+        expect(index.assessmentIds).toHaveLength(3);
+        for (const move of index.unresolvedMovesUci) expect(lookupAnswer(index, move, assessments, []).quality).toBe('UNKNOWN');
     });
-
-    it('keeps confirmation stable when equally graded accepted moves change rank', () => {
-        const first = acceptanceFrontierFromMultiPv({
-            lines: lines([0, 20, 160]),
-            requestedMultiPv: 3,
-            policy,
-        });
-        const reordered = lines([0, 20, 160]);
-        reordered[0]!.pvUci = ['b2b3'];
-        reordered[1]!.pvUci = ['a2a3'];
-        const confirmation = acceptanceFrontierFromMultiPv({
-            lines: reordered,
-            requestedMultiPv: 3,
-            policy,
-        });
-
-        expect(first.status).toBe('STABLE');
-        expect(confirmation.status).toBe('STABLE');
-        expect(confirmAcceptanceFrontier(first, confirmation)).toEqual(
-            confirmation
-        );
-    });
-
-    it('retains common answers when marginal membership changes', () => {
-        const first = acceptanceFrontierFromMultiPv({
-            lines: lines([0, 20, 160]),
-            requestedMultiPv: 3,
-            policy,
-        });
-        const changed = lines([0, 20, 160]);
-        changed[1]!.pvUci = ['h2h3'];
-        const confirmation = acceptanceFrontierFromMultiPv({
-            lines: changed,
-            requestedMultiPv: 3,
-            policy,
-        });
-
-        expect(first.status).toBe('STABLE');
-        expect(confirmation.status).toBe('STABLE');
-        expect(confirmAcceptanceFrontier(first, confirmation).status).toBe(
-            'STABLE'
-        );
-    });
-
-    it('retains conservative tiers when membership is unchanged', () => {
-        const first = acceptanceFrontierFromMultiPv({
-            lines: lines([0, 40, 90, 150]),
-            requestedMultiPv: 4,
-            policy,
-        });
-        const changed = acceptanceFrontierFromMultiPv({
-            lines: lines([0, 55, 90, 150]),
-            requestedMultiPv: 4,
-            policy,
-        });
-
-        expect(first.status).toBe('STABLE');
-        expect(changed.status).toBe('STABLE');
-        expect(confirmAcceptanceFrontier(first, changed).status).toBe(
-            'STABLE'
-        );
+    it('a marginal membership reversal leaves other supported alternatives intact', () => {
+        const revision = practiceV4Fixture();
+        revision.evidence.observations['observation-2'].lines[1].score = { kind: 'CP', cp: -160, pov: 'WHITE' };
+        const { index, assessments } = project(revision);
+        expect(lookupAnswer(index, 'e2e4', assessments, []).quality).toBe('GOOD');
+        expect(lookupAnswer(index, 'd2d4', assessments, []).quality).toBe('UNKNOWN');
+        expect(lookupAnswer(index, 'a2a3', assessments, []).quality).toBe('BELOW_STANDARD');
     });
 });

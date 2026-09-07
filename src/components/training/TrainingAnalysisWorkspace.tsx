@@ -263,7 +263,7 @@ export function TrainingAnalysisWorkspace({
             revisionKey: prompt.solutionRevisionId,
             decisionFen: prompt.fen,
             sideToMove: prompt.sideToMove,
-            positionHistory: prompt.grading.positionHistory,
+            positionHistory: prompt.grading.source.positionHistory,
             originalMoveUci: review.originalMoveUci,
             submittedMoveUci: review.submittedMoveUci,
             bestLineUci: review.bestLineUci,

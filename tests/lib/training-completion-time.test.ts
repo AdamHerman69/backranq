@@ -20,17 +20,15 @@ describe('practice completion event time', () => {
         expect(parseTrainingCompletionTime('2026-09-05T12:05:00.000Z', receivedAt)).not.toBeNull();
     });
 
-    it('requires completion time on the HTTP request contract', () => {
+    it('requires the immutable reveal event time on the HTTP request contract', () => {
         const request = {
-            kind: 'RECORD',
+            kind: 'REVEAL',
             clientAttemptId: '11111111-1111-4111-8111-111111111111',
-            solutionRevisionId: '22222222-2222-4222-8222-222222222222',
-            status: 'REVEALED',
-            steps: [],
+            momentRevisionId: '22222222-2222-4222-8222-222222222222',
         };
         expect(parseRecordTrainingAttemptRequest(request, receivedAt)).toBeNull();
-        const completedAt = '2026-09-01T12:00:00.000Z';
-        expect(parseRecordTrainingAttemptRequest({ ...request, completedAt }, receivedAt))
-            .toEqual({ ...request, completedAt });
+        const revealedAt = '2026-09-01T12:00:00.000Z';
+        expect(parseRecordTrainingAttemptRequest({ ...request, revealedAt }, receivedAt))
+            .toEqual({ ...request, revealedAt });
     });
 });

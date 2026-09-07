@@ -382,7 +382,7 @@ function ProgressKpiStrip({ snapshot }: { snapshot: ProgressSnapshot }) {
         {
             label: 'Full solves',
             value: formatProgressRate(snapshot.practice.fullPositionSolve),
-            detail: 'Across graded Practice attempts',
+            detail: 'Across resolved Practice attempts',
         },
         {
             label: 'Needs review',
@@ -587,30 +587,16 @@ function FirstRecordedOutcome({
 }) {
     const outcome = snapshot.firstRecordedTerminalOutcome;
     if (outcome.positions === 0) return null;
-    const metObjective =
-        outcome.gradeCounts.BEST +
-        outcome.gradeCounts.STRONG +
-        outcome.gradeCounts.GOOD;
     const counts = [
         {
             label: 'Met objective',
-            value: metObjective,
-            detail: 'Best, Strong, or Good',
+            value: outcome.metObjective.x,
+            detail: 'Supported good decision, including moves awaiting a tier',
         },
         {
-            label: 'Improved',
-            value: outcome.gradeCounts.IMPROVED,
-            detail: 'Better, not yet solved',
-        },
-        {
-            label: 'Original move repeated',
-            value: outcome.gradeCounts.REPEATED_MISTAKE,
-            detail: 'Same source-game move',
-        },
-        {
-            label: 'Different mistake',
-            value: outcome.gradeCounts.DIFFERENT_MISTAKE,
-            detail: 'Original issue avoided',
+            label: 'Below standard',
+            value: outcome.resolved - outcome.metObjective.x,
+            detail: 'Supported below-standard decision',
         },
         {
             label: 'Revealed',
@@ -652,7 +638,7 @@ function FirstRecordedOutcome({
                             : ''}
                     </p>
                 </div>
-                <dl className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                <dl className="grid gap-2 sm:grid-cols-3">
                     {counts.map((item) => (
                         <div
                             key={item.label}
@@ -677,11 +663,11 @@ function FirstRecordedOutcome({
 
 function InPractice({ snapshot }: { snapshot: ProgressSnapshot }) {
     const assessableAttempts =
-        snapshot.practice.gradedAttempts +
+        snapshot.practice.resolvedAttempts +
         snapshot.practice.revealedAttempts;
     const terminalAttempts =
         assessableAttempts +
-        snapshot.practice.unresolvedExcluded;
+        snapshot.practice.unavailableExcluded;
     return terminalAttempts === 0 ? (
         <EmptySection
             title="No completed attempts yet"
@@ -699,7 +685,7 @@ function InPractice({ snapshot }: { snapshot: ProgressSnapshot }) {
                                     <dd className="mt-1 text-lg font-semibold tabular-nums">
                                         {number(
                                             snapshot.practice
-                                                .gradedAttempts
+                                                .resolvedAttempts
                                         )}
                                     </dd>
                                 </div>
@@ -721,7 +707,7 @@ function InPractice({ snapshot }: { snapshot: ProgressSnapshot }) {
                                     <dd className="mt-1 text-lg font-semibold tabular-nums">
                                         {number(
                                             snapshot.practice
-                                                .unresolvedExcluded
+                                                .unavailableExcluded
                                         )}
                                     </dd>
                                 </div>
@@ -840,7 +826,7 @@ function ReviewRecurrence({ snapshot }: { snapshot: ProgressSnapshot }) {
     const analyticsContext = progressAnalyticsContext(snapshot);
     const hasAttemptHistory =
         snapshot.firstRecordedTerminalOutcome.positions > 0 ||
-        snapshot.practice.gradedAttempts +
+        snapshot.practice.resolvedAttempts +
             snapshot.practice.revealedAttempts >
             0 ||
         snapshot.inventory.fresh <
@@ -988,9 +974,9 @@ function BreakdownRow({
                     </dd>
                 </div>
                 <div>
-                    <dt>Graded attempts completed in scope</dt>
+                    <dt>Resolved attempts completed in scope</dt>
                     <dd className="font-medium tabular-nums text-foreground">
-                        {number(row.gradedAttempts)}
+                        {number(row.resolvedAttempts)}
                     </dd>
                 </div>
             </dl>

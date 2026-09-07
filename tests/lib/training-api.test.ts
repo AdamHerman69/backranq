@@ -1,4 +1,6 @@
-import { fixtureSolution } from '../helpers/extractionEvidence';
+import { practiceV4Fixture } from '../helpers/practice-v4';
+import { createHash } from 'node:crypto';
+import { canonicalJson, canonicalPracticeSemantics } from '@/lib/training/practiceContract';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     getTrainingMomentPrompt,
@@ -29,16 +31,21 @@ vi.mock('@/lib/training/practiceFeedQueries', () => ({
 const queryDueMock = vi.mocked(queryDuePracticeStream);
 const queryNewMock = vi.mocked(queryNewPracticeStream);
 
+const manifest = practiceV4Fixture();
+manifest.momentId = '11111111-1111-4111-8111-111111111111';
+manifest.revisionId = '22222222-2222-4222-8222-222222222222';
+manifest.source.gameId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+manifest.semanticHash = createHash('sha256').update(canonicalJson(canonicalPracticeSemantics(manifest))).digest('hex');
 const promptRow = {
     id: '11111111-1111-4111-8111-111111111111',
     currentSolutionRevisionId:
         '22222222-2222-4222-8222-222222222222',
-    fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
+    fen: manifest.source.fen,
     sideToMove: 'w',
     positionHistory: [],
     gameId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     decisionPly: 0,
-    originalMoveUci: 'e2f2',
+    originalMoveUci: 'a2a3',
     scoreBefore: { kind: 'cp', cp: 80, pov: 'WHITE' },
     scoreAfter: { kind: 'cp', cp: 0, pov: 'WHITE' },
     cpLoss: 80,
@@ -50,81 +57,7 @@ const promptRow = {
         provider: 'LICHESS',
         playedAt: new Date('2026-01-01T00:00:00.000Z'),
     },
-    currentSolutionRevision: fixtureSolution({
-        originalDecision: {sourceKinds: ['MY_MISTAKE'], lessonKinds: ['AVOID_MISTAKE'], themes: ['fork'], scoreBefore: {kind: 'cp', cp: 80, pov: 'WHITE'}, scoreAfter: {kind: 'cp', cp: 0, pov: 'WHITE'}, cpLoss:80, winChanceLoss:0.1},
-        bestMoveUci: 'e2e3',
-        acceptedMovesUci: ['e2e3'],
-        acceptanceFrontier: {
-            version: 1,
-            status: 'STABLE',
-            targetCutoffCp: 100,
-            effectiveCutoffCp: 70,
-            boundaryGapCp: 40,
-            moves: [{ moveUci: 'e2e3', tier: 'BEST' }],
-            firstRejectedMoveUci: 'e2f2',
-        },
-        solutionShape: 'UNIQUE',
-        bestLine: ['e2e3'],
-        scoreAtStart: { kind: 'cp', cp: 80, pov: 'WHITE' },
-        gradingPolicy: {
-            version: 3,
-            pov: 'TRAINING_SIDE',
-            best: { maxCpLoss: 20, maxWinChanceLoss: 0.03 },
-            strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
-            success: {
-                maxCpLoss: 100,
-                maxWinChanceLoss: 0.1,
-                preserveOutcome: true,
-            },
-            improvement: {
-                minRecoveredCp: 40,
-                minRecoveredWinChance: 0.05,
-            },
-            unknownMove: 'EVALUATE',
-            matePolicy: 'EXACT',
-            tablebasePolicy: 'EXACT',
-        },
-        solutionTree: {
-            fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
-            ply: 0,
-            role: 'USER',
-            acceptedMovesUci: ['e2e3'],
-            alternativesComplete: true,
-            branches: [
-                {
-                    moveUci: 'e2e3',
-                    best: true,
-                    child: {
-                        fen: '8/8/8/8/8/4K3/8/6k1 b - - 1 1',
-                        ply: 1,
-                        role: 'TERMINAL',
-                        acceptedMovesUci: [],
-                        alternativesComplete: true,
-                        branches: [],
-                    },
-                },
-            ],
-        },
-        moveAssessments: [
-            {
-                decisionIndex: 0,
-                fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
-                moveUci: 'e2e3',
-                source: 'PRECOMPUTED',
-                status: 'VERIFIED',
-                grade: 'BEST',
-                scoreAfter: {
-                    kind: 'cp',
-                    cp: 80,
-                    pov: 'WHITE',
-                },
-                evidence: {
-                    bestGapCp: 0,
-                    preservesOutcome: true,
-                },
-            },
-        ],
-    }),
+    currentSolutionRevision: { manifest, trainable: true },
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     lastTrainedAt: null,
 };
@@ -169,15 +102,15 @@ describe('canonical training API boundary', () => {
                 findMany: vi.fn().mockResolvedValue([
                     {
                         ...promptRow,
-                        originalMoveUci: 'e2f2',
-                        bestMoveUci: 'e2e3',
+                        originalMoveUci: 'a2a3',
+                        bestMoveUci: 'e2e4',
                         themes: ['quiet-move'],
                     },
                 ]),
                 findFirst: vi.fn().mockResolvedValue({
                     ...promptRow,
-                    originalMoveUci: 'e2f2',
-                    bestMoveUci: 'e2e3',
+                    originalMoveUci: 'a2a3',
+                    bestMoveUci: 'e2e4',
                     themes: ['quiet-move'],
                 }),
             },
@@ -201,13 +134,13 @@ describe('canonical training API boundary', () => {
             fen: promptRow.fen,
             sideToMove: 'w',
             grading: expect.objectContaining({
-                originalMoveUci: 'e2f2',
-                moveAssessments: [
+                source: expect.objectContaining({ originalMoveUci: 'a2a3' }),
+                assessments: expect.arrayContaining([
                     expect.objectContaining({
-                        moveUci: 'e2e3',
-                        grade: 'BEST',
+                        moveUci: 'e2e4',
+                        tier: 'BEST', quality: 'GOOD',
                     }),
-                ],
+                ]),
             }),
         });
         expect(feed).toEqual({
@@ -216,8 +149,8 @@ describe('canonical training API boundary', () => {
             appliedFilters: {},
         });
         expect(detail).toEqual({ moment: expected });
-        expect(feed.items[0]?.grading.review.bestMoveUci).toBe(
-            'e2e3'
+        expect(feed.items[0]?.review.bestMoveUci).toBe(
+            'e2e4'
         );
         expect(db.trainingMoment.findMany).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -225,7 +158,6 @@ describe('canonical training API boundary', () => {
                     currentSolutionRevision: {
                         is: expect.objectContaining({
                             trainable: true,
-                            verificationStatus: 'VERIFIED',
                         }),
                     },
                 }),
@@ -238,34 +170,9 @@ describe('canonical training API boundary', () => {
     });
 
     it('serves a confirmed prompt with partial answer coverage', async () => {
-        const findMany = vi.fn().mockResolvedValue([
-            {
-                ...promptRow,
-                currentSolutionRevision: {
-                    ...promptRow.currentSolutionRevision,
-                    acceptanceFrontier: {
-                        ...promptRow.currentSolutionRevision
-                            .acceptanceFrontier,
-                        status: 'OPEN',
-                        effectiveCutoffCp: null,
-                        boundaryGapCp: null,
-                    },
-                    solutionTree: {
-                        ...promptRow.currentSolutionRevision
-                            .solutionTree,
-                        alternativesComplete: false,
-                    },
-                },
-            },
-        ]);
-
-        await expect(
-            listPracticeFeed({
-                db: { trainingMoment: { findMany } } as never,
-                userId: 'user-1',
-                request: { limit: 10 },
-            })
-        ).resolves.toMatchObject({items: [expect.objectContaining({grading: expect.objectContaining({answerCoverage: expect.objectContaining({status: 'PARTIAL'})})})]});
+        const findMany = vi.fn().mockResolvedValue([promptRow]);
+        await expect(listPracticeFeed({ db: { trainingMoment: { findMany } } as never, userId: 'user-1', request: { limit: 10 } }))
+            .resolves.toMatchObject({items: [expect.objectContaining({grading: expect.objectContaining({rootAnswerIndex: expect.objectContaining({readiness: 'PARTIAL'})})})]});
     });
 
     it('interleaves bounded due and new streams without trusting database return order', async () => {
@@ -314,6 +221,7 @@ describe('canonical training API boundary', () => {
                 ...promptRow,
                 id: ids[name],
                 currentSolutionRevisionId: revisions[name],
+                currentSolutionRevision: { trainable: true, manifest: { ...manifest, momentId: ids[name], revisionId: revisions[name] } },
             }))
         );
         const now = new Date('2026-02-01T00:00:00.000Z');
@@ -402,6 +310,7 @@ describe('canonical training API boundary', () => {
                     ...promptRow,
                     id: secondId,
                     currentSolutionRevisionId: secondRevision,
+                    currentSolutionRevision: { trainable: true, manifest: { ...manifest, momentId: secondId, revisionId: secondRevision } },
                 },
             ]);
         const startedAt = new Date('2026-02-01T00:00:00.000Z');
@@ -794,104 +703,17 @@ describe('canonical training API boundary', () => {
         ).toBeNull();
     });
 
-    it('parses only bounded record-only history payloads', () => {
-        expect(
-            parseRecordTrainingAttemptRequest({
-                kind: 'START',
-                clientAttemptId:
-                    '33333333-3333-4333-8333-333333333333',
-                moveUci: 'E2E4',
-            })
-        ).toBeNull();
-        expect(
-            parseRecordTrainingAttemptRequest({
-                kind: 'RECORD',
-                completedAt: '2026-07-30T08:00:00.000Z',
-                clientAttemptId:
-                    '33333333-3333-4333-8333-333333333333',
-                solutionRevisionId:
-                    '22222222-2222-4222-8222-222222222222',
-                status: 'GRADED',
-                grade: 'BEST',
-                gradingSource: 'PRECOMPUTED',
-                comparison: null,
-                steps: [
-                    {
-                        stepIndex: 0,
-                        actor: 'USER',
-                        fenBefore: promptRow.fen,
-                        moveUci: 'E2E3',
-                        grade: 'BEST',
-                        source: 'PRECOMPUTED',
-                        timeSpentMs: 12,
-                    },
-                ],
-            })
-        ).toEqual({
-            kind: 'RECORD',
-            completedAt: '2026-07-30T08:00:00.000Z',
-            clientAttemptId:
-                '33333333-3333-4333-8333-333333333333',
-            solutionRevisionId:
-                '22222222-2222-4222-8222-222222222222',
-            status: 'GRADED',
-            grade: 'BEST',
-            gradingSource: 'PRECOMPUTED',
-            comparison: null,
-            steps: [
-                {
-                    stepIndex: 0,
-                    actor: 'USER',
-                    fenBefore: promptRow.fen,
-                    moveUci: 'e2e3',
-                    grade: 'BEST',
-                    source: 'PRECOMPUTED',
-                    timeSpentMs: 12,
-                },
-            ],
-        });
-        expect(
-            parseRecordTrainingAttemptRequest({
-                kind: 'RECORD',
-                completedAt: '2026-07-30T08:00:00.000Z',
-                clientAttemptId:
-                    '33333333-3333-4333-8333-333333333333',
-                solutionRevisionId:
-                    '22222222-2222-4222-8222-222222222222',
-                status: 'GRADED',
-                grade: 'BEST',
-                steps: [
-                    {
-                        stepIndex: 0,
-                        actor: 'USER',
-                        fenBefore: promptRow.fen,
-                        moveUci: 'e2e3',
-                        grade: 'BEST',
-                        timeSpentMs: 12.5,
-                    },
-                ],
-            })
-        ).toBeNull();
-        expect(
-            parseRecordTrainingAttemptRequest({
-                kind: 'RECORD',
-                completedAt: '2026-07-30T08:00:00.000Z',
-                clientAttemptId:
-                    '33333333-3333-4333-8333-333333333333',
-                solutionRevisionId:
-                    '22222222-2222-4222-8222-222222222222',
-                status: 'REVEALED',
-                steps: [],
-            })
-        ).toEqual({
-            kind: 'RECORD',
-            completedAt: '2026-07-30T08:00:00.000Z',
-            clientAttemptId:
-                '33333333-3333-4333-8333-333333333333',
-            solutionRevisionId:
-                '22222222-2222-4222-8222-222222222222',
-            status: 'REVEALED',
-            steps: [],
-        });
+    it('parses bounded canonical move events and explicit reveal, rejecting old grade payloads', () => {
+        const record = { kind: 'RECORD', clientAttemptId: '33333333-3333-4333-8333-333333333333',
+            momentRevisionId: manifest.revisionId, contextId: manifest.source.contextId, stepIndex: 0,
+            moveUci: 'e2e4', playedAt: '2026-07-30T08:00:00.000Z', timeSpentMs: 12,
+            initialAssessmentId: null, initialCoverageGroupId: null, resolution: 'PENDING' };
+        expect(parseRecordTrainingAttemptRequest(record)).toEqual(record);
+        expect(parseRecordTrainingAttemptRequest({ ...record, grade: 'BEST' })).toBeNull();
+        expect(parseRecordTrainingAttemptRequest({ ...record, moveUci: 'E2E4' })).toBeNull();
+        expect(parseRecordTrainingAttemptRequest({ ...record, timeSpentMs: 12.5 })).toBeNull();
+        expect(parseRecordTrainingAttemptRequest({ ...record, kind: 'START' })).toBeNull();
+        const reveal = { kind: 'REVEAL', clientAttemptId: record.clientAttemptId, momentRevisionId: manifest.revisionId, revealedAt: record.playedAt };
+        expect(parseRecordTrainingAttemptRequest(reveal)).toEqual(reveal);
     });
 });

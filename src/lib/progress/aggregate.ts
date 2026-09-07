@@ -1,9 +1,10 @@
+import type { Quality, Tier, MoveAssessment } from '@/lib/training/practiceContract';
 import {
     PROGRESS_DEFINITION_VERSION,
     type ProgressAnalysisStateCounts,
     type ProgressBreakdownRow,
     type ProgressFilters,
-    type ProgressGradeCounts,
+    type ProgressTierCounts,
     type ProgressImpactBuckets,
     type ProgressPositionAction,
     type ProgressProvider,
@@ -29,11 +30,9 @@ type AnalysisRunStatus =
 type AnalysisJobStatus = AnalysisRunStatus;
 type AttemptStatus =
     | 'PENDING'
-    | 'GRADED'
+    | 'RESOLVED'
     | 'REVEALED'
-    | 'SKIPPED'
-    | 'UNRESOLVED';
-type AttemptGrade = keyof ProgressGradeCounts;
+    | 'UNAVAILABLE';
 type PositionPhase = 'OPENING' | 'MIDDLEGAME' | 'ENDGAME';
 type TrainingSourceKind = 'MY_MISTAKE' | 'MISSED_OPPORTUNITY';
 
@@ -71,7 +70,9 @@ export type ProgressAttemptRecord = {
     completedAt: Date | null;
     userMoveUci: string | null;
     status: AttemptStatus;
-    grade: AttemptGrade | null;
+    quality: Quality;
+    tier: Tier | null;
+    originalRelation: MoveAssessment['originalRelation'];
     contextPhase: PositionPhase | null;
     contextCpLoss: number | null;
     contextWinChanceLoss: number | null;
@@ -82,9 +83,10 @@ export type ProgressAttemptRecord = {
     contextSolutionHash: string;
     steps: Array<{
         stepIndex: number;
-        actor: 'USER' | 'ENGINE';
         moveUci: string;
-        grade: AttemptGrade | null;
+        quality: Quality;
+        tier: Tier | null;
+        originalRelation: MoveAssessment['originalRelation'];
     }>;
 };
 
@@ -104,12 +106,7 @@ export type ProgressPositionRecord = {
         id: string;
         solutionHash: string;
         configHash: string;
-        verificationStatus:
-            | 'VERIFIED'
-            | 'AMBIGUOUS'
-            | 'UNSTABLE'
-            | 'INVALID';
-        decision: unknown;
+        manifest: unknown;
         trainable: boolean;
     } | null;
     observations: Array<{
@@ -143,24 +140,16 @@ type EligiblePosition = {
 const ACTION_LIMIT = 20;
 const MIX_TOLERANCE = 0.15;
 
-function emptyGradeCounts(): ProgressGradeCounts {
+function emptyTierCounts(): ProgressTierCounts {
     return {
         BEST: 0,
         STRONG: 0,
         GOOD: 0,
-        IMPROVED: 0,
-        REPEATED_MISTAKE: 0,
-        DIFFERENT_MISTAKE: 0,
+        SUBPAR: 0,
     };
 }
 
-function isFullSolve(grade: AttemptGrade | null) {
-    return (
-        grade === 'BEST' ||
-        grade === 'STRONG' ||
-        grade === 'GOOD'
-    );
-}
+function isFullSolve(quality: Quality | null) { return quality === 'GOOD'; }
 
 function matchesFilters(
     game: ProgressGameRecord,
@@ -246,13 +235,12 @@ function positionIsEligible(
         !revision ||
         revision.id !== position.currentSolutionRevisionId ||
         !revision.trainable ||
-        revision.verificationStatus !== 'VERIFIED' ||
-        !hasConfirmedDecision(revision.decision) ||
+        !hasConfirmedDecision(revision.manifest) ||
         revision.configHash !== run.configHash
     ) {
         return false;
     }
-    // A same-policy unresolved rerun does not erase prior confirmed evidence.
+    // A same-policy unavailable rerun does not erase prior confirmed evidence.
     return position.observations.some(
         (observation) =>
             observation.solutionRevisionId === revision.id &&
@@ -265,8 +253,9 @@ function hasConfirmedDecision(value: unknown) {
         value !== null &&
         typeof value === 'object' &&
         !Array.isArray(value) &&
-        'status' in value &&
-        value.status === 'CONFIRMED_MISTAKE'
+        'decision' in value && value.decision !== null && typeof value.decision === 'object' &&
+        'status' in value.decision && value.decision.status === 'CONFIRMED_MISTAKE' &&
+        'selection' in value.decision && value.decision.selection === 'INCLUDED'
     );
 }
 
@@ -279,7 +268,7 @@ function sortedTerminalAttempts(
             (attempt) =>
                 attempt.completedAt !== null &&
                 attempt.completedAt.getTime() <= asOf.getTime() &&
-                (attempt.status === 'GRADED' ||
+                (attempt.status === 'RESOLVED' ||
                     attempt.status === 'REVEALED')
         )
         .slice()
@@ -315,7 +304,6 @@ function currentSemanticTerminalAttempts(
 
 function rootStep(attempt: ProgressAttemptRecord) {
     return attempt.steps
-        .filter((step) => step.actor === 'USER')
         .slice()
         .sort((left, right) => left.stepIndex - right.stepIndex)[0];
 }
@@ -323,7 +311,8 @@ function rootStep(attempt: ProgressAttemptRecord) {
 function exactOriginalMoveRepeated(
     attempt: ProgressAttemptRecord
 ) {
-    return rootStep(attempt)?.grade === 'REPEATED_MISTAKE';
+    const root = rootStep(attempt);
+    return root?.quality === 'BELOW_STANDARD' && root.originalRelation === 'SAME_MOVE';
 }
 
 function hasPersistentOriginalMoveRepetition(
@@ -474,38 +463,38 @@ function attemptsInWindow(
 function practicePeriod(
     attempts: ReturnType<typeof attemptsInWindow>
 ) {
-    const graded = attempts.filter(
+    const resolved = attempts.filter(
         ({ attempt }) =>
-            attempt.status === 'GRADED' && attempt.grade !== null
+            attempt.status === 'RESOLVED' && attempt.quality !== 'UNKNOWN'
     );
     const revealed = attempts.filter(
         ({ attempt }) => attempt.status === 'REVEALED'
     );
-    const unresolved = attempts.filter(
-        ({ attempt }) => attempt.status === 'UNRESOLVED'
+    const unavailable = attempts.filter(
+        ({ attempt }) => attempt.status === 'UNAVAILABLE'
     );
-    const gradeCounts = emptyGradeCounts();
-    for (const { attempt } of graded) {
-        gradeCounts[attempt.grade!] += 1;
+    const tierCounts = emptyTierCounts();
+    for (const { attempt } of resolved) {
+        if (attempt.tier) tierCounts[attempt.tier] += 1;
     }
-    const fullSolved = graded.filter(({ attempt }) =>
-        isFullSolve(attempt.grade)
+    const fullSolved = resolved.filter(({ attempt }) =>
+        isFullSolve(attempt.quality)
     ).length;
-    const withRoot = graded.filter(
-        ({ attempt }) => rootStep(attempt)?.grade != null
+    const withRoot = resolved.filter(
+        ({ attempt }) => rootStep(attempt)?.quality != null && rootStep(attempt)?.quality !== 'UNKNOWN'
     );
     const rootSolved = withRoot.filter(({ attempt }) =>
-        isFullSolve(rootStep(attempt)?.grade ?? null)
+        isFullSolve(rootStep(attempt)?.quality ?? null)
     ).length;
     const exactRepeated = withRoot.filter(({ attempt }) =>
         exactOriginalMoveRepeated(attempt)
     ).length;
     return {
-        graded,
+        resolved,
         revealed,
-        unresolved,
-        gradeCounts,
-        fullPositionSolve: progressRate(fullSolved, graded.length),
+        unavailable,
+        tierCounts,
+        fullPositionSolve: progressRate(fullSolved, resolved.length),
         rootDecisionSuccess: progressRate(rootSolved, withRoot.length),
         exactOriginalMoveRepeated: progressRate(
             exactRepeated,
@@ -531,29 +520,29 @@ function firstOutcomes(
                         inHalfOpenWindow(attempt.completedAt, from, to)
                 )
         );
-    const graded = first.filter(
+    const resolved = first.filter(
         (attempt) =>
-            attempt.status === 'GRADED' && attempt.grade !== null
+            attempt.status === 'RESOLVED' && attempt.quality !== 'UNKNOWN'
     );
-    const acceptedFirst = graded.filter((attempt) =>
-        isFullSolve(attempt.grade)
+    const acceptedFirst = resolved.filter((attempt) =>
+        isFullSolve(attempt.quality)
     ).length;
-    const gradeCounts = emptyGradeCounts();
-    for (const attempt of graded) gradeCounts[attempt.grade!] += 1;
+    const tierCounts = emptyTierCounts();
+    for (const attempt of resolved) if (attempt.tier) tierCounts[attempt.tier] += 1;
     return {
         basis:
-            'FIRST_RECORDED_GRADED_OR_REVEALED_PER_POSITION' as const,
+            'FIRST_RECORDED_RESOLVED_OR_REVEALED_PER_POSITION' as const,
         positions: first.length,
-        graded: graded.length,
+        resolved: resolved.length,
         revealed: first.filter(
             (attempt) => attempt.status === 'REVEALED'
         ).length,
         metObjective: progressRate(acceptedFirst, first.length),
-        gradedFullSolve: progressRate(
+        resolvedFullSolve: progressRate(
             acceptedFirst,
-            graded.length
+            resolved.length
         ),
-        gradeCounts,
+        tierCounts,
     };
 }
 
@@ -564,7 +553,7 @@ function actionReason(
     const latest = terminal.at(-1);
     if (!latest) return null;
     if (
-        latest.status === 'GRADED' &&
+        latest.status === 'RESOLVED' &&
         exactOriginalMoveRepeated(latest)
     ) {
         return 'LATEST_ORIGINAL_MOVE_REPEATED';
@@ -577,16 +566,16 @@ function actionReason(
             .slice(latestRevealIndex + 1)
             .some(
                 (attempt) =>
-                    attempt.status === 'GRADED' &&
-                    isFullSolve(attempt.grade)
+                    attempt.status === 'RESOLVED' &&
+                    isFullSolve(attempt.quality)
             );
         if (!laterSolve && latest.status === 'REVEALED') {
             return 'REVEALED_WITHOUT_LATER_SOLVE';
         }
     }
     if (
-        latest.status === 'GRADED' &&
-        !isFullSolve(latest.grade)
+        latest.status === 'RESOLVED' &&
+        !isFullSolve(latest.quality)
     ) {
         return hasPersistentOriginalMoveRepetition(terminal)
             ? 'PERSISTENT_ORIGINAL_MOVE_REPETITION'
@@ -648,7 +637,7 @@ function inventoryAndActions(
         }
         const repeated = terminal.filter(
             (attempt) =>
-                attempt.status === 'GRADED' &&
+                attempt.status === 'RESOLVED' &&
                 exactOriginalMoveRepeated(attempt)
         ).length;
         const reason = actionReason(position, terminal);
@@ -665,10 +654,8 @@ function inventoryAndActions(
             sourceGameId: position.gameId,
             reason,
             latestTerminalAt: latest.completedAt!.toISOString(),
-            latestGrade:
-                latest.status === 'REVEALED'
-                    ? 'REVEALED'
-                    : latest.grade!,
+            latestStatus: latest.status as 'RESOLVED' | 'REVEALED',
+            latestQuality: latest.quality, latestTier: latest.tier, latestOriginalRelation: latest.originalRelation,
             exactOriginalMoveRepeatCount: repeated,
             impact: impactFor(position),
             phase: position.phase ?? 'UNKNOWN',
@@ -720,8 +707,8 @@ function delayedRecheck(
         const terminal = sortedTerminalAttempts(attempts, asOf);
         const baseline = terminal.find(
             (attempt) =>
-                attempt.status === 'GRADED' &&
-                isFullSolve(attempt.grade)
+                attempt.status === 'RESOLVED' &&
+                isFullSolve(attempt.quality)
         );
         if (
             !baseline?.completedAt ||
@@ -755,8 +742,8 @@ function delayedRecheck(
         if (!recheck) continue;
         observedRechecks += 1;
         if (
-            recheck.status === 'GRADED' &&
-            isFullSolve(recheck.grade)
+            recheck.status === 'RESOLVED' &&
+            isFullSolve(recheck.quality)
         ) {
             observedSolved += 1;
         }
@@ -796,7 +783,7 @@ function mixDistributions(
         impact: new Map<string, number>(),
     };
     for (const { attempt } of attempts) {
-        if (attempt.status !== 'GRADED') continue;
+        if (attempt.status !== 'RESOLVED') continue;
         const source = attempt.contextSourceKinds
             .slice()
             .sort()
@@ -821,7 +808,7 @@ function configDistribution(
 ) {
     const distribution = new Map<string, number>();
     for (const { attempt } of attempts) {
-        if (attempt.status === 'GRADED') {
+        if (attempt.status === 'RESOLVED') {
             addCount(distribution, attempt.contextConfigHash);
         }
     }
@@ -852,7 +839,7 @@ function breakdownRows(
 ): ProgressBreakdownRow[] {
     const positionSets = new Map<string, Set<string>>();
     const gameSets = new Map<string, Set<string>>();
-    const gradedCounts = new Map<string, number>();
+    const resolvedCounts = new Map<string, number>();
     const solvedCounts = new Map<string, number>();
     for (const entry of eligible) {
         for (const key of positionKeys(entry)) {
@@ -866,10 +853,10 @@ function breakdownRows(
         }
     }
     for (const item of attempts) {
-        if (item.attempt.status !== 'GRADED') continue;
+        if (item.attempt.status !== 'RESOLVED') continue;
         for (const key of attemptKeys(item)) {
-            addCount(gradedCounts, key);
-            if (isFullSolve(item.attempt.grade)) {
+            addCount(resolvedCounts, key);
+            if (isFullSolve(item.attempt.quality)) {
                 addCount(solvedCounts, key);
             }
         }
@@ -877,7 +864,7 @@ function breakdownRows(
     return Array.from(
         new Set([
             ...positionSets.keys(),
-            ...gradedCounts.keys(),
+            ...resolvedCounts.keys(),
         ])
     )
         .sort()
@@ -885,10 +872,10 @@ function breakdownRows(
             key,
             positions: positionSets.get(key)?.size ?? 0,
             sourceGames: gameSets.get(key)?.size ?? 0,
-            gradedAttempts: gradedCounts.get(key) ?? 0,
+            resolvedAttempts: resolvedCounts.get(key) ?? 0,
             fullPositionSolve: progressRate(
                 solvedCounts.get(key) ?? 0,
-                gradedCounts.get(key) ?? 0
+                resolvedCounts.get(key) ?? 0
             ),
         }));
 }
@@ -1182,16 +1169,16 @@ export function aggregateProgressSnapshot({
         ),
         practice: {
             basis: 'TERMINAL_COMPLETED_AT',
-            gradedAttempts: currentPractice.graded.length,
+            resolvedAttempts: currentPractice.resolved.length,
             revealedAttempts: currentPractice.revealed.length,
-            unresolvedExcluded: currentPractice.unresolved.length,
+            unavailableExcluded: currentPractice.unavailable.length,
             fullPositionSolve:
                 currentPractice.fullPositionSolve,
             rootDecisionSuccess:
                 currentPractice.rootDecisionSuccess,
             exactOriginalMoveRepeated:
                 currentPractice.exactOriginalMoveRepeated,
-            gradeCounts: currentPractice.gradeCounts,
+            tierCounts: currentPractice.tierCounts,
             fullPositionSolveTrend: progressTrend({
                 current: currentPractice.fullPositionSolve,
                 previous:
@@ -1262,7 +1249,7 @@ export function aggregateProgressSnapshot({
             basis: {
                 positionAndSourceGameCounts:
                     'CURRENT_LIBRARY_SOURCE_GAME_PLAYED_AT',
-                gradedAttemptCounts:
+                resolvedAttemptCounts:
                     'TERMINAL_COMPLETED_AT_FROZEN_ATTEMPT_CONTEXT',
             },
             multiLabelDisclosure: {
@@ -1308,9 +1295,9 @@ export function aggregateProgressSnapshot({
             },
             exclusions: [
                 'REVEALED_NOT_SOLVED',
-                'UNRESOLVED_NOT_WRONG',
+                'UNAVAILABLE_NOT_WRONG',
                 'PENDING_NOT_TERMINAL',
-                'SKIPPED_NOT_GRADED',
+                'PENDING_NOT_RESOLVED',
             ],
         },
     };

@@ -4,7 +4,7 @@ import {
     PROGRESS_TIME_CLASSES,
     type ProgressAnalysisStateCounts,
     type ProgressBreakdownRow,
-    type ProgressGradeCounts,
+    type ProgressTierCounts,
     type ProgressRequest,
     type ProgressSnapshot,
 } from '@/lib/progress/contracts';
@@ -61,22 +61,12 @@ function analysisStates(
     };
 }
 
-function gradeCounts(map: CountMap, field: string): ProgressGradeCounts {
+function tierCounts(map: CountMap, field: string): ProgressTierCounts {
     return {
         BEST: countFrom(map, 'BEST', field),
         STRONG: countFrom(map, 'STRONG', field),
         GOOD: countFrom(map, 'GOOD', field),
-        IMPROVED: countFrom(map, 'IMPROVED', field),
-        REPEATED_MISTAKE: countFrom(
-            map,
-            'REPEATED_MISTAKE',
-            field
-        ),
-        DIFFERENT_MISTAKE: countFrom(
-            map,
-            'DIFFERENT_MISTAKE',
-            field
-        ),
+        SUBPAR: countFrom(map, 'SUBPAR', field),
     };
 }
 
@@ -116,14 +106,14 @@ function breakdownRows(args: {
                 row.sourceGames,
                 `sourceGames.${row.key}`
             ),
-            gradedAttempts: 0,
+            resolvedAttempts: 0,
             fullPositionSolve: progressRate(0, 0),
         });
     }
     for (const row of args.attemptRows ?? []) {
-        const graded = count(
-            row.gradedAttempts,
-            `gradedAttempts.${row.key}`
+        const resolved = count(
+            row.resolvedAttempts,
+            `resolvedAttempts.${row.key}`
         );
         const solved = count(
             row.solvedAttempts,
@@ -134,8 +124,8 @@ function breakdownRows(args: {
             key: row.key,
             positions: existing?.positions ?? 0,
             sourceGames: existing?.sourceGames ?? 0,
-            gradedAttempts: graded,
-            fullPositionSolve: progressRate(solved, graded),
+            resolvedAttempts: resolved,
+            fullPositionSolve: progressRate(solved, resolved),
         });
     }
     return Array.from(output.values()).sort((left, right) =>
@@ -193,17 +183,17 @@ export function assembleProgressSnapshot(args: {
         args.positions.currentEligibleGames,
         'currentEligibleGames'
     );
-    const currentGraded = count(
-        args.attempts.currentPractice.graded,
-        'currentPractice.graded'
+    const currentResolved = count(
+        args.attempts.currentPractice.resolved,
+        'currentPractice.resolved'
     );
     const currentSolved = count(
         args.attempts.currentPractice.solved,
         'currentPractice.solved'
     );
-    const previousGraded = count(
-        args.attempts.previousPractice.graded,
-        'previousPractice.graded'
+    const previousResolved = count(
+        args.attempts.previousPractice.resolved,
+        'previousPractice.resolved'
     );
     const previousSolved = count(
         args.attempts.previousPractice.solved,
@@ -234,9 +224,9 @@ export function assembleProgressSnapshot(args: {
         args.attempts.firstOutcome.positions,
         'firstOutcome.positions'
     );
-    const firstGraded = count(
-        args.attempts.firstOutcome.graded,
-        'firstOutcome.graded'
+    const firstResolved = count(
+        args.attempts.firstOutcome.resolved,
+        'firstOutcome.resolved'
     );
     const firstSolved = count(
         args.attempts.firstOutcome.solved,
@@ -360,34 +350,34 @@ export function assembleProgressSnapshot(args: {
             },
         },
         firstRecordedTerminalOutcome: {
-            basis: 'FIRST_RECORDED_GRADED_OR_REVEALED_PER_POSITION',
+            basis: 'FIRST_RECORDED_RESOLVED_OR_REVEALED_PER_POSITION',
             positions: firstPositions,
-            graded: firstGraded,
+            resolved: firstResolved,
             revealed: count(
                 args.attempts.firstOutcome.revealed,
                 'firstOutcome.revealed'
             ),
             metObjective: progressRate(firstSolved, firstPositions),
-            gradedFullSolve: progressRate(firstSolved, firstGraded),
-            gradeCounts: gradeCounts(
-                args.attempts.firstOutcome.gradeCounts,
-                'firstOutcome.gradeCounts'
+            resolvedFullSolve: progressRate(firstSolved, firstResolved),
+            tierCounts: tierCounts(
+                args.attempts.firstOutcome.tierCounts,
+                'firstOutcome.tierCounts'
             ),
         },
         practice: {
             basis: 'TERMINAL_COMPLETED_AT',
-            gradedAttempts: currentGraded,
+            resolvedAttempts: currentResolved,
             revealedAttempts: count(
                 args.attempts.currentPractice.revealed,
                 'currentPractice.revealed'
             ),
-            unresolvedExcluded: count(
-                args.attempts.currentPractice.unresolved,
-                'currentPractice.unresolved'
+            unavailableExcluded: count(
+                args.attempts.currentPractice.unavailable,
+                'currentPractice.unavailable'
             ),
             fullPositionSolve: progressRate(
                 currentSolved,
-                currentGraded
+                currentResolved
             ),
             rootDecisionSuccess: progressRate(
                 count(
@@ -409,18 +399,18 @@ export function assembleProgressSnapshot(args: {
                     'currentPractice.rootObserved'
                 )
             ),
-            gradeCounts: gradeCounts(
-                args.attempts.currentPractice.gradeCounts,
-                'currentPractice.gradeCounts'
+            tierCounts: tierCounts(
+                args.attempts.currentPractice.tierCounts,
+                'currentPractice.tierCounts'
             ),
             fullPositionSolveTrend: progressTrend({
-                current: progressRate(currentSolved, currentGraded),
+                current: progressRate(currentSolved, currentResolved),
                 previous:
                     args.request.scope === 'all'
                         ? null
                         : progressRate(
                               previousSolved,
-                              previousGraded
+                              previousResolved
                           ),
                 allTime: args.request.scope === 'all',
                 comparableConfig,
@@ -537,7 +527,7 @@ export function assembleProgressSnapshot(args: {
             basis: {
                 positionAndSourceGameCounts:
                     'CURRENT_LIBRARY_SOURCE_GAME_PLAYED_AT',
-                gradedAttemptCounts:
+                resolvedAttemptCounts:
                     'TERMINAL_COMPLETED_AT_FROZEN_ATTEMPT_CONTEXT',
             },
             multiLabelDisclosure: {
@@ -585,9 +575,9 @@ export function assembleProgressSnapshot(args: {
             },
             exclusions: [
                 'REVEALED_NOT_SOLVED',
-                'UNRESOLVED_NOT_WRONG',
+                'UNAVAILABLE_NOT_WRONG',
                 'PENDING_NOT_TERMINAL',
-                'SKIPPED_NOT_GRADED',
+                'PENDING_NOT_RESOLVED',
             ],
         },
     };

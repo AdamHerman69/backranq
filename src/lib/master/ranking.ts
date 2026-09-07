@@ -29,18 +29,17 @@ export function rankMasterCandidate(args: {
     now?: Date;
 }): MasterCandidateRanking {
     const now = args.now ?? new Date();
-    const solution = args.moment.solution;
+    const solution = args.moment.solution.manifest;
+    const accepted = solution.assessments.filter(a => solution.rootAnswerIndex.assessmentIds.includes(a.id)
+        && a.quality === 'GOOD' && a.qualitySupport === 'SUPPORTED').map(a => a.moveUci);
     const reasons: string[] = [];
-    const acceptedCount = solution.acceptedMovesUci.length;
-    const lineLength = solution.bestLineUci.length;
+    const acceptedCount = accepted.length;
+    const lineLength = solution.continuation.explanationLines.find(line => line.startContextId === solution.source.contextId)?.movesUci.length ?? 1;
     const cpLoss = args.moment.originalDecision.cpLoss ?? 0;
     const winChanceLoss = args.moment.originalDecision.winChanceLoss ?? 0;
 
-    if (!solution.trainable) reasons.push('NOT_TRAINABLE');
-    if (solution.verificationStatus !== 'VERIFIED') {
-        reasons.push('NOT_VERIFIED');
-    }
-    if (solution.solutionShape === 'OPEN') reasons.push('OPEN_SOLUTION');
+    if (solution.decision.selection !== 'INCLUDED') reasons.push('NOT_TRAINABLE');
+    if (solution.rootAnswerIndex.readiness !== 'ALL_MOVES_CLASSIFIED') reasons.push('OPEN_SOLUTION');
     if (solution.decision.status !== 'CONFIRMED_MISTAKE') {
         reasons.push('DECISION_NOT_CONFIRMED');
     }
@@ -51,7 +50,7 @@ export function rankMasterCandidate(args: {
         reasons.push('SOLUTION_LENGTH_UNSUITABLE');
     }
     if (
-        solution.acceptedMovesUci.some(
+        accepted.some(
             (move) =>
                 move.toLowerCase() ===
                 args.moment.originalMoveUci.toLowerCase()
@@ -72,14 +71,13 @@ export function rankMasterCandidate(args: {
     const freshnessScore = clamp01(1 - ageDays / 21);
     const recognitionScore = clamp01(args.personPriority / 100);
     const clarityScore =
-        solution.solutionShape === 'UNIQUE'
+        acceptedCount === 1
             ? 1
             : acceptedCount === 2
               ? 0.78
               : 0.58;
     // Ranking weight for verified decision evidence; this is not a calibrated probability.
-    const engineConfidenceScore = solution.decision.status === 'CONFIRMED_MISTAKE' &&
-        solution.verificationStatus === 'VERIFIED' ? 1 : 0;
+    const engineConfidenceScore = solution.decision.status === 'CONFIRMED_MISTAKE' ? 1 : 0;
     const humanInterestScore = clamp01(
         Math.max(winChanceLoss / 0.25, cpLoss / 500)
     );

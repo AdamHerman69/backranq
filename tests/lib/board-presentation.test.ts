@@ -8,7 +8,7 @@ import {
     initialBoardPresentation,
     trainingMoveQuality,
 } from '@/lib/training/boardPresentation';
-import { ATTEMPT_GRADES } from '@/lib/training/contracts';
+const ATTEMPT_GRADES = ['BEST', 'STRONG', 'GOOD', 'SUBPAR'] as const;
 
 describe('board presentation', () => {
     it('keeps the submitted move visible before revealing its grade', () => {
@@ -31,14 +31,14 @@ describe('board presentation', () => {
             type: 'GRADE_REVEAL',
             sequenceId: 4,
             moveUci: 'f1c4',
-            grade: 'REPEATED_MISTAKE',
+            grade: 'SUBPAR',
         });
 
         expect(graded).toMatchObject({
             stage: 'GRADE_REVEAL',
             lastMove: { from: 'f1', to: 'c4' },
             marker: {
-                grade: 'REPEATED_MISTAKE',
+                grade: 'SUBPAR',
                 square: 'c4',
                 tone: 'negative',
             },
@@ -105,7 +105,7 @@ describe('board presentation', () => {
 });
 
 it('updates the displayed marker after refinement while preserving a review position', () => {
-    const graded = boardPresentationReducer(initialBoardPresentation(20), { type: 'GRADE_REVEAL', sequenceId: 20, moveUci: 'f7h7', grade: 'DIFFERENT_MISTAKE' });
+    const graded = boardPresentationReducer(initialBoardPresentation(20), { type: 'GRADE_REVEAL', sequenceId: 20, moveUci: 'f7h7', grade: 'SUBPAR' });
     const refined = boardPresentationReducer(graded, { type: 'REFINE_GRADE', sequenceId: 20, moveUci: 'f7h7', grade: 'BEST' });
     expect(refined.marker?.grade).toBe('BEST');
     expect(refined.stage).toBe(graded.stage);

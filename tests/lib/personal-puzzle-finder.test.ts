@@ -1,9 +1,11 @@
-import { fixtureSolution } from '../helpers/extractionEvidence';
+import { emptyExtractionWork } from '@/lib/analysis/extractionWork';
+import { practiceV4Fixture } from '../helpers/practice-v4';
+import { createHash } from 'node:crypto';
+import { canonicalJson, canonicalPracticeSemantics } from '@/lib/training/practiceContract';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { StockfishEngine } from '@/lib/analysis/stockfishClient';
 import { findFirstVerifiedPersonalPuzzle } from '@/lib/onboarding/personalPuzzleFinder';
-import { normalizeGradingPolicy } from '@/lib/training/config';
 import type { TrainingMomentCandidate } from '@/lib/training/contracts';
 import type { NormalizedGame } from '@/lib/types/game';
 
@@ -25,86 +27,17 @@ function game(id: string, playedAt: string): NormalizedGame {
 }
 
 function candidate(sourceGameId: string): TrainingMomentCandidate {
+    const manifest = practiceV4Fixture();
+    manifest.source.gameId = sourceGameId;
+    manifest.source.sourcePgnHash = `hash-${sourceGameId}`;
+    manifest.semanticHash = createHash('sha256').update(canonicalJson(canonicalPracticeSemantics(manifest))).digest('hex');
     return {
-        sourceGameId,
-        sourceProvider: 'lichess',
-        sourcePlayedAt: '2026-08-05T00:00:00.000Z',
-        sourcePgnHash: `hash-${sourceGameId}`,
-        decisionPly: 0,
-        fen,
-        positionHistory: [],
-        sideToMove: 'w',
-        originalMoveUci: 'f7e7',
-        originalDecision: {
-            scoreBefore: { kind: 'mate', plies: 1, winner: 'WHITE' },
-            scoreAfter: { kind: 'cp', cp: 0, pov: 'WHITE' },
-        },
-        confidence: 1,
-        phase: 'ENDGAME',
-        sourceKinds: ['MISSED_OPPORTUNITY'],
-        lessonKinds: ['CONVERT_ADVANTAGE'],
-        themes: ['mate'],
-        solution: fixtureSolution({
-            verificationStatus: 'VERIFIED',
-            solutionShape: 'UNIQUE',
-            gradingStrategy: 'PRECOMPUTED',
-            continuationShape: 'SINGLE_DECISION',
-            trainable: true,
-            bestMoveUci: 'f7f8',
-            acceptedMovesUci: ['f7f8'],
-            acceptanceFrontier: {
-                version: 1,
-                status: 'STABLE',
-                targetCutoffCp: 100,
-                effectiveCutoffCp: 0,
-                boundaryGapCp: null,
-                moves: [{ moveUci: 'f7f8', tier: 'BEST' }],
-                firstRejectedMoveUci: null,
-            },
-            moveAssessments: [
-                {
-                    positionKey: 'root',
-                    decisionIndex: 0,
-                    fen,
-                    moveUci: 'f7f8',
-                    source: 'PRECOMPUTED',
-                    grade: 'BEST',
-                    scoreAfter: { kind: 'mate', plies: 0, winner: 'WHITE' },
-                    evidence: { kind: 'TEST' },
-                },
-            ],
-            bestLineUci: ['f7f8'],
-            solutionTree: {
-                fen,
-                ply: 0,
-                role: 'USER',
-                acceptedMovesUci: ['f7f8'],
-                alternativesComplete: true,
-                branches: [
-                    {
-                        moveUci: 'f7f8',
-                        best: true,
-                        child: {
-                            fen: after,
-                            ply: 1,
-                            role: 'TERMINAL',
-                            acceptedMovesUci: [],
-                            alternativesComplete: true,
-                            stopReason: 'CHECKMATE',
-                            branches: [],
-                        },
-                    },
-                ],
-            },
-            scoreAtStart: { kind: 'mate', plies: 1, winner: 'WHITE' },
-            playedMoveScore: { kind: 'cp', cp: 0, pov: 'WHITE' },
-            targetOutcome: { preserve: 'win' },
-            gradingPolicy: normalizeGradingPolicy(undefined),
-            solutionHash: `solution-${sourceGameId}`,
-            evidence: { kind: 'TEST' },
-            generatorVersion: 'test',
-            configHash: 'test-config',
-        }),
+        sourceGameId, sourceProvider: 'lichess', sourcePlayedAt: '2026-08-05T00:00:00.000Z',
+        sourcePgnHash: manifest.source.sourcePgnHash, decisionPly: 0, fen: manifest.source.fen,
+        positionHistory: [], sideToMove: 'w', originalMoveUci: manifest.source.originalMoveUci,
+        originalDecision: { scoreBefore: { kind: 'cp', cp: 30, pov: 'WHITE' }, scoreAfter: { kind: 'cp', cp: -200, pov: 'WHITE' }, cpLoss: 230 },
+        confidence: 1, phase: 'OPENING', sourceKinds: ['MY_MISTAKE'], lessonKinds: ['AVOID_MISTAKE'], themes: [],
+        solution: { manifest, configHash: 'test-config' },
     };
 }
 
@@ -113,7 +46,7 @@ type ExtractorArgs = Parameters<
 >[0];
 
 function output(moments: TrainingMomentCandidate[] = []) {
-    return { moments, manifests: [], configSnapshot: {}, configHash: 'test' };
+    return { moments, manifests: [], configSnapshot: {}, configHash: 'test', engineWork: emptyExtractionWork() };
 }
 
 const identity = { provider: 'lichess', username: 'public-player' } as const;
@@ -139,7 +72,7 @@ describe('personal puzzle finder', () => {
         const extractor = vi.fn(async (args: ExtractorArgs) => {
             const id = args.games[0]!.id; calls.push(id);
             const found = candidate(id);
-            found.solution.trainable = id === 'oldest';
+            found.solution.manifest.decision.selection = id === 'oldest' ? 'INCLUDED' : 'OMITTED';
             return output(id === 'newest' ? [] : [found]);
         });
         const result = await findFirstVerifiedPersonalPuzzle({

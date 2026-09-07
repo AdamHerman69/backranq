@@ -6,7 +6,7 @@ import { WARMUP_PUZZLE } from '@/lib/onboarding/warmupPuzzle';
 describe('public puzzle grading fallback', () => {
     it('turns an ungradable legal move into a useful review, never unresolved UI', () => {
         const result = publicPuzzleReviewFallback({
-            review: WARMUP_PUZZLE.prompt.grading.review,
+            review: WARMUP_PUZZLE.prompt.review,
             submittedMoveUci: 'b4b5',
             comparison: {
                 submittedScoreAfter: null,

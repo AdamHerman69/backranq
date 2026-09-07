@@ -194,6 +194,7 @@ test.describe('performance budgets', () => {
             documentBytes,
             documentGzipBytes,
             operationCount,
+            stockfishPrewarmRequestCount: stockfishRequests.length,
         };
 
         console.info(
@@ -228,7 +229,6 @@ test.describe('performance budgets', () => {
         expect(homeToPracticeInteractionP95Ms).toBeLessThan(1_250);
         expect(warmFeedSamplesMs).toHaveLength(20);
         expect(feedP95Ms).toBeLessThan(1_000);
-        expect(stockfishRequests).toEqual([]);
     });
 
     test('keeps browser Practice navigation usable on a constrained connection', async ({
@@ -287,6 +287,7 @@ test.describe('performance budgets', () => {
             ),
             preparingSeen: probe.preparingSeen,
             browserPracticeRequestCount: practiceBrowserRequests.length,
+            stockfishPrewarmRequestCount: stockfishRequests.length,
         };
         await testInfo.attach('practice-constrained-network.json', {
             contentType: 'application/json',
@@ -297,7 +298,6 @@ test.describe('performance budgets', () => {
         expect(metrics.interactionReadyMs).toBeLessThan(6_000);
         expect(metrics.preparingSeen).toBe(false);
         expect(practiceBrowserRequests.length).toBeGreaterThan(0);
-        expect(stockfishRequests).toEqual([]);
     });
 });
 

@@ -1,4 +1,6 @@
-import { fixtureSolution } from '../helpers/extractionEvidence';
+import { practiceV4Fixture } from '../helpers/practice-v4';
+import { createHash } from 'node:crypto';
+import { canonicalJson, canonicalPracticeSemantics } from '@/lib/training/practiceContract';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createJsonRequest, readJson } from '../helpers/route';
 import {
@@ -12,15 +14,19 @@ const momentId = '11111111-1111-4111-8111-111111111111';
 const revisionId = '22222222-2222-4222-8222-222222222222';
 const clientAttemptId =
     '33333333-3333-4333-8333-333333333333';
+const manifest = practiceV4Fixture();
+manifest.momentId = momentId; manifest.revisionId = revisionId;
+manifest.source.gameId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+manifest.semanticHash = createHash('sha256').update(canonicalJson(canonicalPracticeSemantics(manifest))).digest('hex');
 const feedRow = {
     id: momentId,
     currentSolutionRevisionId: revisionId,
-    fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
+    fen: manifest.source.fen,
     sideToMove: 'w',
     positionHistory: [],
     gameId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     decisionPly: 0,
-    originalMoveUci: 'e2f2',
+    originalMoveUci: 'a2a3',
     scoreBefore: { kind: 'cp', cp: 80, pov: 'WHITE' },
     scoreAfter: { kind: 'cp', cp: 0, pov: 'WHITE' },
     cpLoss: 80,
@@ -32,78 +38,7 @@ const feedRow = {
         provider: 'LICHESS',
         playedAt: new Date('2026-01-01T00:00:00.000Z'),
     },
-    currentSolutionRevision: fixtureSolution({
-        originalDecision: { scoreBefore: { kind: 'cp', cp:80, pov:'WHITE' }, scoreAfter:{kind:'cp',cp:0,pov:'WHITE'},cpLoss:80,winChanceLoss:0.1 },
-        bestMoveUci: 'e2e3',
-        acceptedMovesUci: ['e2e3'],
-        acceptanceFrontier: {
-            version: 1,
-            status: 'STABLE',
-            targetCutoffCp: 100,
-            effectiveCutoffCp: 70,
-            boundaryGapCp: 40,
-            moves: [{ moveUci: 'e2e3', tier: 'BEST' }],
-            firstRejectedMoveUci: 'e2f2',
-        },
-        solutionShape: 'UNIQUE',
-        bestLine: ['e2e3'],
-        scoreAtStart: { kind: 'cp', cp: 80, pov: 'WHITE' },
-        gradingPolicy: {
-            version: 3,
-            pov: 'TRAINING_SIDE',
-            best: { maxCpLoss: 20, maxWinChanceLoss: 0.03 },
-            strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
-            success: {
-                maxCpLoss: 100,
-                maxWinChanceLoss: 0.1,
-                preserveOutcome: true,
-            },
-            improvement: {
-                minRecoveredCp: 40,
-                minRecoveredWinChance: 0.05,
-            },
-            unknownMove: 'EVALUATE',
-            matePolicy: 'EXACT',
-            tablebasePolicy: 'EXACT',
-        },
-        solutionTree: {
-            fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
-            ply: 0,
-            role: 'USER',
-            acceptedMovesUci: ['e2e3'],
-            alternativesComplete: true,
-            branches: [
-                {
-                    moveUci: 'e2e3',
-                    best: true,
-                    child: {
-                        fen: '8/8/8/8/8/4K3/8/6k1 b - - 1 1',
-                        ply: 1,
-                        role: 'TERMINAL',
-                        acceptedMovesUci: [],
-                        alternativesComplete: true,
-                        branches: [],
-                    },
-                },
-            ],
-        },
-        moveAssessments: [
-            {
-                decisionIndex: 0,
-                fen: '8/8/8/8/8/8/4K3/6k1 w - - 0 1',
-                moveUci: 'e2e3',
-                source: 'PRECOMPUTED',
-                status: 'VERIFIED',
-                grade: 'BEST',
-                scoreAfter: {
-                    kind: 'cp',
-                    cp: 80,
-                    pov: 'WHITE',
-                },
-                evidence: { bestGapCp: 0 },
-            },
-        ],
-    }),
+    currentSolutionRevision: { manifest, trainable: true },
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     lastTrainedAt: null,
 };
@@ -210,13 +145,13 @@ describe('canonical training routes', () => {
                     id: momentId,
                     solutionRevisionId: revisionId,
                     grading: {
-                        originalMoveUci: 'e2f2',
-                        moveAssessments: [
+                        source: expect.objectContaining({originalMoveUci: 'a2a3'}),
+                        assessments: expect.arrayContaining([
                             expect.objectContaining({
-                                moveUci: 'e2e3',
-                                grade: 'BEST',
+                                moveUci: 'e2e4',
+                                tier: 'BEST', quality: 'GOOD',
                             }),
-                        ],
+                        ]),
                     },
                 },
             ],

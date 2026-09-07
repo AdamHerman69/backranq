@@ -17,7 +17,11 @@ it.skipIf(process.env.RUN_FIRST_PUZZLE_SMOKE !== '1')(
         const analyze = engine.analyzeMultiPv.bind(engine);
         const rejected = new Set<string>();
         vi.spyOn(engine, 'analyzeMultiPv').mockImplementation(async request => {
-            if (request.purpose === 'MISTAKE_REFERENCE' && (rejected.has(request.fen) || rejected.size < 2)) {
+            // Confirmation may need either a missing reference or a reference
+            // refresh after scan evidence drifts. Exercise unavailable full-root
+            // confirmation independently of that planner reason.
+            if (request.purpose !== 'GAME_SCAN' && !request.rootMoves?.length
+                && (rejected.has(request.fen) || rejected.size < 2)) {
                 rejected.add(request.fen);
                 throw new Error('Injected unavailable confirmation to exercise candidate fallback');
             }
@@ -28,11 +32,11 @@ it.skipIf(process.env.RUN_FIRST_PUZZLE_SMOKE !== '1')(
                 games: [source], selectedGameIds: new Set([source.id]), engine,
                 strategy: 'FIRST_PUZZLE',
                 options: { returnAnalysis: false, nodesPerPosition: 12_000, confirmNodes: 180_000,
-                    maxConfirmationNodes: 500_000, verificationNodesPerPosition: 80_000 },
+                    maxConfirmationNodes: 500_000 },
             });
             expect(rejected.size).toBe(2);
             expect(result.moments).toHaveLength(1);
-            expect(result.moments[0]!.solution.decision.status).toBe('CONFIRMED_MISTAKE');
+            expect(result.moments[0]!.solution.manifest.decision.status).toBe('CONFIRMED_MISTAKE');
             expect(rejected.has(result.moments[0]!.fen)).toBe(false);
             const scans = scan.mock.calls.filter(([request]) => request.purpose === 'GAME_SCAN');
             expect(scans).toHaveLength(plyCount + 1);

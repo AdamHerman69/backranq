@@ -1,16 +1,9 @@
-import type {
-    AttemptGrade,
-    AcceptanceFrontier,
-    AnswerCoverage,
-    DecisionAssessment,
-    ContinuationReadiness,
-    GradingPolicyV3,
-    PovScore,
-    TrainingLessonKind,
-    TrainingSourceKind,
-} from '@/lib/training/contracts';
-import type { TrainingMoveMetrics } from '@/lib/training/grader';
+import type { PovScore, TrainingLessonKind, TrainingSourceKind } from './contracts';
+import type { Continuation, MoveAssessment, PracticeMomentRevision, Quality, Tier } from './practiceContract';
 import type { GameSource } from '@/lib/types/game';
+export type { RecordPlayedMoveRequest, RevealTrainingAttemptRequest, RecordTrainingAttemptRequest,
+    EnrichTrainingAttemptRequest, RecordTrainingAttemptResponse, EnrichTrainingAttemptResponse,
+    TrainingAttemptWriteRequest } from './attemptApi';
 
 export const PRACTICE_FEED_MAX_LIMIT = 50;
 export const TRAINING_API_MAX_ID_LENGTH = 128;
@@ -64,60 +57,15 @@ export type TrainingPromptDto = {
     solutionRevisionId: string;
     fen: string;
     sideToMove: 'w' | 'b';
-    grading: TrainingGradingManifestDto;
-};
-
-export type TrainingSolutionTreeNodeDto = {
-    fen: string;
-    contextId: string;
-    positionHistory: string[];
-    answerCoverage?: AnswerCoverage;
-    ply: number;
-    role: 'USER' | 'OPPONENT' | 'TERMINAL';
-    acceptedMovesUci: string[];
-    selectedMoveUci?: string;
-    alternativesComplete?: boolean;
-    stopReason?: string;
-    branches: Array<{
-        moveUci: string;
-        best: boolean;
-        child: TrainingSolutionTreeNodeDto;
-    }>;
-};
-
-export type TrainingMoveAssessmentDto = {
-    positionKey: string;
-    referenceId: string;
-    tierStable: boolean;
-    decisionIndex: number;
-    fen: string;
-    moveUci: string;
-    source: 'PRECOMPUTED' | 'DYNAMIC' | 'TABLEBASE';
-    grade: AttemptGrade;
-    scoreAfter: PovScore | null;
-    evidence: unknown;
-};
-
-/**
- * Everything needed to grade a position in the browser. This is deliberately
- * shipped with the prompt: Practice is self-directed, so hiding solutions from
- * DevTools is not a product or security boundary.
- */
-export type TrainingGradingManifestDto = {
-    version: 1;
-    decision: DecisionAssessment;
-    answerCoverage: AnswerCoverage;
-    continuation: ContinuationReadiness;
-    trainingSide: 'w' | 'b';
-    positionHistory: string[];
-    originalMoveUci: string;
-    originalScoreAfter: PovScore;
-    gradingPolicy: GradingPolicyV3;
-    acceptanceFrontier: AcceptanceFrontier;
-    solutionTree: TrainingSolutionTreeNodeDto;
-    moveAssessments: TrainingMoveAssessmentDto[];
+    grading: PracticeMomentRevision;
     review: TrainingReviewDto;
 };
+
+/** A presentation cursor into the canonical continuation graph. */
+export type TrainingSolutionTreeNodeDto = Continuation['nodes'][number] & { ply: number };
+
+export type TrainingMoveAssessmentDto = MoveAssessment;
+export type TrainingGradingManifestDto = PracticeMomentRevision;
 
 export type PracticeFeedResponse = {
     ownerId: string;
@@ -149,73 +97,6 @@ export type PracticeFeedInitialData = {
 export type TrainingMomentResponse = {
     ownerId: string;
     moment: TrainingPromptDto;
-};
-
-/** Personal browser evidence; never a canonical engine attestation. */
-export type TrainingClientMoveEvidence = {
-    version: 1;
-    contextId: string;
-    referenceId: string;
-    policyVersion: number;
-    metrics: TrainingMoveMetrics;
-    tierStable: boolean;
-    localReference: {
-        id: string;
-        bestMoveUci: string;
-        bestScore: PovScore;
-        canonicalBestMoveUci: string;
-        canonicalScore: PovScore;
-        canonicalReferenceOutdated: boolean;
-    };
-    scoreAfter: PovScore | null;
-    searches: Array<{ nodes: number; best: unknown; submitted: unknown; original: unknown; canonical: unknown }>;
-};
-
-export type EnrichTrainingAttemptRequest = {
-    kind: 'ENRICH';
-    clientAttemptId: string;
-    solutionRevisionId: string;
-    clientEvidenceId: string;
-    stepIndex: number;
-    evaluatedAt: string;
-    clientEvidence: TrainingClientMoveEvidence;
-    grade: AttemptGrade;
-};
-export type EnrichTrainingAttemptResponse = {
-    attemptId: string;
-    status: 'ENRICHED';
-    corrected: boolean;
-};
-export type TrainingAttemptWriteRequest = RecordTrainingAttemptRequest | EnrichTrainingAttemptRequest;
-
-export type RecordedTrainingAttemptStepDto = {
-    stepIndex: number;
-    actor: 'USER' | 'ENGINE';
-    fenBefore: string;
-    moveUci: string;
-    grade?: AttemptGrade;
-    source?: 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE';
-    comparison?: TrainingComparisonDto | null;
-    timeSpentMs?: number;
-    clientEvidence?: TrainingClientMoveEvidence;
-};
-
-export type RecordTrainingAttemptRequest = {
-    kind: 'RECORD';
-    /** Terminal client event time, preserved unchanged through offline replay. */
-    completedAt: string;
-    clientAttemptId: string;
-    solutionRevisionId: string;
-    status: 'GRADED' | 'REVEALED';
-    grade?: AttemptGrade;
-    gradingSource?: 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE';
-    comparison?: TrainingComparisonDto | null;
-    steps: RecordedTrainingAttemptStepDto[];
-};
-
-export type RecordTrainingAttemptResponse = {
-    attemptId: string;
-    status: 'RECORDED';
 };
 
 export type TrainingOpponentMoveDto = {
@@ -263,7 +144,9 @@ export type GradedPracticeResult = {
     refinement?: 'PENDING' | 'REFINED' | 'CORRECTED' | 'UNRESOLVED';
     attemptId: string;
     status: 'GRADED';
-    grade: AttemptGrade;
+    quality: Exclude<Quality, 'UNKNOWN'>;
+    tier: Tier | null;
+    originalRelation: MoveAssessment['originalRelation'];
     accepted: boolean;
     review: TrainingReviewDto;
 };

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
+import type { PuzzleEngineHandoff } from '@/lib/onboarding/puzzleEngineHandoff';
 import type { TrainingPromptDto } from '@/lib/training/api';
 import { usePuzzleSession } from '@/lib/hooks/usePuzzleSession';
 
@@ -43,7 +44,7 @@ function scheduleIdlePrewarm(callback: () => void): () => void {
  * Anonymous onboarding adapter. All chess behavior lives in the shared puzzle
  * runtime; this wrapper only selects the public unresolved/engine policy.
  */
-export function usePublicPuzzleSession(prompt: TrainingPromptDto | null) {
+export function usePublicPuzzleSession(prompt: TrainingPromptDto | null, handoff?: PuzzleEngineHandoff | null) {
     const session = usePuzzleSession({
         initialPrompt: prompt,
         unresolvedMode: 'REVEAL',
@@ -68,9 +69,9 @@ export function usePublicPuzzleSession(prompt: TrainingPromptDto | null) {
         cancelPrewarmRef.current = null;
         prewarmRequestedRef.current = false;
         stopEngine();
-        if (prompt) activatePrompt(prompt);
+        if (prompt) activatePrompt(prompt, handoff?.take(prompt.solutionRevisionId));
         else clearPrompt();
-    }, [activatePrompt, clearPrompt, prompt, stopEngine]);
+    }, [activatePrompt, clearPrompt, handoff, prompt, stopEngine]);
 
     const requestEnginePrewarm = useCallback(() => {
         if (!prompt) return;

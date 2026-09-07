@@ -43,6 +43,7 @@ import {
 import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 import { resolveSessionOwnerId } from '@/lib/auth/ownerRun';
+import { readPracticeReassessmentTargets } from '@/lib/training/reassessmentTargets';
 import {
     cleanupBrowserGameAnalysisRun,
     isBrowserGameAnalysisRunCurrent,
@@ -212,9 +213,20 @@ export function GameActions({
             const { extractTrainingMomentsFromGames } =
                 await extractionModulePromise;
             if (!isCurrent()) return;
+            const sourceResponse = await fetch(`/api/games/${dbGameId}`, {
+                cache: 'no-store', headers: { [EXPECTED_OWNER_HEADER]: run.ownerId }, signal: run.controller.signal,
+            });
+            if (!isCurrent()) return;
+            if (!sourceResponse.ok) throw new Error('Could not load the current game for analysis.');
+            const sourcePayload: unknown = await sourceResponse.json();
+            if (!isCurrent()) return;
+            const reassessDecisionPlies = readPracticeReassessmentTargets(sourcePayload, {
+                ownerId: run.ownerId, gameId: dbGameId, pgn: normalizedGame.pgn,
+            });
             const res = await extractTrainingMomentsFromGames({
                 games: [normalizedGame],
                 selectedGameIds: new Set([normalizedGame.id]),
+                reassessDecisionPliesByGameId: { [normalizedGame.id]: reassessDecisionPlies },
                 engine,
                 tablebase: new LichessTablebaseClient(),
                 canonicalSourceGameIdByGameId: {

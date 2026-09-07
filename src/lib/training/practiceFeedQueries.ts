@@ -172,8 +172,7 @@ async function queryDueSlice(args: {
               AND moment."archivedAt" IS NULL
               AND moment."createdAt" <= ${args.feedStartedAt}
               AND solution."trainable" = true
-              AND solution."verificationStatus" = 'VERIFIED'::"VerificationStatus"
-              AND solution."decision"->>'status' = 'CONFIRMED_MISTAKE'
+              AND solution."manifest"->'decision'->>'status' = 'CONFIRMED_MISTAKE'
               AND raw."solutionHash" = solution."solutionHash"
               AND raw."configHash" = solution."configHash"
               AND raw."lastReviewedAt" <= ${args.feedStartedAt}
@@ -285,8 +284,7 @@ async function queryNewSlice(args: {
             WHERE moment."id" = raw."rawId"
               AND moment."currentSolutionRevisionId" = raw."currentSolutionRevisionId"
               AND solution."trainable" = true
-              AND solution."verificationStatus" = 'VERIFIED'::"VerificationStatus"
-              AND solution."decision"->>'status' = 'CONFIRMED_MISTAKE'
+              AND solution."manifest"->'decision'->>'status' = 'CONFIRMED_MISTAKE'
               AND NOT EXISTS (
                   SELECT 1
                   FROM "PracticeReviewState" state

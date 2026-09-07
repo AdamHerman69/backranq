@@ -1,6 +1,6 @@
 import { Chess } from 'chess.js';
 
-import type { AttemptGrade } from '@/lib/training/contracts';
+import type { Tier } from '@/lib/training/practiceContract';
 import type {
     TrainingPromptDto,
     TrainingReviewDto,
@@ -28,7 +28,7 @@ export type PostMoveStorySegment = {
 
 export type PostMoveStory = {
     promptKey: string;
-    grade: AttemptGrade | null;
+    grade: Tier | null;
     segments: PostMoveStorySegment[];
 };
 
@@ -97,7 +97,7 @@ function segment(args: {
 export function buildPostMoveStory(args: {
     prompt: TrainingPromptDto;
     review: TrainingReviewDto;
-    grade: AttemptGrade | null;
+    grade: Tier | null;
 }): PostMoveStory {
     const candidates = [
         segment({

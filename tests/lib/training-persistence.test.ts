@@ -1,78 +1,29 @@
-import { fixtureSolution } from '../helpers/extractionEvidence';
+import { practicePositionFixture } from '../helpers/practice-position';
+import { originalDecisionForPracticeManifest } from '@/lib/training/practiceSourceBinding';
+import { practiceV4Fixture } from '../helpers/practice-v4';
 import { describe, expect, it, vi } from 'vitest';
 import {
     type SolutionRevisionInput,
     type TrainingMomentCandidate,
 } from '@/lib/training/contracts';
 import { solutionSemanticsHash } from '@/lib/training/contractHashes.server';
-import { normalizeGradingPolicy } from '@/lib/training/config';
 import {
     persistTrainingMomentsInTransaction,
     type PersistableTrainingMoment,
 } from '@/lib/training/persistence';
 import { replaceTrainingMomentsInTransaction } from '@/lib/api/trainingMomentPersistence';
-import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
 
-const rootFen = '8/8/8/8/8/8/4K3/6k1 w - - 0 1';
-const rootAssessmentKey = assessmentPositionKey(rootFen, []);
-
-function solution(bestMoveUci = 'e2e4'): SolutionRevisionInput {
-    const semantics = fixtureSolution({
-        verificationStatus: 'VERIFIED' as const,
-        solutionShape: 'UNIQUE' as const,
-        gradingStrategy: 'PRECOMPUTED' as const,
-        continuationShape: 'SINGLE_DECISION' as const,
-        trainable: true,
-        bestMoveUci,
-        acceptedMovesUci: [bestMoveUci],
-        acceptanceFrontier: {
-            version: 1 as const,
-            status: 'STABLE' as const,
-            targetCutoffCp: 100,
-            effectiveCutoffCp: 70,
-            boundaryGapCp: 40,
-            moves: [
-                {
-                    moveUci: bestMoveUci,
-                    tier: 'BEST' as const,
-                },
-            ],
-            firstRejectedMoveUci: null,
-        },
-        moveAssessments: [
-            {
-                positionKey: rootAssessmentKey,
-                decisionIndex: 0,
-                fen: rootFen,
-                moveUci: bestMoveUci,
-                source: 'PRECOMPUTED' as const,
-                grade: 'BEST' as const,
-                scoreAfter: {
-                    kind: 'cp' as const,
-                    cp: 82,
-                    pov: 'WHITE' as const,
-                },
-                evidence: { depth: 22 },
-            },
-        ],
-        bestLineUci: [bestMoveUci, 'e7e5'],
-        solutionTree: { move: bestMoveUci },
-        scoreAtStart: { kind: 'cp' as const, cp: 80, pov: 'WHITE' as const },
-        playedMoveScore: {
-            kind: 'cp' as const,
-            cp: -40,
-            pov: 'WHITE' as const,
-        },
-        targetOutcome: { preserve: 'advantage' },
-        gradingPolicy: normalizeGradingPolicy(undefined),
-    });
-    return {
-        ...semantics,
-        solutionHash: solutionSemanticsHash(semantics),
-        evidence: { depth: 22 },
-        generatorVersion: 'test-v2',
-        configHash: 'config-1',
-    };
+const rootFen = practiceV4Fixture().source.fen;
+const sourceHash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+function solution(explanationMove = 'e2e4'): SolutionRevisionInput {
+    const manifest = practiceV4Fixture();
+    manifest.executionProfileId = 'config-1';
+    manifest.executionProfileSnapshot.id = 'config-1';
+    manifest.source = { ...manifest.source, gameId: 'game-1', sourcePgnHash: sourceHash, decisionPly: 12 };
+    manifest.continuation.explanationLines = [{ startContextId: manifest.source.contextId, movesUci: [explanationMove], stopReason: 'FIXTURE' }];
+    const result = { manifest, configHash: 'config-1' };
+    manifest.semanticHash = solutionSemanticsHash(result);
+    return result;
 }
 
 function moment(
@@ -83,13 +34,8 @@ function moment(
         fen: rootFen,
         positionHistory: [],
         sideToMove: 'w',
-        originalMoveUci: 'e2f2',
-        originalDecision: {
-            scoreBefore: { kind: 'cp', cp: 80, pov: 'WHITE' },
-            scoreAfter: { kind: 'cp', cp: -40, pov: 'WHITE' },
-            cpLoss: 120,
-            winChanceLoss: 0.31,
-        },
+        originalMoveUci: 'a2a3',
+        originalDecision: originalDecisionForPracticeManifest(solution().manifest),
         confidence: 0.94,
         phase: 'ENDGAME',
         sourceKinds: ['MY_MISTAKE'],
@@ -101,14 +47,8 @@ function moment(
 }
 
 function currentRevisionEvidence() {
-    const source = moment();
-    return {
-        configHash:'config-1',generatorVersion:source.solution.generatorVersion,verificationStatus:'VERIFIED',trainable:true,
-        evidence:{selected:source.solution.evidence},
-        originalDecision:{...source.originalDecision,fen:source.fen,positionHistory:source.positionHistory,
-            originalMoveUci:source.originalMoveUci,sideToMove:source.sideToMove,sourceKinds:source.sourceKinds,
-            lessonKinds:source.lessonKinds,themes:source.themes,confidence:source.confidence,phase:source.phase},
-    };
+    const input = solution();
+    return { configHash: input.configHash, generatorVersion: input.manifest.generatorVersion, trainable: true, manifest: input.manifest };
 }
 
 function existingMoment(
@@ -122,7 +62,7 @@ function existingMoment(
         fen: moment().fen,
         positionHistory: [],
         sideToMove: 'w',
-        originalMoveUci: 'e2f2',
+        originalMoveUci: 'a2a3',
         scoreBefore: moment().originalDecision.scoreBefore,
         scoreAfter: moment().originalDecision.scoreAfter,
         cpLoss: 120,
@@ -130,6 +70,7 @@ function existingMoment(
         confidence: 0.94,
         phase: 'ENDGAME',
         currentSolutionRevisionId,
+        archivedAt: null,
         sourceKinds: ['MY_MISTAKE'],
         lessonKinds: ['AVOID_MISTAKE'],
         themes: ['quietmove'],
@@ -139,7 +80,7 @@ function existingMoment(
 function transaction() {
     const tx = {
         analysisRun: {
-            findFirst: vi.fn().mockResolvedValue({ id: 'run-1' }),
+            findFirst: vi.fn().mockResolvedValue({ id: 'run-1', configSnapshot: { extractor: { confirmNodes: 100_000, gradingPolicy: solution().manifest.policySnapshot } } }),
         },
         trainingMoment: {
             findUnique: vi.fn().mockResolvedValue(null),
@@ -157,9 +98,6 @@ function transaction() {
                     solutionHash: data.solutionHash,
                 })
             ),
-        },
-        solutionMoveAssessment: {
-            createMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
         trainingMomentObservation: {
             findUnique: vi.fn().mockResolvedValue(null),
@@ -232,26 +170,16 @@ describe('canonical training persistence', () => {
                     themes: ['defense', 'quietmove'],
                     scoreBefore: {
                         kind: 'cp',
-                        cp: 80,
+                        cp: 30,
                         pov: 'WHITE',
                     },
-                    cpLoss: 120,
+                    cpLoss: 230,
                     confidence: 0.94,
                 }),
             })
         );
         expect(tx.solutionRevision.create).toHaveBeenCalledTimes(1);
-        expect(tx.solutionMoveAssessment.createMany).toHaveBeenCalledWith({
-            data: [
-                expect.objectContaining({
-                    solutionRevisionId: 'revision-new',
-                    positionKey: rootAssessmentKey,
-                    moveUci: 'e2e4',
-                    status: 'VERIFIED',
-                    grade: 'BEST',
-                }),
-            ],
-        });
+        expect(tx.solutionRevision.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ manifest: expect.objectContaining({ contractVersion: 4, momentId: 'moment-1', revisionId: expect.any(String) }), trainable: true }) }));
     });
 
     it('rejects conflicting solution hashes for one canonical decision', async () => {
@@ -271,73 +199,24 @@ describe('canonical training persistence', () => {
         expect(tx.solutionRevision.create).not.toHaveBeenCalled();
     });
 
-    it('rejects duplicate precomputed assessments before writing a moment', async () => {
+    it('rejects duplicate assessment identities before any moment write', async () => {
         const tx = transaction();
         const duplicated = solution();
-        duplicated.moveAssessments = [
-            ...duplicated.moveAssessments,
-            {
-                ...duplicated.moveAssessments[0]!,
-                grade: 'GOOD',
-            },
-        ];
-        duplicated.solutionHash =
-            solutionSemanticsHash(duplicated);
-
-        await expect(
-            persist(tx, [moment({ solution: duplicated })])
-        ).rejects.toThrow('Duplicate precomputed move assessment');
-
+        duplicated.manifest.assessments.push(structuredClone(duplicated.manifest.assessments[0]));
+        duplicated.manifest.semanticHash = solutionSemanticsHash(duplicated);
+        await expect(persist(tx, [moment({ solution: duplicated })])).rejects.toThrow(/Duplicate assessment ID/);
         expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
-        expect(tx.solutionRevision.create).not.toHaveBeenCalled();
-        expect(
-            tx.solutionMoveAssessment.createMany
-        ).not.toHaveBeenCalled();
     });
 
-    it('keeps repeated boards at different decisions and halfmove clocks distinct', async () => {
+    it('keeps repeated boards at different source decisions distinct', async () => {
         const tx = transaction();
-        const base = solution();
-        const repeatedBoardSolution: SolutionRevisionInput = {
-            ...base,
-            moveAssessments: [
-                base.moveAssessments[0]!,
-                {
-                    ...base.moveAssessments[0]!,
-                    decisionIndex: 2,
-                    fen: '8/8/8/8/8/8/4K3/6k1 w - - 4 3',
-                    positionKey: assessmentPositionKey(
-                        '8/8/8/8/8/8/4K3/6k1 w - - 4 3',
-                        [rootFen]
-                    ),
-                },
-            ],
-            solutionHash: '',
-        };
-        repeatedBoardSolution.solutionHash =
-            solutionSemanticsHash(repeatedBoardSolution);
-
-        await persist(tx, [
-            moment({ solution: repeatedBoardSolution }),
-        ]);
-
-        expect(
-            tx.solutionMoveAssessment.createMany
-        ).toHaveBeenCalledWith({
-            data: [
-                expect.objectContaining({
-                    decisionIndex: 0,
-                    positionKey: rootAssessmentKey,
-                }),
-                expect.objectContaining({
-                    decisionIndex: 2,
-                    positionKey: assessmentPositionKey(
-                        '8/8/8/8/8/8/4K3/6k1 w - - 4 3',
-                        [rootFen]
-                    ),
-                }),
-            ],
-        });
+        const later = solution();
+        later.manifest.source.decisionPly = 14;
+        later.manifest.semanticHash = solutionSemanticsHash(later);
+        await persist(tx, [moment(), moment({ decisionPly: 14, solution: later })]);
+        expect(tx.trainingMoment.upsert).toHaveBeenCalledTimes(2);
+        const keys = tx.trainingMoment.upsert.mock.calls.map(([input]) => input.where.momentKey);
+        expect(new Set(keys).size).toBe(2);
     });
 
     it('reuses the current immutable revision when semantics are unchanged', async () => {
@@ -350,19 +229,18 @@ describe('canonical training persistence', () => {
             ...currentRevisionEvidence(),
             id: 'revision-current',
             momentId: 'moment-1',
-            solutionHash: solution().solutionHash,
+            solutionHash: solution().manifest.semanticHash,
         });
 
         const result = await persist(tx, [moment()], 'run-2');
 
         expect(tx.solutionRevision.create).not.toHaveBeenCalled();
-        expect(tx.solutionMoveAssessment.createMany).not.toHaveBeenCalled();
         expect(tx.trainingMomentObservation.create).toHaveBeenCalledWith({
             data: expect.objectContaining({
                 momentId: 'moment-1',
                 analysisRunId: 'run-2',
                 solutionRevisionId: 'revision-current',
-                observedSolutionHash: solution().solutionHash,
+                observedSolutionHash: solution().manifest.semanticHash,
             }),
         });
         expect(Object.values(result.solutionRevisionIdsByKey)).toEqual([
@@ -384,7 +262,7 @@ describe('canonical training persistence', () => {
             ...currentRevisionEvidence(),
             id: 'revision-current',
             momentId: 'moment-1',
-            solutionHash: solution('d2d4').solutionHash,
+            solutionHash: solution('d2d4').manifest.semanticHash,
         });
         tx.solutionRevision.findFirst.mockResolvedValue({ revision: 4 });
 
@@ -396,7 +274,7 @@ describe('canonical training persistence', () => {
                     momentId: 'moment-1',
                     analysisRunId: 'run-2',
                     revision: 5,
-                    solutionHash: solution().solutionHash,
+                    solutionHash: solution().manifest.semanticHash,
                 }),
             })
         );
@@ -406,75 +284,17 @@ describe('canonical training persistence', () => {
         });
     });
 
-    it('appends a revision when grading-relevant assessment WDL evidence changes', async () => {
+    it('appends immutable provenance when fresh physical evidence preserves solution semantics', async () => {
         const tx = transaction();
         const previous = solution();
-        const changed: SolutionRevisionInput = {
-            ...previous,
-            moveAssessments: previous.moveAssessments.map(
-                (assessment, index) =>
-                    index === 0
-                        ? {
-                              ...assessment,
-                              evidence: {
-                                  bestGapWinChance: 0.03,
-                                  preservesOutcome: true,
-                                  evaluation: {
-                                      source: 'ENGINE',
-                                      score: {
-                                          type: 'cp',
-                                          value: 82,
-                                      },
-                                      wdl: {
-                                          win: 500,
-                                          draw: 400,
-                                          loss: 100,
-                                      },
-                                  },
-                              },
-                          }
-                        : assessment
-            ),
-            solutionHash: '',
-        };
-        changed.solutionHash = solutionSemanticsHash(changed);
-        expect(changed.solutionHash).not.toBe(
-            previous.solutionHash
-        );
-        tx.trainingMoment.findUnique.mockImplementation(async ({ where }) => ({
-            ...existingMoment(),
-            momentKey: where.momentKey,
-        }));
-        tx.solutionRevision.findUnique.mockResolvedValue({
-            ...currentRevisionEvidence(),
-            id: 'revision-current',
-            momentId: 'moment-1',
-            solutionHash: previous.solutionHash,
-        });
-        tx.solutionRevision.findFirst.mockResolvedValue({
-            revision: 4,
-        });
-
-        await persist(
-            tx,
-            [moment({ solution: changed })],
-            'run-evidence'
-        );
-
-        expect(tx.solutionRevision.create).toHaveBeenCalledWith(
-            expect.objectContaining({
-                data: expect.objectContaining({
-                    revision: 5,
-                    solutionHash: changed.solutionHash,
-                }),
-            })
-        );
-        expect(tx.trainingMoment.update).toHaveBeenCalledWith({
-            where: { id: 'moment-1' },
-            data: {
-                currentSolutionRevisionId: 'revision-new',
-            },
-        });
+        const changed = solution();
+        Object.values(changed.manifest.evidence.searches)[0].sessionId = 'fresh-physical-session';
+        expect(solutionSemanticsHash(changed)).toBe(previous.manifest.semanticHash);
+        tx.trainingMoment.findUnique.mockImplementation(async ({ where }) => ({ ...existingMoment(), momentKey: where.momentKey }));
+        tx.solutionRevision.findUnique.mockResolvedValue({ ...currentRevisionEvidence(), id: 'revision-current', momentId: 'moment-1', solutionHash: previous.manifest.semanticHash });
+        tx.solutionRevision.findFirst.mockResolvedValue({ revision: 4 });
+        await persist(tx, [moment({ solution: changed })], 'run-evidence');
+        expect(tx.solutionRevision.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ revision: 5, solutionHash: changed.manifest.semanticHash }) }));
     });
 
     it('rejects conflicting results from the same analysis run', async () => {
@@ -487,11 +307,11 @@ describe('canonical training persistence', () => {
             ...currentRevisionEvidence(),
             id: 'revision-current',
             momentId: 'moment-1',
-            solutionHash: solution('d2d4').solutionHash,
+            solutionHash: solution('d2d4').manifest.semanticHash,
         });
         tx.trainingMomentObservation.findUnique.mockResolvedValue({
             solutionRevisionId: 'revision-run',
-            observedSolutionHash: solution('g1f3').solutionHash,
+            observedSolutionHash: solution('g1f3').manifest.semanticHash,
         });
 
         await expect(persist(tx, [moment()])).rejects.toThrow(
@@ -510,7 +330,7 @@ describe('canonical training persistence', () => {
             ...currentRevisionEvidence(),
             id: 'revision-current',
             momentId: 'other-moment',
-            solutionHash: solution().solutionHash,
+            solutionHash: solution().manifest.semanticHash,
         });
 
         await expect(persist(tx, [moment()])).rejects.toThrow(
@@ -519,26 +339,32 @@ describe('canonical training persistence', () => {
         expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
     });
 
-    it('archives only explicitly disproved decisions without deleting attempts or revisions', async () => {
+    it('ignores unproved negative diagnostic outcomes without changing stored revisions or moments', async () => {
         const tx = transaction();
-        tx.trainingMoment.updateMany.mockResolvedValue({ count: 3 });
+        const result = await persist(tx, [], 'run-1', { decisionOutcomes: [{ decisionPly: 12, status: 'NOT_A_MISTAKE', reason: 'ORIGINAL_MOVE_QUALITY_CONFIRMED' }] });
+        expect(result).toMatchObject({ upserted: 0, staleArchived: 0 });
+        expect(tx.trainingMoment.updateMany).not.toHaveBeenCalled();
+        expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
+        expect(tx.solutionRevision.create).not.toHaveBeenCalled();
+    });
 
-        const result = await persist(tx, [], 'run-1', {decisionOutcomes: [{decisionPly:12,status:'NOT_A_MISTAKE',reason:'ORIGINAL_MOVE_QUALITY_CONFIRMED'}]});
+    it('archives an existing moment only with a validated canonical negative revision', async () => {
+        const tx = transaction();
+        tx.trainingMoment.findUnique.mockImplementation(async ({ where }) => ({ ...existingMoment(), momentKey: where.momentKey }));
+        tx.solutionRevision.findUnique.mockResolvedValue({ ...currentRevisionEvidence(), id: 'revision-current', momentId: 'moment-1', solutionHash: solution().manifest.semanticHash });
+        const manifest = practicePositionFixture({ fen: rootFen, originalMoveUci: 'a2a3', bestMoveUci: 'e2e4', gameId: 'game-1', sourcePgnHash: sourceHash, decisionPly: 12, configHash: 'config-1', scores: { a2a3: 30 } });
+        expect(manifest.decision.status).toBe('NOT_A_MISTAKE');
+        const result = await persist(tx, [moment({ solution: { manifest, configHash: 'config-1' }, originalDecision: originalDecisionForPracticeManifest(manifest) })]);
+        expect(result).toMatchObject({ staleArchived: 1, upserted: 0 });
+        expect(tx.trainingMoment.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ status: 'ARCHIVED', archivedAt: expect.any(Date) }) }));
+        expect(tx.solutionRevision.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ trainable: false, manifest: expect.objectContaining({ decision: expect.objectContaining({ status: 'NOT_A_MISTAKE' }) }) }) }));
+        expect(tx.trainingMoment.updateMany).not.toHaveBeenCalled();
+    });
 
-        expect(result).toMatchObject({ upserted: 0, staleArchived: 3 });
-        expect(tx.trainingMoment.updateMany).toHaveBeenCalledWith({
-            where: {
-                userId: 'user-1',
-                gameId: 'game-1',
-                sourcePgnHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-                decisionPly: {in:[12]},
-                archivedAt: null,
-            },
-            data: {
-                archivedAt: expect.any(Date),
-                status: 'ARCHIVED',
-            },
-        });
+    it('rejects a diagnostic outcome contradicting a canonical decision before any writes', async () => {
+        const tx = transaction();
+        await expect(persist(tx, [moment()], 'run-1', { decisionOutcomes: [{ decisionPly: 12, status: 'NOT_A_MISTAKE', reason: 'CONTRADICTORY_DIAGNOSTIC' }] })).rejects.toThrow(/contradicts/);
+        expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
         expect(tx.solutionRevision.create).not.toHaveBeenCalled();
     });
 
@@ -548,14 +374,11 @@ describe('canonical training persistence', () => {
         expect(tx.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 
-    it('retains unresolved history and only suspends a prior incompatible policy', async () => {
+    it('does not suspend prior proof based only on unresolved diagnostic outcomes', async () => {
         const tx = transaction();
-        await persist(tx, [], 'run-2', {decisionOutcomes:[{decisionPly:12,status:'UNRESOLVED',reason:'MISTAKE_COMPARISON_UNRESOLVED'}]});
-        expect(tx.trainingMoment.updateMany).toHaveBeenCalledOnce();
-        expect(tx.trainingMoment.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({sourcePgnHash:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', decisionPly:{in:[12]},currentSolutionRevision:{is:{configHash:{not:'config-1'}}}}),
-            data:{status:'UNSTABLE'},
-        }));
+        await persist(tx, [], 'run-2', { decisionOutcomes: [{ decisionPly: 12, status: 'UNRESOLVED', reason: 'MISTAKE_COMPARISON_UNRESOLVED' }] });
+        expect(tx.trainingMoment.updateMany).not.toHaveBeenCalled();
+        expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
     });
 
     it('requires a complete extraction manifest before any read or write', async () => {
@@ -593,7 +416,7 @@ describe('canonical training persistence', () => {
                 configHash: 'config-1',
                 status: 'RUNNING',
             },
-            select: { id: true },
+            select: { id: true, configSnapshot: true },
         });
         expect(tx.trainingMoment.findUnique).not.toHaveBeenCalled();
         expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
@@ -639,5 +462,29 @@ describe('canonical training persistence', () => {
             })
         ).rejects.toThrow(/completed game/);
         expect(tx.trainingMoment.findUnique).not.toHaveBeenCalled();
+    });
+});
+
+
+describe('authoritative revision binding', () => {
+    it('rejects a valid manifest from a different source before any write', async () => {
+        const tx = transaction();
+        const mismatched = solution();
+        mismatched.manifest.source.gameId = 'other-game';
+        mismatched.manifest.semanticHash = solutionSemanticsHash(mismatched);
+        await expect(persist(tx, [moment({ solution: mismatched })])).rejects.toThrow(/source/i);
+        expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
+    });
+    it('rejects altered original-decision display scores', async () => {
+        const tx = transaction();
+        const value = moment(); value.originalDecision.cpLoss = 999;
+        await expect(persist(tx, [value])).rejects.toThrow(/source|original.decision|projection/i);
+        expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
+    });
+    it('rejects a self-consistent profile whose budget is not the authoritative run budget', async () => {
+        const tx = transaction();
+        tx.analysisRun.findFirst.mockResolvedValue({ id: 'run-1', configSnapshot: { extractor: { confirmNodes: 200_000, gradingPolicy: solution().manifest.policySnapshot } } });
+        await expect(persist(tx, [moment()])).rejects.toThrow(/profile/i);
+        expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
     });
 });

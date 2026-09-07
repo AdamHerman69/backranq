@@ -263,12 +263,13 @@ integration('analysis job lifecycle on PostgreSQL', () => {
                 fence: currentFence,
                 expectedVersion: version,
                 checkpoint: {
-                    version: 1,
+                    version: 2,
                     gameId: fixture.game.id,
                     sourceGameId: fixture.game.id,
                     sourcePgnHash: fixture.game.sourcePgnHash,
                     configHash: fixture.run.configHash,
                     nextPly: version + 1,
+                    reassessDecisionPlies: [],
                     expectedPlies: 2,
                     moments: [],
                     gameAnalysis: [],
@@ -277,6 +278,7 @@ integration('analysis job lifecycle on PostgreSQL', () => {
                     extractionErrors: [],
                     decisionReceipts: [],
                     scanEvidence: [],
+                analysisPool: { version: 2, searches: [], retainedSnapshotIds: [], cost: { queriesByReason: {}, searches: [] } },
                 },
             });
             expect(yielded).toMatchObject({ status: 'QUEUED', attempts: 4 });

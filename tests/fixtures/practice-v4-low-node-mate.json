@@ -1,0 +1,352 @@
+{
+  "provenance": "Actual Chromium Stockfish18 WASM trace: solved mate searches finish naturally before requested25000nodes.",
+  "identity": {
+    "name": "Stockfish 18 Lite WASM",
+    "version": "18.0.8",
+    "flavor": "lite-single-nnue-wasm",
+    "source": "stockfish@18.0.8/browser/stockfish-18-lite-single",
+    "options": {
+      "Threads": 1,
+      "Hash": 64,
+      "UCI_ShowWDL": true
+    },
+    "author": "the Stockfish developers (see AUTHORS file)",
+    "evalFile": "nn-9067e33176e8.nnue"
+  },
+  "searches": [
+    {
+      "request": {
+        "type": "start",
+        "id": "1788770278080-17aee64cb9ac28",
+        "fen": "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1",
+        "positionCommand": "position fen 7k/5Q2/6K1/8/8/8/8/8 w - - 0 1",
+        "legalRootMoves": [
+          "f7a2",
+          "f7a7",
+          "f7b3",
+          "f7b7",
+          "f7c4",
+          "f7c7",
+          "f7d5",
+          "f7d7",
+          "f7e6",
+          "f7e7",
+          "f7e8",
+          "f7f1",
+          "f7f2",
+          "f7f3",
+          "f7f4",
+          "f7f5",
+          "f7f6",
+          "f7f8",
+          "f7g7",
+          "f7g8",
+          "f7h7",
+          "g6f5",
+          "g6f6",
+          "g6g5",
+          "g6h5",
+          "g6h6"
+        ],
+        "multiPv": 1,
+        "maxNodes": 25000,
+        "emitIntervalMs": 120
+      },
+      "snapshots": [
+        {
+          "type": "snapshot",
+          "id": "1788770278080-17aee64cb9ac28",
+          "sessionId": "1788770277274-e2f0a9f6d9f22",
+          "snapshot": {
+            "snapshotIndex": 242,
+            "depth": 243,
+            "lines": [
+              {
+                "multipv": 1,
+                "score": {
+                  "type": "mate",
+                  "value": 1
+                },
+                "wdl": {
+                  "win": 1000,
+                  "draw": 0,
+                  "loss": 0
+                },
+                "pvUci": [
+                  "f7g7"
+                ],
+                "depth": 243,
+                "selDepth": 2,
+                "nodes": 6321,
+                "nps": 351166,
+                "timeMs": 18
+              }
+            ],
+            "bundleComplete": true
+          }
+        },
+        {
+          "type": "snapshot",
+          "id": "1788770278080-17aee64cb9ac28",
+          "sessionId": "1788770277274-e2f0a9f6d9f22",
+          "snapshot": {
+            "snapshotIndex": 243,
+            "depth": 244,
+            "lines": [
+              {
+                "multipv": 1,
+                "score": {
+                  "type": "mate",
+                  "value": 1
+                },
+                "wdl": {
+                  "win": 1000,
+                  "draw": 0,
+                  "loss": 0
+                },
+                "pvUci": [
+                  "f7g7"
+                ],
+                "depth": 244,
+                "selDepth": 2,
+                "nodes": 6347,
+                "nps": 352611,
+                "timeMs": 18
+              }
+            ],
+            "bundleComplete": true
+          }
+        },
+        {
+          "type": "snapshot",
+          "id": "1788770278080-17aee64cb9ac28",
+          "sessionId": "1788770277274-e2f0a9f6d9f22",
+          "snapshot": {
+            "snapshotIndex": 244,
+            "depth": 245,
+            "lines": [
+              {
+                "multipv": 1,
+                "score": {
+                  "type": "mate",
+                  "value": 1
+                },
+                "wdl": {
+                  "win": 1000,
+                  "draw": 0,
+                  "loss": 0
+                },
+                "pvUci": [
+                  "f7g7"
+                ],
+                "depth": 245,
+                "selDepth": 2,
+                "nodes": 6373,
+                "nps": 354055,
+                "timeMs": 18
+              }
+            ],
+            "bundleComplete": true
+          }
+        }
+      ],
+      "done": {
+        "type": "done",
+        "id": "1788770278080-17aee64cb9ac28",
+        "sessionId": "1788770277274-e2f0a9f6d9f22",
+        "bestMoveUci": "f7g7",
+        "final": {
+          "fen": "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1",
+          "depth": 245,
+          "selDepth": 2,
+          "nodes": 6373,
+          "nps": 354055,
+          "timeMs": 18,
+          "lines": [
+            {
+              "multipv": 1,
+              "score": {
+                "type": "mate",
+                "value": 1
+              },
+              "wdl": {
+                "win": 1000,
+                "draw": 0,
+                "loss": 0
+              },
+              "pvUci": [
+                "f7g7"
+              ],
+              "depth": 245,
+              "selDepth": 2,
+              "nodes": 6373,
+              "nps": 354055,
+              "timeMs": 18
+            }
+          ],
+          "boundLines": []
+        }
+      }
+    },
+    {
+      "request": {
+        "type": "start",
+        "id": "1788770278216-7c4f561ef9e5a",
+        "fen": "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1",
+        "positionCommand": "position fen 7k/5Q2/6K1/8/8/8/8/8 w - - 0 1",
+        "legalRootMoves": [
+          "f7e7"
+        ],
+        "multiPv": 1,
+        "maxNodes": 25000,
+        "emitIntervalMs": 120,
+        "rootMoves": [
+          "f7e7"
+        ]
+      },
+      "snapshots": [
+        {
+          "type": "snapshot",
+          "id": "1788770278216-7c4f561ef9e5a",
+          "sessionId": "1788770277274-e2f0a9f6d9f22",
+          "snapshot": {
+            "snapshotIndex": 242,
+            "depth": 243,
+            "lines": [
+              {
+                "multipv": 1,
+                "score": {
+                  "type": "mate",
+                  "value": 2
+                },
+                "wdl": {
+                  "win": 1000,
+                  "draw": 0,
+                  "loss": 0
+                },
+                "pvUci": [
+                  "f7e7",
+                  "h8g8",
+                  "e7g7"
+                ],
+                "depth": 243,
+                "selDepth": 4,
+                "nodes": 730,
+                "nps": 104285,
+                "timeMs": 7
+              }
+            ],
+            "bundleComplete": true
+          }
+        },
+        {
+          "type": "snapshot",
+          "id": "1788770278216-7c4f561ef9e5a",
+          "sessionId": "1788770277274-e2f0a9f6d9f22",
+          "snapshot": {
+            "snapshotIndex": 243,
+            "depth": 244,
+            "lines": [
+              {
+                "multipv": 1,
+                "score": {
+                  "type": "mate",
+                  "value": 2
+                },
+                "wdl": {
+                  "win": 1000,
+                  "draw": 0,
+                  "loss": 0
+                },
+                "pvUci": [
+                  "f7e7",
+                  "h8g8",
+                  "e7g7"
+                ],
+                "depth": 244,
+                "selDepth": 4,
+                "nodes": 733,
+                "nps": 104714,
+                "timeMs": 7
+              }
+            ],
+            "bundleComplete": true
+          }
+        },
+        {
+          "type": "snapshot",
+          "id": "1788770278216-7c4f561ef9e5a",
+          "sessionId": "1788770277274-e2f0a9f6d9f22",
+          "snapshot": {
+            "snapshotIndex": 244,
+            "depth": 245,
+            "lines": [
+              {
+                "multipv": 1,
+                "score": {
+                  "type": "mate",
+                  "value": 2
+                },
+                "wdl": {
+                  "win": 1000,
+                  "draw": 0,
+                  "loss": 0
+                },
+                "pvUci": [
+                  "f7e7",
+                  "h8g8",
+                  "e7g7"
+                ],
+                "depth": 245,
+                "selDepth": 4,
+                "nodes": 736,
+                "nps": 105142,
+                "timeMs": 7
+              }
+            ],
+            "bundleComplete": true
+          }
+        }
+      ],
+      "done": {
+        "type": "done",
+        "id": "1788770278216-7c4f561ef9e5a",
+        "sessionId": "1788770277274-e2f0a9f6d9f22",
+        "bestMoveUci": "f7e7",
+        "final": {
+          "fen": "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1",
+          "depth": 245,
+          "selDepth": 4,
+          "nodes": 736,
+          "nps": 105142,
+          "timeMs": 7,
+          "lines": [
+            {
+              "multipv": 1,
+              "score": {
+                "type": "mate",
+                "value": 2
+              },
+              "wdl": {
+                "win": 1000,
+                "draw": 0,
+                "loss": 0
+              },
+              "pvUci": [
+                "f7e7",
+                "h8g8",
+                "e7g7"
+              ],
+              "depth": 245,
+              "selDepth": 4,
+              "nodes": 736,
+              "nps": 105142,
+              "timeMs": 7
+            }
+          ],
+          "boundLines": []
+        }
+      }
+    }
+  ]
+}

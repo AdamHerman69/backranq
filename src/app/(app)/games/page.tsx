@@ -106,11 +106,7 @@ export default async function GamesPage({
                 currentSolutionRevision: {
                     is: {
                         trainable: true,
-                        verificationStatus: 'VERIFIED',
-                        acceptanceFrontier: {
-                            path: ['status'],
-                            equals: 'STABLE',
-                        },
+                        manifest: { path: ['decision', 'status'], equals: 'CONFIRMED_MISTAKE' },
                     },
                 },
             },
@@ -182,11 +178,7 @@ export default async function GamesPage({
                 currentSolutionRevision: {
                     is: {
                         trainable: true,
-                        verificationStatus: 'VERIFIED',
-                        acceptanceFrontier: {
-                            path: ['status'],
-                            equals: 'STABLE',
-                        },
+                        manifest: { path: ['decision', 'status'], equals: 'CONFIRMED_MISTAKE' },
                     },
                 },
                 gameId: { in: gameIds },

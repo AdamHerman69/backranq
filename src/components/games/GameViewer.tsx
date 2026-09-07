@@ -206,8 +206,8 @@ function extractionReasonLabel(reason: ExtractionDecisionReason): string {
             return 'Not saved: engine evidence was incomplete';
         case 'SOURCE_INVALID':
             return 'The source position could not be reconstructed.';
-        case 'NO_SUPPORTED_PRACTICAL_LESSON':
-            return 'No clear practical lesson was confirmed in this position.';
+        case 'NO_MEANINGFUL_SELECTION_SIGNAL':
+            return 'The mistake is confirmed, but its impact is too small for the practice feed.';
         case 'MISTAKE_COMPARISON_UNRESOLVED':
             return 'Not saved yet: deeper verification remained unstable';
     }

@@ -1,10 +1,7 @@
 import type { GameSource } from '@/lib/types/game';
-import {
-    canonicalMoveAssessmentEvidence,
-    canonicalSolutionTreeSemantics,
-} from '@/lib/training/solutionSemantics';
+import { canonicalPracticeSemantics, type PracticeMomentRevision } from './practiceContract';
 
-export const TRAINING_CONTRACT_VERSION = 3 as const;
+export const TRAINING_CONTRACT_VERSION = 4 as const;
 export const TRAINING_MOMENT_KEY_VERSION = 1 as const;
 
 export const TRAINING_SOURCE_KINDS = [
@@ -22,41 +19,6 @@ export const TRAINING_LESSON_KINDS = [
     'IMPROVE_POSITION',
 ] as const;
 export type TrainingLessonKind = (typeof TRAINING_LESSON_KINDS)[number];
-
-export const VERIFICATION_STATUSES = [
-    'VERIFIED',
-    'AMBIGUOUS',
-    'UNSTABLE',
-    'INVALID',
-] as const;
-export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
-
-export const SOLUTION_SHAPES = ['UNIQUE', 'MULTIPLE', 'OPEN'] as const;
-export type SolutionShape = (typeof SOLUTION_SHAPES)[number];
-
-export const GRADING_STRATEGIES = [
-    'PRECOMPUTED',
-    'OUTCOME_TOLERANCE',
-    'DYNAMIC',
-    'TABLEBASE',
-] as const;
-export type GradingStrategy = (typeof GRADING_STRATEGIES)[number];
-
-export const CONTINUATION_SHAPES = [
-    'SINGLE_DECISION',
-    'CONDITIONAL_LINE',
-] as const;
-export type ContinuationShape = (typeof CONTINUATION_SHAPES)[number];
-
-export const ATTEMPT_GRADES = [
-    'BEST',
-    'STRONG',
-    'GOOD',
-    'IMPROVED',
-    'REPEATED_MISTAKE',
-    'DIFFERENT_MISTAKE',
-] as const;
-export type AttemptGrade = (typeof ATTEMPT_GRADES)[number];
 
 /**
  * A score whose point of view is explicit. Mate and tablebase outcomes are
@@ -88,133 +50,16 @@ export type TrainingMomentMetadata = {
     themes: string[];
 };
 
-export type GradingPolicyV3 = {
-    version: 3;
-    pov: 'TRAINING_SIDE';
-    best: {
-        maxCpLoss: number;
-        maxWinChanceLoss: number;
-    };
-    strong: {
-        maxCpLoss: number;
-        maxWinChanceLoss: number;
-    };
-    success: {
-        maxCpLoss: number;
-        maxWinChanceLoss: number;
-        preserveOutcome: boolean;
-    };
-    improvement: {
-        minRecoveredCp: number;
-        minRecoveredWinChance: number;
-    };
-    unknownMove: 'EVALUATE';
-    matePolicy: 'EXACT';
-    tablebasePolicy: 'EXACT';
-};
-
-export const ACCEPTANCE_FRONTIER_STATUSES = [
-    'STABLE',
-    'OPEN',
-    'UNSTABLE',
-] as const;
-export type AcceptanceFrontierStatus =
-    (typeof ACCEPTANCE_FRONTIER_STATUSES)[number];
-
-export type AcceptedMoveTier = 'BEST' | 'STRONG' | 'GOOD';
-
-/**
- * Individually supported answers. Membership stability does not certify
- * unlisted moves; only AnswerCoverage can support that conclusion.
- */
-export type AcceptanceFrontier = {
-    version: 1;
-    status: AcceptanceFrontierStatus;
-    targetCutoffCp: number;
-    effectiveCutoffCp: number | null;
-    boundaryGapCp: number | null;
-    moves: Array<{
-        moveUci: string;
-        tier: AcceptedMoveTier;
-    }>;
-    firstRejectedMoveUci: string | null;
-};
-
-export type SolutionMoveAssessmentInput = {
-    positionKey: string;
-    decisionIndex: number;
-    fen: string;
-    moveUci: string;
-    source: 'PRECOMPUTED' | 'TABLEBASE';
-    grade: AttemptGrade;
-    referenceId: string;
-    tierStable: boolean;
-    scoreAfter: PovScore | null;
-    evidence: unknown;
-};
-
-export type DecisionAssessment = {
-    status: 'CONFIRMED_MISTAKE' | 'NOT_A_MISTAKE' | 'UNRESOLVED';
-    reason: string;
-};
-
-export type AnswerCoverage = {
-    version: 1;
-    contextId: string;
-    status: 'PARTIAL' | 'QUALITY_BOUNDARY_VERIFIED' | 'ALL_LEGAL_ASSESSED';
-    legalMovesUci: string[];
-    assessedMovesUci: string[];
-    /** Only these moves have a supported below-quality-boundary conclusion. */
-    coveredMovesUci: string[];
-    referenceId: string;
-    policyVersion: number;
-    reason: string;
-    evidence?: unknown;
-};
-
-export type ContinuationReadiness = {
-    status: 'NONE' | 'EXPLANATION_ONLY' | 'GRADED_BRANCHES_READY';
-    explanationAvailable: boolean;
-    gradedContinuationReady: boolean;
-};
-
-/** Physical search identity lives in immutable evidence, not grading equivalence. */
-export function canonicalAnswerCoverage(coverage: AnswerCoverage) {
-    return {
-        version: coverage.version,
-        contextId: coverage.contextId,
-        status: coverage.status,
-        legalMovesUci: [...coverage.legalMovesUci].sort(),
-        assessedMovesUci: [...coverage.assessedMovesUci].sort(),
-        coveredMovesUci: [...coverage.coveredMovesUci].sort(),
-        policyVersion: coverage.policyVersion,
-    };
-}
-
+/** Canonical v4 manifest plus the enclosing immutable analysis configuration. */
 export type SolutionRevisionInput = {
-    solutionHash: string;
-    decision: DecisionAssessment;
-    answerCoverage: AnswerCoverage;
-    continuation: ContinuationReadiness;
-    verificationStatus: VerificationStatus;
-    solutionShape: SolutionShape;
-    gradingStrategy: GradingStrategy;
-    continuationShape: ContinuationShape;
-    trainable: boolean;
-    bestMoveUci: string;
-    acceptedMovesUci: string[];
-    acceptanceFrontier: AcceptanceFrontier;
-    moveAssessments: SolutionMoveAssessmentInput[];
-    bestLineUci: string[];
-    solutionTree: unknown;
-    scoreAtStart: PovScore | null;
-    playedMoveScore: PovScore | null;
-    targetOutcome: unknown;
-    gradingPolicy: GradingPolicyV3;
-    evidence: unknown;
-    generatorVersion: string;
+    manifest: PracticeMomentRevision;
     configHash: string;
 };
+
+export function isTrainableSolution(solution: SolutionRevisionInput): boolean {
+    return solution.manifest.decision.status === 'CONFIRMED_MISTAKE'
+        && solution.manifest.decision.selection === 'INCLUDED';
+}
 
 export type TrainingMomentCandidate = {
     sourceGameId: string;
@@ -347,73 +192,6 @@ export function stableCanonicalStringify(value: unknown): string {
  * verification evidence may produce a new immutable revision without making
  * an otherwise equivalent solution appear different.
  */
-export function canonicalSolutionSemantics(
-    input: Pick<
-        SolutionRevisionInput,
-        | 'verificationStatus'
-        | 'decision'
-        | 'answerCoverage'
-        | 'continuation'
-        | 'solutionShape'
-        | 'gradingStrategy'
-        | 'continuationShape'
-        | 'trainable'
-        | 'bestMoveUci'
-        | 'acceptedMovesUci'
-        | 'acceptanceFrontier'
-        | 'moveAssessments'
-        | 'bestLineUci'
-        | 'solutionTree'
-        | 'scoreAtStart'
-        | 'playedMoveScore'
-        | 'targetOutcome'
-        | 'gradingPolicy'
-    >
-): unknown {
-    const normalizeUci = (move: string) => move.trim().toLowerCase();
-    return {
-        version: 1,
-        decision: { status: input.decision.status },
-        answerCoverage: canonicalAnswerCoverage(input.answerCoverage),
-        continuation: input.continuation,
-        verificationStatus: input.verificationStatus,
-        solutionShape: input.solutionShape,
-        gradingStrategy: input.gradingStrategy,
-        continuationShape: input.continuationShape,
-        trainable: input.trainable,
-        bestMoveUci: normalizeUci(input.bestMoveUci),
-        acceptedMovesUci: Array.from(
-            new Set(
-                [input.bestMoveUci, ...input.acceptedMovesUci]
-                    .map(normalizeUci)
-                    .filter(Boolean)
-            )
-        ).sort(),
-        acceptanceFrontier: input.acceptanceFrontier,
-        moveAssessments: input.moveAssessments
-            .map((assessment) => ({
-                positionKey: assessment.positionKey,
-                decisionIndex: assessment.decisionIndex,
-                fen: assessment.fen,
-                moveUci: normalizeUci(assessment.moveUci),
-                source: assessment.source,
-                grade: assessment.grade,
-                tierStable: assessment.tierStable,
-                scoreAfter: assessment.scoreAfter,
-                evidence: canonicalMoveAssessmentEvidence(
-                    assessment.evidence
-                ),
-            }))
-            .sort((left, right) =>
-                `${left.decisionIndex}\u0000${left.positionKey}\u0000${left.moveUci}`.localeCompare(
-                    `${right.decisionIndex}\u0000${right.positionKey}\u0000${right.moveUci}`
-                )
-            ),
-        bestLineUci: input.bestLineUci.map(normalizeUci),
-        solutionTree: canonicalSolutionTreeSemantics(input.solutionTree),
-        scoreAtStart: input.scoreAtStart,
-        playedMoveScore: input.playedMoveScore,
-        targetOutcome: input.targetOutcome,
-        gradingPolicy: input.gradingPolicy,
-    };
+export function canonicalSolutionSemantics(input: SolutionRevisionInput): unknown {
+    return canonicalPracticeSemantics(input.manifest);
 }

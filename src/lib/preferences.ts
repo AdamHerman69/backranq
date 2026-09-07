@@ -354,8 +354,6 @@ export function analysisDefaultsToExtractOptions(
         themeLookaheadPlies: 4,
         confirmNodes: quality.confirmationNodes,
         maxConfirmationNodes: quality.maxConfirmationNodes,
-        verificationNodesPerPosition:
-            quality.verificationNodesPerPosition,
         minWinningChanceLoss: trainingConfig.minWinChanceLoss,
         fallbackMinCpLoss: trainingConfig.fallbackMinCpLoss,
         gradingPolicy: trainingConfig.gradingPolicy,

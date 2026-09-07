@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { loadPracticeReassessmentTargets } from '@/lib/training/reassessmentTargets.server';
 import {
     boundedJsonBody,
     isRecord,
@@ -180,7 +181,10 @@ export async function GET(
     });
     if (!game)
         return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    return NextResponse.json({ game });
+    const reassessment = await loadPracticeReassessmentTargets({ db: prisma, userId, gameId: id, pgn: game.pgn });
+    return NextResponse.json({ game, ownerId: userId, reassessment }, {
+        headers: { 'Cache-Control': 'private, no-store' },
+    });
 }
 
 export async function PATCH(

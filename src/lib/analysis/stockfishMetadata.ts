@@ -1,5 +1,11 @@
+import artifact from './stockfishArtifact.json';
+
+/** Reviewed runtime bytes; the copy/build gate verifies both source and deployed assets. */
+export const STOCKFISH_ARTIFACT_ID =
+    `stockfish-js-wasm-sha256:${artifact.jsSha256}:${artifact.wasmSha256}`;
+
 export const STOCKFISH_BROWSER_REVISION =
-    'stockfish-18.0.8-bridge-v5';
+    'stockfish-18.0.8-bridge-v8';
 
 export const STOCKFISH_BROWSER_CACHE_NAME =
     `coach-engine-${STOCKFISH_BROWSER_REVISION}`;

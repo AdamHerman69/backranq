@@ -1,3 +1,6 @@
+import { Chess } from 'chess.js';
+import { practicePositionFixture } from '../helpers/practice-position';
+import { originalDecisionForPracticeManifest } from '@/lib/training/practiceSourceBinding';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { weeklyMasterConfig } from '@/lib/master/config';
 
@@ -56,14 +59,13 @@ beforeEach(() => {
     });
     mocks.extract.mockImplementation(async () => ({
         manifests: [manifest],
-        moments: [1, 3].map(decisionPly => ({
-            sourceGameId: snapshotId, decisionPly,
-            originalDecision: { scoreBefore: {}, scoreAfter: {} },
-            solution: {
-                configHash: weeklyMasterConfig().analysis.configHash,
-                evidence: { physicalSearch: ++physicalSearch },
-            },
-        })),
+        moments: [0, 2].map(decisionPly => {
+            const config = weeklyMasterConfig();
+            const board = new Chess(); if (decisionPly === 2) { board.move('e4'); board.move('e5'); }
+            const revision = practicePositionFixture({ fen: board.fen(), originalMoveUci: decisionPly === 0 ? 'e2e4' : 'g1f3', bestMoveUci: decisionPly === 0 ? 'd2d4' : 'f1c4', gameId: snapshotId, sourcePgnHash: pgnHash, decisionPly, configHash: config.analysis.configHash, confirmationNodes: config.analysis.options.confirmNodes ?? 1, policy: config.analysis.options.gradingPolicy });
+            Object.values(revision.evidence.searches)[0].sessionId = `fresh-search-${++physicalSearch}`;
+            return { sourceGameId: snapshotId, decisionPly, fen: revision.source.fen, positionHistory: [], sideToMove: 'w', originalMoveUci: revision.source.originalMoveUci, sourceKinds: ['MY_MISTAKE'], lessonKinds: ['AVOID_MISTAKE'], themes: [], confidence: 0.99, phase: 'OPENING', originalDecision: originalDecisionForPracticeManifest(revision), solution: { manifest: revision, configHash: config.analysis.configHash } };
+        }),
     }));
     // Model PostgreSQL atomic commit/rollback while requiring every content write
     // to use the same transaction handle (there are no global write mocks).

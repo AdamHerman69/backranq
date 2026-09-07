@@ -1,4 +1,4 @@
-import { fixtureSolution } from '../helpers/extractionEvidence';
+import { practiceV4Fixture } from '../helpers/practice-v4';
 import { describe, expect, it } from 'vitest';
 import type { TrainingMomentCandidate } from '@/lib/training/contracts';
 import {
@@ -18,7 +18,7 @@ function candidate(
         fen: '8/8/8/8/8/8/8/K6k w - - 0 1',
         positionHistory: [],
         sideToMove: 'w',
-        originalMoveUci: 'a1a2',
+        originalMoveUci: 'a2a3',
         sourceKinds: ['MY_MISTAKE'],
         lessonKinds: ['AVOID_MISTAKE'],
         themes: ['tactic'],
@@ -30,52 +30,12 @@ function candidate(
         },
         confidence: 0.98,
         phase: 'MIDDLEGAME',
-        solution: fixtureSolution({
-            solutionHash: 'solution-hash',
-            verificationStatus: 'VERIFIED',
-            solutionShape: 'UNIQUE',
-            gradingStrategy: 'PRECOMPUTED',
-            continuationShape: 'SINGLE_DECISION',
-            trainable: true,
-            bestMoveUci: 'a1b1',
-            acceptedMovesUci: ['a1b1'],
-            acceptanceFrontier: {
-                version: 1,
-                status: 'STABLE',
-                targetCutoffCp: 100,
-                effectiveCutoffCp: 70,
-                boundaryGapCp: 40,
-                moves: [{ moveUci: 'a1b1', tier: 'BEST' }],
-                firstRejectedMoveUci: 'a1a2',
-            },
-            moveAssessments: [],
-            bestLineUci: ['a1b1', 'h1g1', 'b1c1'],
-            solutionTree: {},
-            scoreAtStart: { kind: 'cp', cp: 120, pov: 'WHITE' },
-            playedMoveScore: { kind: 'cp', cp: -80, pov: 'WHITE' },
-            targetOutcome: {},
-            gradingPolicy: {
-                version: 3,
-                pov: 'TRAINING_SIDE',
-                best: { maxCpLoss: 15, maxWinChanceLoss: 0.02 },
-                strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
-                success: {
-                    maxCpLoss: 80,
-                    maxWinChanceLoss: 0.08,
-                    preserveOutcome: true,
-                },
-                improvement: {
-                    minRecoveredCp: 40,
-                    minRecoveredWinChance: 0.04,
-                },
-                unknownMove: 'EVALUATE',
-                matePolicy: 'EXACT',
-                tablebasePolicy: 'EXACT',
-            },
-            evidence: {},
-            generatorVersion: 'test',
-            configHash: 'config',
-        }),
+        solution: { configHash: 'config', manifest: (() => {
+            const manifest = practiceV4Fixture();
+            manifest.rootAnswerIndex.readiness = 'ALL_MOVES_CLASSIFIED';
+            manifest.rootAnswerIndex.unresolvedMovesUci = [];
+            return manifest;
+        })() },
         ...overrides,
     };
 }
@@ -105,8 +65,7 @@ describe('Weekly Master candidate ranking', () => {
                 },
                 solution: {
                     ...base.solution,
-                    verificationStatus: 'AMBIGUOUS',
-                    solutionShape: 'OPEN',
+                    manifest: { ...base.solution.manifest, decision: { ...base.solution.manifest.decision, status: 'UNRESOLVED', selection: 'OMITTED' }, rootAnswerIndex: { ...base.solution.manifest.rootAnswerIndex, readiness: 'PARTIAL' } },
                 },
             }),
             playedAt: new Date('2026-08-05T12:00:00.000Z'),
@@ -117,7 +76,7 @@ describe('Weekly Master candidate ranking', () => {
         expect(ranking.hardGatePassed).toBe(false);
         expect(ranking.rejectionReasons).toEqual(
             expect.arrayContaining([
-                'NOT_VERIFIED',
+                'DECISION_NOT_CONFIRMED',
                 'OPEN_SOLUTION',
                 'MISTAKE_NOT_MEANINGFUL',
             ])
@@ -130,7 +89,7 @@ describe('Weekly Master candidate ranking', () => {
             moment: candidate({
                 solution: {
                     ...base.solution,
-                    acceptedMovesUci: ['a1b1', 'a1a2'],
+                    manifest: { ...base.solution.manifest, assessments: base.solution.manifest.assessments.map(assessment => assessment.moveUci === 'a2a3' ? { ...assessment, quality: 'GOOD', qualitySupport: 'SUPPORTED' } : assessment) },
                 },
             }),
             playedAt: new Date('2026-08-05T12:00:00.000Z'),

@@ -63,24 +63,23 @@ describe('Progress dashboard rendering', () => {
             attempts: [],
         });
         snapshot.firstRecordedTerminalOutcome = {
-            basis: 'FIRST_RECORDED_GRADED_OR_REVEALED_PER_POSITION',
+            basis: 'FIRST_RECORDED_RESOLVED_OR_REVEALED_PER_POSITION',
             positions: 5,
-            graded: 4,
+            resolved: 4,
             revealed: 1,
             metObjective: progressRate(2, 5),
-            gradedFullSolve: progressRate(2, 4),
-            gradeCounts: {
+            resolvedFullSolve: progressRate(2, 4),
+            tierCounts: {
+                // One supported good move has no supported tier yet.
                 BEST: 1,
                 STRONG: 0,
-                GOOD: 1,
-                IMPROVED: 1,
-                REPEATED_MISTAKE: 1,
-                DIFFERENT_MISTAKE: 0,
+                GOOD: 0,
+                SUBPAR: 2,
             },
         };
         snapshot.practice = {
             ...snapshot.practice,
-            gradedAttempts: 4,
+            resolvedAttempts: 4,
             revealedAttempts: 1,
             fullPositionSolve: progressRate(2, 4),
             rootDecisionSuccess: progressRate(2, 4),
@@ -95,7 +94,9 @@ describe('Progress dashboard rendering', () => {
 
         expect(firstOutcomeAt).toBeGreaterThan(-1);
         expect(allAttemptsAt).toBeGreaterThan(firstOutcomeAt);
-        expect(html).toContain('Original move repeated');
+        expect(html).toContain('Below standard');
+        expect(html).toContain('Supported good decision, including moves awaiting a tier');
+        expect(html).toMatch(/Met objective<\/dt><dd[^>]*>2<\/dd>/);
         expect(html).toContain('Revealed');
     });
 
@@ -119,7 +120,7 @@ describe('Progress dashboard rendering', () => {
                 key: 'MIDDLEGAME',
                 positions: 0,
                 sourceGames: 0,
-                gradedAttempts: 1,
+                resolvedAttempts: 1,
                 fullPositionSolve: progressRate(1, 1),
             },
         ];
@@ -132,7 +133,7 @@ describe('Progress dashboard rendering', () => {
         expect(html).toContain(
             'Positions from games played in scope'
         );
-        expect(html).toContain('Graded attempts completed in scope');
+        expect(html).toContain('Resolved attempts completed in scope');
         expect(html).toContain(
             'using context frozen when each attempt was recorded'
         );
@@ -153,7 +154,7 @@ describe('Progress dashboard rendering', () => {
             positions: [],
             attempts: [],
         });
-        snapshot.practice.unresolvedExcluded = 2;
+        snapshot.practice.unavailableExcluded = 2;
 
         const html = renderToStaticMarkup(
             createElement(ProgressDashboard, { snapshot })
@@ -187,7 +188,7 @@ describe('Progress dashboard rendering', () => {
         snapshot.availability.filteredEmpty = true;
         snapshot.practice = {
             ...snapshot.practice,
-            gradedAttempts: 1,
+            resolvedAttempts: 1,
             fullPositionSolve: progressRate(1, 1),
             rootDecisionSuccess: progressRate(1, 1),
         };

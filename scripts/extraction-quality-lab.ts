@@ -6,6 +6,7 @@ import { extractTrainingMomentsFromGames } from '@/lib/analysis/extractTrainingM
 import type { TrainingExtractionReceipt } from '@/lib/analysis/extractionReceipt';
 import { ServerStockfishClient } from '@/lib/analysis/serverStockfishClient';
 import { ExtractionQualityAudit } from './extraction-quality-audit';
+import { compareRootAnswers, snapshotRootAnswers, summarizeRootComparisons, type RootAnswerSnapshot } from './extraction-quality-comparison';
 import type {
     AnalysisLimit,
     EvalResult,
@@ -65,18 +66,15 @@ type Profile = {
     nodesPerPosition: number;
     confirmNodes: number;
     maxConfirmationNodes: number;
-    verificationNodesPerPosition: number;
 };
 
-type MomentSnapshot = {
+type MomentSnapshot = RootAnswerSnapshot & {
     key: string;
     decisionPly: number;
     trainable: boolean;
     sourceKinds: string[];
     verificationStatus: string;
     solutionShape: string;
-    bestMoveUci: string;
-    acceptedMovesUci: string[];
 };
 
 type GameRun = {
@@ -396,11 +394,7 @@ async function runProfile(
                     nodesPerPosition: profile.nodesPerPosition,
                     confirmNodes: profile.confirmNodes,
                     maxConfirmationNodes: profile.maxConfirmationNodes,
-                    verificationNodesPerPosition:
-                        profile.verificationNodesPerPosition,
                     multiPv: 5,
-                    maxMultiPv: 16,
-                    maxAcceptedMoves: 16,
                 },
             });
             const extractionWallTimeMs = Math.round(performance.now() - startedAt);
@@ -419,14 +413,12 @@ async function runProfile(
                 moments: output.moments.map((moment) => ({
                     key: `${game.id}:${moment.decisionPly}`,
                     decisionPly: moment.decisionPly,
-                    trainable: moment.solution.trainable,
+                    trainable: moment.solution.manifest.decision.selection === 'INCLUDED',
                     sourceKinds: moment.sourceKinds,
                     verificationStatus:
-                        moment.solution.verificationStatus,
-                    solutionShape: moment.solution.solutionShape,
-                    bestMoveUci: moment.solution.bestMoveUci,
-                    acceptedMovesUci:
-                        moment.solution.acceptedMovesUci.slice().sort(),
+                        moment.solution.manifest.decision.status,
+                    solutionShape: moment.solution.manifest.rootAnswerIndex.readiness,
+                    ...snapshotRootAnswers(moment.solution.manifest),
                 })),
                 extractionReceipt:
                     analysis?.trainingExtraction ?? null,
@@ -477,14 +469,6 @@ async function runProfile(
     return { profile, games, totals };
 }
 
-function jaccard(left: string[], right: string[]): number {
-    const a = new Set(left);
-    const b = new Set(right);
-    const union = new Set([...a, ...b]);
-    if (union.size === 0) return 1;
-    return [...a].filter((value) => b.has(value)).length / union.size;
-}
-
 function compare(product: ProfileRun, reference: ProfileRun) {
     const productMoments = new Map(
         product.games.flatMap((game) =>
@@ -512,32 +496,10 @@ function compare(product: ProfileRun, reference: ProfileRun) {
     const sharedDetails = sharedKeys.map((key) => {
         const productMoment = productMoments.get(key)!;
         const referenceMoment = referenceMoments.get(key)!;
-        const exactBestMove =
-            productMoment.bestMoveUci === referenceMoment.bestMoveUci;
-        const bestMovesCompatible =
-            productMoment.acceptedMovesUci.includes(
-                referenceMoment.bestMoveUci
-            ) &&
-            referenceMoment.acceptedMovesUci.includes(
-                productMoment.bestMoveUci
-            );
-        return {
-            key,
-            productBestMoveUci: productMoment.bestMoveUci,
-            referenceBestMoveUci: referenceMoment.bestMoveUci,
-            exactBestMove,
-            bestMovesCompatible,
-            acceptedMoveJaccard: jaccard(
-                productMoment.acceptedMovesUci,
-                referenceMoment.acceptedMovesUci
-            ),
-        };
+        return { key, ...compareRootAnswers(productMoment, referenceMoment) };
     });
     const bestMoveAgreements = sharedDetails.filter(
         (detail) => detail.exactBestMove
-    ).length;
-    const bestMoveCompatibility = sharedDetails.filter(
-        (detail) => detail.bestMovesCompatible
     ).length;
     const acceptedMoveJaccard = sharedDetails.map(
         (detail) => detail.acceptedMoveJaccard
@@ -558,25 +520,26 @@ function compare(product: ProfileRun, reference: ProfileRun) {
             sharedKeys.length === 0
                 ? 1
                 : bestMoveAgreements / sharedKeys.length,
-        bestMoveCompatibility:
-            sharedKeys.length === 0
-                ? 1
-                : bestMoveCompatibility / sharedKeys.length,
+        ...summarizeRootComparisons(sharedDetails),
         meanAcceptedMoveJaccard:
             acceptedMoveJaccard.length === 0
                 ? 1
                 : acceptedMoveJaccard.reduce((sum, value) => sum + value, 0) /
                   acceptedMoveJaccard.length,
-        bestMoveDisagreements: sharedDetails.filter(
+        sharedDetails,
+        bestMoveDifferences: sharedDetails.filter(
             (detail) => !detail.exactBestMove
         ),
-        acceptedMoveDisagreements: sharedDetails.filter(
+        bestMoveIncompatibilities: sharedDetails.filter(detail => detail.bestMoveCompatibility === 'INCOMPATIBLE'),
+        supportedQualityDisagreements: sharedDetails.filter(detail => detail.supportedQualityOppositionMovesUci.length > 0),
+        acceptedMoveSetDifferences: sharedDetails.filter(
             (detail) => detail.acceptedMoveJaccard < 1
         ),
     };
 }
 
-function percent(value: number) {
+function percent(value: number | null) {
+    if (value === null) return 'unresolved (no resolved comparisons)';
     return `${(value * 100).toFixed(1)}%`;
 }
 
@@ -599,8 +562,10 @@ function markdownReport(report: {
         `- Reference coverage: ${percent(comparison.referenceCoverage)}\n` +
         `- Product agreement: ${percent(comparison.productAgreement)}\n` +
         `- Best-move agreement: ${percent(comparison.bestMoveAgreement)}\n` +
-        `- Best-move compatibility: ${percent(comparison.bestMoveCompatibility)}\n` +
-        `- Accepted-move similarity: ${percent(comparison.meanAcceptedMoveJaccard)}\n` +
+        `- Best-move compatibility (resolved only): ${percent(comparison.bestMoveCompatibility)}\n` +
+        `- Compatibility counts: ${comparison.bestMoveCompatibilityCounts.compatible} compatible, ${comparison.bestMoveCompatibilityCounts.incompatible} incompatible, ${comparison.bestMoveCompatibilityCounts.unknown} unknown (${comparison.bestMoveCompatibilityCounts.resolved}/${comparison.bestMoveCompatibilityCounts.total} resolved)\n` +
+        `- Supported quality oppositions: ${comparison.supportedQualityDisagreements.length} shared decisions\n` +
+        `- Known-GOOD set overlap (descriptive Jaccard; not disagreement): ${percent(comparison.meanAcceptedMoveJaccard)}\n` +
         `- Product-only decisions: ${comparison.productOnly.join(', ') || 'none'}\n` +
         `- Reference-only decisions: ${comparison.referenceOnly.join(', ') || 'none'}\n`;
 }
@@ -633,8 +598,10 @@ function confirmationMarkdown(report: {
         `- Shared moments: ${comparison.sharedMoments}\n` +
         `- Candidate coverage by product: ${percent(comparison.referenceCoverage)}\n` +
         `- Product coverage by candidate: ${percent(comparison.productAgreement)}\n` +
-        `- Best-move compatibility: ${percent(comparison.bestMoveCompatibility)}\n` +
-        `- Accepted-move similarity: ${percent(comparison.meanAcceptedMoveJaccard)}\n` +
+        `- Best-move compatibility (resolved only): ${percent(comparison.bestMoveCompatibility)}\n` +
+        `- Compatibility counts: ${comparison.bestMoveCompatibilityCounts.compatible} compatible, ${comparison.bestMoveCompatibilityCounts.incompatible} incompatible, ${comparison.bestMoveCompatibilityCounts.unknown} unknown (${comparison.bestMoveCompatibilityCounts.resolved}/${comparison.bestMoveCompatibilityCounts.total} resolved)\n` +
+        `- Supported quality oppositions: ${comparison.supportedQualityDisagreements.length} shared decisions\n` +
+        `- Known-GOOD set overlap (descriptive Jaccard; not disagreement): ${percent(comparison.meanAcceptedMoveJaccard)}\n` +
         `- Product-only decisions: ${comparison.productOnly.join(', ') || 'none'}\n` +
         `- Candidate-only decisions: ${comparison.referenceOnly.join(', ') || 'none'}\n`;
 }
@@ -654,14 +621,12 @@ async function runLab(mode: 'smoke' | 'full', requestedLimit: number | null) {
                   nodesPerPosition: 5_000,
                   confirmNodes: 10_000,
                   maxConfirmationNodes: 40_000,
-                  verificationNodesPerPosition: 5_000,
               }
             : {
                   name: 'product',
                   nodesPerPosition: 100_000,
                   confirmNodes: 200_000,
                   maxConfirmationNodes: 800_000,
-                  verificationNodesPerPosition: 100_000,
               };
     const reference: Profile =
         mode === 'smoke'
@@ -670,21 +635,19 @@ async function runLab(mode: 'smoke' | 'full', requestedLimit: number | null) {
                   nodesPerPosition: 20_000,
                   confirmNodes: 40_000,
                   maxConfirmationNodes: 160_000,
-                  verificationNodesPerPosition: 20_000,
               }
             : {
                   name: 'reference',
                   nodesPerPosition: 400_000,
                   confirmNodes: 800_000,
                   maxConfirmationNodes: 3_200_000,
-                  verificationNodesPerPosition: 400_000,
               };
     const productRun = await runProfile(corpus, product);
     if (process.env.BACKRANQ_EXTRACTION_PRODUCT_ONLY === '1') {
         fs.mkdirSync(reportDirectory, { recursive: true });
         const jsonPath = path.join(reportDirectory, `${mode}-product-only.json`);
         fs.writeFileSync(jsonPath, `${JSON.stringify({
-            version: 1,
+            version: 2,
             generatedAt: new Date().toISOString(),
             mode,
             corpus: { path: path.relative(repositoryRoot, corpusPath), games: corpus.games.length },
@@ -695,7 +658,7 @@ async function runLab(mode: 'smoke' | 'full', requestedLimit: number | null) {
     }
     const referenceRun = await runProfile(corpus, reference);
     const report = {
-        version: 1,
+        version: 2,
         generatedAt: new Date().toISOString(),
         mode,
         corpus: {
@@ -730,7 +693,6 @@ async function runConfirmationExperiment(requestedLimit: number | null) {
         nodesPerPosition: 100_000,
         confirmNodes: 200_000,
         maxConfirmationNodes: 800_000,
-        verificationNodesPerPosition: 100_000,
     };
     const candidate: Profile = {
         ...product,
@@ -740,7 +702,7 @@ async function runConfirmationExperiment(requestedLimit: number | null) {
     const productRun = await runProfile(corpus, product);
     const candidateRun = await runProfile(corpus, candidate);
     const report = {
-        version: 1,
+        version: 2,
         generatedAt: new Date().toISOString(),
         mode: 'confirmation',
         corpus: {

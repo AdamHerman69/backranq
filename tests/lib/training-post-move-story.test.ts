@@ -29,7 +29,7 @@ describe('shared post-move story', () => {
         const story = buildPostMoveStory({
             prompt,
             review: {
-                ...prompt.grading.review,
+                ...prompt.review,
                 submittedMoveUci: 'f7e8',
             },
             grade: 'BEST',

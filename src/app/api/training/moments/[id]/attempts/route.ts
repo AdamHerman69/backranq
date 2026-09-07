@@ -7,7 +7,7 @@ import type { TrainingApiErrorResponse } from '@/lib/training/api';
 import { expectedOwnerId } from '@/lib/auth/ownerContract';
 import {
     isTrainingApiUuid,
-    MAX_TRAINING_API_BODY_BYTES,
+    MAX_TRAINING_ATTEMPT_BODY_BYTES,
     parseRecordTrainingAttemptRequest,
     parseEnrichTrainingAttemptRequest,
 } from '@/lib/training/apiValidation';
@@ -44,7 +44,7 @@ export async function POST(
     }
     const body = await boundedJsonBody(
         req,
-        MAX_TRAINING_API_BODY_BYTES
+        MAX_TRAINING_ATTEMPT_BODY_BYTES
     );
     if (!body.ok) {
         return NextResponse.json<TrainingApiErrorResponse>(
@@ -63,7 +63,7 @@ export async function POST(
 
     try {
         return NextResponse.json(
-            await (request.kind === 'RECORD' ? recordTrainingAttempt({
+            await (request.kind !== 'ENRICH' ? recordTrainingAttempt({
                 userId,
                 momentId: id,
                 request,

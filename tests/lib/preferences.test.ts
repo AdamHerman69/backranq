@@ -16,7 +16,6 @@ describe('analysis preference bounds', () => {
             nodesPerPosition: 100_000,
             confirmNodes: 200_000,
             maxConfirmationNodes: 1_600_000,
-            verificationNodesPerPosition: 100_000,
             themeLookaheadPlies: 4,
         });
     });
@@ -34,11 +33,7 @@ describe('analysis preference bounds', () => {
         expect(options.maxConfirmationNodes).toBe(800_000);
         expect(options.minWinningChanceLoss).toBe(0.12);
         expect(options.fallbackMinCpLoss).toBe(150);
-        expect(options.gradingPolicy?.success).toEqual({
-            maxCpLoss: 75,
-            maxWinChanceLoss: 0.075,
-            preserveOutcome: true,
-        });
+        expect(options.gradingPolicy).toMatchObject({ minToleranceCp: 75, maxExpectedScoreLoss: 0.075 });
         expect(options).not.toHaveProperty('maxPuzzlesPerGame');
         expect(options).not.toHaveProperty('puzzleMode');
         expect(options).not.toHaveProperty('uniquenessMarginCp');

@@ -118,7 +118,7 @@ try {
                 const raw = await AuditExtraction.extractTrainingMomentsFromGames({
                     games: [game], selectedGameIds: new Set([game.id]), engine,
                     onProgress(progress) { if (progress.ply >= lastPrintedPly + 10) { lastPrintedPly = progress.ply; console.log(`AUDIT_PROGRESS ${game.id} ${progress.ply}/${progress.plyCount}`); } },
-                    options: { returnAnalysis: true, nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 800_000, verificationNodesPerPosition: 100_000, multiPv: 5, maxMultiPv: 16, maxAcceptedMoves: 16 },
+                    options: { returnAnalysis: true, nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 800_000, multiPv: 5 },
                 });
                 output = { ...raw, analysis: raw.analysis ? Object.fromEntries(raw.analysis) : null };
             } catch (failure) { error = String(failure); }
@@ -131,7 +131,7 @@ try {
         const serverEvidence = JSON.parse(await fs.readFile(path.resolve('artifacts/extraction-quality-lab', comparisonDirectory, `product-${filename}`)));
         const browserMoments = result.output?.moments ?? [];
         const serverMoments = serverEvidence.output?.moments ?? [];
-        const summary = { gameId: game.id, complete: result.output?.manifests?.[0]?.complete, browserTotalMs: result.totalMs, serverTotalMs: serverEvidence.totalMs, browserRequests: result.calls.length, browserPhysicalSearches: result.physicalSearches.length, serverRequests: serverEvidence.calls.length, browserTrainable: browserMoments.filter((m) => m.solution.trainable).map((m) => m.decisionPly), serverTrainable: serverMoments.filter((m) => m.solution.trainable).map((m) => m.decisionPly), browserReasons: result.output?.analysis?.[game.id]?.trainingExtraction?.summary?.reasons, serverReasons: serverEvidence.output?.analysis?.[game.id]?.trainingExtraction?.summary?.reasons, error: result.error };
+        const summary = { gameId: game.id, complete: result.output?.manifests?.[0]?.complete, browserTotalMs: result.totalMs, serverTotalMs: serverEvidence.totalMs, browserRequests: result.calls.length, browserPhysicalSearches: result.physicalSearches.length, serverRequests: serverEvidence.calls.length, browserTrainable: browserMoments.filter((m) => m.solution.manifest.decision.selection === 'INCLUDED').map((m) => m.decisionPly), serverTrainable: serverMoments.filter((m) => m.solution.manifest.decision.selection === 'INCLUDED').map((m) => m.decisionPly), browserReasons: result.output?.analysis?.[game.id]?.trainingExtraction?.summary?.reasons, serverReasons: serverEvidence.output?.analysis?.[game.id]?.trainingExtraction?.summary?.reasons, error: result.error };
         summaries.push(summary);
         console.log(JSON.stringify(summary));
     }

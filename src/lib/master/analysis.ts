@@ -195,42 +195,10 @@ export async function analyzeMasterSnapshot(args: {
                             sourceKinds: moment.sourceKinds,
                             lessonKinds: moment.lessonKinds,
                             themes: moment.themes,
-                            verificationStatus: solution.verificationStatus,
-                            solutionShape: solution.solutionShape,
-                            gradingStrategy: solution.gradingStrategy,
-                            continuationShape: solution.continuationShape,
-                            bestMoveUci: solution.bestMoveUci,
-                            acceptedMovesUci: solution.acceptedMovesUci,
-                            acceptanceFrontier: json(
-                                solution.acceptanceFrontier
-                            ),
-                            bestLine: json(solution.bestLineUci),
-                            solutionTree: json(solution.solutionTree),
-                            moveAssessments: json(solution.moveAssessments),
-                            scoreAtStart:
-                                solution.scoreAtStart == null
-                                    ? Prisma.DbNull
-                                    : json(solution.scoreAtStart),
-                            playedMoveScore:
-                                solution.playedMoveScore == null
-                                    ? Prisma.DbNull
-                                    : json(solution.playedMoveScore),
-                            targetOutcome: json(solution.targetOutcome),
-                            gradingPolicy: json(solution.gradingPolicy),
-                            evidence: json({
-                                solutionContract: {
-                                    decision: solution.decision,
-                                    answerCoverage: solution.answerCoverage,
-                                    continuation: solution.continuation,
-                                    originalDecision,
-                                },
-                                solution: solution.evidence,
-                                extractionManifest: manifest,
-                                analysisConfig:
-                                    args.config.analysis.snapshot,
-                            }),
-                            solutionHash: solution.solutionHash,
-                            generatorVersion: solution.generatorVersion,
+                            manifest: json(solution.manifest),
+                            trainable: solution.manifest.decision.selection === 'INCLUDED',
+                            solutionHash: solution.manifest.semanticHash,
+                            generatorVersion: solution.manifest.generatorVersion,
                             configHash: solution.configHash,
                             ...ranking,
                             status: ranking.hardGatePassed
@@ -239,18 +207,8 @@ export async function analyzeMasterSnapshot(args: {
                         },
                         update: {
                             pipelineRunId: args.pipelineRunId,
-                            evidence: json({
-                                solutionContract: {
-                                    decision: solution.decision,
-                                    answerCoverage: solution.answerCoverage,
-                                    continuation: solution.continuation,
-                                    originalDecision,
-                                },
-                                solution: solution.evidence,
-                                extractionManifest: manifest,
-                                analysisConfig:
-                                    args.config.analysis.snapshot,
-                            }),
+                            manifest: json(solution.manifest),
+                            trainable: solution.manifest.decision.selection === 'INCLUDED',
                             ...ranking,
                             status: ranking.hardGatePassed
                                 ? 'ELIGIBLE'

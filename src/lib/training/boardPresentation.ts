@@ -1,6 +1,6 @@
 import type { Square } from 'chess.js';
 
-import type { AttemptGrade } from '@/lib/training/contracts';
+import type { Tier } from '@/lib/training/practiceContract';
 
 export type BoardArrowPresentation = {
     startSquare: Square;
@@ -13,10 +13,10 @@ export type BoardMove = {
     to: Square;
 };
 
-export type MoveQualityTone = 'positive' | 'warning' | 'negative';
+export type MoveQualityTone = 'positive' | 'warning' | 'negative' | 'neutral';
 
 export type TrainingMoveQuality = {
-    grade: AttemptGrade;
+    grade: Tier | 'PENDING';
     label: string;
     shortLabel: string;
     symbol: string;
@@ -52,7 +52,7 @@ export type BoardPresentationEvent =
           type: 'GRADE_REVEAL' | 'REFINE_GRADE';
           sequenceId: number;
           moveUci: string;
-          grade: AttemptGrade;
+          grade: Tier;
       }
     | { type: 'OPPONENT_MOVE'; sequenceId: number; moveUci: string }
     | { type: 'SETTLE'; sequenceId: number }
@@ -64,7 +64,7 @@ export type BoardPresentationEvent =
           type: 'REVIEW_ATTEMPT';
           sequenceId: number;
           moveUci: string;
-          grade: AttemptGrade | null;
+          grade: Tier | null;
       };
 
 export const BOARD_MOVE_ANIMATION_MS = 190;
@@ -91,7 +91,7 @@ export function boardMoveFromUci(moveUci: string): BoardMove | null {
 }
 
 export function trainingMoveQuality(
-    grade: AttemptGrade
+    grade: Tier
 ): TrainingMoveQuality {
     switch (grade) {
         case 'BEST':
@@ -118,36 +118,14 @@ export function trainingMoveQuality(
                 symbol: '✓',
                 tone: 'positive',
             };
-        case 'IMPROVED':
-            return {
-                grade,
-                label: 'Improved move',
-                shortLabel: 'Improved',
-                symbol: '↑',
-                tone: 'warning',
-            };
-        case 'REPEATED_MISTAKE':
-            return {
-                grade,
-                label: 'Repeated mistake',
-                shortLabel: 'Repeated',
-                symbol: '↻',
-                tone: 'negative',
-            };
-        case 'DIFFERENT_MISTAKE':
-            return {
-                grade,
-                label: 'Different mistake',
-                shortLabel: 'Mistake',
-                symbol: '!',
-                tone: 'negative',
-            };
+        case 'SUBPAR':
+            return { grade, label: 'Subpar move', shortLabel: 'Subpar', symbol: '!', tone: 'negative' };
     }
 }
 
 function markerForMove(
     moveUci: string,
-    grade: AttemptGrade
+    grade: Tier
 ): BoardMoveMarker | null {
     const move = boardMoveFromUci(moveUci);
     return move
@@ -176,7 +154,7 @@ export function boardPresentationReducer(
                 marker: null,
             };
         case 'CHECKING':
-            return { ...state, stage: 'CHECKING' };
+            return { ...state, stage: 'CHECKING', marker: state.lastMove ? { square: state.lastMove.to, grade: 'PENDING', label: 'Evaluating move', shortLabel: 'Evaluating', symbol: '…', tone: 'neutral' } : null };
         case 'GRADE_REVEAL':
             return {
                 ...state,
@@ -198,7 +176,7 @@ export function boardPresentationReducer(
                 marker: null,
             };
         case 'SETTLE':
-            return { ...state, stage: 'SETTLED' };
+            return { ...state, stage: 'SETTLED', marker: state.marker?.grade === 'PENDING' ? null : state.marker };
         case 'REVIEW_DECISION':
             return {
                 ...state,

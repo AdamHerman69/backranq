@@ -1,4 +1,4 @@
-import { STOCKFISH_BROWSER_WORKER_URL } from '@/lib/analysis/stockfishMetadata';
+import { STOCKFISH_ARTIFACT_ID, STOCKFISH_BROWSER_WORKER_URL } from '@/lib/analysis/stockfishMetadata';
 import { Chess } from 'chess.js';
 import { ruleTerminalEvaluation } from './ruleEvaluation';
 
@@ -10,6 +10,8 @@ export type RuleTerminalOutcome = {
 };
 export type SearchEvidence = {
     id: string;
+    /** Runtime lifetime, independent of physical search and cache identity. */
+    sessionId?: string;
     source: 'ENGINE' | 'RULE';
     engine: EngineIdentity;
     request: {
@@ -45,6 +47,7 @@ export type EngineWdl = {
 };
 
 export type EngineIdentity = {
+    artifactId: string;
     name: string;
     author?: string;
     version?: string;
@@ -68,6 +71,8 @@ export type AnalysisLimit = {
     /** Wall-clock safety watchdog; it is not an analysis-quality target. */
     timeoutMs?: number;
     signal?: AbortSignal;
+    /** Complete point bundles or explicitly incomplete bound counters; cache hits never emit. */
+    onSnapshot?(snapshot: AnalysisSnapshot): void;
 };
 
 export type MultiPvStreamingUpdate = {
@@ -95,7 +100,18 @@ export interface StreamingAnalysisHandle {
     stop(): void;
 }
 
+export type AnalysisBoundLine = MultiPvLine & { score: Score; bound: 'UPPER' | 'LOWER' };
+export type AnalysisSnapshot = {
+    id: string;
+    searchId: string;
+    snapshotIndex: number;
+    fen: string;
+    depth: number;
+    searchEvidence: SearchEvidence;
+} & ({ bundleComplete: true; lines: MultiPvLine[] } | { bundleComplete: false; lines: AnalysisBoundLine[] });
+
 export type EvalResult = {
+    snapshots?: AnalysisSnapshot[];
     terminal?: RuleTerminalOutcome;
     searchEvidence?: SearchEvidence;
     fen: string;
@@ -123,6 +139,7 @@ export type MultiPvLine = {
 };
 
 export type MultiPvResult = {
+    snapshots?: AnalysisSnapshot[];
     /** Bounds retain their direction and are never exact scoring lines. */
     boundLines?: BoundedEngineLine[];
     terminal?: RuleTerminalOutcome;
@@ -228,13 +245,82 @@ export function resolvedEngineLimit<T extends AnalysisLimit>(opts: T, defaultNod
     return { ...opts, nodes, depth, movetimeMs };
 }
 
-export function createSearchEvidence(id: string, engine: EngineIdentity, context: EngineSearchContext, opts: AnalysisLimit & { multiPv?: number }, reported: { nodes?: number; timeMs?: number } = {}): SearchEvidence {
-    return { id, source: 'ENGINE', engine: { ...engine, options: { ...engine.options } }, request: { fen: context.fen, rootMoves: [...(context.rootMoves ?? context.legalRootMoves)], previousFens: context.previousFens, historyMode: context.previousFens.length ? 'REPLAY' : 'FEN_ONLY', purpose: opts.purpose ?? 'UNSPECIFIED', multiPv: opts.multiPv ?? 1, limits: { ...(opts.nodes != null ? { nodes: opts.nodes } : {}), ...(opts.depth != null ? { depth: opts.depth } : {}), ...(opts.movetimeMs != null ? { movetimeMs: opts.movetimeMs } : {}) } }, reported: { nodes: reported.nodes ?? 0, timeMs: reported.timeMs ?? 0 }, reused: false };
+export function createSearchEvidence(id: string, engine: EngineIdentity, context: EngineSearchContext, opts: AnalysisLimit & { multiPv?: number }, reported: { nodes?: number; timeMs?: number } = {}, sessionId?: string): SearchEvidence {
+    return { id, ...(sessionId ? { sessionId } : {}), source: 'ENGINE', engine: { ...engine, options: { ...engine.options } }, request: { fen: context.fen, rootMoves: [...(context.rootMoves ?? context.legalRootMoves)], previousFens: context.previousFens, historyMode: context.previousFens.length ? 'REPLAY' : 'FEN_ONLY', purpose: opts.purpose ?? 'UNSPECIFIED', multiPv: opts.multiPv ?? 1, limits: { ...(opts.nodes != null ? { nodes: opts.nodes } : {}), ...(opts.depth != null ? { depth: opts.depth } : {}), ...(opts.movetimeMs != null ? { movetimeMs: opts.movetimeMs } : {}) } }, reported: { nodes: reported.nodes ?? 0, timeMs: reported.timeMs ?? 0 }, reused: false };
 }
 
 export function terminalEngineResult(context: EngineSearchContext, evidence: SearchEvidence): MultiPvResult | null {
     if (!context.terminal) return null;
     return { fen: context.fen, bestMoveUci: '', lines: [], alternativesComplete: true, terminal: context.terminal, identity: evidence.engine, searchEvidence: { ...evidence, source: 'RULE' } };
+}
+
+/** A snapshot is an actual complete iteration, never reconstructed from mixed depths. */
+export function createAnalysisSnapshot(
+    searchId: string, snapshotIndex: number, engine: EngineIdentity,
+    context: EngineSearchContext, limit: AnalysisLimit & { multiPv?: number },
+    lines: MultiPvLine[], sessionId?: string,
+): Extract<AnalysisSnapshot, { bundleComplete: true }> | null {
+    const depth = lines[0]?.depth;
+    if (!searchId || !Number.isInteger(snapshotIndex) || snapshotIndex < 0 || !Number.isInteger(depth) || depth! < 1 || lines.some((line) => line.depth !== depth || 'bound' in line)
+        || !isStructurallyCompleteMultiPvBundle(lines, limit.multiPv ?? 1, context.rootMoves ?? context.legalRootMoves)) return null;
+    const evidence = createSearchEvidence(searchId, engine, context, limit, {
+        nodes: Math.max(0, ...lines.map((line) => line.nodes ?? 0)),
+        timeMs: Math.max(0, ...lines.map((line) => line.timeMs ?? 0)),
+    }, sessionId);
+    return { id: `${searchId}:snapshot:${snapshotIndex}`, searchId, snapshotIndex,
+        fen: context.fen, depth: depth!, lines: structuredClone(lines), searchEvidence: evidence, bundleComplete: true };
+}
+
+/** A directional counter is never a complete MultiPV iteration or a point score. */
+export function createBoundAnalysisSnapshot(
+    searchId: string, snapshotIndex: number, engine: EngineIdentity,
+    context: EngineSearchContext, limit: AnalysisLimit & { multiPv?: number },
+    lines: AnalysisBoundLine[], sessionId?: string,
+): Extract<AnalysisSnapshot, { bundleComplete: false }> | null {
+    const depth = lines[0]?.depth;
+    const scope = context.rootMoves ?? context.legalRootMoves;
+    if (!searchId || !Number.isInteger(snapshotIndex) || snapshotIndex < 0 || !Number.isInteger(depth) || depth! < 1
+        || !lines.length || lines.length > Math.min(limit.multiPv ?? 1, scope.length)
+        || new Set(lines.map(line => line.pvUci[0])).size !== lines.length
+        || lines.some(line => line.depth !== depth || (line.bound !== 'LOWER' && line.bound !== 'UPPER')
+            || !line.score || !Number.isFinite(line.score.value) || !scope.includes(line.pvUci[0]))) return null;
+    const searchEvidence = createSearchEvidence(searchId, engine, context, limit, {
+        nodes: Math.max(0, ...lines.map(line => line.nodes ?? 0)), timeMs: Math.max(0, ...lines.map(line => line.timeMs ?? 0)),
+    }, sessionId);
+    return { id: `${searchId}:snapshot:${snapshotIndex}`, searchId, snapshotIndex,
+        fen: context.fen, depth: depth!, lines: structuredClone(lines), searchEvidence, bundleComplete: false };
+}
+
+/** Keep convergence points independently of active directional counterevidence. */
+export function retainAnalysisSnapshots(snapshots: readonly AnalysisSnapshot[]): AnalysisSnapshot[] {
+    const points = new Map<string, string[]>();
+    const bounds = new Map<string, Map<string, { snapshot: AnalysisSnapshot; line: AnalysisBoundLine }>>();
+    for (const snapshot of snapshots) for (const line of snapshot.lines) {
+        const move = line.pvUci[0];
+        if (snapshot.bundleComplete) {
+            points.set(move, [...(points.get(move) ?? []), snapshot.id].slice(-3));
+            bounds.delete(move);
+        } else {
+            const bounded = line as AnalysisBoundLine;
+            const active = bounds.get(move) ?? new Map();
+            // CP bounds have a numeric ordering; mate bounds stay in their
+            // outcome domain rather than being converted to centipawns.
+            const key = `${bounded.bound}:${bounded.score.type}:${bounded.score.type === 'mate' ? Math.sign(bounded.score.value) : ''}`;
+            const previous = active.get(key);
+            if (!previous || bounded.score.type !== 'cp' ||
+                (bounded.bound === 'LOWER' ? bounded.score.value >= previous.line.score.value : bounded.score.value <= previous.line.score.value)) {
+                active.set(key, { snapshot, line: bounded });
+            }
+            bounds.set(move, active);
+        }
+    }
+    const ids = new Set([...points.values()].flat());
+    for (const active of bounds.values()) for (const item of active.values()) ids.add(item.snapshot.id);
+    return snapshots.filter(snapshot => ids.has(snapshot.id));
+}
+
+function pendingSnapshots(snapshots: AnalysisSnapshot[]): AnalysisSnapshot[] {
+    return structuredClone(snapshots);
 }
 
 /**
@@ -316,6 +402,7 @@ export class StockfishClient implements StockfishEngine {
           }
           | {
               kind: 'multipv';
+              snapshots: AnalysisSnapshot[];
               requestedMultiPv: number;
               context: EngineSearchContext;
               limit: AnalysisLimit & { multiPv?: number };
@@ -346,6 +433,7 @@ export class StockfishClient implements StockfishEngine {
         timeoutId: number;
     }>();
     private identity: EngineIdentity = {
+        artifactId: STOCKFISH_ARTIFACT_ID,
         name: 'Stockfish 18',
         version: '18.0.8',
         flavor: 'lite-single-nnue-wasm',
@@ -483,7 +571,7 @@ export class StockfishClient implements StockfishEngine {
         const result = await this.analyzeMultiPv({ ...opts, multiPv: 1 });
         const first = result.lines[0];
         if (!first && !result.terminal) throw new Error('Engine returned no exact PV');
-        return { fen: result.fen, bestMoveUci: first?.pvUci[0] ?? result.bestMoveUci, pvUci: first?.pvUci ?? [], score: result.terminal ? { type: result.terminal.outcome === 'LOSS' ? 'mate' : 'cp', value: 0 } : first?.score ?? null, wdl: result.terminal ? { win: 0, draw: result.terminal.outcome === 'DRAW' ? 1000 : 0, loss: result.terminal.outcome === 'LOSS' ? 1000 : 0 } : first?.wdl, depth: first?.depth, selDepth: first?.selDepth, nodes: result.searchEvidence?.reported.nodes ?? first?.nodes, nps: first?.nps, timeMs: result.searchEvidence?.reported.timeMs ?? first?.timeMs, terminal: result.terminal, searchEvidence: result.searchEvidence };
+        return { fen: result.fen, bestMoveUci: first?.pvUci[0] ?? result.bestMoveUci, pvUci: first?.pvUci ?? [], score: result.terminal ? { type: result.terminal.outcome === 'LOSS' ? 'mate' : 'cp', value: 0 } : first?.score ?? null, wdl: result.terminal ? { win: 0, draw: result.terminal.outcome === 'DRAW' ? 1000 : 0, loss: result.terminal.outcome === 'LOSS' ? 1000 : 0 } : first?.wdl, depth: first?.depth, selDepth: first?.selDepth, nodes: result.searchEvidence?.reported.nodes ?? first?.nodes, nps: first?.nps, timeMs: result.searchEvidence?.reported.timeMs ?? first?.timeMs, terminal: result.terminal, searchEvidence: result.searchEvidence, snapshots: result.snapshots };
     }
 
     async analyzeMultiPv(opts: AnalysisLimit & {
@@ -520,6 +608,7 @@ export class StockfishClient implements StockfishEngine {
         const p = new Promise<MultiPvResult>((resolve, reject) => {
             this.pending.set(id, {
                 kind: 'multipv',
+                snapshots: [],
                 requestedMultiPv: multiPv,
                 context,
                 limit,
@@ -672,6 +761,30 @@ export class StockfishClient implements StockfishEngine {
         if (!data || typeof data !== 'object') return;
         const msg = data as Record<string, unknown>;
 
+        if (msg.type === 'snapshot') {
+            const id = String(msg.id ?? '');
+            const pending = this.pending.get(id);
+            if (!pending || pending.kind !== 'multipv') return;
+            const update = msg.snapshot as { snapshotIndex?: number; depth?: number; bundleComplete?: boolean; lines?: MultiPvLine[] } | undefined;
+            if (!update || !Number.isInteger(update.snapshotIndex) || !Number.isInteger(update.depth) || !update.lines) return;
+            const snapshot = update.bundleComplete === false
+                ? createBoundAnalysisSnapshot(id, update.snapshotIndex!, this.identity, pending.context, pending.limit, update.lines as AnalysisBoundLine[], typeof msg.sessionId === 'string' ? msg.sessionId : undefined)
+                : createAnalysisSnapshot(id, update.snapshotIndex!, this.identity, pending.context, pending.limit, update.lines, typeof msg.sessionId === 'string' ? msg.sessionId : undefined);
+            if (!snapshot || snapshot.depth !== update.depth || pending.snapshots.some((item) => item.id === snapshot.id)) return;
+            pending.snapshots.push(snapshot);
+            pending.snapshots = retainAnalysisSnapshots(pending.snapshots);
+            try {
+                pending.limit.onSnapshot?.(structuredClone(snapshot));
+            } catch (error) {
+                this.clearTimeoutFor(id);
+                this.pending.delete(id);
+                if (this.activeJobId === id) this.activeJobId = null;
+                this.worker?.postMessage({ type: 'stop', id });
+                pending.reject(error instanceof Error ? error : new Error(String(error)));
+            }
+            return;
+        }
+
         if (msg.type === 'update') {
             const id = String(msg.id ?? '');
             const update = msg.update as MultiPvStreamingUpdate | undefined;
@@ -757,7 +870,8 @@ export class StockfishClient implements StockfishEngine {
                                 legalRootMoves
                             ),
                         identity: this.identity,
-                        searchEvidence: createSearchEvidence(id, this.identity, p.context, p.limit, { nodes: latest.nodes, timeMs: latest.timeMs }),
+                        snapshots: pendingSnapshots(p.snapshots),
+                        searchEvidence: createSearchEvidence(id, this.identity, p.context, p.limit, { nodes: latest.nodes, timeMs: latest.timeMs }, typeof msg.sessionId === 'string' ? msg.sessionId : undefined),
                     });
                 }
             }
@@ -815,6 +929,7 @@ export class StockfishClient implements StockfishEngine {
                 candidate &&
                 typeof candidate === 'object' &&
                 typeof (candidate as EngineIdentity).name === 'string' &&
+                (candidate as EngineIdentity).artifactId === STOCKFISH_ARTIFACT_ID &&
                 typeof (candidate as EngineIdentity).source === 'string'
             ) {
                 this.identity = {

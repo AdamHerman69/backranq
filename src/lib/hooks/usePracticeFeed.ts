@@ -1,5 +1,6 @@
 'use client';
 
+import { attemptWritePrecedes, sameAttemptWriteStream } from '@/lib/training/attemptWriteOrder';
 import {
     useCallback,
     useEffect,
@@ -387,10 +388,8 @@ export function usePracticeFeed({
     const puzzleSession = usePuzzleSession({
         initialPrompt: serverInitial?.prompt ?? null,
         unresolvedMode: 'REVEAL',
-        // The prompt ships a local grading manifest. Loading a multi-megabyte
-        // engine before an unknown move or explicit Analysis intent competes
-        // with the only thing the user needs first: an interactive board.
-        prewarmEngine: false,
+        // Prewarm only the active position after its first render.
+        prewarmEngine: true,
         onRefined: (prompt, request) => refinementSinkRef.current(prompt, request),
         onCompleted: (completion) =>
             completionSinkRef.current(completion),
@@ -1117,6 +1116,10 @@ export function usePracticeFeed({
             // requests, but must not erase a result that already finished.
             const queuedEntry = queueRecord(momentId, request);
             if (!online) return null;
+            if (readQueue(requestOwnerId).some(entry => attemptWritePrecedes(entry.request, request))) {
+                void flushQueueRef.current();
+                return null;
+            }
             const controller = new AbortController();
             let retryAfterDirectFailure = false;
             attemptWriteControllersRef.current.add(controller);
@@ -1163,7 +1166,8 @@ export function usePracticeFeed({
                 // failure may leave queuedCount unchanged. Start one outbox
                 // pass explicitly; failed flushes do not schedule themselves.
                 if (
-                    retryAfterDirectFailure &&
+                    (retryAfterDirectFailure || readQueue(requestOwnerId).some(entry => sameAttemptWriteStream(entry.request, request)
+                        && trainingAttemptQueueIdentity(entry.request) !== trainingAttemptQueueIdentity(request))) &&
                     ownerIdRef.current === requestOwnerId
                 ) {
                     directRetryRequestedRef.current = true;
@@ -1206,13 +1210,16 @@ export function usePracticeFeed({
         try {
             const queued = readQueue(ownerId);
             const remainingEntries: QueuedTrainingAttempt[] = [];
+            const blockedStreams = new Set<string>();
             for (let index = 0; index < queued.length; index += 1) {
                 const entry = queued[index]!;
+                const stream = `${entry.request.clientAttemptId}:${entry.request.momentRevisionId}`;
                 if (
-                    entry.state === 'NEEDS_ATTENTION' ||
+                    blockedStreams.has(stream) || entry.state === 'NEEDS_ATTENTION' ||
                     directAttemptWritesRef.current.has(trainingAttemptQueueIdentity(entry.request))
                 ) {
                     remainingEntries.push(entry);
+                    blockedStreams.add(stream);
                     continue;
                 }
                 try {
@@ -1248,6 +1255,7 @@ export function usePracticeFeed({
                             new Date().toISOString()
                         )
                     );
+                    blockedStreams.add(stream);
                     if (failure.offline) setOnline(false);
                     if (failure.disposition === 'RETRY') {
                         remainingEntries.push(...queued.slice(index + 1));

@@ -22,6 +22,7 @@ import {
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { createPuzzleEngineHandoff, type PuzzleEngineHandoff } from '@/lib/onboarding/puzzleEngineHandoff';
 import type { StockfishClient } from '@/lib/analysis/stockfishClient';
 import {
     fetchCurrentMasterPuzzle,
@@ -103,6 +104,8 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
     const stageRef = useRef<HTMLDivElement | null>(null);
     const searchRunId = state.personal.status === 'IDLE' ? null : state.personal.runId;
     const engineRef = useRef<StockfishClient | null>(null);
+    const handoffRef = useRef<PuzzleEngineHandoff | null>(null);
+    const [engineHandoff, setEngineHandoff] = useState<PuzzleEngineHandoff | null>(null);
     const terminalStateRef = useRef(false);
     const startedPuzzleIdsRef = useRef(new Set<string>());
     const mountedRef = useRef(true);
@@ -170,6 +173,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
             clearProgressFrame();
             abortRef.current?.abort();
             engineRef.current?.terminate?.();
+            handoffRef.current?.dispose();
         };
     }, [clearProgressFrame, emit]);
 
@@ -242,6 +246,8 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
         clearProgressFrame();
         abortRef.current?.abort();
         engineRef.current?.terminate?.();
+        engineRef.current = null;
+        handoffRef.current?.dispose(); handoffRef.current = null; setEngineHandoff(null);
         const controller = new AbortController();
         abortRef.current = controller;
         const runId = crypto.randomUUID();
@@ -252,6 +258,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
         milestonesRef.current = new Set();
         const startedAt = performance.now();
         let searchEngine: StockfishClient | null = null;
+        let retainedForPractice = false;
         let lookupSucceeded = false;
         dispatch({ type: 'SEARCH_STARTED', runId, identity });
         emit('IDENTITY_SUBMITTED', { runId, provider });
@@ -317,6 +324,10 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                 return;
             }
             clearProgressFrame();
+            const handoff = createPuzzleEngineHandoff(engine, puzzle.prompt.solutionRevisionId);
+            handoffRef.current = handoff; setEngineHandoff(handoff);
+            retainedForPractice = true;
+            if (engineRef.current === engine) engineRef.current = null;
             dispatch({ type: 'PERSONAL_READY', runId, puzzle });
             emit('PERSONAL_PUZZLE_READY', {
                 runId,
@@ -345,7 +356,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                 { runId, provider, reason }
             );
         } finally {
-            searchEngine?.terminate?.();
+            if (!retainedForPractice) searchEngine?.terminate?.();
             if (engineRef.current === searchEngine) engineRef.current = null;
             if (abortRef.current === controller) clearProgressFrame();
         }
@@ -428,6 +439,7 @@ export function DualOnboardingHero({ isSignedIn }: { isSignedIn: boolean }) {
                     <PublicPuzzlePlayer
                         personalScan={state.personal.status !== 'IDLE' && state.personal.status !== 'READY' ? state.personal : undefined}
                         puzzle={state.activePuzzle}
+                        engineHandoff={state.activePuzzle.context.kind === 'PERSONAL' ? engineHandoff : null}
                         compactLayout
                         onAttemptStarted={() => {
                             const active = state.activePuzzle;

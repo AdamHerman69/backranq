@@ -35,28 +35,6 @@ export function trainingMomentKey(identity: TrainingMomentIdentity): string {
         .digest('hex');
 }
 
-export function solutionSemanticsHash(
-    input: Pick<
-        SolutionRevisionInput,
-        | 'verificationStatus'
-        | 'decision'
-        | 'answerCoverage'
-        | 'continuation'
-        | 'solutionShape'
-        | 'gradingStrategy'
-        | 'continuationShape'
-        | 'trainable'
-        | 'bestMoveUci'
-        | 'acceptedMovesUci'
-        | 'acceptanceFrontier'
-        | 'moveAssessments'
-        | 'bestLineUci'
-        | 'solutionTree'
-        | 'scoreAtStart'
-        | 'playedMoveScore'
-        | 'targetOutcome'
-        | 'gradingPolicy'
-    >
-): string {
+export function solutionSemanticsHash(input: SolutionRevisionInput): string {
     return hashCanonicalTrainingValue(canonicalSolutionSemantics(input));
 }

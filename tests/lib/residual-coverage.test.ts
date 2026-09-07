@@ -10,7 +10,7 @@ function engine(options: { bound?: 'UPPER' | 'LOWER'; drift?: boolean; corruptSc
         const context = resolveEngineSearchContext(request);
         const restricted = !!request.rootMoves;
         const score = restricted ? options.near ? 80 : -100 : options.drift && sequence > 1 ? 240 : 100;
-        const evidence = createSearchEvidence(`physical-${++sequence}`, { name: 'test', source: 'TEST', options: { Threads: 1 } }, context, request);
+        const evidence = createSearchEvidence(`physical-${++sequence}`, { artifactId: 'fixture-artifact', name: 'test', source: 'TEST', options: { Threads: 1 } }, context, request);
         if (options.corruptScope && restricted) evidence.request.rootMoves = evidence.request.rootMoves.slice(0, 1);
         if (options.reuse) evidence.reused = true;
         const root = request.rootMoves?.[0] ?? 'e2e4';

@@ -1,3 +1,4 @@
+import { PositionAnalysisPool } from './positionAnalysisPool';
 import type { TrainingMomentExtractionCheckpoint } from './extractTrainingMoments';
 import { MAX_ASSESSMENT_POSITION_HISTORY } from '@/lib/training/assessmentIdentity';
 
@@ -24,13 +25,16 @@ function evaluation(value: unknown): boolean {
 export function parseExtractionCheckpoint(value: unknown): TrainingMomentExtractionCheckpoint {
     if (!isRecord(value)) throw new Error('Analysis checkpoint is not an object');
     if (
-        value.version !== 1 ||
+        value.version !== 2 ||
         typeof value.gameId !== 'string' ||
         typeof value.sourceGameId !== 'string' ||
         typeof value.sourcePgnHash !== 'string' ||
         typeof value.configHash !== 'string' ||
         !finite(value.nextPly) || !Number.isInteger(value.nextPly) || value.nextPly < 0 ||
         !finite(value.expectedPlies) || !Number.isInteger(value.expectedPlies) || value.expectedPlies < value.nextPly ||
+        !Array.isArray(value.reassessDecisionPlies) || !value.reassessDecisionPlies.every(ply =>
+            Number.isInteger(ply) && ply >= 0 && ply < (value.expectedPlies as number)) ||
+        new Set(value.reassessDecisionPlies).size !== value.reassessDecisionPlies.length ||
         !Array.isArray(value.moments) ||
         !Array.isArray(value.gameAnalysis) ||
         !Array.isArray(value.whiteMoveAccuracies) || !value.whiteMoveAccuracies.every(finite) ||
@@ -51,5 +55,7 @@ export function parseExtractionCheckpoint(value: unknown): TrainingMomentExtract
             (value.pendingConfirmation.newEval != null && !evaluation(value.pendingConfirmation.newEval)) ||
             (value.pendingConfirmation.afterEval != null && !evaluation(value.pendingConfirmation.afterEval))))
     ) throw new Error('Analysis checkpoint has an invalid shape');
+    if (!isRecord(value.analysisPool)) throw new Error('Analysis checkpoint is missing its evidence pool');
+    PositionAnalysisPool.hydrate(value.analysisPool as unknown as Parameters<typeof PositionAnalysisPool.hydrate>[0]);
     return value as unknown as TrainingMomentExtractionCheckpoint;
 }

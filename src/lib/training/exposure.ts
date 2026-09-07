@@ -13,6 +13,12 @@ const TERMINAL_REASONS = [
 ] as const;
 const MAX_FUTURE_SKEW_MS = 5 * 60_000;
 const MAX_EXPOSURE_AGE_MS = 30 * 24 * 60 * 60_000;
+const EXPOSURE_PARENT_CONSTRAINTS = new Set([
+    'PracticeExposure_userId_fkey',
+    'PracticeExposure_trainingMomentId_userId_fkey',
+    'PracticeExposure_solutionRevision_moment_fkey',
+    'PracticeExposure_attemptId_userId_fkey',
+]);
 
 type PracticeFocus = (typeof FOCUSES)[number];
 type TerminalReason = (typeof TERMINAL_REASONS)[number];
@@ -228,6 +234,17 @@ export async function recordPracticeExposure(args: {
             duplicate: false,
         } as const;
     } catch (error) {
+        // A parent can disappear after the ownership checks above, for example
+        // when a game is deleted while its final exposure event is in flight.
+        if (
+            error instanceof Prisma.PrismaClientKnownRequestError &&
+            error.code === 'P2003' &&
+            error.meta?.modelName === 'PracticeExposure' &&
+            typeof error.meta.constraint === 'string' &&
+            EXPOSURE_PARENT_CONSTRAINTS.has(error.meta.constraint)
+        ) {
+            return { ok: false, reason: 'NOT_FOUND' } as const;
+        }
         if (
             error instanceof Prisma.PrismaClientKnownRequestError &&
             error.code === 'P2002'

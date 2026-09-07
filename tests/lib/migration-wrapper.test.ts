@@ -93,24 +93,24 @@ describe('migration wrapper', () => {
         'terminates a migration grandchild that ignores SIGTERM',
         () => {
             const directory = fakePnpm(
-                '"$NODE_BINARY" "$GRANDCHILD_FIXTURE" &\nwait'
+                '/bin/sh "$GRANDCHILD_FIXTURE" &\nwait'
             );
-            const fixture = join(directory, 'grandchild.mjs');
+            const fixture = join(directory, 'grandchild.sh');
             const pidFile = join(directory, 'grandchild.pid');
             writeFileSync(
                 fixture,
                 [
-                    "import { writeFileSync } from 'node:fs';",
-                    "writeFileSync(process.env.GRANDCHILD_PID_FILE, String(process.pid));",
-                    "process.on('SIGTERM', () => {});",
-                    'setInterval(() => {}, 1_000);',
+                    // Shell builtins install the signal handler and publish the
+                    // PID before the timeout, without racing another Node startup.
+                    "trap '' TERM",
+                    'printf "%s" "$$" > "$GRANDCHILD_PID_FILE"',
+                    'while :; do sleep 10; done',
                 ].join('\n')
             );
 
             const result = run(directory, {
                 BACKRANQ_MIGRATION_TIMEOUT_MS: '1000',
                 BACKRANQ_MIGRATION_KILL_GRACE_MS: '100',
-                NODE_BINARY: process.execPath,
                 GRANDCHILD_FIXTURE: fixture,
                 GRANDCHILD_PID_FILE: pidFile,
             });

@@ -1,11 +1,17 @@
 import { expect, test, type Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
 import type { Chess } from 'chess.js';
+import { readFileSync } from 'node:fs';
 
 import { COACH_OFFLINE_ACCESS_STORAGE_KEY } from '@/lib/coach/offlineAccess';
 import { COACH_OFFLINE_OWNER_STORAGE_KEY } from '@/lib/coach/offlineOwner';
 
 import { clickMove, square } from './support/board';
+
+// Playwright's Node loader does not transform imported JSON like the app bundler.
+// Read the same reviewed pins without changing the production module contract.
+const stockfishArtifact = JSON.parse(readFileSync(new URL('../../src/lib/analysis/stockfishArtifact.json', import.meta.url), 'utf8'));
+const STOCKFISH_ARTIFACT_ID = `stockfish-js-wasm-sha256:${stockfishArtifact.jsSha256}:${stockfishArtifact.wasmSha256}`;
 
 // The deterministic judge still speaks legal UCI for the actual requested
 // position. Bundle the same rules library into the fixture's init script.
@@ -21,7 +27,7 @@ const chessFixtureBundle = buildSync({
 }).outputFiles[0]!.text;
 
 async function installDeterministicCoachEngine(page: Page) {
-    const installWorker = () => {
+    const installWorker = (artifactId: string) => {
         const FixtureChess = (window as unknown as {
             CoachFixtureChess: { Chess: typeof Chess };
         }).CoachFixtureChess.Chess;
@@ -188,6 +194,7 @@ async function installDeterministicCoachEngine(page: Page) {
                                 data: {
                                     type: 'identity',
                                     identity: {
+                                        artifactId,
                                         name: 'Deterministic coach',
                                         source: 'e2e',
                                         options: {},
@@ -342,7 +349,7 @@ async function installDeterministicCoachEngine(page: Page) {
     await page.addInitScript({
         content: `${chessFixtureBundle}
             ;globalThis.CoachFixtureChess = CoachFixtureChess;
-            ;(${installWorker.toString()})();`,
+            ;(${installWorker.toString()})(${JSON.stringify(STOCKFISH_ARTIFACT_ID)});`,
     });
 }
 

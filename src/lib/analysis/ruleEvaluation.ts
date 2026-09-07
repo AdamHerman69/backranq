@@ -41,6 +41,7 @@ export function ruleTerminalEvaluation(
             id: `rule:${kind}:${assessmentPositionKey(fen, previousFens)}`,
             source: 'RULE',
             engine: {
+                artifactId: 'backranq-standard-rules-v1:chess.js@1.4.0',
                 name: 'Chess rules',
                 version: '1',
                 source: 'chess.js',

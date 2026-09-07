@@ -1,11 +1,8 @@
 /** Regression checks for defects first reproduced by the 8739124 audit. */
 import { Chess } from 'chess.js';
 import { describe, expect, it } from 'vitest';
-import {
-    acceptanceFrontierFromMultiPv,
-    confirmAcceptanceFrontier,
-} from '@/lib/training/acceptanceFrontier';
-import { normalizeGradingPolicy } from '@/lib/training/config';
+import { assessMove } from '@/lib/training/assessmentPolicy';
+import { practiceV4Fixture } from '../helpers/practice-v4';
 import {
     evaluationLoss,
     negateScore,
@@ -14,76 +11,20 @@ import {
 import { ServerStockfishClient } from '@/lib/analysis/serverStockfishClient';
 import type { ServerStockfishRuntime } from '@/lib/analysis/serverStockfishRuntime';
 import { extractTrainingMomentsFromGames } from '@/lib/analysis/extractTrainingMoments';
-import { metricsFromPovScores } from '@/lib/training/gradingEvidence';
-import type { MultiPvLine } from '@/lib/analysis/stockfishClient';
-
-const policy = normalizeGradingPolicy(undefined);
-const lines = (cps: number[]): MultiPvLine[] =>
-    cps.map((value, i) => ({
-        multipv: i + 1,
-        score: { type: 'cp', value },
-        pvUci: ['e2e4', 'd2d4', 'g1f3', 'b1c3'][i]
-            ? [['e2e4', 'd2d4', 'g1f3', 'b1c3'][i]!]
-            : [`a2a${i}`],
-    }));
-
 describe('chess audit regressions', () => {
-    it('applies the cp boundary without inventing exact outcome preservation', () => {
-        const frontier = acceptanceFrontierFromMultiPv({
-            lines: lines([60, -40, -60, -100]),
-            requestedMultiPv: 4,
-            alternativesComplete: true,
-            policy,
-        });
-        expect(frontier.status).toBe('STABLE');
-        expect(frontier.moves.map((x) => x.moveUci)).not.toContain('g1f3');
-        const metrics = metricsFromPovScores({
-            moveUci: 'g1f3',
-            originalMoveUci: '',
-            trainingSide: 'w',
-            bestScore: { kind: 'cp', cp: 60, pov: 'WHITE' },
-            submittedScore: { kind: 'cp', cp: -60, pov: 'WHITE' },
-            originalScore: null,
-        });
-        expect(policy.success.preserveOutcome).toBe(true);
-        expect(metrics.preservesOutcome).toBeNull();
+    it('applies adaptive cp quality without inventing rule-exact preservation', () => {
+        const revision = practiceV4Fixture();
+        const assess = () => assessMove(revision.frames[0], { id: 'audit', moveUci: 'd2d4', originalMoveUci: 'a2a3', referenceMoveUci: 'e2e4', trainingSide: 'WHITE', evidence: revision.evidence });
+        expect(assess().quality).toBe('GOOD');
+        expect(assess().metrics.preservesExactOutcome).toBeNull();
+        for (const observation of Object.values(revision.evidence.observations)) if (observation.lines[1]) observation.lines[1].score = { kind: 'CP', cp: -150, pov: 'WHITE' };
+        expect(assess().quality).toBe('BELOW_STANDARD');
     });
-    it('retains unchanged acceptable membership across tier-only drift', () => {
-        const first = acceptanceFrontierFromMultiPv({
-            lines: lines([100, 81, -70]),
-            requestedMultiPv: 3,
-            alternativesComplete: true,
-            policy,
-        });
-        const second = acceptanceFrontierFromMultiPv({
-            lines: lines([100, 79, -70]),
-            requestedMultiPv: 3,
-            alternativesComplete: true,
-            policy,
-        });
-        expect(first.moves.map((x) => x.moveUci)).toEqual(
-            second.moves.map((x) => x.moveUci),
-        );
-        expect(confirmAcceptanceFrontier(first, second).status).toBe('STABLE');
-    });
-    it('requires cp quality even when matched WDL is saturated', () => {
-        const saturated = lines([1000, 800, 600]);
-        saturated.forEach((x) => {
-            x.wdl = { win: 1000, draw: 0, loss: 0 };
-        });
-        const frontier = acceptanceFrontierFromMultiPv({
-            lines: saturated,
-            requestedMultiPv: 3,
-            alternativesComplete: true,
-            policy,
-        });
-        expect(
-            evaluationLoss(
-                { score: saturated[0]!.score, wdl: saturated[0]!.wdl },
-                { score: saturated[1]!.score, wdl: saturated[1]!.wdl },
-            ).winningChance,
-        ).toBe(0);
-        expect(frontier.moves.map((x) => x.moveUci)).not.toContain('d2d4');
+    it('retains supported membership while exact tiers vary across complete depths', () => {
+        const revision = practiceV4Fixture();
+        for (const [index, observation] of Object.values(revision.evidence.observations).entries()) if (observation.lines[1]) observation.lines[1].score = { kind: 'CP', cp: index % 2 ? 9 : 11, pov: 'WHITE' };
+        const answer = assessMove(revision.frames[0], { id: 'audit', moveUci: 'd2d4', originalMoveUci: 'a2a3', referenceMoveUci: 'e2e4', trainingSide: 'WHITE', evidence: revision.evidence });
+        expect(answer.quality).toBe('GOOD'); expect(answer.qualitySupport).toBe('SUPPORTED'); expect(answer.tier).toBeNull();
     });
     it('treats mate zero as a loss for the side to move', () => {
         expect(winningChance({ type: 'mate', value: 0 })).toBe(0);

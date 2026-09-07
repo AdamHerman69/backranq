@@ -44,6 +44,7 @@ import {
     type TrainerAttemptPhase,
 } from '@/lib/training/trainerState';
 import { cn } from '@/lib/utils';
+import { formatLiveEvaluation } from '@/lib/training/presentation';
 
 type TrainerViewMode = 'solve' | 'analyze';
 type RevealIntent = 'solution' | 'analysis' | null;
@@ -286,7 +287,7 @@ export function TrainingTrainer({
             training.presentation.stage !== 'USER_MOVE'
         ) {
             return {
-                message: feedback.message,
+                message: training.liveEvaluation ? formatLiveEvaluation(training.liveEvaluation.score, training.prompt?.sideToMove ?? 'w') : feedback.message,
                 tone: 'neutral' as const,
                 busy: true,
             };
@@ -917,7 +918,7 @@ export function TrainingTrainer({
                             initialFen={analysisSession.initialFen}
                             review={
                                 training.review ??
-                                training.prompt.grading.review
+                                training.prompt.review
                             }
                             engineClient={training.engineClient}
                             onRequestEngine={

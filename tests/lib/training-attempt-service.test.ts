@@ -1,1123 +1,194 @@
-import { fixtureSolution, TEST_REFERENCE_ID } from '../helpers/extractionEvidence';
-import { Chess } from 'chess.js';
-import { assessmentPositionKey } from '@/lib/training/assessmentIdentity';
+import { practiceV4Fixture, practiceV4PatchFixture } from '../helpers/practice-v4';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { recordTrainingAttempt, enrichTrainingAttempt, type TrainingAttemptDependencies } from '@/lib/training/attemptService';
+import type { EnrichTrainingAttemptRequest, RecordPlayedMoveRequest } from '@/lib/training/attemptApi';
+import type { PracticeMomentRevision, MoveAssessment } from '@/lib/training/practiceContract';
 
-import {
-    recordTrainingAttempt,
-    enrichTrainingAttempt,
-    trainingAttemptPayloadHash,
-    TrainingAttemptError,
-} from '@/lib/training/attemptService';
-import type { TrainingSolutionTreeNodeDto, TrainingClientMoveEvidence, EnrichTrainingAttemptRequest, RecordTrainingAttemptRequest } from '@/lib/training/api';
-
-const momentId = '11111111-1111-4111-8111-111111111111';
-const revisionId = '22222222-2222-4222-8222-222222222222';
-const clientAttemptId =
-    '33333333-3333-4333-8333-333333333333';
-const rootFen =
-    'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-const afterE4 =
-    'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
-const afterE4E5 =
-    'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2';
-
-const gradingPolicy = {
-    version: 3,
-    pov: 'TRAINING_SIDE',
-    best: { maxCpLoss: 20, maxWinChanceLoss: 0.03 },
-    strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
-    success: {
-        maxCpLoss: 100,
-        maxWinChanceLoss: 0.1,
-        preserveOutcome: true,
-    },
-    improvement: {
-        minRecoveredCp: 40,
-        minRecoveredWinChance: 0.05,
-    },
-    unknownMove: 'EVALUATE',
-    matePolicy: 'EXACT',
-    tablebasePolicy: 'EXACT',
-};
-
-function revisionFixture() {
-    return fixtureSolution({
-        originalDecision: { phase: 'MIDDLEGAME', fen: rootFen, sideToMove: 'w', originalMoveUci: 'd2d4', positionHistory: [], scoreBefore: { kind: 'cp', cp: 25, pov: 'WHITE' }, scoreAfter: { kind: 'cp', cp: -95, pov: 'WHITE' }, cpLoss: 120, winChanceLoss: 0.2, sourceKinds: ['MY_MISTAKE'], lessonKinds: ['TACTICAL'], themes: ['fork'] },
-        trainable: true,
-        verificationStatus: 'VERIFIED',
-        acceptanceFrontier: {
-            version: 1,
-            status: 'STABLE',
-            targetCutoffCp: 100,
-            effectiveCutoffCp: 80,
-            boundaryGapCp: 40,
-            moves: [{ moveUci: 'e2e4', tier: 'BEST' }],
-            firstRejectedMoveUci: 'a2a3',
-        },
-        solutionHash: 'solution-hash-1',
-        configHash: 'config-hash-1',
-        bestMoveUci: 'e2e4',
-        acceptedMovesUci: ['e2e4'],
-        solutionShape: 'UNIQUE',
-        bestLine: ['e2e4'],
-        scoreAtStart: { kind: 'cp', cp: 25, pov: 'WHITE' },
-        gradingPolicy,
-        solutionTree: {
-            fen: rootFen,
-            ply: 0,
-            role: 'USER',
-            acceptedMovesUci: ['e2e4'],
-            alternativesComplete: true,
-            branches: [
-                {
-                    moveUci: 'e2e4',
-                    best: true,
-                    child: {
-                        fen: afterE4,
-                        ply: 1,
-                        role: 'TERMINAL',
-                        acceptedMovesUci: [],
-                        alternativesComplete: true,
-                        branches: [],
-                    },
-                },
-            ],
-        },
-        moveAssessments: [
-            {
-                decisionIndex: 0,
-                fen: rootFen,
-                moveUci: 'e2e4',
-                source: 'PRECOMPUTED',
-                status: 'VERIFIED',
-                grade: 'BEST',
-                scoreAfter: { kind: 'cp', cp: 25, pov: 'WHITE' },
-                evidence: {
-                    bestGapCp: 0,
-                    bestGapWinChance: 0,
-                    recoveredCp: 120,
-                    recoveredWinChance: 0.2,
-                    preservesOutcome: true,
-                },
-            },
-        ],
-    });
+// Evidence correctness is independently tested by the canonical contract suite.
+// Here the persistence boundary receives the validated value and is exercised with a transactional store.
+vi.mock('@/lib/training/practiceContract', async importOriginal => {
+    const original = await importOriginal<typeof import('@/lib/training/practiceContract')>();
+    return { ...original, parsePracticeMomentRevision: (value: unknown) => (value as { contractVersion?: number }).contractVersion === 4 ? original.parsePracticeMomentRevision(value) : value,
+        validatePracticeEvaluationPatch: (revision: PracticeMomentRevision, patch: Parameters<typeof original.validatePracticeEvaluationPatch>[1]) => revision.contractVersion === 4 ? original.validatePracticeEvaluationPatch(revision, patch) : ({ success: true, value: patch }) };
+});
+const userId = '11111111-1111-4111-8111-111111111111';
+const momentId = '22222222-2222-4222-8222-222222222222';
+const revisionId = '33333333-3333-4333-8333-333333333333';
+const clientAttemptId = '44444444-4444-4444-8444-444444444444';
+const eventId = (n: number) => `55555555-5555-4555-8555-${String(n).padStart(12, '0')}`;
+const at = '2026-09-01T10:00:00.000Z';
+const good = { id: 'good', contextId: 'root', moveUci: 'e2e4', frameId: 'frame', quality: 'GOOD', qualitySupport: 'SUPPORTED', tier: null, tierSupport: 'NONE', originalRelation: 'BETTER', pending: ['TIER'] } as MoveAssessment;
+const bad = { ...good, id: 'bad', moveUci: 'a2a3', quality: 'BELOW_STANDARD', originalRelation: 'SAME_MOVE' } as MoveAssessment;
+let manifest: PracticeMomentRevision;
+function record(overrides: Partial<RecordPlayedMoveRequest> = {}): RecordPlayedMoveRequest {
+    return { kind: 'RECORD', clientAttemptId, momentRevisionId: revisionId, stepIndex: 0, contextId: 'root', moveUci: 'e2e4', playedAt: at, timeSpentMs: 100, initialAssessmentId: null, initialCoverageGroupId: null, resolution: 'PENDING', ...overrides };
 }
-
-function momentFixture() {
-    return {
-        id: momentId,
-        fen: rootFen,
-        sideToMove: 'w',
-        positionHistory: [],
-        originalMoveUci: 'd2d4',
-        scoreBefore: { kind: 'cp', cp: 25, pov: 'WHITE' },
-        scoreAfter: { kind: 'cp', cp: -95, pov: 'WHITE' },
-        gameId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        decisionPly: 0,
-        phase: 'MIDDLEGAME',
-        cpLoss: 120,
-        winChanceLoss: 0.2,
-        sourceKinds: ['MY_MISTAKE'],
-        lessonKinds: ['TACTICAL'],
-        themes: ['fork'],
-        currentSolutionRevisionId: revisionId,
-        game: {
-            provider: 'LICHESS',
-            timeClass: 'RAPID',
-            playedAt: new Date('2026-07-30T08:00:00.000Z'),
-        },
-        currentSolutionRevision: revisionFixture(),
-    };
+function enrich(sequence = 1, assessment: MoveAssessment | null = good): EnrichTrainingAttemptRequest {
+    return { kind: 'ENRICH', clientAttemptId, momentRevisionId: revisionId, stepIndex: 0, eventId: eventId(sequence), sequence, supersedesEventId: sequence === 1 ? null : eventId(sequence - 1), evaluatedAt: '2026-09-01T10:00:01.000Z', resolution: assessment ? 'RESOLVED' : 'UNAVAILABLE', assessmentId: assessment ? `${assessment.id}-${sequence}` : null, evaluation: assessment ? { frame: { id: `frame-${sequence}` } as never, assessments: [{ ...assessment, id: `${assessment.id}-${sequence}` }], evidence: { searches: {}, observations: {}, exact: {} } } : null };
 }
-
-function continuationRevisionFixture() {
-    const result = fixtureSolution({
-        ...revisionFixture(),
-        bestLine: ['e2e4', 'e7e5', 'g1f3'],
-        solutionTree: {
-            fen: rootFen,
-            ply: 0,
-            role: 'USER',
-            acceptedMovesUci: ['e2e4'],
-            alternativesComplete: true,
-            branches: [
-                {
-                    moveUci: 'e2e4',
-                    best: true,
-                    child: {
-                        fen: afterE4,
-                        ply: 1,
-                        role: 'OPPONENT',
-                        acceptedMovesUci: [],
-                        selectedMoveUci: 'e7e5',
-                        alternativesComplete: true,
-                        branches: [
-                            {
-                                moveUci: 'e7e5',
-                                best: true,
-                                child: {
-                                    fen: afterE4E5,
-                                    ply: 2,
-                                    role: 'USER',
-                                    acceptedMovesUci: ['g1f3'],
-                                    alternativesComplete: true,
-                                    branches: [
-                                        {
-                                            moveUci: 'g1f3',
-                                            best: true,
-                                            child: {
-                                                fen: 'rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2',
-                                                ply: 3,
-                                                role: 'TERMINAL',
-                                                acceptedMovesUci: [],
-                                                branches: [],
-                                            },
-                                        },
-                                    ],
-                                },
-                            },
-                        ],
-                    },
-                },
-            ],
-        },
-        moveAssessments: [
-            ...revisionFixture().moveAssessments,
-            {
-                positionKey: assessmentPositionKey(afterE4E5, [rootFen, afterE4]),
-                referenceId: TEST_REFERENCE_ID,
-                tierStable: true,
-                decisionIndex: 1,
-                fen: afterE4E5,
-                moveUci: 'g1f3',
-                source: 'PRECOMPUTED',
-                status: 'VERIFIED',
-                grade: 'BEST',
-                scoreAfter: {
-                    kind: 'cp',
-                    cp: 5,
-                    pov: 'WHITE',
-                },
-                evidence: {
-                    bestGapCp: 20,
-                    bestGapWinChance: 0.02,
-                    preservesOutcome: true,
-                },
-            },
-        ],
-    });
-    const node = result.solutionTree.branches[0].child.branches[0].child as unknown as TrainingSolutionTreeNodeDto;
-    node.answerCoverage = { ...result.answerCoverage, contextId: node.contextId, legalMovesUci: new Chess(afterE4E5).moves({verbose:true}).map(move => move.from + move.to + (move.promotion ?? '')), assessedMovesUci: ['g1f3'], coveredMovesUci: [] };
-    return result;
-}
-
-function gradedRequest(): RecordTrainingAttemptRequest {
-    return {
-        kind: 'RECORD',
-        completedAt: '2026-07-30T08:00:00.000Z',
-        clientAttemptId,
-        solutionRevisionId: revisionId,
-        status: 'GRADED',
-        grade: 'BEST',
-        gradingSource: 'PRECOMPUTED',
-        comparison: {
-            submittedScoreAfter: {
-                kind: 'cp',
-                cp: 25,
-                pov: 'WHITE',
-            },
-            bestGapCp: 0,
-            bestGapWinChance: 0,
-            recoveredCp: 120,
-            recoveredWinChance: 0.2,
-            preservesOutcome: true,
-        },
-        steps: [
-            {
-                stepIndex: 0,
-                actor: 'USER',
-                fenBefore: rootFen,
-                moveUci: 'e2e4',
-                grade: 'BEST',
-                source: 'PRECOMPUTED',
-                timeSpentMs: 900,
-            },
-        ],
-    };
-}
-
-function dependencies() {
-    const created = {
-        id: '44444444-4444-4444-8444-444444444444',
-    };
-    const tx = {
-        $queryRaw: vi.fn().mockResolvedValue([
-            {
-                acquired: true,
-                currentSolutionRevisionId: revisionId,
-            },
-        ]),
-        trainingAttempt: {
-            create: vi.fn().mockResolvedValue(created),
-        },
-        trainingAttemptStep: {
-            createMany: vi.fn().mockResolvedValue({ count: 1 }),
-        },
-        trainingMoment: {
-            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        },
-        trainingAttemptStatusEvent: {
-            create: vi.fn().mockResolvedValue({ id: 'status-event-1' }),
-        },
-        practiceReviewState: {
-            findUnique: vi.fn().mockResolvedValue(null),
-            upsert: vi.fn().mockResolvedValue({ id: 'review-state-1' }),
-        },
-        practiceReviewEvent: {
-            findUnique: vi.fn().mockResolvedValue(null),
-            create: vi.fn().mockResolvedValue({ id: 'review-event-1' }),
-        },
-    };
-    const db = {
-        trainingAttempt: {
-            findUnique: vi.fn().mockResolvedValue(null),
-        },
-        trainingMoment: {
-            findFirst: vi.fn().mockResolvedValue(momentFixture()),
-        },
-        solutionRevision: { findFirst: vi.fn().mockResolvedValue(revisionFixture()) },
-        trainingAttemptAssessmentRevision: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({id:'refinement-1'}) },
-        $transaction: vi.fn(
-            async (callback: (transaction: typeof tx) => unknown) =>
-                callback(tx)
-        ),
-    };
-    return { db, tx, created };
-}
-
-function deferred() {
-    let resolve!: () => void;
-    const promise = new Promise<void>((done) => {
-        resolve = done;
-    });
-    return { promise, resolve };
-}
-
-type ReviewStateSnapshot = {
-    id: string;
-    intervalDays: number;
-    lapses: number;
-    successes: number;
-    nextDueAt: Date;
-    lastReviewedAt: Date;
-    algorithmVersion: string;
-};
-
-type ReviewStateWrite = Omit<ReviewStateSnapshot, 'id'>;
-
-function concurrentDependencies() {
-    const attempts = new Map<
-        string,
-        {
-            id: string;
-            trainingMomentId: string;
-            solutionRevisionId: string;
-            clientPayloadHash: string;
+type Row = Record<string, unknown>;
+function matches(row: Row, where: Row = {}): boolean {
+    return Object.entries(where).every(([key, value]) => {
+        if (key === 'OR') return (value as Row[]).some(v => matches(row, v));
+        if (key.includes('_')) return matches(row, value as Row);
+        if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
+            if ('in' in value) return (value.in as unknown[]).includes(row[key]);
+            if ('lt' in value) return (row[key] as Date) < (value.lt as Date);
         }
-    >();
-    const reviewEventKeys = new Set<string>();
-    let reviewState: ReviewStateSnapshot | null = null;
-    let lastTrainedAt: Date | null = null;
-    let createdAttemptCount = 0;
-
-    const firstLockAcquired = deferred();
-    const allowFirstLock = deferred();
-    const secondLockWaiting = deferred();
-    const lockWaiters: Array<() => void> = [];
-    let lockHeld = false;
-    let lockAcquisitions = 0;
-
-    const releaseLock = () => {
-        const next = lockWaiters.shift();
-        if (next) next();
-        else lockHeld = false;
-    };
-    const acquireLock = async () => {
-        if (lockHeld) {
-            secondLockWaiting.resolve();
-            await new Promise<void>((resolve) => {
-                lockWaiters.push(resolve);
-            });
-        } else {
-            lockHeld = true;
-        }
-        lockAcquisitions += 1;
-        if (lockAcquisitions === 1) {
-            firstLockAcquired.resolve();
-            await allowFirstLock.promise;
-        }
-        return releaseLock;
-    };
-
-    const moment = momentFixture();
-
-    const createTransactionClient = (
-        setRelease: (release: () => void) => void
-    ) => ({
-        $queryRaw: vi.fn(async () => {
-            setRelease(await acquireLock());
-            return [
-                {
-                    acquired: true,
-                    currentSolutionRevisionId: revisionId,
-                },
-            ];
-        }),
-        trainingAttempt: {
-            create: vi.fn(
-                async (input: {
-                    data: {
-                        clientAttemptId: string;
-                        trainingMomentId: string;
-                        solutionRevisionId: string;
-                        clientPayloadHash: string;
-                    };
-                }) => {
-                    if (attempts.has(input.data.clientAttemptId)) {
-                        throw { code: 'P2002' };
-                    }
-                    createdAttemptCount += 1;
-                    const created = {
-                        id: `attempt-${createdAttemptCount}`,
-                        trainingMomentId:
-                            input.data.trainingMomentId,
-                        solutionRevisionId:
-                            input.data.solutionRevisionId,
-                        clientPayloadHash:
-                            input.data.clientPayloadHash,
-                    };
-                    attempts.set(input.data.clientAttemptId, created);
-                    return { id: created.id };
-                }
-            ),
-        },
-        trainingAttemptStep: {
-            createMany: vi.fn().mockResolvedValue({ count: 1 }),
-        },
-        trainingMoment: {
-            updateMany: vi.fn(
-                async (input: { data: { lastTrainedAt: Date } }) => {
-                    if (
-                        !lastTrainedAt ||
-                        input.data.lastTrainedAt > lastTrainedAt
-                    ) {
-                        lastTrainedAt = input.data.lastTrainedAt;
-                        return { count: 1 };
-                    }
-                    return { count: 0 };
-                }
-            ),
-        },
-        trainingAttemptStatusEvent: {
-            create: vi.fn().mockResolvedValue({ id: 'status-event' }),
-        },
-        practiceReviewState: {
-            findUnique: vi.fn(async () =>
-                reviewState ? { ...reviewState } : null
-            ),
-            upsert: vi.fn(
-                async (input: {
-                    create: ReviewStateWrite;
-                    update: ReviewStateWrite;
-                }) => {
-                    const write = reviewState
-                        ? input.update
-                        : input.create;
-                    reviewState = {
-                        id: reviewState?.id ?? 'review-state-1',
-                        intervalDays: write.intervalDays,
-                        lapses: write.lapses,
-                        successes: write.successes,
-                        nextDueAt: write.nextDueAt,
-                        lastReviewedAt: write.lastReviewedAt,
-                        algorithmVersion: write.algorithmVersion,
-                    };
-                    return { id: reviewState.id };
-                }
-            ),
-        },
-        practiceReviewEvent: {
-            findUnique: vi.fn(
-                async (input: {
-                    where: {
-                        userId_eventKey: { eventKey: string };
-                    };
-                }) =>
-                    reviewEventKeys.has(
-                        input.where.userId_eventKey.eventKey
-                    )
-                        ? { id: 'existing-review-event' }
-                        : null
-            ),
-            create: vi.fn(
-                async (input: { data: { eventKey: string } }) => {
-                    reviewEventKeys.add(input.data.eventKey);
-                    return { id: `review-event-${reviewEventKeys.size}` };
-                }
-            ),
-        },
+        return row[key] === value;
     });
-
-    const db = {
-        trainingAttempt: {
-            findUnique: vi.fn(
-                async (input: {
-                    where: {
-                        userId_clientAttemptId: {
-                            clientAttemptId: string;
-                        };
-                    };
-                }) =>
-                    attempts.get(
-                        input.where.userId_clientAttemptId
-                            .clientAttemptId
-                    ) ?? null
-            ),
-        },
-        trainingMoment: {
-            findFirst: vi.fn().mockResolvedValue(moment),
-        },
-        $transaction: vi.fn(
-            async (
-                callback: (
-                    tx: ReturnType<typeof createTransactionClient>
-                ) => Promise<unknown>
-            ) => {
-                const lock: { release: (() => void) | null } = {
-                    release: null,
-                };
-                const tx = createTransactionClient((value) => {
-                    lock.release = value;
-                });
-                try {
-                    return await callback(tx);
-                } finally {
-                    lock.release?.();
-                }
-            }
-        ),
-    };
-
-    return {
-        db,
-        firstLockAcquired,
-        allowFirstLock,
-        secondLockWaiting,
-        state: () => reviewState,
-        eventCount: () => reviewEventKeys.size,
-        lastTrainedAt: () => lastTrainedAt,
-    };
 }
-
-describe('client-graded training attempt recording', () => {
-    beforeEach(() => {
-        vi.clearAllMocks();
-    });
-
-    it('preserves offline completion time separately from server receipt time', async () => {
-        const { db, tx, created } = dependencies();
-        const response = await recordTrainingAttempt({
-            userId: 'user-1',
-            momentId,
-            request: gradedRequest(),
-            dependencies: {
-                db: db as never,
-                now: () => new Date('2026-08-05T08:00:00.000Z'),
-            },
-        });
-
-        expect(response).toEqual({
-            attemptId: created.id,
-            status: 'RECORDED',
-        });
-        expect(tx.$queryRaw).toHaveBeenCalledOnce();
-        expect(
-            tx.$queryRaw.mock.invocationCallOrder[0]
-        ).toBeLessThan(
-            tx.trainingAttempt.create.mock.invocationCallOrder[0] ??
-                Number.MAX_SAFE_INTEGER
-        );
-        const lockSql = Array.isArray(tx.$queryRaw.mock.calls[0]?.[0])
-            ? tx.$queryRaw.mock.calls[0]![0].join(' ')
-            : String(tx.$queryRaw.mock.calls[0]?.[0]);
-        expect(lockSql).toContain('pg_advisory_xact_lock');
-        expect(tx.$queryRaw.mock.calls[0]?.[1]).toBe(
-            `practice-review:user-1:${momentId}`
-        );
-        expect(tx.trainingAttempt.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({
-                status: 'GRADED',
-                grade: 'BEST',
-                gradingSource: 'PRECOMPUTED',
-                userMoveUci: 'e2e4',
-                clientPayloadHash: expect.any(String),
-                completedAt: new Date('2026-07-30T08:00:00.000Z'),
-                attemptedAt: new Date('2026-08-05T08:00:00.000Z'),
-                gradingEvidence: expect.objectContaining({
-                    serverVerified: true,
-                }),
-                contextPhase: 'MIDDLEGAME',
-                contextCpLoss: 120,
-                contextWinChanceLoss: 0.2,
-                contextSourceKinds: ['MY_MISTAKE'],
-                contextLessonKinds: ['TACTICAL'],
-                contextThemes: ['fork'],
-                contextProvider: 'LICHESS',
-                contextTimeClass: 'RAPID',
-                contextSolutionHash: 'solution-hash-1',
-                contextConfigHash: 'config-hash-1',
-            }),
-            select: { id: true },
-        });
-        expect(tx.trainingAttemptStep.createMany).toHaveBeenCalledWith({
-            data: [
-                expect.objectContaining({
-                    stepIndex: 0,
-                    actor: 'USER',
-                    fenBefore: rootFen,
-                    moveUci: 'e2e4',
-                    grade: 'BEST',
-                }),
-            ],
-        });
-        expect(tx.trainingMoment.updateMany).toHaveBeenCalled();
-        expect(
-            tx.trainingAttemptStatusEvent.create
-        ).toHaveBeenCalledWith({
-            data: expect.objectContaining({
-                attemptId: created.id,
-                status: 'GRADED',
-                grade: 'BEST',
-                reason: 'GRADED',
-                occurredAt: new Date('2026-07-30T08:00:00.000Z'),
-            }),
-        });
-        expect(tx.practiceReviewState.upsert).toHaveBeenCalledWith(
-            expect.objectContaining({
-                create: expect.objectContaining({
-                    solutionHash: 'solution-hash-1',
-                    configHash: 'config-hash-1',
-                    successes: 1,
-                    lastReviewedAt: new Date('2026-07-30T08:00:00.000Z'),
-                    nextDueAt: new Date('2026-07-31T08:00:00.000Z'),
-                }),
-            })
-        );
-        expect(tx.practiceReviewEvent.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({
-                attemptId: created.id,
-                outcome: 'SUCCESS',
-                grade: 'BEST',
-                occurredAt: new Date('2026-07-30T08:00:00.000Z'),
-            }),
-        });
-    });
-
-    it('records reveal-only history without requiring a move', async () => {
-        const { db, tx } = dependencies();
-        await recordTrainingAttempt({
-            userId: 'user-1',
-            momentId,
-            request: {
-                kind: 'RECORD',
-                completedAt: '2026-07-30T08:00:00.000Z',
-                clientAttemptId,
-                solutionRevisionId: revisionId,
-                status: 'REVEALED',
-                steps: [],
-            },
-            dependencies: { db: db as never },
-        });
-
-        expect(tx.trainingAttempt.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({
-                status: 'REVEALED',
-                grade: null,
-                gradingSource: null,
-                userMoveUci: null,
-            }),
-            select: { id: true },
-        });
-        expect(
-            tx.trainingAttemptStep.createMany
-        ).not.toHaveBeenCalled();
-        expect(
-            tx.trainingAttemptStatusEvent.create
-        ).toHaveBeenCalledWith({
-            data: expect.objectContaining({
-                status: 'REVEALED',
-                grade: null,
-                reason: 'REVEALED',
-            }),
-        });
-        expect(tx.practiceReviewEvent.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({
-                outcome: 'REVEAL',
-                grade: null,
-            }),
-        });
-    });
-
-    it('records a reveal after a verified partial continuation', async () => {
-        const { db, tx } = dependencies();
-        db.trainingMoment.findFirst.mockResolvedValue({
-            ...momentFixture(),
-            currentSolutionRevision: continuationRevisionFixture(),
-        });
-        const first = gradedRequest().steps[0]!;
-
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: {
-                    kind: 'RECORD',
-                    completedAt: '2026-07-30T08:00:00.000Z',
-                    clientAttemptId,
-                    solutionRevisionId: revisionId,
-                    status: 'REVEALED',
-                    steps: [
-                        first,
-                        {
-                            stepIndex: 1,
-                            actor: 'ENGINE',
-                            fenBefore: afterE4,
-                            moveUci: 'e7e5',
-                        },
-                    ],
-                },
-                dependencies: { db: db as never },
-            })
-        ).resolves.toMatchObject({ status: 'RECORDED' });
-
-        expect(tx.trainingAttempt.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({
-                status: 'REVEALED',
-                grade: null,
-                gradingSource: null,
-                userMoveUci: 'e2e4',
-            }),
-            select: { id: true },
-        });
-        expect(tx.trainingAttemptStep.createMany).toHaveBeenCalledWith({
-            data: [
-                expect.objectContaining({
-                    stepIndex: 0,
-                    actor: 'USER',
-                    grade: 'BEST',
-                }),
-                expect.objectContaining({
-                    stepIndex: 1,
-                    actor: 'ENGINE',
-                    grade: null,
-                }),
-            ],
-        });
-    });
-
-    it('rejects a revision with a malformed acceptance summary', async () => {
-        const { db, tx } = dependencies();
-        const moment = await db.trainingMoment.findFirst();
-        db.trainingMoment.findFirst.mockResolvedValue({
-            ...moment,
-            currentSolutionRevision: {
-                ...moment.currentSolutionRevision,
-                acceptanceFrontier: { status: 'OPEN' },
-            },
-        });
-
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: gradedRequest(),
-                dependencies: { db: db as never },
-            })
-        ).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
-        expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
-    });
-
-    it('preserves the served revision when a newer revision wins the transaction race', async () => {
-        const { db, tx } = dependencies();
-        tx.$queryRaw.mockResolvedValue([
-            {
-                acquired: true,
-                currentSolutionRevisionId:
-                    '99999999-9999-4999-8999-999999999999',
-            },
-        ]);
-
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: gradedRequest(),
-                dependencies: { db: db as never },
-            })
-        ).resolves.toMatchObject({ status: 'RECORDED' });
-        expect(tx.trainingAttempt.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ solutionRevisionId: revisionId, gradingEvidence: expect.objectContaining({ historicalRevision: true }) }) }));
-
-    });
-
-    it('validates the complete local continuation line before writing', async () => {
-        const { db, tx } = dependencies();
-        db.trainingMoment.findFirst.mockResolvedValue({
-            ...momentFixture(),
-            currentSolutionRevision: continuationRevisionFixture(),
-        });
-        const request = gradedRequest();
-        request.steps = [
-            request.steps[0]!,
-            {
-                stepIndex: 1,
-                actor: 'ENGINE',
-                fenBefore: afterE4,
-                moveUci: 'e7e5',
-            },
-            {
-                stepIndex: 2,
-                actor: 'USER',
-                fenBefore: afterE4E5,
-                moveUci: 'g1f3',
-                grade: 'BEST',
-                source: 'PRECOMPUTED',
-            },
-        ];
-        request.grade = 'BEST';
-
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request,
-                dependencies: { db: db as never },
-            })
-        ).resolves.toMatchObject({ status: 'RECORDED' });
-        expect(tx.trainingAttemptStep.createMany).toHaveBeenCalledWith({
-            data: expect.arrayContaining([
-                expect.objectContaining({
-                    stepIndex: 1,
-                    actor: 'ENGINE',
-                    grade: null,
-                }),
-            ]),
-        });
-    });
-
-    it('aggregates a later tablebase step into the server grading source', async () => {
-        const { db, tx } = dependencies();
-        const revision = continuationRevisionFixture();
-        revision.moveAssessments[1] = {
-            ...revision.moveAssessments[1]!,
-            source: 'TABLEBASE',
+function harness() {
+    const tables: Record<string, Row[]> = {
+        trainingMoment: [{ id: momentId, userId, gameId: 'game', phase: null, cpLoss: 200, winChanceLoss: null, sourceKinds: [], lessonKinds: [], themes: [], game: { provider: 'LICHESS', timeClass: 'RAPID' }, lastTrainedAt: null }],
+        solutionRevision: [{ id: revisionId, momentId, manifest, trainable: true, solutionHash: manifest.semanticHash, configHash: 'policy' }],
+        trainingAttempt: [], trainingAttemptStep: [], trainingAttemptAssessmentRevision: [], trainingAttemptStatusEvent: [], practiceReviewState: [], practiceReviewEvent: [],
+    };
+    const tx: Record<string, unknown> = { $queryRaw: vi.fn().mockResolvedValue([{ acquired: true }]) };
+    for (const name of Object.keys(tables)) {
+        const find = (where: Row) => tables[name].find(r => matches(r, where));
+        const create = (data: Row) => { const row = { id: `${name}-${tables[name].length}`, status: 'PENDING', quality: 'UNKNOWN', tier: null, originalRelation: 'UNKNOWN', revealedAt: null, latestSequence: 0, latestEventId: null, ...data }; tables[name].push(row); return row; };
+        tx[name] = {
+            findFirst: async ({ where }: { where: Row }) => find(where) ?? null,
+            findUnique: async ({ where }: { where: Row }) => find(where) ?? null,
+            findMany: async ({ where }: { where: Row }) => tables[name].filter(r => matches(r, where)).sort((a, b) => Number(a.stepIndex ?? a.attemptedAt ?? 0) - Number(b.stepIndex ?? b.attemptedAt ?? 0)),
+            create: async ({ data }: { data: Row }) => create(data),
+            createMany: async ({ data }: { data: Row[] }) => { data.forEach(create); return { count: data.length }; },
+            update: async ({ where, data }: { where: Row; data: Row }) => Object.assign(find(where)!, data),
+            updateMany: async ({ where, data }: { where: Row; data: Row }) => { tables[name].filter(r => matches(r, where)).forEach(r => Object.assign(r, data)); return {}; },
+            deleteMany: async ({ where }: { where: Row }) => { tables[name] = tables[name].filter(r => !matches(r, where)); return {}; },
+            upsert: async ({ where, create: input, update }: { where: Row; create: Row; update: Row }) => find(where) ? Object.assign(find(where)!, update) : create(input),
         };
-        db.trainingMoment.findFirst.mockResolvedValue({
-            ...momentFixture(),
-            currentSolutionRevision: revision,
-        });
-        const request = gradedRequest();
-        request.steps = [
-            request.steps[0]!,
-            {
-                stepIndex: 1,
-                actor: 'ENGINE',
-                fenBefore: afterE4,
-                moveUci: 'e7e5',
-            },
-            {
-                stepIndex: 2,
-                actor: 'USER',
-                fenBefore: afterE4E5,
-                moveUci: 'g1f3',
-                grade: 'BEST',
-                source: 'TABLEBASE',
-            },
-        ];
-        request.grade = 'BEST';
-        request.gradingSource = 'TABLEBASE';
-
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request,
-                dependencies: { db: db as never },
-            })
-        ).resolves.toMatchObject({ status: 'RECORDED' });
-        expect(tx.trainingAttempt.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({
-                grade: 'BEST',
-                gradingSource: 'TABLEBASE',
-            }),
-            select: { id: true },
-        });
-    });
-
-    it('rejects a graded attempt that stops before the solution tree is terminal', async () => {
-        const { db, tx } = dependencies();
-        db.trainingMoment.findFirst.mockResolvedValue({
-            ...momentFixture(),
-            currentSolutionRevision: continuationRevisionFixture(),
-        });
-
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: gradedRequest(),
-                dependencies: { db: db as never },
-            })
-        ).rejects.toMatchObject({
-            code: 'INVALID_REQUEST',
-            status: 400,
-        });
-        expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
-    });
-
-    it('rejects illegal, discontinuous, and forged aggregate results', async () => {
-        const { db, tx } = dependencies();
-        const illegal = gradedRequest();
-        illegal.steps[0] = {
-            ...illegal.steps[0]!,
-            moveUci: 'e2e5',
-        };
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: illegal,
-                dependencies: { db: db as never },
-            })
-        ).rejects.toMatchObject({
-            code: 'ILLEGAL_MOVE',
-            status: 400,
-        });
-
-        const forged = gradedRequest();
-        forged.grade = 'GOOD';
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: forged,
-                dependencies: { db: db as never },
-            })
-        ).rejects.toBeInstanceOf(TrainingAttemptError);
-
-        const legalButLosing = gradedRequest();
-        legalButLosing.steps[0] = {
-            ...legalButLosing.steps[0]!,
-            moveUci: 'a2a3',
-            grade: 'BEST',
-        };
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: legalButLosing,
-                dependencies: { db: db as never },
-            })
-        ).rejects.toMatchObject({ code: 'INVALID_REQUEST', status: 400 });
-        expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
-    });
-
-    it('is idempotent by owner and client attempt id', async () => {
-        const { db, tx } = dependencies();
-        db.trainingAttempt.findUnique.mockResolvedValue({
-            id: 'existing-attempt',
-            trainingMomentId: momentId,
-            solutionRevisionId: revisionId,
-            clientPayloadHash: trainingAttemptPayloadHash({
-                momentId,
-                request: gradedRequest(),
-            }),
-        });
-
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: gradedRequest(),
-                dependencies: { db: db as never },
-            })
-        ).resolves.toEqual({
-            attemptId: 'existing-attempt',
-            status: 'RECORDED',
-        });
-        expect(db.trainingMoment.findFirst).not.toHaveBeenCalled();
-        expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
-        expect(
-            tx.trainingAttemptStatusEvent.create
-        ).not.toHaveBeenCalled();
-
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: { ...gradedRequest(), grade: 'GOOD' },
-                dependencies: { db: db as never },
-            })
-        ).rejects.toMatchObject({
-            code: 'IDEMPOTENCY_CONFLICT',
-            status: 409,
-        });
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: {
-                    ...gradedRequest(),
-                    completedAt: '2026-07-29T08:00:00.000Z',
-                },
-                dependencies: { db: db as never },
-            })
-        ).rejects.toMatchObject({
-            code: 'IDEMPOTENCY_CONFLICT',
-            status: 409,
-        });
-    });
-
-    it('serializes distinct attempts and preserves the newer schedule when timestamps arrive out of order', async () => {
-        const harness = concurrentDependencies();
-        const newerAt = new Date('2026-08-04T12:00:00.000Z');
-        const olderAt = new Date('2026-08-03T12:00:00.000Z');
-        const newerRequest = {
-            ...gradedRequest(),
-            completedAt: newerAt.toISOString(),
-            clientAttemptId:
-                '44444444-4444-4444-8444-444444444444',
-        };
-        const olderRequest = {
-            ...gradedRequest(),
-            completedAt: olderAt.toISOString(),
-            clientAttemptId:
-                '55555555-5555-4555-8555-555555555555',
-        };
-
-        const newer = recordTrainingAttempt({
-            userId: 'user-1',
-            momentId,
-            request: newerRequest,
-            dependencies: {
-                db: harness.db as never,
-                now: () => new Date('2026-08-05T12:00:00.000Z'),
-            },
-        });
-        await harness.firstLockAcquired.promise;
-        const older = recordTrainingAttempt({
-            userId: 'user-1',
-            momentId,
-            request: olderRequest,
-            dependencies: {
-                db: harness.db as never,
-                now: () => new Date('2026-08-05T12:00:00.000Z'),
-            },
-        });
-        await harness.secondLockWaiting.promise;
-        harness.allowFirstLock.resolve();
-
-        const results = await Promise.all([newer, older]);
-        expect(results[0].attemptId).not.toBe(results[1].attemptId);
-        expect(harness.eventCount()).toBe(2);
-        expect(harness.state()).toMatchObject({
-            successes: 2,
-            lapses: 0,
-            intervalDays: 1,
-            lastReviewedAt: newerAt,
-            nextDueAt: new Date('2026-08-05T12:00:00.000Z'),
-        });
-        expect(harness.lastTrainedAt()).toEqual(newerAt);
-
-        await expect(
-            recordTrainingAttempt({
-                userId: 'user-1',
-                momentId,
-                request: newerRequest,
-                dependencies: {
-                    db: harness.db as never,
-                    now: () => newerAt,
-                },
-            })
-        ).resolves.toEqual(results[0]);
-        expect(harness.eventCount()).toBe(2);
-        expect(harness.state()).toMatchObject({ successes: 2 });
-    });
-});
-
-function clientEvidence(moveUci = 'a2a3'): TrainingClientMoveEvidence {
-    return { version: 1, contextId: assessmentPositionKey(rootFen, []), referenceId: TEST_REFERENCE_ID, policyVersion: 3, tierStable:true, localReference: { id:'local-reference', bestMoveUci:'e2e4', bestScore:{kind:'cp',cp:25,pov:'WHITE'}, canonicalBestMoveUci:'e2e4', canonicalScore:{kind:'cp',cp:25,pov:'WHITE'}, canonicalReferenceOutdated:false }, metrics: {moveUci, originalMoveUci:'d2d4', stable:true, evidenceModel:'CP_ONLY', bestGapCp:30, recoveredCp:90, preservesOutcome:null}, scoreAfter:{kind:'cp',cp:-5,pov:'WHITE'}, searches:[{nodes:100000,best:{},submitted:{},original:{},canonical:{}},{nodes:200000,best:{},submitted:{},original:{},canonical:{}}] };
+    }
+    const dependencies = { now: () => new Date('2026-09-06T12:00:00Z'), db: { $transaction: async (fn: (t: unknown) => unknown) => { const saved = structuredClone(tables); try { return await fn(tx); } catch (error) { Object.assign(tables, saved); throw error; } } } } as unknown as TrainingAttemptDependencies;
+    return { tables, write: (request = record()) => recordTrainingAttempt({ userId, momentId, request, dependencies }), refine: (request = enrich()) => enrichTrainingAttempt({ userId, momentId, request, dependencies }), dependencies };
 }
-
-describe('personal and historical attempt evidence', () => {
-    it('records a locally evaluated unknown answer without claiming canonical verification', async () => {
-        const {db,tx}=dependencies(); const request=gradedRequest();
-        request.grade='STRONG'; request.gradingSource='CLIENT_EVALUATED';
-        request.steps=[{stepIndex:0,actor:'USER',fenBefore:rootFen,moveUci:'a2a3',grade:'STRONG',source:'CLIENT_EVALUATED',clientEvidence:clientEvidence()}];
-        await expect(recordTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).resolves.toMatchObject({status:'RECORDED'});
-        expect(tx.trainingAttempt.create).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({gradingSource:'CLIENT_EVALUATED',gradingEvidence:expect.objectContaining({serverVerified:false,trust:'CLIENT_EVALUATED'})})}));
-        expect(tx.trainingAttemptStep.createMany).toHaveBeenCalledWith(expect.objectContaining({data:[expect.objectContaining({evidence:expect.objectContaining({serverVerified:false})})]}));
+beforeEach(() => {
+    manifest = { momentId, revisionId, semanticHash: 'semantic', source: { gameId: 'game', contextId: 'root', fen: 'root-fen' }, rootAnswerIndex: { contextId: 'root', frameId: 'frame', legalMovesUci: ['e2e4', 'a2a3'], assessmentIds: ['good', 'bad'] }, decision: { selection: 'INCLUDED' }, assessments: [good, bad], continuation: { mode: 'SINGLE_DECISION', nodes: [], edges: [] } } as unknown as PracticeMomentRevision;
+});
+describe('Practice v4 attempt events', () => {
+    it('persists an unresolved played move once without a mastery penalty', async () => {
+        const h = harness();
+        expect(await h.write()).toMatchObject({ status: 'PENDING', quality: 'UNKNOWN' });
+        expect(await h.write()).toMatchObject({ idempotentReplay: true });
+        expect(h.tables.trainingAttempt).toHaveLength(1);
+        expect(h.tables.trainingAttemptStep).toHaveLength(1);
+        expect(h.tables.practiceReviewState).toHaveLength(0);
     });
-    it('rejects a locally evaluated answer carrying another history context', async () => {
-        const {db}=dependencies();const request=gradedRequest();request.grade='STRONG';request.gradingSource='CLIENT_EVALUATED';
-        request.steps=[{stepIndex:0,actor:'USER',fenBefore:rootFen,moveUci:'a2a3',grade:'STRONG',source:'CLIENT_EVALUATED',clientEvidence:{...clientEvidence(),contextId:'other-history'}}];
-        await expect(recordTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).rejects.toMatchObject({code:'INVALID_REQUEST'});
+    it('resolves quality without requiring a tier and counts one success', async () => {
+        const h = harness(); await h.write();
+        expect(await h.refine()).toMatchObject({ status: 'RESOLVED', quality: 'GOOD', tier: null, applied: true });
+        expect(await h.refine()).toMatchObject({ idempotentReplay: true, applied: false });
+        expect(h.tables.practiceReviewState[0]).toMatchObject({ successes: 1, lapses: 0 });
+        expect(h.tables.practiceReviewEvent).toHaveLength(1);
     });
-    it('loads the explicitly served historical revision without rebinding the attempt', async () => {
-        const {db,tx}=dependencies(); const moment=momentFixture(); moment.currentSolutionRevisionId='99999999-9999-4999-8999-999999999999'; db.trainingMoment.findFirst.mockResolvedValue(moment);
-        await expect(recordTrainingAttempt({userId:'user-1',momentId,request:gradedRequest(),dependencies:{db:db as never}})).resolves.toMatchObject({status:'RECORDED'});
-        expect(db.solutionRevision.findFirst).toHaveBeenCalledWith(expect.objectContaining({where:{id:revisionId,momentId}}));
-        expect(tx.trainingAttempt.create).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({solutionRevisionId:revisionId,gradingEvidence:expect.objectContaining({historicalRevision:true})})}));
+    it('rebuilds counters after a supported correction instead of adding another attempt', async () => {
+        const h = harness(); await h.write(); await h.refine();
+        await h.refine(enrich(2, { ...bad, moveUci: 'e2e4' }));
+        expect(h.tables.practiceReviewState[0]).toMatchObject({ successes: 0, lapses: 1, intervalDays: 1 });
+        expect(h.tables.trainingAttempt).toHaveLength(1);
+        expect(h.tables.trainingAttemptAssessmentRevision).toHaveLength(2);
+        expect(h.tables.practiceReviewEvent).toHaveLength(1);
     });
-    it('appends an idempotent visible correction without creating another attempt or schedule event', async () => {
-        const {db,tx}=dependencies();
-        db.trainingAttempt.findUnique.mockResolvedValue({id:'attempt-1',trainingMomentId:momentId,solutionRevisionId:revisionId,status:'GRADED',steps:[{stepIndex:0,actor:'USER',fenBefore:rootFen,moveUci:'a2a3',grade:'DIFFERENT_MISTAKE'}]});
-        const request:EnrichTrainingAttemptRequest={kind:'ENRICH',clientAttemptId,solutionRevisionId:revisionId,clientEvidenceId:'55555555-5555-4555-8555-555555555555',stepIndex:0,evaluatedAt:'2026-07-30T08:00:01.000Z',clientEvidence:clientEvidence(),grade:'STRONG'};
-        const result=await enrichTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}});
-        expect(result).toEqual({attemptId:'attempt-1',status:'ENRICHED',corrected:true});
-        const data=db.trainingAttemptAssessmentRevision.create.mock.calls[0][0].data;
-        expect(data).toMatchObject({gradingSource:'CLIENT_EVALUATED',corrected:true,evidence:{serverVerified:false}});
-        expect(tx.trainingAttempt.create).not.toHaveBeenCalled();expect(tx.practiceReviewEvent.create).not.toHaveBeenCalled();
-        db.trainingAttemptAssessmentRevision.findUnique.mockResolvedValue({...data,id:'refinement-1'});
-        await expect(enrichTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).resolves.toEqual(result);
-        expect(db.trainingAttemptAssessmentRevision.create).toHaveBeenCalledTimes(1);
-        await expect(enrichTrainingAttempt({userId:'user-1',momentId,request:{...request,grade:'GOOD'},dependencies:{db:db as never}})).rejects.toMatchObject({code:'IDEMPOTENCY_CONFLICT'});
+    it('keeps the play date stable when a later evaluation changes its projection', async () => {
+        const h = harness(); await h.write();
+        await h.refine({ ...enrich(), evaluatedAt: '2026-09-03T10:00:00.000Z' });
+        await h.refine({ ...enrich(2, { ...bad, moveUci: 'e2e4' }), evaluatedAt: '2026-09-05T10:00:00.000Z' });
+        expect(h.tables.trainingAttempt[0]).toMatchObject({ attemptedAt: new Date(at), completedAt: new Date(at) });
+        expect(h.tables.trainingAttemptAssessmentRevision[1]).toMatchObject({ evaluatedAt: new Date('2026-09-05T10:00:00.000Z') });
+    });
+    it('accepts older late audit evidence without replacing the latest projection', async () => {
+        const h = harness(); await h.write(); await h.refine(enrich(2, { ...bad, moveUci: 'e2e4' }));
+        expect(await h.refine(enrich(1))).toMatchObject({ quality: 'BELOW_STANDARD', applied: false });
+        expect(h.tables.trainingAttemptStep[0]).toMatchObject({ latestSequence: 2 });
+        expect(h.tables.trainingAttemptAssessmentRevision).toHaveLength(2);
+    });
+    it('makes enrichment before RECORD retryable, then accepts its retry', async () => {
+        const h = harness(); await expect(h.refine()).rejects.toMatchObject({ status: 425 });
+        await h.write(); await expect(h.refine()).resolves.toMatchObject({ applied: true });
+    });
+    it('rejects changed played payload, sequence conflict, wrong context and unsupported claims', async () => {
+        const h = harness(); await h.write();
+        await expect(h.write(record({ moveUci: 'a2a3' }))).rejects.toMatchObject({ status: 409 });
+        await expect(h.refine(enrich(1, { ...good, contextId: 'other' }))).rejects.toMatchObject({ status: 400 });
+        await expect(h.refine(enrich(1, { ...good, qualitySupport: 'PROVISIONAL' }))).rejects.toMatchObject({ status: 400 });
+        await h.refine();
+        await expect(h.refine({ ...enrich(), eventId: eventId(9) })).rejects.toMatchObject({ status: 409 });
+    });
+    it('keeps engine unavailability neutral and a reveal separate from the played move', async () => {
+        const h = harness(); await h.write();
+        expect(await h.refine(enrich(1, null))).toMatchObject({ status: 'UNAVAILABLE', quality: 'UNKNOWN' });
+        expect(h.tables.practiceReviewState).toHaveLength(0);
+        await recordTrainingAttempt({ userId, momentId, dependencies: h.dependencies, request: { kind: 'REVEAL', clientAttemptId, momentRevisionId: revisionId, revealedAt: '2026-09-01T10:01:00.000Z' } });
+        expect(h.tables.trainingAttempt).toHaveLength(1);
+        expect(h.tables.trainingAttemptStep).toHaveLength(1);
+        await h.refine(enrich(2));
+        expect(h.tables.trainingAttempt[0]).toMatchObject({ status: 'REVEALED', quality: 'UNKNOWN' });
+        expect(h.tables.practiceReviewState).toHaveLength(0);
+    });
+    it('uses the served supported initial assessment without client grading claims', async () => {
+        const h = harness(); expect(await h.write(record({ resolution: 'RESOLVED', initialAssessmentId: 'good' }))).toMatchObject({ status: 'RESOLVED', quality: 'GOOD', tier: null });
+        expect(h.tables.practiceReviewState[0]).toMatchObject({ successes: 1 });
     });
 });
 
-it('rejects a graded continuation whose per-node coverage uses another reference', async()=>{
-    const {db,tx}=dependencies();const revision=continuationRevisionFixture();
-    const node=revision.solutionTree.branches[0].child.branches[0].child as unknown as TrainingSolutionTreeNodeDto;
-    node.answerCoverage={...node.answerCoverage!,referenceId:'foreign-reference'};
-    db.trainingMoment.findFirst.mockResolvedValue({...momentFixture(),currentSolutionRevision:revision});
-    await expect(recordTrainingAttempt({userId:'user-1',momentId,request:gradedRequest(),dependencies:{db:db as never}})).rejects.toMatchObject({code:'NOT_FOUND'});
-    expect(tx.trainingAttempt.create).not.toHaveBeenCalled();
+
+it('validates real engine evidence at the persistence boundary and rejects a forged quality correction', async () => {
+    manifest = { ...practiceV4Fixture(), momentId, revisionId };
+    const h = harness();
+    const patch = practiceV4PatchFixture(manifest);
+    await h.write(record({ contextId: manifest.source.contextId }));
+    const request = { ...enrich(), evaluation: patch, assessmentId: 'local-e2e4' };
+    expect(await h.refine(request)).toMatchObject({ quality: 'GOOD', applied: true });
+    const forged = structuredClone(request);
+    forged.eventId = eventId(2); forged.sequence = 2; forged.supersedesEventId = eventId(1);
+    forged.evaluation.assessments[0].quality = 'BELOW_STANDARD';
+    await expect(h.refine(forged)).rejects.toMatchObject({ status: 400 });
+    expect(h.tables.practiceReviewState[0]).toMatchObject({ successes: 1, lapses: 0 });
+    expect(h.tables.trainingAttemptAssessmentRevision).toHaveLength(1);
 });
 
-it('rejects personal evidence that conceals a superseded canonical reference',async()=>{
-    const {db}=dependencies();const request=gradedRequest();const evidence=clientEvidence();
-    evidence.localReference.canonicalScore={kind:'cp',cp:-100,pov:'WHITE'};
-    request.grade='STRONG';request.gradingSource='CLIENT_EVALUATED';request.steps=[{stepIndex:0,actor:'USER',fenBefore:rootFen,moveUci:'a2a3',grade:'STRONG',source:'CLIENT_EVALUATED',clientEvidence:evidence}];
-    await expect(recordTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).rejects.toThrow('suppresses an outdated canonical');
-    evidence.localReference.canonicalReferenceOutdated=true;
-    await expect(recordTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).resolves.toMatchObject({status:'RECORDED'});
+
+it('rejects an out-of-order predecessor whose ID breaks the already stored successor chain', async () => {
+    const h = harness(); await h.write(); await h.refine(enrich(2));
+    await expect(h.refine({ ...enrich(1), eventId: eventId(9) })).rejects.toMatchObject({ status: 409 });
+    expect(h.tables.trainingAttemptAssessmentRevision).toHaveLength(1);
 });
 
-it('records a legal ungraded move as neutral review without inventing a failed verdict',async()=>{
-    const {db,tx}=dependencies();
-    const request:RecordTrainingAttemptRequest={kind:'RECORD',clientAttemptId,solutionRevisionId:revisionId,completedAt:'2026-07-30T08:00:00.000Z',status:'REVEALED',steps:[{stepIndex:0,actor:'USER',fenBefore:rootFen,moveUci:'a2a3',timeSpentMs:1000}]};
-    await expect(recordTrainingAttempt({userId:'user-1',momentId,request,dependencies:{db:db as never}})).resolves.toMatchObject({status:'RECORDED'});
-    expect(tx.trainingAttempt.create).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({userMoveUci:'a2a3',grade:null,gradingSource:null,gradingEvidence:expect.objectContaining({trust:'UNASSESSED',serverVerified:false})})}));
-    expect(tx.trainingAttemptStep.createMany).toHaveBeenCalledWith(expect.objectContaining({data:[expect.objectContaining({grade:null,evidence:expect.objectContaining({serverVerified:false,evidence:{kind:'UNRESOLVED_LOCAL_REVIEW',serverVerified:false}})})]}));
+
+it('records a validated coverage-group verdict without inventing a tier or score', async () => {
+    manifest.coverageGroups = [{ id: 'bad-group', contextId: 'root', frameId: 'frame', movesUci: ['a2a3'], conclusion: 'BELOW_STANDARD', basis: 'ALL_SCOPE_ASSESSED', evidenceIds: [] }];
+    manifest.rootAnswerIndex.coverageGroupIds = ['bad-group'];
+    const h = harness();
+    expect(await h.write(record({ moveUci: 'a2a3', resolution: 'RESOLVED', initialCoverageGroupId: 'bad-group' }))).toMatchObject({ quality: 'BELOW_STANDARD', tier: null });
+    expect(h.tables.trainingAttemptStep[0]).toMatchObject({ initialAssessmentId: null, initialCoverageGroupId: 'bad-group' });
+});
+
+
+it('pins a delayed offline attempt to revision A metrics after revision B changes the moment', async () => {
+    manifest = { ...practiceV4Fixture(), momentId, revisionId };
+    const original = manifest.assessments.find(item => item.id === manifest.decision.originalAssessmentId)!;
+    const h = harness();
+    const newRevisionId = '66666666-6666-4666-8666-666666666666';
+    h.tables.solutionRevision.push({ ...h.tables.solutionRevision[0], id: newRevisionId, solutionHash: 'new-semantic' });
+    Object.assign(h.tables.trainingMoment[0], { currentSolutionRevisionId: newRevisionId, cpLoss: 999, winChanceLoss: 0.95 });
+    await h.write(record({ contextId: manifest.source.contextId }));
+    expect(h.tables.trainingAttempt[0]).toMatchObject({ solutionRevisionId: revisionId, contextSolutionHash: manifest.semanticHash, contextCpLoss: Math.max(0, original.metrics.lossCp!), contextWinChanceLoss: original.metrics.lossExpectedScore == null ? null : Math.max(0, original.metrics.lossExpectedScore) });
+    expect(h.tables.trainingAttempt[0].contextCpLoss).not.toBe(999);
+    expect(h.tables.trainingAttempt[0].contextWinChanceLoss).not.toBe(0.95);
+});
+
+
+it('does not classify a later-context group move as repetition of the source decision', async () => {
+    manifest.source.originalMoveUci = 'a2a3';
+    manifest.coverageGroups = [{ id: 'later-group', contextId: 'later', frameId: 'later-frame', movesUci: ['a2a3'], conclusion: 'BELOW_STANDARD', basis: 'ALL_SCOPE_ASSESSED', evidenceIds: [] }];
+    manifest.continuation = { mode: 'VERIFIED_BRANCHES', nodes: [
+        { id: 'root-node', role: 'USER', contextId: 'root', fen: 'root-fen' },
+        { id: 'opponent-node', role: 'OPPONENT', contextId: 'opponent', fen: 'opponent-fen' },
+        { id: 'later-node', role: 'USER', contextId: 'later', fen: 'later-fen', answerIndex: { contextId: 'later', frameId: 'later-frame', legalMovesUci: ['a2a3'], assessmentIds: [], coverageGroupIds: ['later-group'] } },
+    ], edges: [{ from: 'root-node', to: 'opponent-node', moveUci: 'e2e4' }, { from: 'opponent-node', to: 'later-node', moveUci: 'e7e5' }] } as unknown as PracticeMomentRevision['continuation'];
+    const h = harness();
+    await h.write(record({ resolution: 'RESOLVED', initialAssessmentId: 'good' }));
+    await h.write(record({ stepIndex: 1, contextId: 'later', moveUci: 'a2a3', playedAt: '2026-09-01T10:01:00.000Z', resolution: 'RESOLVED', initialCoverageGroupId: 'later-group' }));
+    expect(h.tables.trainingAttemptStep[1]).toMatchObject({ quality: 'BELOW_STANDARD', originalRelation: 'UNKNOWN' });
 });

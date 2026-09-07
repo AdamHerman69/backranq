@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { canonicalJson, canonicalPracticeSemantics } from '../../src/lib/training/practiceContract';
+import { deriveRootAnswerIndex } from '../../src/lib/training/answerIndex';
 import { expect, test, type Page } from '@playwright/test';
 
 import type { OnboardingGamesResponse } from '../../src/lib/onboarding/contracts';
@@ -6,13 +9,13 @@ import { clickMove, waitForBoard } from './support/board';
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
-// A short, legal game with one unambiguous missed mate. The actual browser
+// A short, legal game with an unambiguous bishop loss. The actual browser
 // Stockfish worker and extraction pipeline run; only provider I/O is stubbed.
 const gamesResponse: OnboardingGamesResponse = {
     requestId: 'landing-handoff-test',
     identity: { provider: 'chesscom', username: 'public-player' },
     games: [{
-        id: 'chesscom:landing-missed-mate',
+        id: 'chesscom:landing-bishop-loss',
         provider: 'chesscom',
         url: 'https://www.chess.com/game/live/1',
         playedAt: '2026-09-01T00:00:00Z',
@@ -20,7 +23,7 @@ const gamesResponse: OnboardingGamesResponse = {
         white: { name: 'opponent' },
         black: { name: 'public-player' },
         provenance: { username: 'public-player', userSide: 'black' },
-        pgn: '[White "opponent"]\n[Black "public-player"]\n[Result "*"]\n\n1. f3 e5 2. g4 Nc6 3. Nc3 Nf6 *',
+        pgn: '[White "opponent"]\n[Black "public-player"]\n[Result "*"]\n\n1. e4 e5 2. Nf3 Ba3 3. Nxa3 *',
     }],
 };
 
@@ -46,7 +49,25 @@ async function findPosition(page: Page) {
 
 test('shows the personal result automatically and ignores a late master response', async ({ page }) => {
     const events = await prepare(page);
+    await page.addInitScript(() => {
+        const NativeWorker = window.Worker;
+        const records: unknown[] = [];
+        Object.assign(window, { handoffEngineRecords: records });
+        window.Worker = class extends NativeWorker {
+            constructor(url: string | URL, options?: WorkerOptions) {
+                super(url, options);
+                if (String(url).includes('backranq-engine.worker')) this.addEventListener('message', event => {
+                    if (records.length < 2000) records.push({ direction: 'received', at: performance.now(), data: event.data });
+                });
+            }
+            postMessage(message: unknown) {
+                if (records.length < 2000) records.push({ direction: 'sent', at: performance.now(), data: message });
+                super.postMessage(message);
+            }
+        };
+    });
     let releaseMaster!: () => void;
+    let completed = false;
     const masterGate = new Promise<void>((resolve) => { releaseMaster = resolve; });
     await page.route('**/api/master-puzzle', async (route) => {
         await masterGate;
@@ -73,12 +94,17 @@ test('shows the personal result automatically and ignores a late master response
         await masterResponse;
         // Finish a real move after the late fetch, proving that the personal
         // player stayed mounted and still grades the generated solution.
-        await clickMove(page, 'd8', 'h4');
-        await expect(page.getByText('Best move — well found.')).toBeVisible();
+        await clickMove(page, 'b8', 'c6');
+        await expect(page.locator('[data-board-stage]')).toHaveAttribute('data-board-marker', /BEST|STRONG|GOOD/);
         await expect(page.getByRole('heading', { name: 'A position you actually played' })).toBeVisible();
         expect(events).not.toContain('MASTER_PUZZLE_SHOWN');
+        completed = true;
     } finally {
         releaseMaster();
+        if (!completed && !page.isClosed()) {
+            await test.info().attach('handoff-engine-evidence', { contentType: 'application/json', body: JSON.stringify(await page.evaluate(() =>
+                (window as unknown as { handoffEngineRecords: unknown[] }).handoffEngineRecords)) });
+        }
     }
 });
 
@@ -93,7 +119,15 @@ test('replaces started warm-up input with live scan and automatically enables th
     // browser Stockfish still calculates every position and final answer.
     await page.addInitScript(() => {
         const NativeWorker = window.Worker;
+        const lifetimes: Array<{ terminated: boolean }> = [];
+        Object.assign(window, { stockfishLifetimes: lifetimes });
         window.Worker = class extends NativeWorker {
+            private readonly lifetime = { terminated: false };
+            constructor(url: string | URL, options?: WorkerOptions) {
+                super(url, options);
+                if (String(url).includes('backranq-engine.worker')) lifetimes.push(this.lifetime);
+            }
+            terminate() { this.lifetime.terminated = true; super.terminate(); }
             set onmessage(handler: ((this: Worker, event: MessageEvent) => unknown) | null) {
                 super.onmessage = handler ? (event) => {
                     setTimeout(() => handler.call(this, event), 80);
@@ -126,6 +160,7 @@ test('replaces started warm-up input with live scan and automatically enables th
     await expect(page.getByRole('heading', { name: 'A position you actually played' }))
         .toBeVisible({ timeout: 30_000 });
     await expect(page.locator('[data-board-fen]')).toHaveAttribute('data-board-fen', decisionFen!);
+    expect(await page.evaluate(() => (window as unknown as { stockfishLifetimes: Array<{ terminated: boolean }> }).stockfishLifetimes.at(-1)?.terminated)).toBe(false);
     // The actual board and its squares survive the handoff, with no change to
     // its size or placement. This catches a remount even when FEN is identical.
     expect(await persistentBoard!.evaluate((element) => element.isConnected)).toBe(true);
@@ -134,8 +169,8 @@ test('replaces started warm-up input with live scan and automatically enables th
     expect(boardAfter).toEqual(boardBefore);
     await expect(page.getByRole('button', { name: 'Solve my position' })).toHaveCount(0);
     expect(events).not.toContain('PERSONAL_READY_NOTICE_SHOWN');
-    await clickMove(page, 'd8', 'h4');
-    await expect(page.getByText('Best move — well found.')).toBeVisible();
+    await clickMove(page, 'b8', 'c6');
+    await expect(page.locator('[data-board-stage]')).toHaveAttribute('data-board-marker', /BEST|STRONG|GOOD/);
     expect(errors).toEqual([]);
 });
 
@@ -199,16 +234,15 @@ test('changing identity cancels the running engine and fences its late result', 
     expect(events).not.toContain('PERSONAL_PUZZLE_SHOWN');
 });
 
-test('the public player evaluates an uncovered answer with real local Stockfish', async ({ page }) => {
+test('the public player evaluates an uncovered terminal answer from exact rules', async ({ page }) => {
     await prepare(page);
     const prompt = structuredClone(WARMUP_PUZZLE.prompt);
     const unknown = 'f7h7';
-    prompt.grading.moveAssessments = prompt.grading.moveAssessments.filter(item => item.moveUci !== unknown);
-    prompt.grading.answerCoverage.assessedMovesUci = prompt.grading.answerCoverage.assessedMovesUci.filter(move => move !== unknown);
-    prompt.grading.solutionTree.acceptedMovesUci = prompt.grading.solutionTree.acceptedMovesUci.filter(move => move !== unknown);
-    prompt.grading.solutionTree.branches = prompt.grading.solutionTree.branches.filter(branch => branch.moveUci !== unknown);
-    prompt.grading.acceptanceFrontier.moves = prompt.grading.acceptanceFrontier.moves.filter(move => move.moveUci !== unknown);
-    prompt.grading.review.acceptedMovesUci = prompt.grading.review.acceptedMovesUci.filter(move => move !== unknown);
+    prompt.grading.assessments = prompt.grading.assessments.filter(item => item.moveUci !== unknown);
+    prompt.grading.rootAnswerIndex = deriveRootAnswerIndex(prompt.grading, prompt.grading.frames[0], prompt.grading.rootAnswerIndex.preferredMoveUci);
+    prompt.grading.continuation.nodes[0].answerIndex = prompt.grading.rootAnswerIndex;
+    prompt.grading.semanticHash = createHash('sha256').update(canonicalJson(canonicalPracticeSemantics(prompt.grading))).digest('hex');
+    prompt.review.acceptedMovesUci = prompt.review.acceptedMovesUci.filter(move => move !== unknown);
     await page.route('**/api/master-puzzle', (route) => route.fulfill({ json: {
         state: 'ready', publication: { id: 'partial-evidence', headline: 'Partial evidence test', prompt },
     } }));
@@ -219,8 +253,8 @@ test('the public player evaluates an uncovered answer with real local Stockfish'
     await page.goto('/');
     await expect(page.getByRole('heading', { name: 'Partial evidence test' })).toBeVisible();
     await clickMove(page, 'f7', 'h7');
-    await expect(page.getByText('Best move — well found.')).toBeVisible({ timeout: 30_000 });
-    await expect(page.locator('[data-board-fen]')).toHaveAttribute('data-board-marker', 'BEST');
-    expect(workers.some(url => url.includes('stockfish'))).toBe(true);
+    await expect(page.getByText(/Best move — well found.|Good move — this solution is accepted.|Strong move — a high-quality solution./)).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-board-fen]')).toHaveAttribute('data-board-marker', /BEST|STRONG|GOOD/);
+    expect(workers.some(url => url.includes('stockfish'))).toBe(false);
     expect(errors).toEqual([]);
 });

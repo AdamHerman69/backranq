@@ -1,431 +1,386 @@
 import { Chess } from 'chess.js';
-import { appendAssessmentHistory } from '@/lib/training/assessmentIdentity';
+import { PositionAnalysisPool } from '@/lib/analysis/positionAnalysisPool';
+import { AnalysisWorkPlanner, type AnalysisWorkReason } from '@/lib/analysis/analysisWorkPlanner';
+import { mergePracticeEvidence, practiceEngineFingerprint, practiceEvidenceFromSnapshots } from '@/lib/analysis/practiceEvidence';
+import { collectPracticeExactEvidence } from '@/lib/analysis/practiceExactEvidence';
 import { ruleTerminalEvaluation } from '@/lib/analysis/ruleEvaluation';
+import type { EngineIdentity, StockfishEngine } from '@/lib/analysis/stockfishClient';
+import { lookupAnswer } from './answerIndex';
+import { createAssessmentEvaluator, type PracticeReferenceDrift } from './assessmentPolicy';
+import { createPracticeValidationFacts, type PracticeValidationFacts } from './practiceValidationFacts';
+import { canonicalJson, practiceFingerprint, validatePracticeEvaluationPatch, type ComparisonFrame, type MoveAssessment, type PracticeEvaluationPatch, type PracticeScore, type Tier } from './practiceContract';
+import type { TrainingComparisonDto, TrainingGradingManifestDto, TrainingSolutionTreeNodeDto } from './api';
+import type { PovScore } from './contracts';
 
-import type { StockfishEngine } from '@/lib/analysis/stockfishClient';
-import type {
-    TrainingComparisonDto,
-    TrainingClientMoveEvidence,
-    TrainingGradingManifestDto,
-    TrainingMoveAssessmentDto,
-    TrainingSolutionTreeNodeDto,
-} from '@/lib/training/api';
-import type { AttemptGrade, PovScore } from '@/lib/training/contracts';
-import {
-    engineScoreToWhitePov,
-    engineWdlChance,
-    metricsFromMatchedOutcomeEvidence,
-    metricsFromPovScores,
-    scoreForTrainingSide,
-} from '@/lib/training/gradingEvidence';
-import {
-    gradeTrainingMove,
-    type TrainingMoveGradeResult,
-    type TrainingMoveMetrics,
-} from '@/lib/training/grader';
-
-const LOCAL_PASS_NODES = [100_000, 200_000, 400_000] as const;
-const LOCAL_ENGINE_TIMEOUT_MS = 20_000;
-
+// 100k + 200k + 400k + 800k fits the ordinary 1.5M reservation only
+// when no extra reference/retry work has spent that same budget.
+const LOCAL_MAX_PASS_NODES = 800_000;
 export type LocalMoveEvaluation = {
-    result: TrainingMoveGradeResult;
-    source: 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE';
-    clientEvidence?: TrainingClientMoveEvidence;
-    refinementNeeded?: boolean;
+    result: { status: 'GRADED'; quality: 'GOOD' | 'BELOW_STANDARD'; tier: Tier | null; accepted: boolean; originalRelation: MoveAssessment['originalRelation'] }
+        | { status: 'UNRESOLVED'; reason: 'ENGINE_UNAVAILABLE' | 'UNSTABLE_EVIDENCE' | 'MISSING_OUTCOME_EVIDENCE' };
+    source: 'PRECOMPUTED' | 'CLIENT_EVALUATED';
+    assessment: MoveAssessment | null;
+    patch: PracticeEvaluationPatch | null;
+    refinementNeeded: boolean;
     scoreAfter: PovScore | null;
     comparison: TrainingComparisonDto | null;
-    evidence: unknown;
+    /** New compatible evidence has withdrawn support for the initial served quality. */
+    invalidatedKnownQuality?: boolean;
 };
-
-export type LocalContinuation = {
-    opponentMoveUci: string;
-    fenAfterOpponentMove: string;
-    nextUserNode: TrainingSolutionTreeNodeDto;
-};
-
-function normalizeUci(move: string): string {
-    return move.trim().toLowerCase();
+export type LocalAnalysisSession = { pool: PositionAnalysisPool; frame: ComparisonFrame | null; referenceMoveUci: string | null; validationFacts: PracticeValidationFacts };
+export function createLocalAnalysisSession(): LocalAnalysisSession {
+    return { pool: new PositionAnalysisPool(), frame: null, referenceMoveUci: null, validationFacts: createPracticeValidationFacts() };
 }
+export type LocalGradingUpdate =
+    | { kind: 'LIVE'; score: PovScore; depth: number }
+    | { kind: 'INVALIDATED'; evaluation: LocalMoveEvaluation }
+    | { kind: 'SUPPORTED'; evaluation: LocalMoveEvaluation };
 
-function applyUci(fen: string, moveUci: string): string | null {
-    const move = normalizeUci(moveUci);
-    try {
-        const chess = new Chess(fen);
-        const played = chess.move({
-            from: move.slice(0, 2),
-            to: move.slice(2, 4),
-            promotion: move.slice(4, 5) || undefined,
-        });
-        return played ? chess.fen() : null;
-    } catch {
-        return null;
-    }
+export function practiceScoreToWhite(score: PracticeScore | null): PovScore | null {
+    if (!score) return null;
+    if (score.kind === 'CP') return { kind: 'cp', cp: score.pov === 'WHITE' ? score.cp : -score.cp, pov: 'WHITE' };
+    if (score.kind === 'MATE') return { kind: 'mate', plies: score.plies, winner: score.winner };
+    return { kind: 'tablebase', wdl: score.pov === 'WHITE' || score.outcome === 'DRAW' ? score.outcome : score.outcome === 'WIN' ? 'LOSS' : 'WIN', pov: 'WHITE' };
 }
-
-function comparisonFromMetrics(
-    scoreAfter: PovScore | null,
-    metrics: TrainingMoveMetrics
-): TrainingComparisonDto {
+function evaluation(assessment: MoveAssessment, patch: PracticeEvaluationPatch | null): LocalMoveEvaluation {
+    const scoreAfter = practiceScoreToWhite(assessment.score);
+    const supported = assessment.qualitySupport === 'SUPPORTED' && assessment.quality !== 'UNKNOWN';
     return {
-        submittedScoreAfter: scoreAfter,
-        bestGapCp: metrics.bestGapCp ?? null,
-        bestGapWinChance: metrics.bestGapWinChance ?? null,
-        recoveredCp: metrics.recoveredCp ?? null,
-        recoveredWinChance: metrics.recoveredWinChance ?? null,
-        preservesOutcome: metrics.preservesOutcome ?? null,
+        result: supported ? { status: 'GRADED', quality: assessment.quality as 'GOOD' | 'BELOW_STANDARD',
+            tier: assessment.tier, accepted: assessment.quality === 'GOOD', originalRelation: assessment.originalRelation }
+            : { status: 'UNRESOLVED', reason: 'UNSTABLE_EVIDENCE' },
+        source: patch ? 'CLIENT_EVALUATED' : 'PRECOMPUTED', assessment, patch,
+        refinementNeeded: assessment.pending.some(task => task !== 'EXPLANATION'), scoreAfter,
+        comparison: { submittedScoreAfter: scoreAfter, bestGapCp: assessment.metrics.lossCp,
+            bestGapWinChance: assessment.metrics.lossExpectedScore, recoveredCp: assessment.metrics.recoveredCp,
+            recoveredWinChance: assessment.metrics.recoveredExpectedScore, preservesOutcome: assessment.metrics.preservesExactOutcome },
     };
 }
-
-function assessmentForMove(args: {
-    manifest: TrainingGradingManifestDto;
-    node: TrainingSolutionTreeNodeDto;
-    moveUci: string;
-}): TrainingMoveAssessmentDto | null {
-    const move = normalizeUci(args.moveUci);
-    const decisionIndex = Math.floor(args.node.ply / 2);
-    return (
-        args.manifest.moveAssessments.find(
-            (assessment) =>
-                assessment.positionKey === args.node.contextId &&
-                assessment.referenceId === (args.node.answerCoverage ?? args.manifest.answerCoverage).referenceId &&
-                assessment.decisionIndex === decisionIndex &&
-                assessment.fen === args.node.fen &&
-                normalizeUci(assessment.moveUci) === move
-        ) ?? null
-    );
-}
-
-function bestAssessment(args: {
-    manifest: TrainingGradingManifestDto;
-    node: TrainingSolutionTreeNodeDto;
-}): TrainingMoveAssessmentDto | null {
-    const bestMove =
-        args.node.branches.find((branch) => branch.best)?.moveUci ??
-        args.node.selectedMoveUci ??
-        args.node.acceptedMovesUci[0] ??
-        '';
-    return assessmentForMove({
-        ...args,
-        moveUci: bestMove,
-    });
-}
-
-function knownMetrics(args: {
-    manifest: TrainingGradingManifestDto;
-    node: TrainingSolutionTreeNodeDto;
-    moveUci: string;
-    assessment: TrainingMoveAssessmentDto | null;
-}): TrainingMoveMetrics {
-    const rootDecision = args.node.ply === 0;
-    const bestScore =
-        rootDecision
-            ? args.manifest.review.scoreAtStart
-            : bestAssessment(args)?.scoreAfter ??
-              args.manifest.review.scoreAtStart;
-    const metrics = metricsFromPovScores({
-        moveUci: args.moveUci,
-        originalMoveUci: rootDecision
-            ? args.manifest.originalMoveUci
-            : '',
-        trainingSide: args.manifest.trainingSide,
-        bestScore,
-        submittedScore:
-            args.assessment?.scoreAfter ??
-            (rootDecision &&
-            normalizeUci(args.moveUci) ===
-                normalizeUci(args.manifest.originalMoveUci)
-                ? args.manifest.originalScoreAfter
-                : null),
-        originalScore: rootDecision
-            ? args.manifest.originalScoreAfter
-            : null,
-        evidence: args.assessment?.evidence,
-    });
-    const evidence = args.assessment?.evidence as Partial<TrainingMoveMetrics> | null;
-    const exact = metricsFromMatchedOutcomeEvidence({ moveUci: args.moveUci, originalMoveUci: rootDecision ? args.manifest.originalMoveUci : '', trainingSide: args.manifest.trainingSide, bestScore, submittedScore: args.assessment?.scoreAfter ?? null, originalScore: rootDecision ? args.manifest.originalScoreAfter : null, stable: true });
-    if (exact.evidenceModel === 'EXACT_OUTCOME') return { ...exact, stable: exact.stable && evidence?.stable !== false, referenceOutdated: exact.referenceOutdated || evidence?.referenceOutdated === true };
-    return { ...metrics, stable: metrics.stable && evidence?.stable !== false, evidenceModel: metrics.bestGapWinChance == null ? 'CP_ONLY' : 'MATCHED_WDL', referenceOutdated: evidence?.referenceOutdated === true || (args.assessment?.scoreAfter != null && exact.referenceOutdated === true) };
-
-}
-
-/**
- * Synchronous path used for every move already present in the downloaded
- * grading manifest. Returning null means "genuinely unknown", never "wrong".
- */
-export function gradeKnownLocalMove(args: {
-    manifest: TrainingGradingManifestDto;
-    node: TrainingSolutionTreeNodeDto;
-    moveUci: string;
+function gradeCanonicalKnownMove(args: {
+    manifest: TrainingGradingManifestDto; node: TrainingSolutionTreeNodeDto; moveUci: string;
 }): LocalMoveEvaluation | null {
-    const move = normalizeUci(args.moveUci);
-    const isRoot = args.node.ply === 0;
-    const assessment = assessmentForMove({ ...args, moveUci: move });
-    if (assessment && assessment.source !== 'DYNAMIC') {
-        const metrics = knownMetrics({ ...args, moveUci: move, assessment });
-        const derived = gradeTrainingMove(metrics, args.manifest.gradingPolicy);
-        const rawEvidence = assessment.evidence as { membership?: { status?: string; contextId?: string; referenceId?: string; policyVersion?: number; stable?: boolean } } | null;
-        const membership = rawEvidence?.membership;
-        const supportedMembership = !metrics.referenceOutdated && membership?.status === 'ACCEPTED' && membership.stable === true && membership.contextId === args.node.contextId && membership.referenceId === assessment.referenceId && membership.policyVersion === args.manifest.gradingPolicy.version && args.node.acceptedMovesUci.includes(move);
-        if (derived.status !== 'GRADED' && !supportedMembership) return null;
-        const result: TrainingMoveGradeResult = derived.status === 'GRADED'
-            ? derived.accepted && !assessment.tierStable ? { status: 'GRADED', grade: 'GOOD', accepted: true } : derived
-            : { status: 'GRADED', grade: 'GOOD', accepted: true };
-        return {
-            result,
-            source: assessment.source,
-            scoreAfter: assessment.scoreAfter,
-            comparison: metrics.stable ? comparisonFromMetrics(assessment.scoreAfter, metrics) : null,
-            evidence: { kind: derived.status === 'GRADED' ? 'POLICY_CHECKED_ASSESSMENT' : 'SUPPORTED_ACCEPTED_MEMBERSHIP', assessment: assessment.evidence },
-            refinementNeeded: !assessment.tierStable || derived.status !== 'GRADED',
-        };
-    }
-
-    const coverage = args.node.answerCoverage ?? (isRoot ? args.manifest.answerCoverage : null);
-    if (coverage && coverage.contextId === args.node.contextId &&
-        coverage.status !== 'PARTIAL' && coverage.coveredMovesUci.includes(move)) {
-        return {
-            result: { status: 'GRADED', grade: 'DIFFERENT_MISTAKE', accepted: false },
-            source: 'PRECOMPUTED', scoreAfter: null, comparison: null,
-            evidence: { kind: 'CERTIFIED_BELOW_QUALITY_BOUNDARY', coverage },
-            refinementNeeded: true,
-        };
-    }
+    const index = args.node.answerIndex;
+    if (!index) return null;
+    const found = lookupAnswer(index, args.moveUci, args.manifest.assessments, args.manifest.coverageGroups,
+        args.manifest.frames.find(frame => frame.id === index.frameId));
+    if (found.kind === 'INDIVIDUAL') return evaluation(found.assessment, null);
+    if (found.kind === 'GROUP') return {
+        result: { status: 'GRADED', quality: 'BELOW_STANDARD', tier: null, accepted: false, originalRelation: args.node.contextId === args.manifest.source.contextId && args.moveUci === args.manifest.source.originalMoveUci ? 'SAME_MOVE' : 'UNKNOWN' },
+        source: 'PRECOMPUTED', assessment: null, patch: null, refinementNeeded: true, scoreAfter: null, comparison: null,
+    };
     return null;
 }
 
-function terminalOutcome(fen: string, previousFens: readonly string[]): { reason: string; score: PovScore } | null {
-    const result = ruleTerminalEvaluation(fen, previousFens);
-    if (!result?.terminal) return null;
-    return {
-        reason: result.terminal.kind,
-        score: result.terminal.outcome === 'DRAW'
-            ? { kind: 'tablebase', wdl: 'DRAW', pov: 'WHITE' }
-            : { kind: 'mate', plies: 0, winner: new Chess(fen).turn() === 'w' ? 'BLACK' : 'WHITE' },
-    };
+/** Retain the constant-time canonical lookup until this session has learned
+ * relevant evidence. A local contradiction cannot resurrect a stale verdict. */
+export function gradeKnownLocalMove(args: {
+    manifest: TrainingGradingManifestDto; node: TrainingSolutionTreeNodeDto; moveUci: string;
+    session?: LocalAnalysisSession;
+}): LocalMoveEvaluation | null {
+    const known = gradeCanonicalKnownMove(args);
+    if (!known || !args.session) return known;
+    const frame = args.manifest.frames.find(item => item.id === args.node.answerIndex?.frameId);
+    const reference = frame && args.manifest.assessments.find(item => item.id === frame.referenceAssessmentId);
+    if (!frame || !reference) return null;
+    const searches = args.session.pool.find({ fen: args.node.fen, previousFens: args.node.positionHistory })
+        .filter(search => practiceEngineFingerprint(search.evidence.engine) === frame.engineFingerprint);
+    if (!searches.some(search => search.snapshots.length)) return known;
+    const evidence = mergePracticeEvidence(args.manifest.evidence, practiceEvidenceFromSnapshots(
+        searches.flatMap(search => search.snapshots), args.node.trainingSide,
+        searches.filter(search => search.result).map(search => search.evidence)));
+    const assess = createAssessmentEvaluator(evidence, args.session.validationFacts);
+    const current = assess(frame, { id: 'known-quality-guard', moveUci: args.moveUci,
+        trainingSide: args.node.trainingSide, referenceMoveUci: reference.moveUci,
+        originalMoveUci: args.node.contextId === args.manifest.source.contextId ? args.manifest.source.originalMoveUci : reference.moveUci,
+    }, args.manifest.policySnapshot);
+    return current.qualitySupport === 'SUPPORTED' && known.result.status === 'GRADED'
+        && current.quality === known.result.quality ? known : null;
 }
 
-function stableEngineEvidence(args: {
-    firstScore: PovScore | null;
-    firstWdlChance: number | null;
-    secondScore: PovScore | null;
-    secondWdlChance: number | null;
-    trainingSide: 'w' | 'b';
-}): boolean {
-    if (!args.firstScore || !args.secondScore) return false;
-    if (args.firstScore.kind === 'mate' && args.secondScore.kind === 'mate' && args.firstScore.winner !== args.secondScore.winner) return false;
-    if (args.firstWdlChance != null && args.secondWdlChance != null && Number.isFinite(args.firstWdlChance) && Number.isFinite(args.secondWdlChance)) {
-        return Math.abs(args.firstWdlChance - args.secondWdlChance) <= 0.05;
-    }
-    if (args.firstScore.kind === 'mate' || args.secondScore.kind === 'mate') {
-        return args.firstScore.kind === 'mate' && args.secondScore.kind === 'mate' && args.firstScore.winner === args.secondScore.winner;
-    }
-    if (args.firstScore.kind === 'tablebase' || args.secondScore.kind === 'tablebase') {
-        return args.firstScore.kind === 'tablebase' && args.secondScore.kind === 'tablebase' && args.firstScore.wdl === args.secondScore.wdl;
-    }
-    return Math.abs(args.firstScore.cp - args.secondScore.cp) <= 75;
+function unresolved(reason: 'ENGINE_UNAVAILABLE' | 'UNSTABLE_EVIDENCE'): LocalMoveEvaluation {
+    return { result: { status: 'UNRESOLVED', reason }, source: 'CLIENT_EVALUATED', assessment: null,
+        patch: null, refinementNeeded: false, scoreAfter: null, comparison: null };
 }
 
-function stableMatchedGap(args: {
-    firstBestScore: PovScore | null;
-    firstBestWdlChance: number | null;
-    firstSubmittedScore: PovScore | null;
-    firstSubmittedWdlChance: number | null;
-    secondBestScore: PovScore | null;
-    secondBestWdlChance: number | null;
-    secondSubmittedScore: PovScore | null;
-    secondSubmittedWdlChance: number | null;
-    trainingSide: 'w' | 'b';
-}): boolean {
-    const wdl = [args.firstBestWdlChance, args.firstSubmittedWdlChance, args.secondBestWdlChance, args.secondSubmittedWdlChance];
-    if (wdl.every((value): value is number => typeof value === 'number' && Number.isFinite(value)) &&
-        Math.abs((wdl[0] - wdl[1]) - (wdl[2] - wdl[3])) > 0.05) return false;
-    const firstBest = scoreForTrainingSide(
-        args.firstBestScore,
-        args.trainingSide
-    );
-    const firstSubmitted = scoreForTrainingSide(
-        args.firstSubmittedScore,
-        args.trainingSide
-    );
-    const secondBest = scoreForTrainingSide(
-        args.secondBestScore,
-        args.trainingSide
-    );
-    const secondSubmitted = scoreForTrainingSide(
-        args.secondSubmittedScore,
-        args.trainingSide
-    );
-    if (
-        firstBest.cp != null &&
-        firstSubmitted.cp != null &&
-        secondBest.cp != null &&
-        secondSubmitted.cp != null
-    ) {
-        return (
-            Math.abs(
-                Math.max(0, firstBest.cp - firstSubmitted.cp) -
-                    Math.max(0, secondBest.cp - secondSubmitted.cp)
-            ) <= 75
-        );
-    }
-    return (
-        stableEngineEvidence({
-            firstScore: args.firstBestScore,
-            firstWdlChance: args.firstBestWdlChance,
-            secondScore: args.secondBestScore,
-            secondWdlChance: args.secondBestWdlChance,
-            trainingSide: args.trainingSide,
-        }) &&
-        stableEngineEvidence({
-            firstScore: args.firstSubmittedScore,
-            firstWdlChance: args.firstSubmittedWdlChance,
-            secondScore: args.secondSubmittedScore,
-            secondWdlChance: args.secondSubmittedWdlChance,
-            trainingSide: args.trainingSide,
-        })
-    );
+/** A submitted mandatory ending can use the same exact evidence policy without an engine. */
+function gradeRuleTerminalMove(args: {
+    manifest: TrainingGradingManifestDto; node: TrainingSolutionTreeNodeDto; moveUci: string;
+}): LocalMoveEvaluation | null {
+    const board = new Chess(args.node.fen);
+    board.move({ from: args.moveUci.slice(0, 2), to: args.moveUci.slice(2, 4), promotion: args.moveUci[4] });
+    if (!ruleTerminalEvaluation(board.fen(), [...args.node.positionHistory, args.node.fen])) return null;
+    const collected = collectPracticeExactEvidence({ fen: args.node.fen, positionHistory: args.node.positionHistory,
+        trainingSide: args.node.trainingSide });
+    const result = Object.values(collected.evidence.exact).flatMap(record => record.results).find(item => item.moveUci === args.moveUci);
+    if (!result) return null;
+    const canonicalFrame = args.manifest.frames.find(frame => frame.id === args.node.answerIndex?.frameId && frame.status === 'CURRENT' && frame.model === 'EXACT_OUTCOME');
+    const canonicalReference = canonicalFrame && args.manifest.assessments.find(item => item.id === canonicalFrame.referenceAssessmentId && item.quality === 'GOOD' && item.qualitySupport === 'SUPPORTED' && item.score?.kind === 'EXACT');
+    // A win is the maximum outcome. Draw/loss cannot establish the root optimum.
+    const referenceMoveUci = result.outcome === 'WIN' ? args.moveUci : canonicalReference?.moveUci;
+    if (!referenceMoveUci) return null;
+    const evidence = mergePracticeEvidence(args.manifest.evidence, collected.evidence);
+    const id = `${args.node.contextId}:local-rule:${practiceFingerprint([args.manifest.revisionId, referenceMoveUci, args.moveUci, Object.keys(collected.evidence.exact)])}`;
+    const frame: ComparisonFrame = { id, contextId: args.node.contextId, policyId: args.manifest.policyId,
+        engineFingerprint: 'FIDE-rules', model: 'EXACT_OUTCOME', referenceAssessmentId: `${id}:move:${referenceMoveUci}`,
+        status: 'CURRENT', supersededById: null };
+    const originalMoveUci = args.node.contextId === args.manifest.source.contextId ? args.manifest.source.originalMoveUci : referenceMoveUci;
+    const assess = createAssessmentEvaluator(evidence);
+    const assessments = [...new Set([referenceMoveUci, args.moveUci])].map(moveUci => assess(frame, {
+        id: `${id}:move:${moveUci}`, moveUci, trainingSide: args.node.trainingSide, referenceMoveUci, originalMoveUci,
+    }, args.manifest.policySnapshot));
+    const assessment = assessments.find(item => item.moveUci === args.moveUci)!;
+    if (assessment.qualitySupport !== 'SUPPORTED' || assessment.quality === 'UNKNOWN') return null;
+    const patch: PracticeEvaluationPatch = { frame, assessments, evidence: { searches: {}, observations: {}, exact:
+        Object.fromEntries(Object.entries(collected.evidence.exact).filter(([recordId]) => !Object.hasOwn(args.manifest.evidence.exact, recordId))) } };
+    const checked = validatePracticeEvaluationPatch(args.manifest, patch);
+    return checked.success ? evaluation(assessment, checked.value) : null;
 }
 
-/** Bounded fresh matched searches; an unknown move never inherits a PV verdict. */
+/** Only missing reference/move evidence enters the bounded queue; original comparison never blocks quality. */
 export async function gradeUnknownLocalMove(args: {
-    engine: StockfishEngine;
-    manifest: TrainingGradingManifestDto;
-    node: TrainingSolutionTreeNodeDto;
-    moveUci: string;
-    positionHistory?: readonly string[];
-    retryEngine?: () => StockfishEngine;
+    engine: StockfishEngine | (() => StockfishEngine); retryEngine?: () => StockfishEngine;
+    manifest: TrainingGradingManifestDto; node: TrainingSolutionTreeNodeDto; moveUci: string;
+    session?: LocalAnalysisSession; planner?: AnalysisWorkPlanner; signal?: AbortSignal;
+    attemptId?: string; refine?: boolean; onUpdate?: (update: LocalGradingUpdate) => void;
 }): Promise<LocalMoveEvaluation> {
-    const move = normalizeUci(args.moveUci);
-    const fenAfter = applyUci(args.node.fen, move);
-    if (!fenAfter) throw new Error('Illegal move');
-    const previousFens = args.node.positionHistory;
-    const terminal = terminalOutcome(fenAfter, appendAssessmentHistory(previousFens, args.node.fen));
-    const pov = new Chess(args.node.fen).turn();
-    const rootDecision = args.node.ply === 0;
-    const originalMove = rootDecision ? args.manifest.originalMoveUci : '';
-    const canonicalBestMove = bestAssessment(args)?.moveUci ?? args.node.selectedMoveUci ?? args.node.acceptedMovesUci[0];
-    if (!canonicalBestMove) throw new Error('Missing canonical reference move');
-    const deadline = performance.now() + LOCAL_ENGINE_TIMEOUT_MS;
-    let engine = args.engine;
-    let retriedFailure = false;
-    type Pass = { bestScore: PovScore | null; submittedScore: PovScore | null; bestWdlChance: number | null; submittedWdlChance: number | null; metrics: TrainingMoveMetrics };
-    let previous: Pass | null = null;
-    let evaluation: LocalMoveEvaluation | null = null;
-    const searches: TrainingClientMoveEvidence['searches'] = [];
-    for (const nodes of LOCAL_PASS_NODES) {
-        const search = async (rootMoves?: string[]): Promise<Awaited<ReturnType<StockfishEngine['evalPosition']>>> => {
-            const remaining = deadline - performance.now();
-            if (remaining <= 0) throw new Error('Local grading budget exhausted');
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            try {
-                return await Promise.race([
-                    engine.evalPosition({ fen: args.node.fen, previousFens, rootMoves, nodes, timeoutMs: remaining, reuse: 'FRESH_REQUIRED', purpose: 'PRACTICE_MATCHED_COMPARISON' }),
-                    new Promise<never>((_, reject) => {
-                        timer = setTimeout(() => {
-                            engine.cancelAll?.();
-                            reject(new Error('Local grading budget exhausted'));
-                        }, remaining);
-                    }),
-                ]);
-            } catch (error) {
-                if (!retriedFailure && args.retryEngine && performance.now() < deadline) {
-                    retriedFailure = true;
-                    if (timer) clearTimeout(timer);
-                    engine = args.retryEngine();
-                    return search(rootMoves);
-                }
-                throw error;
-            } finally {
-                if (timer) clearTimeout(timer);
-            }
-        };
-        const best = await search();
-        const submitted = terminal ? null : await search([move]);
-        const original = originalMove && originalMove !== move ? await search([originalMove]) : submitted;
-        const canonical = best.bestMoveUci === canonicalBestMove ? best
-            : canonicalBestMove === move ? submitted
-            : canonicalBestMove === originalMove ? original
-            : await search([canonicalBestMove]);
-        const bestScore = engineScoreToWhitePov(best.score, pov);
-        const canonicalScore = canonicalBestMove === move && terminal ? terminal.score : engineScoreToWhitePov(canonical?.score ?? null, pov);
-        const submittedScore = terminal?.score ?? engineScoreToWhitePov(submitted?.score ?? null, pov);
-        const originalScore = originalMove === move ? submittedScore : engineScoreToWhitePov(original?.score ?? null, pov);
-        const bestWdlChance = engineWdlChance(best.wdl, pov, args.manifest.trainingSide);
-        const submittedWdlChance = terminal ? scoreForTrainingSide(terminal.score, args.manifest.trainingSide).chance : engineWdlChance(submitted?.wdl, pov, args.manifest.trainingSide);
-        const metrics = metricsFromMatchedOutcomeEvidence({ moveUci: move, originalMoveUci: originalMove, trainingSide: args.manifest.trainingSide, bestScore, submittedScore, originalScore, bestWdlChance, submittedWdlChance, originalWdlChance: engineWdlChance(original?.wdl, pov, args.manifest.trainingSide), stable: true });
-        const canonicalMetrics = metricsFromMatchedOutcomeEvidence({ moveUci: canonicalBestMove, originalMoveUci: '', trainingSide: args.manifest.trainingSide, bestScore, submittedScore: canonicalScore, originalScore: null, bestWdlChance, submittedWdlChance: engineWdlChance(canonical?.wdl, pov, args.manifest.trainingSide), stable: true });
-        if (canonicalMetrics.referenceOutdated) metrics.referenceOutdated = true;
-        const current = { bestScore, submittedScore, bestWdlChance, submittedWdlChance, metrics: { ...metrics } };
-        const compact = (result: typeof best | null) => {
-            if (!result) return null;
-            const report = result.searchEvidence;
-            return { score: result.score, wdl: result.wdl ?? null, searchEvidence: report ? { id: report.id, engine: report.engine, reused: report.reused, reported: report.reported, request: { rootMoves: report.request.rootMoves, historyMode: report.request.historyMode, limits: report.request.limits, purpose: report.request.purpose } } : null };
-        };
-        searches.push({ nodes, best: compact(best), submitted: compact(submitted), original: compact(original), canonical: compact(canonical) });
-        const result = gradeTrainingMove(metrics, args.manifest.gradingPolicy);
-        const priorResult = previous ? gradeTrainingMove(previous.metrics, args.manifest.gradingPolicy) : null;
-        const stable = !!previous && stableMatchedGap({ firstBestScore: previous.bestScore, firstBestWdlChance: previous.bestWdlChance, firstSubmittedScore: previous.submittedScore, firstSubmittedWdlChance: previous.submittedWdlChance, secondBestScore: bestScore, secondBestWdlChance: bestWdlChance, secondSubmittedScore: submittedScore, secondSubmittedWdlChance: submittedWdlChance, trainingSide: args.manifest.trainingSide }) && result.status === 'GRADED' && priorResult?.status === 'GRADED' && result.accepted === priorResult.accepted;
-        const tierStable = result.status === 'GRADED' && priorResult?.status === 'GRADED' && result.grade === priorResult.grade;
-        metrics.stable = stable;
-        const canonicalReferenceOutdated = (canonicalMetrics.bestGapCp ?? 0) > 0 || (canonicalMetrics.bestGapWinChance ?? 0) > 0;
-        if (!bestScore || !canonicalScore) return { result: { status: 'UNRESOLVED', reason: 'MISSING_OUTCOME_EVIDENCE' }, source: 'CLIENT_EVALUATED', scoreAfter: submittedScore, comparison: null, evidence: { searches } };
-        const localReference: TrainingClientMoveEvidence['localReference'] = { id: best.searchEvidence?.id ?? crypto.randomUUID(), bestMoveUci: best.bestMoveUci, bestScore, canonicalBestMoveUci: canonicalBestMove, canonicalScore, canonicalReferenceOutdated };
-        const clientEvidence: TrainingClientMoveEvidence = { version: 1, contextId: args.node.contextId, referenceId: (args.node.answerCoverage ?? args.manifest.answerCoverage).referenceId, policyVersion: args.manifest.gradingPolicy.version, localReference, tierStable, metrics, scoreAfter: submittedScore, searches: [...searches] };
-        evaluation = { result: gradeTrainingMove(metrics, args.manifest.gradingPolicy), source: 'CLIENT_EVALUATED', scoreAfter: submittedScore, comparison: comparisonFromMetrics(submittedScore, metrics), evidence: { kind: terminal ? 'LOCAL_RULE' : 'LOCAL_STOCKFISH', terminal: terminal?.reason ?? null, clientEvidence }, clientEvidence };
-        if (stable) return evaluation;
-        previous = current;
+    // Keep the canonical baseline for causal invalidation/refinement, but only
+    // return it immediately when the current session still supports its quality.
+    const known = gradeCanonicalKnownMove(args);
+    if (known && !args.refine) {
+        const currentKnown = gradeKnownLocalMove(args);
+        if (currentKnown) return currentKnown;
     }
-    return evaluation!;
+    const board = new Chess(args.node.fen);
+    if (!board.moves({ verbose: true }).some(move => `${move.from}${move.to}${move.promotion ?? ''}` === args.moveUci)) throw new Error('Illegal practice move');
+    if (args.signal?.aborted) return unresolved('ENGINE_UNAVAILABLE');
+    const exact = gradeRuleTerminalMove(args);
+    if (exact) { args.onUpdate?.({ kind: 'SUPPORTED', evaluation: exact }); return exact; }
+    const session = args.session ?? createLocalAnalysisSession();
+    if (session.frame?.contextId !== args.node.contextId) { session.frame = null; session.referenceMoveUci = null; }
+    const planner = args.planner ?? new AnalysisWorkPlanner({ maxNodes: args.refine ? 200_000 : 1_500_000, maxWallMs: args.refine ? 2_000 : 8_000 });
+    const abort = () => planner.cancelGeneration();
+    args.signal?.addEventListener('abort', abort, { once: true });
+    let engine = typeof args.engine === 'function' ? args.engine() : args.engine;
+    let retried = false;
+    let identity: EngineIdentity | null = null;
+    let supported: LocalMoveEvaluation | null = null;
+    let invalidatedKnownQuality = false;
+    let notifiedInvalidation = false;
+    let qualityWasWithdrawn = false;
+    const failure = (reason: 'ENGINE_UNAVAILABLE' | 'UNSTABLE_EVIDENCE') => ({ ...unresolved(reason), invalidatedKnownQuality });
+    const detailComplete = (value: LocalMoveEvaluation) => value.result.status === 'GRADED' &&
+        (!args.refine || qualityWasWithdrawn || known?.result.status !== 'GRADED' || value.result.quality !== known.result.quality || value.assessment?.tierSupport === 'SUPPORTED');
+    let lastLiveAt = -Infinity;
+    const history = args.node.positionHistory;
+    let jobIndex = 0;
+    const legalMoveCount = board.moves().length;
+    // This memo belongs to this grading invocation and immutable manifest only.
+    let cachedVersion = -1;
+    let cachedIdentity: EngineIdentity | null = null;
+    let cachedPatch: PracticeEvaluationPatch | null = null;
+    let cachedEvaluator: ReturnType<typeof createAssessmentEvaluator> | null = null;
+    const latestPatch = (): PracticeEvaluationPatch | null => {
+        if (!identity) return null;
+        if (cachedVersion === session.pool.evidenceVersion && cachedIdentity === identity) return cachedPatch;
+        cachedVersion = session.pool.evidenceVersion; cachedIdentity = identity; cachedPatch = null;
+        const searches = session.pool.find({ fen: args.node.fen, previousFens: history, engine: identity });
+        const roots = searches.filter(search => search.evidence.request.rootMoves.length === legalMoveCount);
+        const root = roots.at(-1);
+        const rootSnapshot = root?.snapshots.findLast(snapshot => snapshot.bundleComplete);
+        const localReference = root?.result?.lines[0]?.pvUci[0] ?? rootSnapshot?.lines[0]?.pvUci[0];
+        const fingerprint = practiceEngineFingerprint(identity);
+        const canonicalFrame = args.manifest.frames.find(frame => frame.id === args.node.answerIndex?.frameId && frame.engineFingerprint === fingerprint);
+        if (root && localReference) {
+            const frameId = `${args.node.contextId}:local:${practiceFingerprint([root.evidence.id, fingerprint])}`;
+            session.frame = { id: frameId, contextId: args.node.contextId, policyId: args.manifest.policyId,
+                engineFingerprint: fingerprint, model: (root.result?.lines[0] ?? rootSnapshot?.lines[0])?.wdl ? 'MATCHED_WDL' : 'CP_ONLY',
+                referenceAssessmentId: `${frameId}:move:${localReference}`, status: 'CURRENT', supersededById: null };
+            session.referenceMoveUci = localReference;
+        } else if (!session.frame && canonicalFrame) {
+            // Preserve canonical evidence, but derive new personal assessments in a new frame.
+            const frameId = `${args.node.contextId}:local:${practiceFingerprint([canonicalFrame.id, args.attemptId ?? 'session'])}`;
+            session.referenceMoveUci = args.node.answerIndex!.preferredMoveUci;
+            session.frame = { ...canonicalFrame, id: frameId, referenceAssessmentId: `${frameId}:move:${session.referenceMoveUci}` };
+        }
+        if (!session.frame || session.frame.engineFingerprint !== fingerprint || !session.referenceMoveUci) return null;
+        const evidence = mergePracticeEvidence(args.manifest.evidence, practiceEvidenceFromSnapshots(
+            searches.flatMap(search => search.snapshots), args.node.trainingSide,
+            searches.filter(search => search.result).map(search => search.evidence)));
+        // Assessment IDs are immutable conclusions. New observations produce a
+        // new projection/frame, even when the best root move stays unchanged.
+        const projectionId = `${session.frame.id}:projection:${practiceFingerprint([session.frame, args.moveUci, evidence])}`;
+        const frame: ComparisonFrame = { ...session.frame, id: projectionId, referenceAssessmentId: `${projectionId}:move:${session.referenceMoveUci}` };
+        const originalMoveUci = args.node.contextId === args.manifest.source.contextId
+            ? args.manifest.source.originalMoveUci : session.referenceMoveUci;
+        const assess = createAssessmentEvaluator(evidence, session.validationFacts);
+        cachedEvaluator = assess;
+        if (known?.result.status === 'GRADED' && canonicalFrame) {
+            const canonicalReference = args.manifest.assessments.find(item => item.id === canonicalFrame.referenceAssessmentId);
+            if (canonicalReference) {
+                const currentKnown = assess(canonicalFrame, { id: 'initial-quality-check', moveUci: args.moveUci,
+                    trainingSide: args.node.trainingSide, referenceMoveUci: canonicalReference.moveUci,
+                    originalMoveUci: args.node.contextId === args.manifest.source.contextId ? args.manifest.source.originalMoveUci : canonicalReference.moveUci,
+                }, args.manifest.policySnapshot);
+                invalidatedKnownQuality = currentKnown.qualitySupport !== 'SUPPORTED' || currentKnown.quality !== known.result.quality;
+            }
+        }
+        const assessments = [...new Set([session.referenceMoveUci, args.moveUci])].map(moveUci => assess(frame, {
+            id: `${projectionId}:move:${moveUci}`, moveUci, trainingSide: args.node.trainingSide,
+            referenceMoveUci: session.referenceMoveUci!, originalMoveUci,
+        }, args.manifest.policySnapshot));
+        cachedPatch = { frame, assessments, evidence };
+        return cachedPatch;
+    };
+    let driftPatch: PracticeEvaluationPatch | null = null;
+    let driftResult: PracticeReferenceDrift | null = null;
+    const referenceDrift = (patch: PracticeEvaluationPatch | null) => {
+        if (!patch || !session.referenceMoveUci) return null;
+        if (driftPatch !== patch) {
+            driftPatch = patch;
+            driftResult = cachedEvaluator!.detectReferenceDrift({ frame: patch.frame, trainingSide: args.node.trainingSide,
+                referenceMoveUci: session.referenceMoveUci, policy: args.manifest.policySnapshot });
+        }
+        return driftResult;
+    };
+    let projectedPatch: PracticeEvaluationPatch | null = null;
+    let projectedValue: LocalMoveEvaluation | null = null;
+    const project = () => {
+        const patch = latestPatch();
+        if (invalidatedKnownQuality && !notifiedInvalidation) {
+            notifiedInvalidation = true;
+            qualityWasWithdrawn = true;
+            args.onUpdate?.({ kind: 'INVALIDATED', evaluation: failure('UNSTABLE_EVIDENCE') });
+        } else if (!invalidatedKnownQuality) notifiedInvalidation = false;
+        if (patch === projectedPatch) return projectedValue;
+        projectedPatch = patch; projectedValue = null;
+        const assessment = patch?.assessments.find(item => item.moveUci === args.moveUci);
+        if (!assessment || !patch) return null;
+        // The server already has immutable canonical evidence. Send only new or
+        // changed IDs; validation still compares against the complete merged store.
+        const evidence = { searches: {}, observations: {}, exact: {} } as PracticeEvaluationPatch['evidence'];
+        for (const kind of ['searches', 'observations', 'exact'] as const) {
+            for (const [id, item] of Object.entries(patch.evidence[kind])) {
+                const base = args.manifest.evidence[kind][id];
+                if (!base || canonicalJson(base) !== canonicalJson(item)) Object.assign(evidence[kind], { [id]: item });
+            }
+        }
+        const evaluated = evaluation(assessment, { ...patch, evidence });
+        if (referenceDrift(patch)) { projectedValue = { ...evaluated, result: { status: 'UNRESOLVED', reason: 'UNSTABLE_EVIDENCE' } }; return projectedValue; }
+        if (detailComplete(evaluated)) supported = evaluated;
+        projectedValue = evaluated; return evaluated;
+    };
+    const finish = (reason: 'ENGINE_UNAVAILABLE' | 'UNSTABLE_EVIDENCE') => {
+        if (supported) return supported;
+        // Restoring a withdrawn verdict is quality work. Tier uncertainty must
+        // not keep the move neutral after its quality is supported again.
+        const current = qualityWasWithdrawn ? project() : null;
+        return current?.result.status === 'GRADED' ? current : failure(reason);
+    };
+    try {
+        if (args.signal?.aborted) return unresolved('ENGINE_UNAVAILABLE');
+        // Identity/startup participates in the same wall deadline as every search.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            identity = engine.getIdentity ? await Promise.race([engine.getIdentity(), new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error('Engine startup budget exhausted')), planner.remainingWallMs);
+            })]) : null;
+        } finally { clearTimeout(timer); }
+        // One dependency per completed search. Reference work must not advance
+        // the answer ladder or trigger an answer search against an unready root.
+        let nextRootNodes = args.manifest.policySnapshot.latestSupportNodes;
+        let nextAnswerNodes = args.manifest.policySnapshot.latestSupportNodes;
+        const attemptedProbes = new Set<string>();
+        while (!args.signal?.aborted && planner.remainingWallMs > 0) {
+            const patch = latestPatch();
+            const current = project();
+            if (current && detailComplete(current)) return current;
+            const readiness = patch && session.referenceMoveUci ? cachedEvaluator!.referenceReadiness({
+                frame: patch.frame, trainingSide: args.node.trainingSide,
+                referenceMoveUci: session.referenceMoveUci, policy: args.manifest.policySnapshot,
+            }) : null;
+            let move: string | null;
+            let nodes: number;
+            let reason: AnalysisWorkReason;
+            if (readiness?.status === 'READY') {
+                move = args.moveUci; nodes = nextAnswerNodes; reason = 'MISSING_MOVE';
+                nextAnswerNodes *= 2;
+            } else if (readiness?.requiredWork === 'REFERENCE_PROBE') {
+                move = readiness.preferredMoveUci;
+                nodes = args.manifest.policySnapshot.minimumReferenceProbeNodes;
+                reason = 'VERIFY_REFERENCE';
+                const premise = `${patch!.frame.engineFingerprint}:${readiness.rootSearchId}:${move}`;
+                // A naturally completed but immature/under-budget probe cannot
+                // spin the same 400k request until the wall timer happens to end.
+                if (attemptedProbes.has(premise)) break;
+                attemptedProbes.add(premise);
+            } else {
+                move = null;
+                reason = readiness?.status === 'REFERENCE_VALUE_DRIFT' || readiness?.status === 'UNRESOLVED_REFERENCE'
+                    ? 'REFERENCE_DRIFT' : 'MISSING_REFERENCE';
+                const priorRoot = readiness?.rootSearchId && patch?.evidence.searches[readiness.rootSearchId];
+                const priorNodes = priorRoot ? priorRoot.request.limit.nodes ?? priorRoot.reportedNodes : 0;
+                while (nextRootNodes <= priorNodes) nextRootNodes *= 2;
+                nodes = nextRootNodes; nextRootNodes *= 2;
+            }
+            if (nodes > LOCAL_MAX_PASS_NODES || planner.remainingNodes < nodes) break;
+            const qualityStop = new AbortController();
+            const run = async () => planner.enqueue({
+                id: `${args.attemptId ?? 'local'}:${jobIndex++}`, generation: planner.currentGeneration,
+                contextId: args.node.contextId, frameId: session.frame?.id ?? null, attemptId: args.attemptId ?? null,
+                reason, evidenceDependencies: [...(readiness?.evidenceIds ?? []), reason === 'VERIFY_REFERENCE'
+                    ? `missing:reference-probe:${move}` : move ? `missing:quality:${move}` : `missing:reference:${args.node.contextId}`],
+                priority: args.refine ? 'SUBMITTED_DETAIL' : reason === 'MISSING_MOVE' ? 'SUBMITTED_QUALITY' : 'REQUIRED_REFERENCE', nodes,
+            }, async job => {
+                const result = await engine.analyzeMultiPv({ fen: args.node.fen, previousFens: history, multiPv: 1,
+                    rootMoves: move ? [move] : undefined, nodes: job.nodes, timeoutMs: job.timeoutMs,
+                    signal: AbortSignal.any([job.signal, qualityStop.signal, ...(args.signal ? [args.signal] : [])]),
+                    purpose: reason, reuse: 'FRESH_REQUIRED', onSnapshot(snapshot) {
+                        identity ??= snapshot.searchEvidence.engine;
+                        session.pool.recordSnapshot(snapshot);
+                        job.onSnapshot(snapshot);
+                    } });
+                identity ??= result.searchEvidence?.engine ?? null;
+                session.pool.recordResult(result);
+                return result;
+            }, () => {
+                if (args.signal?.aborted) return;
+                const current = project();
+                if (current?.scoreAfter && performance.now() - lastLiveAt >= 100) {
+                    lastLiveAt = performance.now();
+                    args.onUpdate?.({ kind: 'LIVE', score: current.scoreAfter,
+                        depth: session.pool.find({ fen: args.node.fen, previousFens: history }).at(-1)?.snapshots.at(-1)?.depth ?? 0 });
+                }
+                if (current && detailComplete(current)) {
+                    supported = current;
+                    args.onUpdate?.({ kind: 'SUPPORTED', evaluation: current });
+                    qualityStop.abort();
+                }
+            });
+            try { await run(); }
+            catch {
+                if (supported) break;
+                if (!retried && args.retryEngine && !args.signal?.aborted && planner.remainingWallMs > 0 && planner.remainingNodes >= nodes) {
+                    retried = true; engine = args.retryEngine();
+                    try { await run(); } catch { if (!supported) return finish('ENGINE_UNAVAILABLE'); }
+                } else return finish('ENGINE_UNAVAILABLE');
+            }
+            project();
+            if (supported) return supported;
+        }
+        return finish('UNSTABLE_EVIDENCE');
+    } catch { return finish('ENGINE_UNAVAILABLE'); }
+    finally { args.signal?.removeEventListener('abort', abort); }
 }
 
 export function localContinuationForMove(args: {
-    node: TrainingSolutionTreeNodeDto;
-    moveUci: string;
-}): LocalContinuation | null {
-    const branch = args.node.branches.find(
-        (candidate) =>
-            normalizeUci(candidate.moveUci) ===
-            normalizeUci(args.moveUci)
-    );
-    if (
-        !branch ||
-        branch.child.role !== 'OPPONENT' ||
-        branch.child.branches.length === 0
-    ) {
-        return null;
-    }
-    const opponentBranch =
-        branch.child.branches.find(
-            (candidate) =>
-                normalizeUci(candidate.moveUci) ===
-                normalizeUci(
-                    branch.child.selectedMoveUci ?? ''
-                )
-        ) ??
-        branch.child.branches.find((candidate) => candidate.best) ??
-        branch.child.branches[0]!;
-    return opponentBranch.child.role === 'USER'
-        ? {
-              opponentMoveUci: opponentBranch.moveUci,
-              fenAfterOpponentMove: opponentBranch.child.fen,
-              nextUserNode: opponentBranch.child,
-          }
-        : null;
-}
-
-export function aggregateTrainingGrade(
-    grades: readonly AttemptGrade[]
-): AttemptGrade {
-    if (grades.some((grade) => grade === 'DIFFERENT_MISTAKE')) {
-        return 'DIFFERENT_MISTAKE';
-    }
-    if (grades.some((grade) => grade === 'REPEATED_MISTAKE')) {
-        return 'REPEATED_MISTAKE';
-    }
-    if (grades.some((grade) => grade === 'IMPROVED')) {
-        return 'IMPROVED';
-    }
-    if (grades.some((grade) => grade === 'GOOD')) return 'GOOD';
-    if (grades.some((grade) => grade === 'STRONG')) return 'STRONG';
-    return 'BEST';
+    manifest: TrainingGradingManifestDto; node: TrainingSolutionTreeNodeDto; moveUci: string;
+}): { opponentMoveUci: string; fenAfterOpponentMove: string; nextUserNode: TrainingSolutionTreeNodeDto } | null {
+    if (args.manifest.continuation.mode !== 'VERIFIED_BRANCHES') return null;
+    const { nodes, edges } = args.manifest.continuation;
+    const opponentEdge = edges.find(edge => edge.from === args.node.id && edge.moveUci === args.moveUci);
+    const opponent = nodes.find(node => node.id === opponentEdge?.to && node.role === 'OPPONENT');
+    const reply = edges.find(edge => edge.from === opponent?.id);
+    const next = nodes.find(node => node.id === reply?.to && node.role === 'USER' && node.answerIndex);
+    if (!opponent || !reply || !next) return null;
+    return { opponentMoveUci: reply.moveUci, fenAfterOpponentMove: next.fen, nextUserNode: { ...next, ply: args.node.ply + 2 } };
 }

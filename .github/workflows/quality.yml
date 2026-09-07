@@ -107,6 +107,11 @@ jobs:
           --shadow-database-url "$SHADOW_DATABASE_URL"
           --exit-code
 
+      - name: Verify v4 migration work cancellation and credit settlement
+        env:
+          BACKRANQ_POSTGRES_INTEGRATION: 'true'
+        run: pnpm vitest run tests/lib/practice-v4-migration-postgres.integration.test.ts
+
       - name: Verify PostgreSQL locking and Progress aggregate parity
         env:
           BACKRANQ_POSTGRES_INTEGRATION: 'true'
@@ -118,4 +123,5 @@ jobs:
           tests/lib/game-import-postgres.integration.test.ts
           tests/lib/progress-read-postgres.integration.test.ts
           tests/lib/extraction-practice-postgres.integration.test.ts
+          tests/lib/training-attempt-postgres.integration.test.ts
           tests/lib/master-analysis-postgres.integration.test.ts

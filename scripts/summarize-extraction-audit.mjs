@@ -28,15 +28,15 @@ for (const { name, data } of documents) {
         const san = (uci) => { try { return new Chess(moment.fen).move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || undefined }).san; } catch { return uci; } };
         return {
             decisionPly: moment.decisionPly, fen: moment.fen, sourceKinds: moment.sourceKinds,
-            played: san(moment.originalMoveUci), best: san(moment.solution.bestMoveUci),
-            accepted: moment.solution.acceptedMovesUci.map(san),
+            played: san(moment.originalMoveUci), best: san(moment.solution.manifest.rootAnswerIndex.preferredMoveUci),
+            accepted: moment.solution.manifest.assessments.filter(a => a.quality === 'GOOD' && a.qualitySupport === 'SUPPORTED').map(a => a.moveUci).map(san),
             originalLossCp: moment.originalDecision.cpLoss,
             originalLossExpectedScore: moment.originalDecision.winChanceLoss,
-            trainable: moment.solution.trainable,
-            verification: moment.solution.verificationStatus,
-            frontier: moment.solution.acceptanceFrontier.status,
-            playedAccepted: moment.solution.acceptedMovesUci.includes(moment.originalMoveUci),
-            diagnostics: moment.solution.evidence?.verifier?.diagnostics ?? [],
+            trainable: moment.solution.manifest.decision.selection === 'INCLUDED',
+            verification: moment.solution.manifest.decision.status,
+            frontier: moment.solution.manifest.rootAnswerIndex.readiness,
+            playedAccepted: moment.solution.manifest.assessments.filter(a => a.quality === 'GOOD' && a.qualitySupport === 'SUPPORTED').map(a => a.moveUci).includes(moment.originalMoveUci),
+            diagnostics: [moment.solution.manifest.decision.reason],
         };
     });
     summaries.push({ name, startupMs: data.startupMs, totalMs: data.totalMs, phases,

@@ -1,15 +1,15 @@
-import { fixtureTree } from '../helpers/extractionEvidence';
+import { practicePositionFixture } from '../helpers/practice-position';
+import { originalDecisionForPracticeManifest } from '../../src/lib/training/practiceSourceBinding';
+import { DEFAULT_ASSESSMENT_POLICY } from '../../src/lib/training/practiceContract';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
 import type { FullConfig } from '@playwright/test';
-import { Chess } from 'chess.js';
 
 import { assertSafeE2eDatabaseConfig } from '../../scripts/lib/e2e-database-safety.mjs';
 import { countSourcePgnPlies, hashSourcePgn } from '../../src/lib/chess/pgn';
-import { assessmentPositionKey } from '../../src/lib/training/assessmentIdentity';
 import {
     E2E_AUTH_STATE_PATH,
     E2E_GAMES,
@@ -129,24 +129,6 @@ const STANDARD_TRAINING_MOMENTS = [
     }),
 ] as const;
 
-const GRADING_POLICY = {
-    version: 3,
-    pov: 'TRAINING_SIDE',
-    best: { maxCpLoss: 20, maxWinChanceLoss: 0.03 },
-    strong: { maxCpLoss: 50, maxWinChanceLoss: 0.05 },
-    success: {
-        maxCpLoss: 100,
-        maxWinChanceLoss: 0.1,
-        preserveOutcome: true,
-    },
-    improvement: {
-        minRecoveredCp: 50,
-        minRecoveredWinChance: 0.08,
-    },
-    unknownMove: 'EVALUATE',
-    matePolicy: 'EXACT',
-    tablebasePolicy: 'EXACT',
-} as const;
 
 async function seedTrainingMoment(
     prisma: PrismaClient,
@@ -169,242 +151,29 @@ async function seedTrainingMoment(
         themes: string[];
     }
 ) {
-    const scoreBefore = { kind: 'cp', cp: 85, pov: 'WHITE' };
-    const scoreAfter = { kind: 'cp', cp: -45, pov: 'WHITE' };
-    const applyMove = (fen: string, moveUci: string) => {
-        const chess = new Chess(fen);
-        chess.move({
-            from: moveUci.slice(0, 2),
-            to: moveUci.slice(2, 4),
-            promotion: moveUci.slice(4, 5) || undefined,
-        });
-        return chess.fen();
-    };
-    const fenAfterBest = applyMove(
-        fixture.fen,
-        fixture.bestMoveUci
-    );
-    const isConditional =
-        fixture.id === E2E_TRAINING_MOMENTS.dragMove;
-    const fenAfterOpponent = isConditional
-        ? applyMove(fenAfterBest, 'b8c6')
-        : null;
-    const conditionalMove = 'f1b5';
-    const solutionTree = fixtureTree(isConditional
-        ? {
-              fen: fixture.fen,
-              ply: 0,
-              role: 'USER',
-              alternativesComplete: true,
-              acceptedMovesUci: fixture.acceptedMovesUci,
-              branches: [
-                  {
-                      moveUci: fixture.bestMoveUci,
-                      best: true,
-                      child: {
-                          fen: fenAfterBest,
-                          ply: 1,
-                          role: 'OPPONENT',
-                          alternativesComplete: true,
-                          selectedMoveUci: 'b8c6',
-                          branches: [
-                              {
-                                  moveUci: 'b8c6',
-                                  best: true,
-                                  child: {
-                                      fen: fenAfterOpponent!,
-                                      ply: 2,
-                                      role: 'USER',
-                                      alternativesComplete: true,
-                                      acceptedMovesUci: [
-                                          conditionalMove,
-                                      ],
-                                      branches: [
-                                          {
-                                              moveUci:
-                                                  conditionalMove,
-                                              best: true,
-                                              child: {
-                                                  fen: applyMove(
-                                                      fenAfterOpponent!,
-                                                      conditionalMove
-                                                  ),
-                                                  ply: 3,
-                                                  role: 'TERMINAL',
-                                                  branches: [],
-                                              },
-                                          },
-                                      ],
-                                  },
-                              },
-                          ],
-                      },
-                  },
-              ],
-          }
-        : {
-              fen: fixture.fen,
-              ply: 0,
-              role: 'USER',
-              alternativesComplete: true,
-              acceptedMovesUci: fixture.acceptedMovesUci,
-              branches: [
-                  {
-                      moveUci: fixture.bestMoveUci,
-                      best: true,
-                      child: {
-                          fen: fenAfterBest,
-                          ply: 1,
-                          role: 'TERMINAL',
-                          branches: [],
-                      },
-                  },
-              ],
-          }, [], fixture.revisionId);
-    await prisma.trainingMoment.create({
-        data: {
-            id: fixture.id,
-            userId: fixture.userId,
-            gameId: fixture.gameId,
-            momentKey: crypto
-                .createHash('sha256')
-                .update(`e2e:${fixture.id}`)
-                .digest('hex'),
-            sourcePgnHash:
-                fixture.gameId === E2E_GAMES.standard
-                    ? STANDARD_SOURCE_PGN_HASH
-                    : PROMOTION_SOURCE_PGN_HASH,
-            decisionPly: fixture.decisionPly,
-            fen: fixture.fen,
-            sideToMove: fixture.sideToMove,
-            originalMoveUci: fixture.originalMoveUci,
-            scoreBefore,
-            scoreAfter,
-            cpLoss: 130,
-            winChanceLoss: 0.22,
-            confidence: 0.99,
-            phase: fixture.phase,
-            status: 'ACTIVE',
-            sourceKinds: [...fixture.sourceKinds],
-            lessonKinds: [...fixture.lessonKinds],
-            themes: fixture.themes,
-        },
+    const manifest = practicePositionFixture({
+        fen: fixture.fen, originalMoveUci: fixture.originalMoveUci, bestMoveUci: fixture.bestMoveUci,
+        momentId: fixture.id, revisionId: fixture.revisionId, gameId: fixture.gameId,
+        sourcePgnHash: fixture.gameId === E2E_GAMES.standard ? STANDARD_SOURCE_PGN_HASH : PROMOTION_SOURCE_PGN_HASH,
+        decisionPly: fixture.decisionPly, configHash: TRAINING_CONFIG_HASH,
+        ...(fixture.id === E2E_TRAINING_MOMENTS.dragMove ? { continuation: { opponentMoveUci: 'b8c6', userMoveUci: 'f1b5' } } : {}),
     });
-    await prisma.solutionRevision.create({
-        data: {
-            id: fixture.revisionId,
-            momentId: fixture.id,
-            analysisRunId: fixture.analysisRunId,
-            revision: 1,
-            solutionHash: crypto
-                .createHash('sha256')
-                .update(`e2e-solution:${fixture.revisionId}`)
-                .digest('hex'),
-            decision: {status:'CONFIRMED_MISTAKE',reason:'E2E_CONFIRMED'},
-            answerCoverage: {
-                version:1, contextId:assessmentPositionKey(fixture.fen,[]), status:'PARTIAL',
-                legalMovesUci:new Chess(fixture.fen).moves({verbose:true}).map(move => move.lan),
-                assessedMovesUci:[fixture.bestMoveUci,fixture.originalMoveUci], coveredMovesUci:[],
-                referenceId:fixture.revisionId, policyVersion:3, reason:'E2E_KNOWN_ANSWERS',
-            },
-            continuation: {status:'GRADED_BRANCHES_READY',explanationAvailable:true,gradedContinuationReady:true},
-            originalDecision: {scoreBefore,scoreAfter,cpLoss:130,phase:fixture.phase,sourceKinds:[...fixture.sourceKinds],lessonKinds:[...fixture.lessonKinds],themes:fixture.themes},
-            verificationStatus: 'VERIFIED',
-            solutionShape: 'UNIQUE',
-            gradingStrategy: 'PRECOMPUTED',
-            continuationShape: 'SINGLE_DECISION',
-            trainable: true,
-            bestMoveUci: fixture.bestMoveUci,
-            acceptedMovesUci: fixture.acceptedMovesUci,
-            acceptanceFrontier: {
-                version: 1,
-                status: 'STABLE',
-                targetCutoffCp: 100,
-                effectiveCutoffCp: 70,
-                boundaryGapCp: 40,
-                moves: fixture.acceptedMovesUci.map(
-                    (moveUci, index) => ({
-                        moveUci,
-                        tier: index === 0 ? 'BEST' : 'GOOD',
-                    })
-                ),
-                firstRejectedMoveUci: null,
-            },
-            bestLine: fixture.bestLineUci,
-            solutionTree,
-            scoreAtStart: scoreBefore,
-            playedMoveScore: scoreAfter,
-            targetOutcome: {},
-            gradingPolicy: GRADING_POLICY,
-            evidence: { fixture: true },
-            generatorVersion: 'e2e-v2',
-            configHash: TRAINING_CONFIG_HASH,
-            moveAssessments: {
-                create: [
-                    {
-                        referenceId: fixture.revisionId, tierStable: true,
-                        positionKey: assessmentPositionKey(
-                            fixture.fen,
-                            []
-                        ),
-                        decisionIndex: 0,
-                        fen: fixture.fen,
-                        moveUci: fixture.bestMoveUci,
-                        source: 'PRECOMPUTED',
-                        status: 'VERIFIED',
-                        grade: 'BEST',
-                        scoreAfter: scoreBefore,
-                        evidence: { fixture: true },
-                    },
-                    {
-                        referenceId: fixture.revisionId, tierStable: true,
-                        positionKey: assessmentPositionKey(
-                            fixture.fen,
-                            []
-                        ),
-                        decisionIndex: 0,
-                        fen: fixture.fen,
-                        moveUci: fixture.originalMoveUci,
-                        source: 'PRECOMPUTED',
-                        status: 'VERIFIED',
-                        grade: 'REPEATED_MISTAKE',
-                        scoreAfter,
-                        evidence: { fixture: true },
-                    },
-                    ...(isConditional
-                        ? [
-                              {
-                                  referenceId: fixture.revisionId, tierStable: true,
-                                  positionKey:
-                                      assessmentPositionKey(
-                                          fenAfterOpponent!,
-                                          [
-                                              fixture.fen,
-                                              fenAfterBest,
-                                          ]
-                                      ),
-                                  decisionIndex: 1,
-                                  fen: fenAfterOpponent!,
-                                  moveUci: conditionalMove,
-                                  source:
-                                      'PRECOMPUTED' as const,
-                                  status: 'VERIFIED' as const,
-                                  grade: 'BEST' as const,
-                                  scoreAfter: scoreBefore,
-                                  evidence: {
-                                      fixture: true,
-                                  },
-                              },
-                          ]
-                        : []),
-                ],
-            },
-        },
-    });
-    await prisma.trainingMoment.update({
-        where: { id: fixture.id },
-        data: { currentSolutionRevisionId: fixture.revisionId },
-    });
+    const original = originalDecisionForPracticeManifest(manifest);
+    await prisma.trainingMoment.create({ data: {
+        id: fixture.id, userId: fixture.userId, gameId: fixture.gameId,
+        momentKey: crypto.createHash('sha256').update(`e2e:${fixture.id}`).digest('hex'),
+        sourcePgnHash: manifest.source.sourcePgnHash, decisionPly: fixture.decisionPly,
+        fen: manifest.source.fen, positionHistory: [], sideToMove: fixture.sideToMove,
+        originalMoveUci: fixture.originalMoveUci, ...original,
+        confidence: 0.99, phase: fixture.phase, status: 'ACTIVE', sourceKinds: [...fixture.sourceKinds],
+        lessonKinds: [...fixture.lessonKinds], themes: fixture.themes,
+    } });
+    await prisma.solutionRevision.create({ data: {
+        id: fixture.revisionId, momentId: fixture.id, analysisRunId: fixture.analysisRunId,
+        revision: 1, solutionHash: manifest.semanticHash, trainable: true, manifest,
+        generatorVersion: manifest.generatorVersion, configHash: TRAINING_CONFIG_HASH,
+    } });
+    await prisma.trainingMoment.update({ where: { id: fixture.id }, data: { currentSolutionRevisionId: fixture.revisionId } });
 }
 
 async function deleteE2eUserGraph(prisma: PrismaClient) {
@@ -630,6 +399,7 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                 status: 'SUCCEEDED',
                 inputPgnHash: STANDARD_SOURCE_PGN_HASH,
                 configHash: TRAINING_CONFIG_HASH,
+                configSnapshot: { extractor: { confirmNodes: 100_000, gradingPolicy: DEFAULT_ASSESSMENT_POLICY } },
                 completedAt: new Date('2026-07-20T12:15:00.000Z'),
             },
             {
@@ -642,6 +412,7 @@ async function seedFixtures(prisma: PrismaClient, sessionToken: string) {
                 status: 'SUCCEEDED',
                 inputPgnHash: PROMOTION_SOURCE_PGN_HASH,
                 configHash: TRAINING_CONFIG_HASH,
+                configSnapshot: { extractor: { confirmNodes: 100_000, gradingPolicy: DEFAULT_ASSESSMENT_POLICY } },
                 completedAt: new Date('2026-07-19T12:15:00.000Z'),
             },
         ],

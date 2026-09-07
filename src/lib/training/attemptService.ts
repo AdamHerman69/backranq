@@ -1,914 +1,230 @@
 import { createHash } from 'node:crypto';
+import { acquireTransactionAdvisoryLock } from '@/lib/db/advisoryLock';
+import { Prisma, type PrismaClient, type TrainingAttempt, type TrainingAttemptStep } from '@prisma/client';
+import type { TrainingApiErrorCode } from './api';
+import type { EnrichTrainingAttemptRequest, EnrichTrainingAttemptResponse, RecordTrainingAttemptRequest, RecordTrainingAttemptResponse, TrainingAttemptWriteRequest } from './attemptApi';
+import { canonicalJson, parsePracticeMomentRevision, validatePracticeEvaluationPatch, type MoveAssessment, type PracticeMomentRevision, type PracticeEvaluationPatch } from './practiceContract';
+import { parseEnrichTrainingAttemptRequest, parseRecordTrainingAttemptRequest } from './apiValidation';
 
-import { Chess } from 'chess.js';
-import { Prisma, type PrismaClient } from '@prisma/client';
-import { parseTrainingCompletionTime } from '@/lib/training/completionTime';
-
-import type {
-    RecordTrainingAttemptRequest,
-    EnrichTrainingAttemptRequest,
-    EnrichTrainingAttemptResponse,
-    TrainingClientMoveEvidence,
-    RecordTrainingAttemptResponse,
-    RecordedTrainingAttemptStepDto,
-    TrainingApiErrorCode,
-    TrainingComparisonDto,
-    TrainingGradingManifestDto,
-    TrainingSolutionTreeNodeDto,
-} from '@/lib/training/api';
-import { metricsFromMatchedOutcomeEvidence } from '@/lib/training/gradingEvidence';
-import { gradeTrainingMove } from '@/lib/training/grader';
-import type { AttemptGrade } from '@/lib/training/contracts';
-import { toTrainingPromptDto } from '@/lib/training/apiMappers';
-import {
-    aggregateTrainingGrade,
-    gradeKnownLocalMove,
-    type LocalMoveEvaluation,
-} from '@/lib/training/localGrading';
-
-type TrainingWriteDb = Pick<
-    PrismaClient,
-    '$transaction' | 'trainingMoment' | 'trainingAttempt' | 'solutionRevision' | 'trainingAttemptAssessmentRevision'
->;
-
-const attemptMomentSelect = {
-    id: true,
-    fen: true,
-    sideToMove: true,
-    positionHistory: true,
-    originalMoveUci: true,
-    scoreBefore: true,
-    scoreAfter: true,
-    gameId: true,
-    decisionPly: true,
-    phase: true,
-    cpLoss: true,
-    winChanceLoss: true,
-    sourceKinds: true,
-    lessonKinds: true,
-    themes: true,
-    currentSolutionRevisionId: true,
-    game: {
-        select: {
-            provider: true,
-            timeClass: true,
-            playedAt: true,
-        },
-    },
-    currentSolutionRevision: {
-        select: {
-            decision: true,
-            answerCoverage: true,
-            continuation: true,
-            originalDecision: true,
-            trainable: true,
-            verificationStatus: true,
-            acceptanceFrontier: true,
-            solutionHash: true,
-            configHash: true,
-            bestMoveUci: true,
-            acceptedMovesUci: true,
-            solutionShape: true,
-            bestLine: true,
-            scoreAtStart: true,
-            gradingPolicy: true,
-            solutionTree: true,
-            moveAssessments: {
-                select: {
-                    positionKey: true,
-                    referenceId: true,
-                    tierStable: true,
-                    decisionIndex: true,
-                    fen: true,
-                    moveUci: true,
-                    source: true,
-                    status: true,
-                    grade: true,
-                    scoreAfter: true,
-                    evidence: true,
-                },
-            },
-        },
-    },
-} satisfies Prisma.TrainingMomentSelect;
-
-type AttemptMoment = Prisma.TrainingMomentGetPayload<{
-    select: typeof attemptMomentSelect;
-}>;
-
-const PRACTICE_THEME_TAXONOMY_VERSION = 'backranq-theme-v1';
-const PRACTICE_REVIEW_ALGORITHM_VERSION = 'backranq-review-v1';
-
-function attemptContext(
-    moment: AttemptMoment,
-    revision: NonNullable<AttemptMoment['currentSolutionRevision']>
-) {
-    const original = revision.originalDecision as Record<string, unknown>;
-    return {
-        contextPhase: original.phase as typeof moment.phase,
-        contextCpLoss: original.cpLoss as number | null,
-        contextWinChanceLoss: original.winChanceLoss as number | null,
-        contextSourceKinds: original.sourceKinds as typeof moment.sourceKinds,
-        contextLessonKinds: original.lessonKinds as typeof moment.lessonKinds,
-        contextThemes: original.themes as string[],
-        contextThemeTaxonomyVersion:
-            PRACTICE_THEME_TAXONOMY_VERSION,
-        contextProvider: moment.game.provider,
-        contextTimeClass: moment.game.timeClass,
-        contextConfigHash: revision.configHash,
-        contextSolutionHash: revision.solutionHash,
-    };
-}
-
-type PracticeEvidenceTx = Pick<
-    Prisma.TransactionClient,
-    | '$queryRaw'
-    | 'trainingAttemptStatusEvent'
-    | 'practiceReviewState'
-    | 'practiceReviewEvent'
->;
-
-async function lockPracticeReviewStream(args: {
-    tx: Pick<Prisma.TransactionClient, '$queryRaw'>;
-    userId: string;
-    trainingMomentId: string;
-    expectedSolutionRevisionId: string;
-}) {
-    const lockKey = [
-        'practice-review',
-        args.userId,
-        args.trainingMomentId,
-    ].join(':');
-
-    // Review state is maintained as an absolute scheduler snapshot. Serialize
-    // every distinct attempt for one owner + Position before any read/derive/
-    // write step so concurrent transactions cannot overwrite an increment.
-    const rows = await args.tx.$queryRaw<
-        Array<{
-            acquired: boolean;
-            currentSolutionRevisionId: string;
-        }>
-    >`
-        WITH "practice_review_lock" AS MATERIALIZED (
-            SELECT pg_advisory_xact_lock(
-                hashtextextended(${lockKey}, 0)
-            )
-        )
-        SELECT
-            TRUE AS "acquired",
-            moment."currentSolutionRevisionId"
-        FROM "practice_review_lock"
-        CROSS JOIN LATERAL (
-            SELECT "currentSolutionRevisionId"
-            FROM "TrainingMoment"
-            WHERE "id" = ${args.trainingMomentId}::uuid
-              AND "userId" = ${args.userId}::uuid
-            FOR UPDATE
-        ) AS moment
-    `;
-    if (
-        !rows[0]
-    ) {
-        throw new TrainingAttemptError(
-            'Training solution changed; reload the position',
-            'STALE_REVISION',
-            409
-        );
-    }
-    return rows[0].currentSolutionRevisionId;
-}
-
-async function appendAttemptStatusEvent(args: {
-    tx: PracticeEvidenceTx;
-    attemptId: string;
-    userId: string;
-    status: 'GRADED' | 'REVEALED';
-    grade?: AttemptGrade | null;
-    occurredAt: Date;
-}) {
-    await args.tx.trainingAttemptStatusEvent.create({
-        data: {
-            attemptId: args.attemptId,
-            userId: args.userId,
-            eventKey:
-                args.status === 'GRADED'
-                    ? 'graded'
-                    : 'revealed',
-            status: args.status,
-            grade: args.grade ?? null,
-            reason:
-                args.status === 'GRADED'
-                    ? 'GRADED'
-                    : 'REVEALED',
-            occurredAt: args.occurredAt,
-        },
-    });
-}
-
-async function recordReviewEvidence(args: {
-    tx: PracticeEvidenceTx;
-    attemptId: string;
-    userId: string;
-    trainingMomentId: string;
-    solutionHash: string;
-    configHash: string;
-    grade?: AttemptGrade;
-    revealed: boolean;
-    occurredAt: Date;
-}) {
-    const eventKey = `${args.attemptId}:review`;
-    const recorded = await args.tx.practiceReviewEvent.findUnique({
-        where: {
-            userId_eventKey: {
-                userId: args.userId,
-                eventKey,
-            },
-        },
-        select: { id: true },
-    });
-    if (recorded) return;
-
-    const existing = await args.tx.practiceReviewState.findUnique({
-        where: {
-            userId_trainingMomentId_solutionHash_configHash: {
-                userId: args.userId,
-                trainingMomentId: args.trainingMomentId,
-                solutionHash: args.solutionHash,
-                configHash: args.configHash,
-            },
-        },
-        select: {
-            id: true,
-            intervalDays: true,
-            lapses: true,
-            successes: true,
-            nextDueAt: true,
-            lastReviewedAt: true,
-            algorithmVersion: true,
-        },
-    });
-    const success =
-        !args.revealed &&
-        (args.grade === 'BEST' ||
-            args.grade === 'STRONG' ||
-            args.grade === 'GOOD');
-    const intervalBeforeDays = existing?.intervalDays ?? 0;
-    const scheduledIntervalDays = success
-        ? existing?.successes
-            ? Math.min(
-                  60,
-                  existing.successes === 1
-                      ? 3
-                      : Math.max(3, intervalBeforeDays * 2)
-              )
-            : 1
-        : 1;
-    const advancesSchedule =
-        !existing ||
-        args.occurredAt.getTime() >
-            existing.lastReviewedAt.getTime();
-    // A delayed offline attempt remains durable evidence and increments the
-    // counters, but it must not move a newer schedule backwards.
-    const intervalAfterDays = advancesSchedule
-        ? scheduledIntervalDays
-        : existing.intervalDays;
-    const lastReviewedAt = advancesSchedule
-        ? args.occurredAt
-        : existing.lastReviewedAt;
-    const nextDueAt = advancesSchedule
-        ? new Date(
-              args.occurredAt.getTime() +
-                  intervalAfterDays * 24 * 60 * 60 * 1_000
-          )
-        : existing.nextDueAt;
-    const algorithmVersion = advancesSchedule
-        ? PRACTICE_REVIEW_ALGORITHM_VERSION
-        : existing.algorithmVersion;
-    const state = await args.tx.practiceReviewState.upsert({
-        where: {
-            userId_trainingMomentId_solutionHash_configHash: {
-                userId: args.userId,
-                trainingMomentId: args.trainingMomentId,
-                solutionHash: args.solutionHash,
-                configHash: args.configHash,
-            },
-        },
-        create: {
-            userId: args.userId,
-            trainingMomentId: args.trainingMomentId,
-            solutionHash: args.solutionHash,
-            configHash: args.configHash,
-            nextDueAt,
-            intervalDays: intervalAfterDays,
-            lapses: success ? 0 : 1,
-            successes: success ? 1 : 0,
-            algorithmVersion,
-            lastReviewedAt,
-        },
-        update: {
-            nextDueAt,
-            intervalDays: intervalAfterDays,
-            lapses: success
-                ? existing?.lapses ?? 0
-                : (existing?.lapses ?? 0) + 1,
-            successes: success
-                ? (existing?.successes ?? 0) + 1
-                : existing?.successes ?? 0,
-            algorithmVersion,
-            lastReviewedAt,
-        },
-        select: { id: true },
-    });
-    await args.tx.practiceReviewEvent.create({
-        data: {
-            stateId: state.id,
-            attemptId: args.attemptId,
-            userId: args.userId,
-            eventKey,
-            outcome: args.revealed
-                ? 'REVEAL'
-                : success
-                  ? 'SUCCESS'
-                  : 'LAPSE',
-            grade: args.grade ?? null,
-            occurredAt: args.occurredAt,
-            intervalBeforeDays,
-            intervalAfterDays,
-            nextDueAt,
-            algorithmVersion:
-                PRACTICE_REVIEW_ALGORITHM_VERSION,
-        },
-    });
-}
-
-export type TrainingAttemptDependencies = {
-    db: TrainingWriteDb;
-    now?: () => Date;
-};
-
+type TrainingWriteDb = Pick<PrismaClient, '$transaction'>;
+export type TrainingAttemptDependencies = { db: TrainingWriteDb; now?: () => Date };
 export class TrainingAttemptError extends Error {
-    constructor(
-        message: string,
-        readonly code: TrainingApiErrorCode,
-        readonly status: number
-    ) {
-        super(message);
-        this.name = 'TrainingAttemptError';
+    constructor(message: string, public readonly code: TrainingApiErrorCode, public readonly status: number) { super(message); }
+}
+function invalid(message: string): never { throw new TrainingAttemptError(message, 'INVALID_REQUEST', 400); }
+function conflict(message: string): never { throw new TrainingAttemptError(message, 'IDEMPOTENCY_CONFLICT', 409); }
+function missing(message: string): never { throw new TrainingAttemptError(message, 'NOT_FOUND', 425); }
+function digest(value: unknown) { return createHash('sha256').update(canonicalJson(value)).digest('hex'); }
+export function trainingAttemptPayloadHash(args: { userId: string; momentId: string; request: TrainingAttemptWriteRequest }): string { return digest({ userId: args.userId, momentId: args.momentId, request: args.request }); }
+const neutral = { quality: 'UNKNOWN' as const, tier: null, originalRelation: 'UNKNOWN' as const };
+function projection(assessment: MoveAssessment | null) {
+    if (!assessment) return neutral;
+    if (assessment.qualitySupport !== 'SUPPORTED' || assessment.quality === 'UNKNOWN') invalid('Resolution requires supported move quality');
+    return { quality: assessment.quality, tier: assessment.tierSupport === 'SUPPORTED' ? assessment.tier : null, originalRelation: assessment.originalRelation };
+}
+function response(attempt: TrainingAttempt, idempotentReplay = false): RecordTrainingAttemptResponse {
+    return { attemptId: attempt.id, status: attempt.status, quality: attempt.quality, tier: attempt.tier, originalRelation: attempt.originalRelation, idempotentReplay };
+}
+
+async function ownedStream(tx: Prisma.TransactionClient, args: { userId: string; momentId: string; request: { momentRevisionId: string; clientAttemptId: string } }) {
+    const attemptKey = `practice-attempt:${args.userId}:${args.request.clientAttemptId}`;
+    await acquireTransactionAdvisoryLock(tx, attemptKey);
+    const key = `practice-review:${args.userId}:${args.momentId}`;
+    await acquireTransactionAdvisoryLock(tx, key);
+    const moment = await tx.trainingMoment.findFirst({ where: { id: args.momentId, userId: args.userId }, include: { game: { select: { provider: true, timeClass: true } } } });
+    if (!moment) throw new TrainingAttemptError('Training moment not found', 'NOT_FOUND', 404);
+    const revision = await tx.solutionRevision.findFirst({ where: { id: args.request.momentRevisionId, momentId: moment.id } });
+    if (!revision) throw new TrainingAttemptError('Training revision not found', 'STALE_REVISION', 409);
+    let manifest: PracticeMomentRevision;
+    try { manifest = parsePracticeMomentRevision(revision.manifest); } catch { invalid('Invalid stored Practice revision'); }
+    if (manifest.momentId !== moment.id || manifest.revisionId !== revision.id || manifest.semanticHash !== revision.solutionHash ||
+        manifest.source.gameId !== moment.gameId || manifest.source.contextId !== manifest.rootAnswerIndex.contextId ||
+        !revision.trainable || manifest.decision.selection !== 'INCLUDED') invalid('Revision is not a trainable owned moment');
+    return { moment, revision, manifest };
+}
+
+/** USER steps follow an actual verified path, including its intervening opponent edges. */
+function assertStepContext(manifest: PracticeMomentRevision, previous: TrainingAttemptStep[], contextId: string, stepIndex: number): string {
+    if (stepIndex !== previous.length) missing('Earlier played move must be recorded first');
+    if (stepIndex === 0) {
+        if (contextId !== manifest.source.contextId) invalid('First move must use the source decision');
+        return manifest.source.fen;
     }
-}
-
-function normalizeUci(move: string): string {
-    return move.trim().toLowerCase();
-}
-
-function json(value: unknown): Prisma.InputJsonValue {
-    return value as Prisma.InputJsonValue;
-}
-
-function isUniqueViolation(error: unknown): boolean {
-    return (
-        !!error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        error.code === 'P2002'
-    );
-}
-
-function applyUci(fen: string, moveUci: string): string | null {
-    const move = normalizeUci(moveUci);
-    try {
-        const chess = new Chess(fen);
-        const played = chess.move({
-            from: move.slice(0, 2),
-            to: move.slice(2, 4),
-            promotion: move.slice(4, 5) || undefined,
-        });
-        return played ? chess.fen() : null;
-    } catch {
-        return null;
+    if (manifest.continuation.mode !== 'VERIFIED_BRANCHES') invalid('This revision has one user decision');
+    const last = previous[previous.length - 1];
+    if (last.resolution !== 'RESOLVED' || last.quality !== 'GOOD') invalid('Continuation requires a resolved good preceding decision');
+    const { nodes, edges } = manifest.continuation;
+    const from = nodes.find(n => n.contextId === last.contextId && n.role === 'USER');
+    const target = nodes.find(n => n.contextId === contextId && n.role === 'USER');
+    if (!from || !target) invalid('Unknown user continuation context');
+    const pending = edges.filter(e => e.from === from.id && e.moveUci === last.moveUci).map(e => e.to);
+    const visited = new Set<string>();
+    while (pending.length) {
+        const id = pending.pop()!;
+        if (id === target.id) return target.fen;
+        if (visited.has(id)) continue;
+        visited.add(id);
+        if (nodes.find(n => n.id === id)?.role === 'OPPONENT') pending.push(...edges.filter(e => e.from === id).map(e => e.to));
     }
+    invalid('Played move does not reach this user decision');
 }
 
-type CanonicalRecordedStep = {
-    request: RecordedTrainingAttemptStepDto;
-    grade: AttemptGrade | null;
-    source: 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE' | null;
-    comparison: TrainingComparisonDto | null;
-    evidence: unknown;
-};
-
-type CanonicalAttempt = {
-    grade: AttemptGrade | null;
-    gradingSource: 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE' | null;
-    comparison: TrainingComparisonDto | null;
-    steps: CanonicalRecordedStep[];
-};
-
-function invalidAttempt(message: string): never {
-    throw new TrainingAttemptError(message, 'INVALID_REQUEST', 400);
+function indexedAssessment(manifest: PracticeMomentRevision, contextId: string, moveUci: string, assessmentId: string | null, coverageGroupId: string | null) {
+    const index = contextId === manifest.source.contextId ? manifest.rootAnswerIndex : manifest.continuation.nodes.find(n => n.contextId === contextId && n.role === 'USER')?.answerIndex;
+    if (!index?.legalMovesUci.includes(moveUci)) throw new TrainingAttemptError('Move is not legal in the recorded context', 'ILLEGAL_MOVE', 400);
+    if (coverageGroupId) {
+        const group = manifest.coverageGroups.find(g => g.id === coverageGroupId && g.contextId === contextId && g.frameId === index.frameId && g.movesUci.includes(moveUci));
+        if (!group || !index.coverageGroupIds.includes(group.id)) invalid('Coverage group is not in the served answer index');
+        return { quality: 'BELOW_STANDARD' as const, tier: null, originalRelation: contextId === manifest.source.contextId && moveUci === manifest.source.originalMoveUci ? 'SAME_MOVE' as const : 'UNKNOWN' as const };
+    }
+    if (!assessmentId) return neutral;
+    const assessment = manifest.assessments.find(a => a.id === assessmentId && a.contextId === contextId && a.moveUci === moveUci && a.frameId === index.frameId);
+    if (!assessment || !index.assessmentIds.includes(assessment.id)) invalid('Initial assessment is not in the served answer index');
+    projection(assessment);
+    return projection(assessment);
 }
 
-function canonicalSelectedBranch(node: TrainingSolutionTreeNodeDto) {
-    return (
-        node.branches.find(
-            (branch) =>
-                normalizeUci(branch.moveUci) ===
-                normalizeUci(node.selectedMoveUci ?? '')
-        ) ??
-        node.branches.find((branch) => branch.best) ??
-        node.branches[0] ??
-        null
-    );
-}
-
-function aggregateCanonicalGradingSource(
-    steps: readonly CanonicalRecordedStep[]
-): 'PRECOMPUTED' | 'CLIENT_EVALUATED' | 'TABLEBASE' | null {
-    const userSources = steps.flatMap((step) =>
-        step.request.actor === 'USER' && step.source ? [step.source] : []
-    );
-    return userSources.includes('CLIENT_EVALUATED') ? 'CLIENT_EVALUATED' : userSources.includes('TABLEBASE')
-        ? 'TABLEBASE'
-        : userSources.includes('PRECOMPUTED')
-          ? 'PRECOMPUTED'
-          : null;
-}
-
-function canonicalizeRecordedLine(
-    rootFen: string,
-    request: RecordTrainingAttemptRequest,
-    manifest: TrainingGradingManifestDto
-): CanonicalAttempt {
-    const revealed = request.status === 'REVEALED';
-    if (revealed) {
-        if (
-            request.grade ||
-            request.gradingSource ||
-            request.comparison
-        ) {
-            invalidAttempt(
-                'A revealed attempt cannot carry aggregate grading evidence'
-            );
-        }
-        if (request.steps.length === 0) {
-            return {
-                grade: null,
-                gradingSource: null,
-                comparison: null,
-                steps: [],
-            };
-        }
-    }
-    if (request.steps.length === 0) {
-        throw new TrainingAttemptError(
-            'A graded attempt requires at least one move',
-            'INVALID_REQUEST',
-            400
-        );
-    }
-    let fen = rootFen;
-    let node: TrainingSolutionTreeNodeDto | null = manifest.solutionTree;
-    const userGrades: AttemptGrade[] = [];
-    const canonicalSteps: CanonicalRecordedStep[] = [];
-    for (let index = 0; index < request.steps.length; index += 1) {
-        const step = request.steps[index]!;
-        const expectedActor = index % 2 === 0 ? 'USER' : 'ENGINE';
-        const expectedNodeRole =
-            expectedActor === 'USER' ? 'USER' : 'OPPONENT';
-        if (
-            step.stepIndex !== index ||
-            step.actor !== expectedActor ||
-            step.fenBefore !== fen ||
-            !node ||
-            node.fen !== fen ||
-            node.role !== expectedNodeRole
-        ) {
-            invalidAttempt('Recorded attempt line is inconsistent');
-        }
-        const nextFen = applyUci(fen, step.moveUci);
-        if (!nextFen) {
-            throw new TrainingAttemptError(
-                'Recorded attempt contains an illegal move',
-                'ILLEGAL_MOVE',
-                400
-            );
-        }
-        if (step.actor === 'USER' && revealed && index === request.steps.length - 1 && step.grade === undefined && step.source === undefined && !step.comparison && !step.clientEvidence) {
-            canonicalSteps.push({ request: step, grade: null, source: null, comparison: null, evidence: { kind: 'UNRESOLVED_LOCAL_REVIEW', serverVerified: false } });
-            node = null;
-        } else if (step.actor === 'USER') {
-            const evaluation: LocalMoveEvaluation | null = step.source === 'CLIENT_EVALUATED'
-                ? clientEvaluation(manifest, node, step.moveUci, step.clientEvidence)
-                : gradeKnownLocalMove({ manifest, node, moveUci: step.moveUci });
-            if (!evaluation || evaluation.result.status !== 'GRADED') {
-                invalidAttempt('Recorded move has no verified grading evidence');
-            }
-            if (
-                step.grade !== evaluation.result.grade ||
-                (step.source !== undefined &&
-                    step.source !== evaluation.source)
-            ) {
-                invalidAttempt('Recorded move grade does not match the verified solution');
-            }
-            userGrades.push(evaluation.result.grade);
-            canonicalSteps.push({
-                request: step,
-                grade: evaluation.result.grade,
-                source: evaluation.source,
-                comparison: evaluation.comparison,
-                evidence: evaluation.evidence,
-            });
-            const branch:
-                | TrainingSolutionTreeNodeDto['branches'][number]
-                | undefined = node.branches.find(
-                (candidate) =>
-                    normalizeUci(candidate.moveUci) ===
-                    normalizeUci(step.moveUci)
-            );
-            node = evaluation.result.accepted && manifest.continuation.gradedContinuationReady ? branch?.child ?? null : null;
-            if (!node && index !== request.steps.length - 1) {
-                invalidAttempt('A rejected move cannot have a continuation');
-            }
-        } else if (step.grade || step.source || step.comparison || step.clientEvidence) {
-            invalidAttempt('Engine continuation steps cannot carry a grade');
-        } else {
-            const branch = canonicalSelectedBranch(node);
-            if (
-                !branch ||
-                normalizeUci(branch.moveUci) !== normalizeUci(step.moveUci)
-            ) {
-                invalidAttempt('Recorded engine continuation is not canonical');
-            }
-            canonicalSteps.push({
-                request: step,
-                grade: null,
-                source: null,
-                comparison: null,
-                evidence: { serverVerified: true, kind: 'CANONICAL_CONTINUATION' },
-            });
-            node = branch.child;
-        }
-        fen = nextFen;
-    }
-    if (revealed) {
-        return {
-            grade: null,
-            gradingSource: null,
-            comparison: null,
-            steps: canonicalSteps,
-        };
-    }
-    const grade = aggregateTrainingGrade(userGrades);
-    const firstUserStep = canonicalSteps.find(
-        (step) => step.request.actor === 'USER'
-    );
-    const canonicalGradingSource =
-        aggregateCanonicalGradingSource(canonicalSteps);
-    if (
-        request.steps.at(-1)?.actor !== 'USER' ||
-        (node !== null && (node.role === 'USER' || (node.role === 'OPPONENT' && canonicalSelectedBranch(node)?.child.role === 'USER'))) ||
-        request.grade !== grade ||
-        (request.gradingSource !== undefined &&
-            request.gradingSource !== canonicalGradingSource)
-    ) {
-        invalidAttempt('Recorded aggregate grade is inconsistent');
-    }
-    return {
-        grade,
-        gradingSource: canonicalGradingSource,
-        comparison: firstUserStep?.comparison ?? null,
-        steps: canonicalSteps,
-    };
-}
-
-function stableJson(value: unknown): string {
-    if (Array.isArray(value)) {
-        return `[${value.map(stableJson).join(',')}]`;
-    }
-    if (value && typeof value === 'object') {
-        return `{${Object.entries(value as Record<string, unknown>)
-            .filter(([, item]) => item !== undefined)
-            .sort(([left], [right]) => left.localeCompare(right))
-            .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
-            .join(',')}}`;
-    }
-    return JSON.stringify(value);
-}
-
-export function trainingAttemptPayloadHash(args: {
-    momentId: string;
-    request: RecordTrainingAttemptRequest;
-}): string {
-    return createHash('sha256')
-        .update(
-            stableJson({
-                version: 1,
-                momentId: args.momentId,
-                request: args.request,
-            })
-        )
-        .digest('hex');
-}
-
-function assertIdempotentRecord(
-    existing: {
-        trainingMomentId: string;
-        solutionRevisionId: string;
-        clientPayloadHash: string;
-    },
-    args: {
-        momentId: string;
-        request: RecordTrainingAttemptRequest;
-        clientPayloadHash: string;
-    }
-) {
-    if (
-        existing.trainingMomentId !== args.momentId ||
-        existing.solutionRevisionId !== args.request.solutionRevisionId ||
-        existing.clientPayloadHash !== args.clientPayloadHash
-    ) {
-        throw new TrainingAttemptError(
-            'clientAttemptId payload conflict',
-            'IDEMPOTENCY_CONFLICT',
-            409
-        );
-    }
-}
-
-export async function recordTrainingAttempt(args: {
-    userId: string;
-    momentId: string;
-    request: RecordTrainingAttemptRequest;
-    dependencies: TrainingAttemptDependencies;
-}): Promise<RecordTrainingAttemptResponse> {
-    const db = args.dependencies.db;
-    const now = args.dependencies.now?.() ?? new Date();
-    const completedAt = parseTrainingCompletionTime(args.request.completedAt, now);
-    if (!completedAt) invalidAttempt('Training completion time is invalid');
-    const clientPayloadHash = trainingAttemptPayloadHash(args);
-    const existing = await db.trainingAttempt.findUnique({
-        where: {
-            userId_clientAttemptId: {
-                userId: args.userId,
-                clientAttemptId: args.request.clientAttemptId,
-            },
-        },
-        select: {
-            id: true,
-            trainingMomentId: true,
-            solutionRevisionId: true,
-            clientPayloadHash: true,
-        },
+/** Absolute replay makes corrections and late offline delivery count each attempt once. */
+async function rebuildReviewState(tx: Prisma.TransactionClient, attempt: TrainingAttempt) {
+    const stream = { userId: attempt.userId, trainingMomentId: attempt.trainingMomentId, contextSolutionHash: attempt.contextSolutionHash, contextConfigHash: attempt.contextConfigHash };
+    const attempts = await tx.trainingAttempt.findMany({ where: { ...stream, status: 'RESOLVED', quality: { in: ['GOOD', 'BELOW_STANDARD'] } }, orderBy: [{ attemptedAt: 'asc' }, { id: 'asc' }] });
+    const stateKey = { userId: attempt.userId, trainingMomentId: attempt.trainingMomentId, solutionHash: attempt.contextSolutionHash, configHash: attempt.contextConfigHash };
+    if (!attempts.length) { await tx.practiceReviewState.deleteMany({ where: stateKey }); return; }
+    let successes = 0, lapses = 0, interval = 0;
+    const events = attempts.map(item => {
+        const before = interval;
+        if (item.quality === 'GOOD') { successes++; interval = interval === 0 ? 1 : interval === 1 ? 3 : Math.min(60, interval * 2); }
+        else { lapses++; interval = 1; }
+        const nextDueAt = new Date(item.attemptedAt.getTime() + interval * 86400000);
+        return { item, before, interval, nextDueAt };
     });
-    if (existing) {
-        assertIdempotentRecord(existing, { ...args, clientPayloadHash });
-        return { attemptId: existing.id, status: 'RECORDED' };
-    }
-
-    const moment = await db.trainingMoment.findFirst({
-        where: {
-            id: args.momentId,
-            userId: args.userId,
-        },
-        select: attemptMomentSelect,
-    });
-    if (!moment?.currentSolutionRevision) {
-        throw new TrainingAttemptError(
-            'Training moment not found',
-            'NOT_FOUND',
-            404
-        );
-    }
-    let historical = moment.currentSolutionRevisionId !== args.request.solutionRevisionId;
-    if (historical) {
-        const requested = await db.solutionRevision.findFirst({ where: { id: args.request.solutionRevisionId, momentId: args.momentId }, select: attemptMomentSelect.currentSolutionRevision.select });
-        if (!requested) throw new TrainingAttemptError('Training revision not found', 'NOT_FOUND', 404);
-        moment.currentSolutionRevision = requested;
-        moment.currentSolutionRevisionId = args.request.solutionRevisionId;
-    }
-    const revision = moment.currentSolutionRevision;
-    if (!revision.trainable || revision.verificationStatus !== 'VERIFIED') {
-        throw new TrainingAttemptError('Training revision is not trainable', 'NOT_FOUND', 404);
-    }
-
-    let manifest: TrainingGradingManifestDto;
-    try {
-        manifest = toTrainingPromptDto(moment).grading;
-    } catch {
-        throw new TrainingAttemptError(
-            'Training moment is not currently trainable',
-            'NOT_FOUND',
-            404
-        );
-    }
-    const canonical = canonicalizeRecordedLine(
-        moment.fen,
-        args.request,
-        manifest
-    );
-    const userSteps = args.request.steps.filter(
-        (step) => step.actor === 'USER'
-    );
-    const firstUserStep = userSteps[0] ?? null;
-    const comparison = canonical.comparison;
-
-    try {
-        const attempt = await db.$transaction(async (tx) => {
-            const lockedRevisionId = await lockPracticeReviewStream({
-                tx,
-                userId: args.userId,
-                trainingMomentId: args.momentId,
-                expectedSolutionRevisionId:
-                    args.request.solutionRevisionId,
-            });
-            historical = historical || lockedRevisionId !== args.request.solutionRevisionId;
-            const created = await tx.trainingAttempt.create({
-                data: {
-                    trainingMomentId: args.momentId,
-                    userId: args.userId,
-                    solutionRevisionId:
-                        args.request.solutionRevisionId,
-                    clientAttemptId:
-                        args.request.clientAttemptId,
-                    clientPayloadHash,
-                    userMoveUci: firstUserStep?.moveUci ?? null,
-                    timeSpentMs:
-                        firstUserStep?.timeSpentMs ?? null,
-                    status: args.request.status,
-                    grade:
-                        canonical.grade,
-                    gradingSource:
-                        canonical.gradingSource,
-                    gradingEvidence: json({
-                        serverVerified: canonical.grade != null && canonical.gradingSource !== 'CLIENT_EVALUATED',
-                        trust: canonical.grade == null ? 'UNASSESSED' : canonical.gradingSource === 'CLIENT_EVALUATED' ? 'CLIENT_EVALUATED' : 'CANONICAL',
-                        historicalRevision: historical,
-                        version: 1,
-                        submittedScoreAfter:
-                            comparison?.submittedScoreAfter ?? null,
-                        preservesOutcome:
-                            comparison?.preservesOutcome ?? null,
-                    }),
-                    bestGapCp:
-                        comparison?.bestGapCp == null
-                            ? null
-                            : Math.round(comparison.bestGapCp),
-                    bestGapWinChance:
-                        comparison?.bestGapWinChance ?? null,
-                    recoveredCp:
-                        comparison?.recoveredCp == null
-                            ? null
-                            : Math.round(comparison.recoveredCp),
-                    recoveredWinChance:
-                        comparison?.recoveredWinChance ?? null,
-                    completedAt,
-                    attemptedAt: now,
-                    ...attemptContext(
-                        moment,
-                        revision
-                    ),
-                },
-                select: { id: true },
-            });
-            if (args.request.steps.length > 0) {
-                await tx.trainingAttemptStep.createMany({
-                    data: canonical.steps.map((step) => ({
-                        attemptId: created.id,
-                        stepIndex: step.request.stepIndex,
-                        actor: step.request.actor,
-                        fenBefore: step.request.fenBefore,
-                        moveUci: normalizeUci(step.request.moveUci),
-                        grade: step.grade,
-                        evidence: json({
-                            serverVerified: step.request.actor === 'ENGINE' || (step.grade != null && step.source !== 'CLIENT_EVALUATED'),
-                            source: step.source,
-                            comparison: step.comparison,
-                            evidence: step.evidence,
-                        }),
-                        timeSpentMs: step.request.timeSpentMs ?? null,
-                    })),
-                });
-            }
-            await tx.trainingMoment.updateMany({
-                where: {
-                    id: args.momentId,
-                    userId: args.userId,
-                    status: 'ACTIVE',
-                    currentSolutionRevisionId: args.request.solutionRevisionId,
-                    OR: [
-                        { lastTrainedAt: null },
-                        { lastTrainedAt: { lt: completedAt } },
-                    ],
-                },
-                data: { lastTrainedAt: completedAt },
-            });
-            await appendAttemptStatusEvent({
-                tx,
-                attemptId: created.id,
-                userId: args.userId,
-                status: args.request.status,
-                grade:
-                    args.request.status === 'GRADED'
-                        ? canonical.grade
-                        : null,
-                occurredAt: completedAt,
-            });
-            await recordReviewEvidence({
-                tx,
-                attemptId: created.id,
-                userId: args.userId,
-                trainingMomentId: moment.id,
-                solutionHash:
-                    revision.solutionHash,
-                configHash:
-                    revision.configHash,
-                grade:
-                    args.request.status === 'GRADED'
-                        ? canonical.grade ?? undefined
-                        : undefined,
-                revealed: args.request.status === 'REVEALED',
-                occurredAt: completedAt,
-            });
-            return created;
-        });
-        return { attemptId: attempt.id, status: 'RECORDED' };
-    } catch (error) {
-        if (!isUniqueViolation(error)) throw error;
-        const winner = await db.trainingAttempt.findUnique({
-            where: {
-                userId_clientAttemptId: {
-                    userId: args.userId,
-                    clientAttemptId:
-                        args.request.clientAttemptId,
-                },
-            },
-            select: {
-                id: true,
-                trainingMomentId: true,
-                solutionRevisionId: true,
-                clientPayloadHash: true,
-            },
-        });
-        if (!winner) throw error;
-        assertIdempotentRecord(winner, { ...args, clientPayloadHash });
-        return { attemptId: winner.id, status: 'RECORDED' };
-    }
+    const last = events[events.length - 1];
+    const data = { nextDueAt: last.nextDueAt, intervalDays: interval, successes, lapses, lastReviewedAt: last.item.attemptedAt, algorithmVersion: 'backranq-review-v4' };
+    const state = await tx.practiceReviewState.upsert({ where: { userId_trainingMomentId_solutionHash_configHash: stateKey }, create: { ...stateKey, ...data }, update: data });
+    await tx.practiceReviewEvent.deleteMany({ where: { stateId: state.id } });
+    await tx.practiceReviewEvent.createMany({ data: events.map(({ item, before, interval, nextDueAt }) => ({ stateId: state.id, attemptId: item.id, userId: item.userId, eventKey: `attempt:${item.id}`, outcome: item.quality === 'GOOD' ? 'SUCCESS' : 'LAPSE', quality: item.quality, tier: item.tier, occurredAt: item.attemptedAt, intervalBeforeDays: before, intervalAfterDays: interval, nextDueAt, algorithmVersion: 'backranq-review-v4' })) });
 }
 
-function clientEvaluation(manifest: TrainingGradingManifestDto, node: TrainingSolutionTreeNodeDto, moveUci: string, evidence?: TrainingClientMoveEvidence) {
-    const coverage = node.answerCoverage ?? manifest.answerCoverage;
-    if (!evidence || evidence.contextId !== node.contextId || evidence.referenceId !== coverage.referenceId || evidence.policyVersion !== manifest.gradingPolicy.version || evidence.metrics.moveUci !== normalizeUci(moveUci) || evidence.metrics.originalMoveUci !== (node.ply === 0 ? manifest.originalMoveUci : '')) invalidAttempt('Client evidence does not match this decision context');
-    const reference = evidence.localReference;
-    const canonicalBestMove = node.branches.find(branch => branch.best)?.moveUci ?? node.selectedMoveUci ?? node.acceptedMovesUci[0];
-    if (!reference || reference.id === coverage.referenceId || reference.canonicalBestMoveUci !== canonicalBestMove || !applyUci(node.fen, reference.bestMoveUci)) invalidAttempt('Client local reference does not bind to the served revision');
-    const referenceCheck = metricsFromMatchedOutcomeEvidence({ moveUci: canonicalBestMove, originalMoveUci: '', trainingSide: manifest.trainingSide, bestScore: reference.bestScore, submittedScore: reference.canonicalScore, originalScore: null, stable: true });
-    const canonicalOutdated = (referenceCheck.bestGapCp ?? 0) > 0 || (referenceCheck.bestGapWinChance ?? 0) > 0;
-    if (referenceCheck.referenceOutdated && !evidence.metrics.referenceOutdated) invalidAttempt('Client local reference is worse than the re-evaluated canonical move');
-    if (canonicalOutdated && !reference.canonicalReferenceOutdated) invalidAttempt('Client reference suppresses an outdated canonical comparison');
-    const submittedCheck = metricsFromMatchedOutcomeEvidence({ moveUci, originalMoveUci: evidence.metrics.originalMoveUci, trainingSide: manifest.trainingSide, bestScore: reference.bestScore, submittedScore: evidence.scoreAfter, originalScore: null, stable: evidence.metrics.stable });
-    if (submittedCheck.bestGapCp != null && evidence.metrics.bestGapCp !== submittedCheck.bestGapCp) invalidAttempt('Client comparison does not match its local reference scores');
-    if (submittedCheck.referenceOutdated && !evidence.metrics.referenceOutdated) invalidAttempt('Client comparison suppresses an outdated local reference');
-    const result = gradeTrainingMove(evidence.metrics, manifest.gradingPolicy);
-    const m = evidence.metrics;
-    return { result, source: 'CLIENT_EVALUATED' as const, scoreAfter: evidence.scoreAfter, comparison: { submittedScoreAfter: evidence.scoreAfter, bestGapCp: m.bestGapCp ?? null, bestGapWinChance: m.bestGapWinChance ?? null, recoveredCp: m.recoveredCp ?? null, recoveredWinChance: m.recoveredWinChance ?? null, preservesOutcome: m.preservesOutcome ?? null }, evidence: { trust: 'CLIENT_EVALUATED', serverVerified: false, clientEvidence: evidence } };
+function awaitsContinuation(manifest: PracticeMomentRevision, steps: TrainingAttemptStep[]): boolean {
+    if (manifest.continuation.mode !== 'VERIFIED_BRANCHES' || !steps.length || steps.some(s => s.quality !== 'GOOD')) return false;
+    const last = steps[steps.length - 1];
+    const { nodes, edges } = manifest.continuation;
+    const node = nodes.find(n => n.contextId === last.contextId && n.role === 'USER');
+    if (!node) return false;
+    const pending = edges.filter(e => e.from === node.id && e.moveUci === last.moveUci).map(e => e.to);
+    const visited = new Set<string>();
+    while (pending.length) {
+        const id = pending.pop()!;
+        if (visited.has(id)) continue;
+        visited.add(id);
+        const target = nodes.find(n => n.id === id);
+        if (target?.role === 'USER') return true;
+        if (target?.role === 'OPPONENT') pending.push(...edges.filter(e => e.from === id).map(e => e.to));
+    }
+    return false;
+}
+
+async function updateAggregate(tx: Prisma.TransactionClient, attempt: TrainingAttempt, eventKey: string, at: Date, manifest: PracticeMomentRevision) {
+    const steps = await tx.trainingAttemptStep.findMany({ where: { attemptId: attempt.id }, orderBy: { stepIndex: 'asc' } });
+    const status = attempt.revealedAt ? 'REVEALED' as const : steps.some(s => s.resolution === 'PENDING') || !steps.length || awaitsContinuation(manifest, steps) ? 'PENDING' as const : steps.some(s => s.resolution === 'UNAVAILABLE') ? 'UNAVAILABLE' as const : 'RESOLVED' as const;
+    const quality = status === 'RESOLVED' ? steps.some(s => s.quality === 'BELOW_STANDARD') ? 'BELOW_STANDARD' as const : 'GOOD' as const : 'UNKNOWN' as const;
+    const tierOrder = ['SUBPAR', 'GOOD', 'STRONG', 'BEST'] as const;
+    const tier = status === 'RESOLVED' && steps.every(s => s.tier !== null) ? [...steps].sort((a, b) => tierOrder.indexOf(a.tier!) - tierOrder.indexOf(b.tier!))[0].tier : null;
+    const updated = await tx.trainingAttempt.update({ where: { id: attempt.id }, data: { status, quality, tier, originalRelation: steps[0]?.originalRelation ?? 'UNKNOWN', completedAt: status === 'PENDING' ? null : attempt.revealedAt ?? steps.at(-1)?.playedAt ?? attempt.attemptedAt } });
+    await tx.trainingAttemptStatusEvent.create({ data: { attemptId: attempt.id, userId: attempt.userId, eventKey, status, quality, tier, reason: eventKey.startsWith('enrich:') ? 'CORRECTED' : status === 'RESOLVED' ? 'RESOLVED' : status === 'REVEALED' ? 'REVEALED' : status === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'SUBMITTED', occurredAt: at } });
+    await rebuildReviewState(tx, updated);
+    // Late offline events never move the position's last-practiced timestamp backwards.
+    await tx.trainingMoment.updateMany({ where: { id: attempt.trainingMomentId, userId: attempt.userId, OR: [{ lastTrainedAt: null }, { lastTrainedAt: { lt: attempt.attemptedAt } }] }, data: { lastTrainedAt: attempt.attemptedAt } });
+    return updated;
+}
+
+export async function recordTrainingAttempt(args: { userId: string; momentId: string; request: RecordTrainingAttemptRequest; dependencies: TrainingAttemptDependencies }): Promise<RecordTrainingAttemptResponse> {
+    const request = parseRecordTrainingAttemptRequest(args.request, args.dependencies.now?.() ?? new Date());
+    if (!request) invalid('Invalid played event');
+    const hash = trainingAttemptPayloadHash({ ...args, request });
+    return args.dependencies.db.$transaction(async tx => {
+        const { moment, revision, manifest } = await ownedStream(tx, { ...args, request });
+        let attempt = await tx.trainingAttempt.findUnique({ where: { userId_clientAttemptId: { userId: args.userId, clientAttemptId: request.clientAttemptId } } });
+        if (attempt && (attempt.trainingMomentId !== moment.id || attempt.solutionRevisionId !== revision.id)) conflict('Attempt identity belongs to another moment or revision');
+        if (attempt && request.kind === 'REVEAL' && attempt.revealPayloadHash) {
+            if (attempt.revealPayloadHash !== hash) conflict('Reveal payload conflict');
+            return response(attempt, true);
+        }
+        const previous = attempt ? await tx.trainingAttemptStep.findMany({ where: { attemptId: attempt.id }, orderBy: { stepIndex: 'asc' } }) : [];
+        if (request.kind === 'RECORD') {
+            const existing = previous.find(s => s.stepIndex === request.stepIndex);
+            if (existing) { if (existing.payloadHash !== hash) conflict('Played move payload conflict'); return response(attempt!, true); }
+            if (attempt?.revealedAt) invalid('Cannot play another move after reveal');
+        }
+        const fen = request.kind === 'RECORD' ? assertStepContext(manifest, previous, request.contextId, request.stepIndex) : null;
+        const assessment = request.kind === 'RECORD' ? indexedAssessment(manifest, request.contextId, request.moveUci, request.initialAssessmentId, request.initialCoverageGroupId) : neutral;
+        const at = new Date(request.kind === 'RECORD' ? request.playedAt : request.revealedAt);
+        if (previous.length && at < previous[previous.length - 1].playedAt) invalid('Played events must have chronological timestamps');
+        const originalMetrics = manifest.assessments.find(item => item.id === manifest.decision.originalAssessmentId)?.metrics;
+        if (!attempt) attempt = await tx.trainingAttempt.create({ data: { userId: args.userId, trainingMomentId: moment.id, solutionRevisionId: revision.id, clientAttemptId: request.clientAttemptId, clientPayloadHash: hash, attemptedAt: at, userMoveUci: request.kind === 'RECORD' ? request.moveUci : null, timeSpentMs: request.kind === 'RECORD' ? request.timeSpentMs : null, contextPhase: moment.phase, contextCpLoss: originalMetrics?.lossCp == null ? null : Math.max(0, originalMetrics.lossCp), contextWinChanceLoss: originalMetrics?.lossExpectedScore == null ? null : Math.max(0, originalMetrics.lossExpectedScore), contextSourceKinds: moment.sourceKinds, contextLessonKinds: moment.lessonKinds, contextThemes: moment.themes, contextProvider: moment.game.provider, contextTimeClass: moment.game.timeClass, contextConfigHash: revision.configHash, contextSolutionHash: revision.solutionHash } });
+        if (request.kind === 'REVEAL') attempt = await tx.trainingAttempt.update({ where: { id: attempt.id }, data: { revealedAt: at, revealPayloadHash: hash } });
+        else await tx.trainingAttemptStep.create({ data: { attemptId: attempt.id, stepIndex: request.stepIndex, contextId: request.contextId, fenBefore: fen!, moveUci: request.moveUci, playedAt: at, timeSpentMs: request.timeSpentMs, initialAssessmentId: request.initialAssessmentId, initialCoverageGroupId: request.initialCoverageGroupId, initialResolution: request.resolution, payloadHash: hash, resolution: request.resolution, ...assessment } });
+        return response(await updateAggregate(tx, attempt, request.kind === 'REVEAL' ? 'reveal' : `record:${request.stepIndex}`, at, manifest));
+    }).catch(rethrowWriteConflict);
 }
 
 export async function enrichTrainingAttempt(args: { userId: string; momentId: string; request: EnrichTrainingAttemptRequest; dependencies: TrainingAttemptDependencies }): Promise<EnrichTrainingAttemptResponse> {
-    const { db } = args.dependencies;
-    const request = args.request;
-    const attempt = await db.trainingAttempt.findUnique({ where: { userId_clientAttemptId: { userId: args.userId, clientAttemptId: request.clientAttemptId } }, include: { steps: true } });
-    if (!attempt) throw new TrainingAttemptError('Record the original attempt before its refinement', 'NOT_FOUND', 425);
-    if (attempt.trainingMomentId !== args.momentId || attempt.solutionRevisionId !== request.solutionRevisionId || attempt.status !== 'GRADED') invalidAttempt('Refinement does not match the recorded attempt');
-    const payloadHash = createHash('sha256').update(stableJson(request)).digest('hex');
-    const key = { attemptId_clientEvidenceId: { attemptId: attempt.id, clientEvidenceId: request.clientEvidenceId } };
-    const existing = await db.trainingAttemptAssessmentRevision.findUnique({ where: key });
-    if (existing) {
-        if (existing.payloadHash !== payloadHash) throw new TrainingAttemptError('clientEvidenceId payload conflict', 'IDEMPOTENCY_CONFLICT', 409);
-        return { attemptId: attempt.id, status: 'ENRICHED', corrected: existing.corrected };
+    const request = parseEnrichTrainingAttemptRequest(args.request, args.dependencies.now?.() ?? new Date());
+    if (!request) invalid('Invalid assessment event');
+    const hash = trainingAttemptPayloadHash({ ...args, request });
+    return args.dependencies.db.$transaction(async tx => {
+        const { manifest } = await ownedStream(tx, { ...args, request });
+        const attempt = await tx.trainingAttempt.findUnique({ where: { userId_clientAttemptId: { userId: args.userId, clientAttemptId: request.clientAttemptId } } });
+        if (!attempt) missing('Record the played move before its assessment');
+        if (attempt.trainingMomentId !== args.momentId || attempt.solutionRevisionId !== request.momentRevisionId) conflict('Assessment attempt identity mismatch');
+        const step = await tx.trainingAttemptStep.findUnique({ where: { attemptId_stepIndex: { attemptId: attempt.id, stepIndex: request.stepIndex } } });
+        if (!step) missing('Record the played move before its assessment');
+        const existing = await tx.trainingAttemptAssessmentRevision.findUnique({ where: { eventId: request.eventId } });
+        if (existing) { if (existing.payloadHash !== hash) conflict('Assessment event payload conflict'); return { ...response(attempt, true), applied: false }; }
+        const events = await tx.trainingAttemptAssessmentRevision.findMany({ where: { OR: [{ attemptId: attempt.id, stepIndex: request.stepIndex }, ...(request.supersedesEventId ? [{ eventId: request.supersedesEventId }] : []), { supersedesEventId: request.eventId }] } });
+        if (events.some(e => e.attemptId === attempt.id && e.stepIndex === step.stepIndex && e.sequence === request.sequence)) conflict('Assessment sequence payload conflict');
+        const adjacent = events.filter(e => e.attemptId === attempt.id && e.stepIndex === step.stepIndex);
+        if (adjacent.some(e => e.sequence === request.sequence - 1 && e.eventId !== request.supersedesEventId) ||
+            adjacent.some(e => e.sequence === request.sequence + 1 && e.supersedesEventId !== request.eventId)) conflict('Assessment sequence chain conflict');
+        const predecessor = events.find(e => e.eventId === request.supersedesEventId);
+        if (predecessor && (predecessor.attemptId !== attempt.id || predecessor.stepIndex !== step.stepIndex || predecessor.sequence !== request.sequence - 1)) conflict('Assessment predecessor is not the preceding event');
+        if (events.some(e => e.supersedesEventId === request.eventId && (e.attemptId !== attempt.id || e.stepIndex !== step.stepIndex || e.sequence !== request.sequence + 1))) conflict('Assessment successor conflict');
+        if (new Date(request.evaluatedAt) < step.playedAt) invalid('Assessment predates the played move');
+        let assessment: MoveAssessment | null = null;
+        if (request.evaluation) {
+            for (const event of events) {
+                if (event.attemptId !== attempt.id || event.stepIndex !== step.stepIndex || event.resolution !== 'RESOLVED' || !event.evaluation) continue;
+                assertImmutableEvaluation(event.evaluation as unknown as PracticeEvaluationPatch, request.evaluation);
+            }
+            const checked = validatePracticeEvaluationPatch(manifest, request.evaluation);
+            if (!checked.success) invalid(`Invalid assessment evidence: ${checked.issues.join('; ')}`);
+            assessment = checked.value.assessments.find(a => a.id === request.assessmentId) ?? null;
+            if (!assessment || assessment.contextId !== step.contextId || assessment.moveUci !== step.moveUci) invalid('Assessment is not for the recorded move');
+        }
+        const grading = projection(assessment);
+        await tx.trainingAttemptAssessmentRevision.create({ data: { eventId: request.eventId, attemptId: attempt.id, stepIndex: step.stepIndex, sequence: request.sequence, supersedesEventId: request.supersedesEventId, payloadHash: hash, resolution: request.resolution, assessmentId: request.assessmentId, evaluation: request.evaluation ? request.evaluation as unknown as Prisma.InputJsonValue : Prisma.DbNull, ...grading, evaluatedAt: new Date(request.evaluatedAt) } });
+        if (request.sequence <= step.latestSequence) return { ...response(attempt), applied: false };
+        await tx.trainingAttemptStep.update({ where: { id: step.id }, data: { resolution: request.resolution, ...grading, latestSequence: request.sequence, latestEventId: request.eventId } });
+        const updated = await updateAggregate(tx, attempt, `enrich:${request.eventId}`, new Date(request.evaluatedAt), manifest);
+        return { ...response(updated), applied: true };
+    }).catch(rethrowWriteConflict);
+}
+
+function rethrowWriteConflict(error: unknown): never {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') conflict('Played event or assessment identity conflict');
+    throw error;
+}
+
+function assertImmutableEvaluation(previous: PracticeEvaluationPatch, next: PracticeEvaluationPatch) {
+    if (previous.frame.id === next.frame.id && canonicalJson(previous.frame) !== canonicalJson(next.frame)) invalid('Comparison frame identity cannot change');
+    for (const assessment of next.assessments) {
+        const old = previous.assessments.find(a => a.id === assessment.id);
+        if (old && canonicalJson(old) !== canonicalJson(assessment)) invalid('Assessment identity cannot change');
     }
-    const moment = await db.trainingMoment.findFirst({ where: { id: args.momentId, userId: args.userId }, select: attemptMomentSelect });
-    const revision = await db.solutionRevision.findFirst({ where: { id: request.solutionRevisionId, momentId: args.momentId }, select: attemptMomentSelect.currentSolutionRevision.select });
-    if (!moment || !revision) throw new TrainingAttemptError('Training revision not found', 'NOT_FOUND', 404);
-    moment.currentSolutionRevision = revision;
-    moment.currentSolutionRevisionId = request.solutionRevisionId;
-    const manifest = toTrainingPromptDto(moment).grading;
-    const step = attempt.steps.find(item => item.stepIndex === request.stepIndex && item.actor === 'USER');
-    if (!step) invalidAttempt('Refinement step not found');
-    const findNode = (node: TrainingSolutionTreeNodeDto): TrainingSolutionTreeNodeDto | null => node.contextId === request.clientEvidence.contextId && node.fen === step.fenBefore ? node : node.branches.map(branch => findNode(branch.child)).find(Boolean) ?? null;
-    const node = findNode(manifest.solutionTree);
-    if (!node) invalidAttempt('Refinement context not found');
-    const evaluation = clientEvaluation(manifest, node, step.moveUci, request.clientEvidence);
-    if (evaluation.result.status !== 'GRADED' || evaluation.result.grade !== request.grade) invalidAttempt('Refinement grade does not match its client evidence');
-    const corrected = ['BEST','STRONG','GOOD'].includes(step.grade ?? '') !== evaluation.result.accepted;
-    try {
-        await db.trainingAttemptAssessmentRevision.create({ data: { attemptId: attempt.id, clientEvidenceId: request.clientEvidenceId, payloadHash, grade: request.grade, gradingSource: 'CLIENT_EVALUATED', comparison: json(evaluation.comparison), evidence: json({ ...evaluation.evidence, stepIndex: request.stepIndex, evaluatedAt: request.evaluatedAt }), corrected } });
-    } catch (error) {
-        if (!isUniqueViolation(error)) throw error;
-        const winner = await db.trainingAttemptAssessmentRevision.findUnique({ where: key });
-        if (!winner || winner.payloadHash !== payloadHash) throw new TrainingAttemptError('clientEvidenceId payload conflict', 'IDEMPOTENCY_CONFLICT', 409);
-        return { attemptId: attempt.id, status: 'ENRICHED', corrected: winner.corrected };
+    for (const kind of ['searches', 'observations', 'exact'] as const) {
+        for (const [id, item] of Object.entries(next.evidence[kind])) {
+            const old = previous.evidence[kind][id];
+            if (old && canonicalJson(old) !== canonicalJson(item)) invalid('Physical evidence identity cannot change');
+        }
     }
-    // The initial event and schedule remain immutable. This personal revision is
-    // evidence refinement, not another practice attempt or canonical promotion.
-    return { attemptId: attempt.id, status: 'ENRICHED', corrected };
 }

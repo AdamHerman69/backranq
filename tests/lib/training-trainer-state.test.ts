@@ -50,9 +50,9 @@ describe('canonical training trainer state', () => {
         expect(
             feedbackForTrainingState({
                 phase: 'GRADED',
-                grade: 'REPEATED_MISTAKE',
+                grade: 'SUBPAR',
             }).message
-        ).toBe('That repeats the mistake from the game.');
+        ).toBe('This move loses too much of the position’s value.');
     });
 
     it('keeps review metadata sealed for unresolved and continuation responses', () => {
@@ -78,7 +78,7 @@ describe('canonical training trainer state', () => {
             reviewFromTrainingResponse({
                 attemptId: 'attempt',
                 status: 'GRADED',
-                grade: 'GOOD',
+                quality: 'GOOD', tier: 'GOOD', originalRelation: 'UNKNOWN',
                 accepted: true,
                 review,
             })

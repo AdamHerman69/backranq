@@ -1,273 +1,51 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeGradingPolicy } from '@/lib/training/config';
-import { metricsFromMatchedOutcomeEvidence } from '@/lib/training/gradingEvidence';
-import { gradeTrainingMove } from '@/lib/training/grader';
+import { practiceV4Fixture } from '../helpers/practice-v4';
+import { assessMove, expectedScore, normalizeScore } from '@/lib/training/assessmentPolicy';
+import type { PracticeMomentRevision } from '@/lib/training/practiceContract';
 
-const policy = normalizeGradingPolicy(undefined, 'PRACTICAL');
-const cp = (value: number) =>
-    ({ kind: 'cp', cp: value, pov: 'WHITE' }) as const;
-
-function matched(
-    overrides: Partial<
-        Parameters<typeof metricsFromMatchedOutcomeEvidence>[0]
-    > = {},
-) {
-    return metricsFromMatchedOutcomeEvidence({
-        moveUci: 'e2e4',
-        originalMoveUci: 'a2a3',
-        trainingSide: 'w',
-        bestScore: cp(1_000),
-        submittedScore: cp(0),
-        originalScore: cp(-100),
-        bestWdlChance: 0.9,
-        submittedWdlChance: 0.895,
-        stable: true,
-        ...overrides,
-    });
+function assess(revision: PracticeMomentRevision) {
+    return assessMove(revision.frames[0], { id: 'answer', moveUci: 'd2d4', referenceMoveUci: 'e2e4', originalMoveUci: 'a2a3', trainingSide: 'WHITE', evidence: revision.evidence });
 }
-
-describe('matched dynamic grading evidence', () => {
-    it('requires the cp tolerance even when matched WDL is saturated', () => {
-        const metrics = matched();
-
-        expect(metrics).toMatchObject({
-            bestGapCp: 1_000,
-            bestGapWinChance: 0.005,
-            preservesOutcome: null,
-            stable: true,
-        });
-        expect(gradeTrainingMove(metrics, policy)).toEqual({
-            status: 'GRADED',
-            grade: 'IMPROVED',
-            accepted: false,
-        });
+describe('v4 compatible engine evidence', () => {
+    it('derives expected score from actual win/draw/loss counts', () => {
+        expect(expectedScore({ win: 500, draw: 400, loss: 100 })).toBe(0.7);
+        expect(() => expectedScore({ win: 0, draw: 0, loss: 0 })).toThrow();
+        expect(() => expectedScore({ win: -1, draw: 1000, loss: 1 })).toThrow();
     });
-
-    it('does not accept a cp-equal move when WDL loses the outcome', () => {
-        const metrics = matched({
-            bestScore: cp(0),
-            submittedScore: cp(0),
-            originalScore: cp(0),
-            bestWdlChance: 0.7,
-            submittedWdlChance: 0.4,
-        });
-
-        expect(metrics).toMatchObject({
-            bestGapCp: 0,
-            bestGapWinChance: 0.3,
-            preservesOutcome: null,
-        });
-        expect(gradeTrainingMove(metrics, policy)).toEqual({
-            status: 'GRADED',
-            grade: 'DIFFERENT_MISTAKE',
-            accepted: false,
-        });
+    it('requires compatible WDL even when cp evaluations are equal', () => {
+        const revision = practiceV4Fixture(); revision.frames[0].model = 'MATCHED_WDL';
+        for (const search of Object.values(revision.evidence.searches)) search.engineIdentity.wdlModel = 'stockfish-18';
+        for (const observation of Object.values(revision.evidence.observations)) {
+            observation.lines[0].wdl = { win: 900, draw: 100, loss: 0 };
+            if (observation.lines[1]) observation.lines[1].wdl = { win: 400, draw: 100, loss: 500 };
+            if (observation.lines[1]) observation.lines[1].score = structuredClone(observation.lines[0].score);
+        }
+        expect(assess(revision).quality).toBe('BELOW_STANDARD');
+        for (const observation of Object.values(revision.evidence.observations)) if (observation.lines[1]) observation.lines[1].wdl = null;
+        expect(assess(revision).quality).toBe('UNKNOWN');
     });
-
-    it('falls back to cp without inventing WDL evidence', () => {
-        const metrics = matched({
-            bestScore: cp(100),
-            submittedScore: cp(65),
-            originalScore: cp(-100),
-            bestWdlChance: null,
-            submittedWdlChance: null,
-        });
-
-        expect(metrics).toMatchObject({
-            bestGapCp: 35,
-            bestGapWinChance: null,
-            preservesOutcome: null,
-        });
-        expect(gradeTrainingMove(metrics, policy)).toEqual({
-            status: 'GRADED',
-            grade: 'STRONG',
-            accepted: true,
-        });
+    it('explicit CP_ONLY has no synthetic expected score or exact outcome', () => {
+        const result = assess(practiceV4Fixture());
+        expect(result.quality).toBe('GOOD'); expect(result.metrics.lossExpectedScore).toBeNull(); expect(result.metrics.preservesExactOutcome).toBeNull();
     });
-
-    it('keeps unstable and missing matched evidence unresolved', () => {
-        expect(
-            gradeTrainingMove(
-                matched({
-                    stable: false,
-                }),
-                policy,
-            ),
-        ).toEqual({
-            status: 'UNRESOLVED',
-            reason: 'UNSTABLE_EVIDENCE',
-        });
-        expect(
-            gradeTrainingMove(
-                matched({
-                    bestScore: null,
-                    submittedScore: null,
-                    bestWdlChance: null,
-                    submittedWdlChance: null,
-                }),
-                policy,
-            ),
-        ).toEqual({
-            status: 'UNRESOLVED',
-            reason: 'UNSTABLE_EVIDENCE',
-        });
+    it('never mixes exact/tablebase scores with engine CP under a claimed WDL comparison', () => {
+        const revision = practiceV4Fixture();
+        for (const observation of Object.values(revision.evidence.observations)) observation.lines[0].score = { kind: 'EXACT', outcome: 'WIN', pov: 'WHITE', distance: 3 };
+        expect(assess(revision).quality).toBe('UNKNOWN');
     });
-
-    it('treats a forced mate as an explicit outcome', () => {
-        const bestMate = {
-            kind: 'mate',
-            plies: 5,
-            winner: 'WHITE',
-        } as const;
-        const lostMate = matched({
-            bestScore: bestMate,
-            submittedScore: cp(10_000),
-            bestWdlChance: 1,
-            submittedWdlChance: 1,
-        });
-        expect(lostMate).toMatchObject({
-            bestGapCp: null,
-            bestGapWinChance: 1,
-            preservesOutcome: false,
-        });
-        expect(gradeTrainingMove(lostMate, policy)).toMatchObject({
-            status: 'GRADED',
-            accepted: false,
-        });
-
-        const preservedMate = matched({
-            bestScore: bestMate,
-            submittedScore: {
-                kind: 'mate',
-                plies: 9,
-                winner: 'WHITE',
-            },
-            bestWdlChance: 1,
-            submittedWdlChance: 1,
-        });
-        expect(gradeTrainingMove(preservedMate, policy)).toEqual({
-            status: 'GRADED',
-            grade: 'BEST',
-            accepted: true,
-        });
+    it('mixed cp/mate needs a shared supported basis even for a large apparent loss', () => {
+        const revision = practiceV4Fixture();
+        for (const observation of Object.values(revision.evidence.observations)) if (observation.lines[1]) observation.lines[1].score = { kind: 'MATE', winner: 'BLACK', plies: 7, pov: 'WHITE' };
+        expect(assess(revision).quality).toBe('UNKNOWN');
+        expect(assess(revision).metrics.lossCp).toBeNull();
     });
-
-    it('does not mix an exact tablebase best outcome with cp evidence', () => {
-        const bestTablebase = {
-            kind: 'tablebase',
-            wdl: 'WIN',
-            pov: 'WHITE',
-        } as const;
-        const nonTablebase = matched({
-            bestScore: bestTablebase,
-            submittedScore: cp(10_000),
-            bestWdlChance: 1,
-            submittedWdlChance: 1,
-        });
-        expect(nonTablebase).toMatchObject({
-            bestGapCp: null,
-            bestGapWinChance: 1,
-            preservesOutcome: false,
-        });
-        expect(gradeTrainingMove(nonTablebase, policy)).toMatchObject({
-            status: 'GRADED',
-            accepted: false,
-        });
-
-        const exactWin = matched({
-            bestScore: bestTablebase,
-            submittedScore: {
-                kind: 'tablebase',
-                wdl: 'WIN',
-                pov: 'WHITE',
-                dtz: 7,
-            },
-        });
-        expect(gradeTrainingMove(exactWin, policy)).toEqual({
-            status: 'GRADED',
-            grade: 'BEST',
-            accepted: true,
-        });
+    it('preserves the identity of mate winner when normalizing perspective', () => {
+        expect(normalizeScore({ kind: 'MATE', winner: 'BLACK', plies: 4, pov: 'BLACK' }, 'WHITE')).toEqual({ kind: 'MATE', winner: 'BLACK', plies: 4, pov: 'WHITE' });
+        expect(normalizeScore({ kind: 'EXACT', outcome: 'WIN', distance: 5, pov: 'BLACK' }, 'WHITE')).toEqual({ kind: 'EXACT', outcome: 'LOSS', distance: 5, pov: 'WHITE' });
     });
-});
-
-describe('mixed exact and statistical outcome direction', () => {
-    const loss = { kind: 'mate', plies: 5, winner: 'BLACK' } as const;
-    const win = { kind: 'mate', plies: 5, winner: 'WHITE' } as const;
-    const draw = { kind: 'tablebase', wdl: 'DRAW', pov: 'WHITE' } as const;
-    it('can reject a forced losing mate using a compatible matched expected-score loss without assigning exact outcome to cp', () => {
-        const metrics = matched({
-            bestScore: cp(200),
-            submittedScore: loss,
-            bestWdlChance: 0.9,
-            submittedWdlChance: 0,
-        });
-        expect(metrics).toMatchObject({
-            bestGapCp: null,
-            bestGapWinChance: 0.9,
-            preservesOutcome: null,
-            evidenceModel: 'MATCHED_WDL',
-            referenceOutdated: false,
-        });
-        expect(gradeTrainingMove(metrics, policy)).toMatchObject({
-            status: 'GRADED',
-            accepted: false,
-        });
-    });
-    it('requires a new reference for a proven winning move beyond a cp reference', () => {
-        expect(
-            matched({
-                bestScore: cp(200),
-                submittedScore: win,
-                bestWdlChance: 0.9,
-                submittedWdlChance: 1,
-            }).referenceOutdated,
-        ).toBe(true);
-    });
-    it('does not label a known draw as a new best when matched expected score is lower', () => {
-        const metrics = matched({
-            bestScore: cp(200),
-            submittedScore: draw,
-            bestWdlChance: 0.9,
-            submittedWdlChance: 0.5,
-        });
-        expect(metrics.referenceOutdated).toBe(false);
-        expect(gradeTrainingMove(metrics, policy)).toMatchObject({
-            status: 'GRADED',
-            accepted: false,
-        });
-    });
-    it('cannot reject or accept a close mixed result solely because a cp gap is unavailable', () => {
-        const metrics = matched({
-            bestScore: cp(20),
-            submittedScore: draw,
-            bestWdlChance: 0.55,
-            submittedWdlChance: 0.5,
-        });
-        expect(gradeTrainingMove(metrics, policy).status).toBe('UNRESOLVED');
-        expect(
-            gradeTrainingMove(
-                matched({
-                    bestScore: cp(200),
-                    submittedScore: loss,
-                    bestWdlChance: null,
-                    submittedWdlChance: null,
-                }),
-                policy,
-            ).status,
-        ).toBe('UNRESOLVED');
-    });
-    it('compares proven mate and tablebase outcomes without requiring the same encoding', () => {
-        const metrics = matched({
-            bestScore: win,
-            submittedScore: { kind: 'tablebase', wdl: 'WIN', pov: 'WHITE' },
-        });
-        expect(gradeTrainingMove(metrics, policy)).toMatchObject({
-            status: 'GRADED',
-            accepted: true,
-        });
-        expect(
-            matched({ bestScore: draw, submittedScore: win }).referenceOutdated,
-        ).toBe(true);
+    it('incompatible engine fingerprints do not contribute extra convergence observations', () => {
+        const revision = practiceV4Fixture();
+        revision.evidence.observations['observation-0'].engineFingerprint = 'other-engine';
+        expect(assess(revision).quality).toBe('UNKNOWN');
     });
 });

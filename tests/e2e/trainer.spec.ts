@@ -189,21 +189,21 @@ test.describe('authenticated personal decision practice', () => {
 
         await expect(board).toHaveAttribute(
             'data-board-marker',
-            'REPEATED_MISTAKE'
+            'SUBPAR'
         );
         await expect(board).toHaveAttribute(
             'data-board-marker-square',
             'c4'
         );
         await expect(
-            board.getByRole('img', { name: 'Repeated mistake on c4' })
+            board.getByRole('img', { name: 'Subpar move on c4' })
         ).toBeVisible();
         await expect(board).toHaveAttribute('data-board-last-move', 'f1c4');
         expect(await board.getAttribute('data-board-fen')).not.toBe(
             decisionFen
         );
         await expect(
-            page.getByText('That repeats the mistake from the game.')
+            page.getByText('This move loses too much of the position’s value.')
         ).toBeVisible();
         await expect(
             page.getByRole('region', { name: 'Position review' })
@@ -277,10 +277,12 @@ test.describe('authenticated personal decision practice', () => {
             page.getByText('Opponent replied. Find the best move.')
         ).toBeVisible();
         await expect(board).toHaveAttribute('data-board-last-move', 'b8c6');
+        await expect(board).toHaveAttribute('data-board-stage', 'SETTLED');
         await expect(board).not.toHaveAttribute('data-board-marker', /.+/);
+        await expect(page.getByRole('region', { name: 'Position review' })).toHaveCount(0);
         await expect(page.getByText(/step \d+ \/ \d+/i)).toHaveCount(0);
         await expect(page.getByText(/moves? remaining/i)).toHaveCount(0);
-        expect(requestCount).toBe(0);
+        await expect.poll(() => requestCount).toBe(1);
 
         await dragMove(page, 'f1', 'b5');
         await expect(board).toHaveAttribute('data-board-marker', 'BEST');
@@ -290,7 +292,7 @@ test.describe('authenticated personal decision practice', () => {
         await expect(
             page.getByText('Best move — well found.')
         ).toBeVisible();
-        await expect.poll(() => requestCount).toBe(1);
+        await expect.poll(() => requestCount).toBe(2);
     });
 
     test('requires confirmation before reveal', async ({ page }) => {
@@ -375,8 +377,9 @@ test.describe('authenticated personal decision practice', () => {
 
         const request = await recordedRequest;
         expect(request.postDataJSON()).toMatchObject({
-            status: 'REVEALED',
-            steps: [],
+            kind: 'REVEAL',
+            momentRevisionId: expect.any(String),
+            revealedAt: expect.any(String),
         });
         expect((await recordedResponse).ok()).toBe(true);
         await expect(
@@ -622,10 +625,12 @@ test.describe('authenticated personal decision practice', () => {
     }) => {
         const momentId = E2E_TRAINING_MOMENTS.dragMove;
         let writes = 0;
+        const payloads: Array<{ kind: string; clientAttemptId: string; stepIndex: number }> = [];
         await page.route(
             `**/api/training/moments/${momentId}/attempts`,
             async (route) => {
                 writes += 1;
+                payloads.push(route.request().postDataJSON());
                 if (writes === 1) {
                     await route.fulfill({
                         status: 429,
@@ -656,7 +661,11 @@ test.describe('authenticated personal decision practice', () => {
         ).toBeVisible();
         await dragMove(page, 'f1', 'b5');
 
-        await expect.poll(() => writes).toBe(2);
+        await expect.poll(() => writes).toBe(3);
+        expect(payloads.map(payload => payload.kind)).toEqual(['RECORD', 'RECORD', 'RECORD']);
+        expect(payloads[1]).toEqual(payloads[0]);
+        expect(payloads[2]).toMatchObject({ clientAttemptId: payloads[0].clientAttemptId, stepIndex: 1 });
+        expect(payloads[0].stepIndex).toBe(0);
         await expect(
             page.getByText(/result waiting to sync/)
         ).toHaveCount(0);

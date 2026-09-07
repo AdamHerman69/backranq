@@ -24,7 +24,7 @@ export function feedbackForTrainingState({
     reviewFallback = false,
 }: {
     phase: TrainerAttemptPhase;
-    grade?: GradedPracticeResult['grade'] | null;
+    grade?: GradedPracticeResult['tier'] | null;
     reviewFallback?: boolean;
 }): TrainerFeedback {
     if (phase === 'SUBMITTING') {
@@ -78,22 +78,8 @@ export function feedbackForTrainingState({
                 tone: 'positive',
                 message: 'Good move — this solution is accepted.',
             };
-        case 'IMPROVED':
-            return {
-                tone: 'warning',
-                message:
-                    'Improved on the game, but there was a stronger continuation.',
-            };
-        case 'REPEATED_MISTAKE':
-            return {
-                tone: 'negative',
-                message: 'That repeats the mistake from the game.',
-            };
-        case 'DIFFERENT_MISTAKE':
-            return {
-                tone: 'negative',
-                message: 'That is a different mistake. Review the comparison below.',
-            };
+        case 'SUBPAR':
+            return { tone: 'negative', message: 'This move loses too much of the position’s value.' };
     }
 }
 

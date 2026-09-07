@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashSourcePgn } from '@/lib/chess/pgn';
-import { fixtureSolution } from '../helpers/extractionEvidence';
+import { practicePositionFixture } from '../helpers/practice-position';
+import { originalDecisionForPracticeManifest } from '@/lib/training/practiceSourceBinding';
+import { Chess } from 'chess.js';
 
 const integration = describe.runIf(process.env.BACKRANQ_POSTGRES_INTEGRATION === 'true');
 const db = new PrismaClient();
@@ -54,22 +56,12 @@ integration('Master extraction atomic persistence in PostgreSQL', () => {
             manifests: [{ version: 1, sourceGameId: ids.snapshot, sourcePgnHash: pgnHash,
                 scope: 'FULL_GAME', complete: true, scanComplete: true, extractionComplete: true,
                 expectedPlies: 4, scannedPlies: 4, termination: 'COMPLETED', errors: [], decisionOutcomes: [] }],
-            moments: [0, 2].map(decisionPly => ({
-                sourceGameId: ids.snapshot, decisionPly,
-                fen: '8/8/8/8/8/8/8/K6k w - - 0 1', positionHistory: [], sideToMove: 'w',
-                originalMoveUci: 'a1a2', sourceKinds: ['MY_MISTAKE'], lessonKinds: ['AVOID_MISTAKE'], themes: [],
-                originalDecision: { scoreBefore: { kind: 'cp', cp: 300, pov: 'WHITE' },
-                    scoreAfter: { kind: 'cp', cp: -100, pov: 'WHITE' }, cpLoss: 400, winChanceLoss: 0.2 },
-                solution: fixtureSolution({ solutionHash: 'solution-hash', verificationStatus: 'VERIFIED',
-                    solutionShape: 'UNIQUE', gradingStrategy: 'PRECOMPUTED', continuationShape: 'SINGLE_DECISION',
-                    trainable: true, bestMoveUci: 'a1b1', acceptedMovesUci: ['a1b1'],
-                    acceptanceFrontier: { version: 1, status: 'STABLE', moves: [{ moveUci: 'a1b1', tier: 'BEST' }] },
-                    bestLineUci: ['a1b1'], solutionTree: {}, moveAssessments: [],
-                    scoreAtStart: { kind: 'cp', cp: 300, pov: 'WHITE' },
-                    playedMoveScore: { kind: 'cp', cp: -100, pov: 'WHITE' }, targetOutcome: {},
-                    gradingPolicy: {}, generatorVersion: 'postgres-fixture', configHash: config.analysis.configHash,
-                    evidence: { searchId: `fresh-search-${++physicalSearch}` } }),
-            })),
+            moments: [0, 2].map(decisionPly => {
+                const board = new Chess(); if (decisionPly === 2) { board.move('e4'); board.move('e5'); }
+                const manifest = practicePositionFixture({ fen: board.fen(), originalMoveUci: decisionPly === 0 ? 'e2e4' : 'g1f3', bestMoveUci: decisionPly === 0 ? 'd2d4' : 'f1c4', gameId: ids.snapshot, sourcePgnHash: pgnHash, decisionPly, configHash: config.analysis.configHash, confirmationNodes: config.analysis.options.confirmNodes ?? 1, policy: config.analysis.options.gradingPolicy });
+                Object.values(manifest.evidence.searches)[0].sessionId = `fresh-search-${++physicalSearch}`;
+                return { sourceGameId: ids.snapshot, decisionPly, fen: manifest.source.fen, positionHistory: [], sideToMove: 'w', originalMoveUci: manifest.source.originalMoveUci, sourceKinds: ['MY_MISTAKE'], lessonKinds: ['AVOID_MISTAKE'], themes: [], confidence: 0.99, phase: 'OPENING', originalDecision: originalDecisionForPracticeManifest(manifest), solution: { manifest, configHash: config.analysis.configHash } };
+            }),
         }));
     });
 

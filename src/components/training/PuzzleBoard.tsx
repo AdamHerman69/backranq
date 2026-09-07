@@ -54,6 +54,7 @@ function moveHighlight(tone: PuzzleBoardFeedback['tone'] | undefined) {
 }
 
 function markerClass(tone: MoveQualityTone) {
+    if (tone === 'neutral') return 'border-slate-200 bg-slate-600 text-white shadow-slate-950/25';
     if (tone === 'negative') {
         return 'border-red-200 bg-red-500 text-white shadow-red-950/25';
     }

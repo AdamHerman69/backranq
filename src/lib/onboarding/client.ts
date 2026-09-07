@@ -1,3 +1,4 @@
+import { validatePracticeMomentRevision } from '@/lib/training/practiceContract';
 import type { TrainingPromptDto } from '@/lib/training/api';
 
 import type { OnboardingAnalyticsEvent } from './analytics';
@@ -63,7 +64,11 @@ function isTrainingPrompt(value: unknown): value is TrainingPromptDto {
         typeof prompt.fen === 'string' &&
         (prompt.sideToMove === 'w' || prompt.sideToMove === 'b') &&
         !!prompt.grading &&
-        prompt.grading.version === 1
+        validatePracticeMomentRevision(prompt.grading).success &&
+        prompt.grading.momentId === prompt.id &&
+        prompt.grading.revisionId === prompt.solutionRevisionId &&
+        prompt.grading.source.fen === prompt.fen &&
+        !!prompt.review
     );
 }
 

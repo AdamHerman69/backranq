@@ -1,4 +1,4 @@
-import type { VerificationStatus } from '@/lib/training/contracts';
+import { isExtractionWork, type ExtractionWork } from './extractionWork';
 
 export const EXTRACTION_DECISION_REASONS = [
     'MISTAKE_CONFIRMED',
@@ -8,7 +8,7 @@ export const EXTRACTION_DECISION_REASONS = [
     'ENGINE_EVIDENCE_INVALID',
     'MISTAKE_COMPARISON_UNRESOLVED',
     'SOURCE_INVALID',
-    'NO_SUPPORTED_PRACTICAL_LESSON',
+    'NO_MEANINGFUL_SELECTION_SIGNAL',
 ] as const;
 
 export type ExtractionDecisionReason =
@@ -20,7 +20,11 @@ export type ExtractionDecisionStatus =
     | 'UNRESOLVED';
 
 export type AdaptiveConfirmationPass = {
+    /** One actual request in execution order; dependency budgets need not increase. */
     nodes: number;
+    purpose: 'MISSING_REFERENCE' | 'REFERENCE_DRIFT' | 'VERIFY_REFERENCE' | 'MISSING_MOVE';
+    searchId: string | null;
+    outcome: 'RETURNED' | 'UNATTRIBUTED';
     bestMoveUci: string | null;
     qualifies: boolean;
     cpLoss: number | null;
@@ -28,7 +32,7 @@ export type AdaptiveConfirmationPass = {
 };
 
 export type AdaptiveConfirmationEvidence = {
-    version: 1;
+    version: 2;
     stable: boolean;
     termination:
         | 'STABLE'
@@ -45,12 +49,12 @@ export type TrainingDecisionReceipt = {
     cpLoss: number | null;
     winChanceLoss: number | null;
     confirmation?: AdaptiveConfirmationEvidence;
-    verificationStatus?: VerificationStatus;
     sourceKinds?: Array<'MY_MISTAKE' | 'MISSED_OPPORTUNITY'>;
 };
 
 export type TrainingExtractionReceipt = {
-    version: 1;
+    version: 2;
+    engineWork: ExtractionWork;
     trainingSide: 'WHITE' | 'BLACK';
     thresholds: {
         minWinChanceLoss: number;
@@ -136,7 +140,7 @@ function isConfirmationEvidence(
 ): value is AdaptiveConfirmationEvidence {
     if (
         !isRecord(value) ||
-        value.version !== 1 ||
+        value.version !== 2 ||
         typeof value.stable !== 'boolean' ||
         ![
             'STABLE',
@@ -145,17 +149,19 @@ function isConfirmationEvidence(
             'INCOMPLETE',
         ].includes(value.termination as string) ||
         !Array.isArray(value.passes) ||
-        value.passes.length === 0 ||
-        value.passes.length > 8
+        value.passes.length > 256
     ) {
         return false;
     }
-    let previousNodes = 0;
+    const searchIds = new Set<string>();
     for (const pass of value.passes) {
         if (
             !isRecord(pass) ||
             !integerBetween(pass.nodes, 1, 20_000_000) ||
-            (pass.nodes as number) <= previousNodes ||
+            !['MISSING_REFERENCE', 'REFERENCE_DRIFT', 'VERIFY_REFERENCE', 'MISSING_MOVE'].includes(pass.purpose as string) ||
+            !['RETURNED', 'UNATTRIBUTED'].includes(pass.outcome as string) ||
+            (pass.outcome === 'UNATTRIBUTED' ? pass.searchId !== null
+                : typeof pass.searchId !== 'string' || pass.searchId.length === 0 || pass.searchId.length > 1024 || searchIds.has(pass.searchId)) ||
             (pass.bestMoveUci !== null &&
                 (typeof pass.bestMoveUci !== 'string' ||
                     !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(
@@ -169,13 +175,13 @@ function isConfirmationEvidence(
         ) {
             return false;
         }
-        previousNodes = pass.nodes as number;
+        if (typeof pass.searchId === 'string') searchIds.add(pass.searchId);
     }
-    const lastPass = value.passes.at(-1) as Record<string, unknown>;
+    const lastPass = value.passes.at(-1) as Record<string, unknown> | undefined;
     return value.termination === 'STABLE'
-        ? value.stable && lastPass.qualifies === true
+        ? value.stable && (lastPass == null || lastPass.qualifies === true)
         : value.termination === 'BELOW_THRESHOLD'
-          ? value.stable && lastPass.qualifies === false
+          ? value.stable && (lastPass == null || lastPass.qualifies === false)
           : value.stable === false;
 }
 
@@ -184,7 +190,8 @@ export function isTrainingExtractionReceipt(
 ): value is TrainingExtractionReceipt {
     if (
         !isRecord(value) ||
-        value.version !== 1 ||
+        value.version !== 2 ||
+        !isExtractionWork(value.engineWork) ||
         (value.trainingSide !== 'WHITE' && value.trainingSide !== 'BLACK') ||
         !isRecord(value.thresholds) ||
         !finiteBetween(value.thresholds.minWinChanceLoss, 0, 1) ||
@@ -252,10 +259,6 @@ export function isTrainingExtractionReceipt(
                 confirmation !== undefined &&
                 (!confirmation.stable ||
                     confirmation.termination !== 'STABLE')) ||
-            (decision.verificationStatus !== undefined &&
-                !['VERIFIED', 'AMBIGUOUS', 'UNSTABLE', 'INVALID'].includes(
-                    decision.verificationStatus as string
-                )) ||
             (decision.sourceKinds !== undefined &&
                 (!Array.isArray(decision.sourceKinds) ||
                     decision.sourceKinds.length > 2 ||

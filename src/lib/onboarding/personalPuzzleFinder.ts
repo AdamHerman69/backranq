@@ -46,7 +46,6 @@ export async function findFirstVerifiedPersonalPuzzle(args: {
         nodesPerPosition: 12_000,
         confirmNodes: 180_000,
         maxConfirmationNodes: 500_000,
-        verificationNodesPerPosition: 80_000,
     };
 
     for (const [gameIndex, game] of games.entries()) {

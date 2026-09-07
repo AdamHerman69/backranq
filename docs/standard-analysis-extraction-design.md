@@ -1,5 +1,11 @@
 # Návrh extrakce osobních tréninkových momentů
 
+Nová cílová specifikace pro další implementaci je
+[Extraktor a Practice v4](extractor-practice-target-spec.md), včetně
+[implementačního plánu](extractor-practice-implementation-plan.md). Níže je
+historický návrh; jeho pevná cp hranice, lesson gate a příprava odpovědí nejsou
+autoritou pro nové zadání. Odkaz na v4 neznamená, že v4 již běží v aplikaci.
+
 Stav: technický návrh k implementaci, 2026-09-05. Vychází z auditu revize
 `873912414c5498fa1c94e575ed9847884cad190b` a následného produktového upřesnění.
 Dokument zachovává historický návrh; implementaci nyní popisují

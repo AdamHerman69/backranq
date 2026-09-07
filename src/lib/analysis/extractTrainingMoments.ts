@@ -1,9 +1,14 @@
+import { emptyExtractionWork, extractionWorkSince, type ExtractionWork } from './extractionWork';
+import { assessPracticeReferenceReadiness } from '@/lib/training/assessmentPolicy';
+import { assessPracticeExactPosition } from './practiceExactEvidence';
+import { pieceCountFromFen, TABLEBASE_MAX_PIECES } from './tablebase';
+import { supplementPracticeCoverage } from './practiceCoverage';
+import { originalDecisionForPracticeManifest } from '@/lib/training/practiceSourceBinding';
 import { Chess, type Move } from 'chess.js';
 import type { NormalizedGame } from '@/lib/types/game';
 import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 import type {
     EvalResult,
-    MultiPvLine,
     MultiPvResult,
     Score,
     StockfishEngine,
@@ -23,45 +28,27 @@ import {
     scoreToOrderingCp,
     winningChance,
 } from '@/lib/analysis/evaluation';
-import {
-    verifyConditionalContinuation,
-    type ContinuationVerificationResult,
-    type VerifiedMoveEvaluation,
-    type VerifiedSolutionNode,
-} from '@/lib/analysis/continuationVerifier';
 import type { TablebaseProvider } from '@/lib/analysis/tablebase';
 import type {
-    AcceptanceFrontier,
-    GradingPolicyV3,
     PovScore,
-    SolutionMoveAssessmentInput,
-    SolutionRevisionInput,
     TrainingLessonKind,
     TrainingMomentCandidate,
     TrainingSourceKind,
 } from '@/lib/training/contracts';
 import {
-    canonicalSolutionSemantics,
-    stableCanonicalStringify as stableTrainingStringify,
+    isTrainableSolution,
 } from '@/lib/training/contracts';
 import { sha256Hex } from '@/lib/crypto/sha256';
 import { normalizeGradingPolicy } from '@/lib/training/config';
-import { acceptanceFrontierFromMultiPv } from '@/lib/training/acceptanceFrontier';
+import { PositionAnalysisPool, type PositionAnalysisPoolState } from './positionAnalysisPool';
+import { assessPracticePosition, buildPracticeMomentRevision } from './practiceMomentBuilder';
+import { practiceContextId, type AssessmentPolicy, type DecisionAssessment } from '@/lib/training/practiceContract';
 import {
     appendAssessmentHistory,
     MAX_ASSESSMENT_POSITION_HISTORY,
 } from '@/lib/training/assessmentIdentity';
 import {
-    metricsFromMatchedOutcomeEvidence,
-    engineWdlChance,
-} from '@/lib/training/gradingEvidence';
-import {
-    gradeTrainingMove,
-    type TrainingMoveMetrics,
-} from '@/lib/training/grader';
-import {
     ruleTerminalEvaluation,
-    claimableDraw,
 } from '@/lib/analysis/ruleEvaluation';
 import { createExtractionConfigSnapshot } from '@/lib/analysis/extractionConfig';
 import {
@@ -88,7 +75,7 @@ export type TrainingMomentExtractionOptions = {
     /** Independent cp candidate signal, including saturated WDL positions. */
     fallbackMinCpLoss?: number; // default 30
     /** Versioned grading tolerance persisted with each solution. */
-    gradingPolicy?: GradingPolicyV3;
+    gradingPolicy?: AssessmentPolicy;
     /** How many plies into the PV to look for tactical moves. Defaults to 4. */
     themeLookaheadPlies?: number;
 
@@ -110,22 +97,8 @@ export type TrainingMomentExtractionOptions = {
      */
     maxConfirmationNodes?: number | null;
 
-    /** Practical alternatives and played responses use one outcome tolerance. */
-    multiPv?: number; // initial frontier, default 5
-    maxMultiPv?: number; // adaptive frontier cap, default 16
-    maxAcceptedMoves?: number; // default 16
-
-    /** Bounded conditional verification is enabled by default. */
-    verifyContinuations?: boolean;
-    /**
-     * Defaults to one user decision plus the opponent's reply (2 plies).
-     * Larger values permit independently assessed further USER nodes; optional
-     * continuation failure never invalidates the confirmed root.
-     */
-    verificationMaxPlies?: number;
-    verificationMaxPositions?: number;
-    verificationNodesPerPosition?: number | null;
-    verificationMaxDepth?: number | null;
+    /** Initial confirmation alternatives; missing answers remain explicitly pending. */
+    multiPv?: number;
 
     /**
      * If true, also return move-by-move analysis with classifications for each game.
@@ -135,16 +108,9 @@ export type TrainingMomentExtractionOptions = {
     returnAnalysis?: boolean;
 };
 
-export function isLandingReadyTrainingMoment(
-    moment: TrainingMomentCandidate,
-): boolean {
-    return (
-        moment.solution.trainable &&
-        moment.solution.verificationStatus === 'VERIFIED' &&
-        moment.solution.acceptanceFrontier.status === 'STABLE' &&
-        moment.solution.acceptedMovesUci.length > 0 &&
-        moment.solution.bestLineUci.length > 0
-    );
+export function isLandingReadyTrainingMoment(moment: TrainingMomentCandidate): boolean {
+    return isTrainableSolution(moment.solution)
+        && moment.solution.manifest.assessments.some(a => a.quality === 'GOOD' && a.qualitySupport === 'SUPPORTED');
 }
 
 /** Selection strategy is independent of engine/runtime and compute budgets. */
@@ -169,6 +135,9 @@ export type TrainingMomentExtractionProgress = {
  * Authoritative training-moment extraction result.
  */
 export type TrainingMomentExtractionResult = {
+    /** Cumulative physical work, including discarded candidates and prior checkpoint slices. */
+    engineWork: ExtractionWork;
+    /** Feed candidates plus canonical revisions of explicitly reassessed decisions. */
     moments: TrainingMomentCandidate[];
     manifests: ExtractionCompletionManifest[];
     configSnapshot: Record<string, unknown>;
@@ -187,13 +156,15 @@ export type TrainingMomentExtractionResult = {
 };
 
 export type TrainingMomentExtractionCheckpoint = {
-    version: 1;
+    version: 2;
     gameId: string;
     sourceGameId: string;
     sourcePgnHash: string;
     configHash: string;
     nextPly: number;
     expectedPlies: number;
+    /** Frozen targeting hints; only canonical new evidence can change training state. */
+    reassessDecisionPlies: number[];
     moments: TrainingMomentCandidate[];
     gameAnalysis: AnalyzedMove[];
     whiteMoveAccuracies: number[];
@@ -206,6 +177,7 @@ export type TrainingMomentExtractionCheckpoint = {
         confirmationEvidence?: AdaptiveConfirmationEvidence;
     };
     pendingOpponentError?: boolean;
+    analysisPool: PositionAnalysisPoolState;
     scanEvidence?: Array<{
         fen: string;
         previousFens: string[];
@@ -1021,20 +993,14 @@ type ResolvedOptions = {
     engineTimeoutMs: number;
     minWinningChanceLoss: number;
     fallbackMinCpLoss: number;
-    gradingPolicy: GradingPolicyV3;
+    gradingPolicy: AssessmentPolicy;
     themeLookaheadPlies: number;
     confirmMovetimeMs: number | null;
     confirmNodes: number | null;
     maxConfirmationNodes: number | null;
     returnAnalysis: boolean;
     multiPv: number;
-    maxMultiPv: number;
-    maxAcceptedMoves: number;
-    verifyContinuations: boolean;
-    verificationMaxPlies: number;
-    verificationMaxPositions: number;
-    verificationNodesPerPosition: number | null;
-    verificationMaxDepth: number | null;
+
 };
 
 export function resolveTrainingMomentExtractionOptions(
@@ -1059,10 +1025,6 @@ export function resolveTrainingMomentExtractionOptions(
     const multiPv = Math.max(
         1,
         Math.min(16, Math.trunc(options?.multiPv ?? 5)),
-    );
-    const maxMultiPv = Math.max(
-        multiPv,
-        Math.min(16, Math.trunc(options?.maxMultiPv ?? 16)),
     );
     return {
         movetimeMs: Math.max(1, Math.trunc(options?.movetimeMs ?? 200)),
@@ -1090,33 +1052,7 @@ export function resolveTrainingMomentExtractionOptions(
         maxConfirmationNodes,
         returnAnalysis: options?.returnAnalysis ?? false,
         multiPv,
-        maxMultiPv,
-        maxAcceptedMoves: Math.max(
-            1,
-            Math.min(16, Math.trunc(options?.maxAcceptedMoves ?? maxMultiPv)),
-        ),
-        verifyContinuations: options?.verifyContinuations ?? true,
-        verificationMaxPlies: Math.max(
-            1,
-            Math.min(32, options?.verificationMaxPlies ?? 2),
-        ),
-        verificationMaxPositions: Math.max(
-            1,
-            Math.min(128, options?.verificationMaxPositions ?? 32),
-        ),
-        verificationNodesPerPosition:
-            options?.verificationNodesPerPosition === null
-                ? null
-                : Math.max(
-                      1,
-                      options?.verificationNodesPerPosition ??
-                          options?.nodesPerPosition ??
-                          100_000,
-                  ),
-        verificationMaxDepth:
-            options?.verificationMaxDepth == null
-                ? null
-                : Math.max(1, options.verificationMaxDepth),
+
     };
 }
 
@@ -1298,47 +1234,6 @@ function promoteRepetitionDrawEvaluation(args: {
     };
 }
 
-function mergeRepetitionDrawMultiPv(args: {
-    result: MultiPvResult;
-    fen: string;
-    previousFens: string[];
-}): MultiPvResult {
-    const repetitionMoves = repetitionCompletingMoves(
-        args.previousFens,
-        args.fen,
-    );
-    if (repetitionMoves.length === 0) return args.result;
-    const engineEvaluation = evalFromMultiPv(args.fen, args.result);
-    if (!engineEvaluation) return args.result;
-    const ruleIsBest = ruleDrawOutranksEvaluation(
-        engineEvaluation,
-        repetitionMoves,
-    );
-    const repetitionMoveSet = new Set(
-        repetitionMoves.map((move) => move.moveUci),
-    );
-    const engineLines = args.result.lines.filter(
-        (line) => !repetitionMoveSet.has(normalizeUci(line.pvUci[0] ?? '')),
-    );
-    const ruleLines: MultiPvLine[] = repetitionMoves.map((move, index) => ({
-        multipv: index + 1,
-        pvUci: [move.moveUci],
-        score: { type: 'cp', value: 0 },
-        wdl: { win: 0, draw: 1_000, loss: 0 },
-    }));
-    const ordered = ruleIsBest
-        ? [...ruleLines, ...engineLines]
-        : [...engineLines, ...ruleLines];
-    return {
-        ...args.result,
-        bestMoveUci: ordered[0]?.pvUci[0] ?? args.result.bestMoveUci,
-        lines: ordered.map((line, index) => ({
-            ...line,
-            multipv: index + 1,
-        })),
-    };
-}
-
 function ruleDrawEvaluation(fen: string): EvalResult {
     return {
         fen,
@@ -1354,6 +1249,7 @@ function ruleDrawEvaluation(fen: string): EvalResult {
  * confirmation budget. A changed but equivalent best move is not a rejection.
  */
 type ConfirmationCandidateResult = {
+    exactRoot?: ReturnType<typeof assessPracticeExactPosition>;
     confirmed: boolean;
     newEval?: EvalResult;
     beforeEval?: EvalResult;
@@ -1362,289 +1258,143 @@ type ConfirmationCandidateResult = {
     multiPvResult?: MultiPvResult;
     confirmedLossCp?: number;
     confirmedWinningChanceLoss?: number;
-    originalMetrics?: TrainingMoveMetrics;
+    decision?: DecisionAssessment;
 };
 
 async function confirmCandidate(args: {
-    engine: StockfishEngine;
-    beforeFen: string;
-    afterFen: string;
-    solutionFen: string;
-    minimumWinningChanceLoss: number;
-    fallbackMinimumLossCp: number;
-    gradingPolicy: GradingPolicyV3;
-    multiPv: number;
-    limit: ReturnType<typeof analysisLimit>;
-    previousFens?: string[];
-}): Promise<ConfirmationCandidateResult> {
-    const rootChess = new Chess(args.solutionFen);
-    const original = rootChess
-        .moves({ verbose: true })
-        .find((move) => move.after === args.afterFen);
-    if (!original || args.beforeFen !== args.solutionFen)
-        return { confirmed: false };
+    engine: StockfishEngine; pool: PositionAnalysisPool;
+    beforeFen: string; afterFen: string; solutionFen: string;
+    minimumWinningChanceLoss: number; fallbackMinimumLossCp: number;
+    gradingPolicy: AssessmentPolicy; multiPv: number;
+    limit: ReturnType<typeof analysisLimit>; previousFens?: string[];
+    minimumConfirmationNodes: number; nodeBudgets?: readonly number[];
+}): Promise<ConfirmationCandidateResult & { confirmationEvidence?: AdaptiveConfirmationEvidence }> {
+    const root = new Chess(args.solutionFen);
+    const original = root.moves({ verbose: true }).find(move => move.after === args.afterFen);
+    if (!original || args.beforeFen !== args.solutionFen) return { confirmed: false };
     const moveUci = `${original.from}${original.to}${original.promotion ?? ''}`;
-    const multiPvResult = mergeRepetitionDrawMultiPv({
-        result: await args.engine.analyzeMultiPv({
-            fen: args.solutionFen,
-            multiPv: args.multiPv,
-            ...args.limit,
-            previousFens: args.previousFens,
-            reuse: 'FRESH_REQUIRED',
-            purpose: 'MISTAKE_REFERENCE',
-        }),
-        fen: args.solutionFen,
-        previousFens: args.previousFens ?? [],
-    });
-    const solutionEval = evalFromMultiPv(args.solutionFen, multiPvResult);
-    if (!solutionEval || !hasUsablePv(solutionEval))
-        return { confirmed: false, multiPvResult };
-    let playedRoot = await args.engine.evalPosition({
-        fen: args.solutionFen,
-        ...args.limit,
-        rootMoves: [moveUci],
-        previousFens: args.previousFens,
-        reuse: 'FRESH_REQUIRED',
-        purpose: 'MISTAKE_ORIGINAL',
-    });
-    if (
-        claimableDraw(args.afterFen, [
-            ...(args.previousFens ?? []),
-            args.beforeFen,
-        ]) &&
-        (winningChance(playedRoot.score, playedRoot.wdl) ?? 0) < 0.5
-    )
-        playedRoot = {
-            ...playedRoot,
-            score: { type: 'cp', value: 0 },
-            wdl: { win: 0, draw: 1000, loss: 0 },
-        };
-    if (!playedRoot.score || !playedRoot.pvUci.length)
-        return { confirmed: false, multiPvResult };
-    const terminal = ruleTerminalEvaluation(args.afterFen);
-    const afterEval: EvalResult = terminal ?? {
-        ...playedRoot,
-        fen: args.afterFen,
-        score: negateScore(playedRoot.score),
-        wdl: reverseWdl(playedRoot.wdl),
+    const previousFens = args.previousFens ?? [];
+    const positionArgs = { pool: args.pool, fen: args.solutionFen, positionHistory: previousFens,
+        trainingSide: root.turn() === 'w' ? 'WHITE' as const : 'BLACK' as const,
+        originalMoveUci: moveUci, policy: args.gradingPolicy, minimumConfirmationNodes: args.minimumConfirmationNodes };
+    const nodeBudgets = args.nodeBudgets ?? (args.limit.nodes == null ? [] : [args.limit.nodes]);
+    const stages: readonly (number | null)[] = nodeBudgets.length ? nodeBudgets : [null];
+    // Preserve the previous implicit ceiling of at most a root and original search per profile level.
+    let remainingNodes = nodeBudgets.length ? 2 * nodeBudgets.reduce((sum, nodes) => sum + nodes, 0) : null;
+    const maxNodes = nodeBudgets.at(-1) ?? null;
+    const deadline = performance.now() + 2 * stages.length * args.limit.timeoutMs;
+    const passes: AdaptiveConfirmationEvidence['passes'] = [];
+    let rootCursor = 0; let originalCursor = 0; let dispatched = 0;
+    const probedPremises = new Set<string>();
+    let assessment = assessPracticePosition(positionArgs);
+    const rootSearch = () => args.pool.find({ fen: args.solutionFen, previousFens })
+        .findLast(search => search.result && search.evidence.request.rootMoves.length === root.moves().length
+            && search.snapshots.some(snapshot => snapshot.bundleComplete));
+    let multiPvResult = rootSearch()?.result ?? undefined;
+    const project = (): ConfirmationCandidateResult => {
+        const solutionEval = multiPvResult && evalFromMultiPv(args.solutionFen, multiPvResult);
+        if (!solutionEval || !hasUsablePv(solutionEval)) return { confirmed: false, multiPvResult, decision: assessment?.decision };
+        const originalSearch = args.pool.find({ fen: args.solutionFen, previousFens, moveUci })
+            .findLast(search => search.result?.lines.some(line => line.pvUci[0] === moveUci));
+        const originalLine = originalSearch?.result?.lines.find(line => line.pvUci[0] === moveUci);
+        if (!originalLine?.score) return { confirmed: false, newEval: solutionEval, multiPvResult, decision: assessment?.decision };
+        const afterEval: EvalResult = { fen: args.afterFen, bestMoveUci: originalLine.pvUci[1] ?? '',
+            pvUci: originalLine.pvUci.slice(1), score: negateScore(originalLine.score),
+            wdl: reverseWdl(originalLine.wdl), searchEvidence: originalSearch?.evidence };
+        const loss = evaluationLoss({ score: solutionEval.score, wdl: solutionEval.wdl },
+            { score: originalLine.score, wdl: originalLine.wdl });
+        return { confirmed: assessment?.decision.status === 'CONFIRMED_MISTAKE', decision: assessment?.decision,
+            newEval: solutionEval, beforeEval: solutionEval, afterEval, loss, multiPvResult,
+            confirmedLossCp: loss.cp ?? undefined, confirmedWinningChanceLoss: loss.winningChance ?? undefined };
     };
-    const loss = evaluationLoss(
-        { score: solutionEval.score, wdl: solutionEval.wdl },
-        { score: playedRoot.score, wdl: playedRoot.wdl },
-    );
-    const confirmed =
-        (loss.winningChance != null &&
-            loss.winningChance >= args.minimumWinningChanceLoss) ||
-        (loss.cp != null && loss.cp >= args.fallbackMinimumLossCp) ||
-        (solutionEval.score?.type === 'mate' &&
-            playedRoot.score.type !== 'mate');
-    const side = sideToMoveFromFen(args.solutionFen);
-    const originalMetrics = metricsFromMatchedOutcomeEvidence({
-        moveUci,
-        originalMoveUci: moveUci,
-        trainingSide: side,
-        bestScore: engineScoreToWhitePov(solutionEval.score, side),
-        submittedScore: engineScoreToWhitePov(afterEval.score, otherSide(side)),
-        originalScore: engineScoreToWhitePov(afterEval.score, otherSide(side)),
-        bestWdlChance: engineWdlChance(solutionEval.wdl, side, side),
-        submittedWdlChance: engineWdlChance(
-            afterEval.wdl,
-            otherSide(side),
-            side,
-        ),
-        stable: true,
-    });
-    return {
-        confirmed,
-        originalMetrics,
-        newEval: solutionEval,
-        beforeEval: solutionEval,
-        afterEval,
-        loss,
-        multiPvResult,
-        confirmedLossCp: loss.cp ?? undefined,
-        confirmedWinningChanceLoss: loss.winningChance ?? undefined,
-    };
+    const referenceReadiness = () => assessment && assessPracticeReferenceReadiness({ evidence: assessment.evidence,
+        frame: assessment.frame, trainingSide: positionArgs.trainingSide,
+        referenceMoveUci: assessment.rootAnswerIndex.preferredMoveUci, policy: args.gradingPolicy });
+    let readiness = referenceReadiness();
+    while (performance.now() < deadline && (nodeBudgets.length > 0 || dispatched < 2)) {
+        if (args.limit.signal?.aborted) throw new Error('Analysis aborted');
+        const paidRoot = rootSearch();
+        const paidRootNodes = paidRoot?.evidence.request.limits.nodes ?? paidRoot?.evidence.reported.nodes ?? 0;
+        const rootBudgetSatisfied = paidRootNodes >= args.minimumConfirmationNodes;
+        if (readiness?.status === 'READY' && rootBudgetSatisfied && assessment?.decision.status !== 'UNRESOLVED') break;
+        let nodes: number | null;
+        let purpose: 'MISSING_REFERENCE' | 'REFERENCE_DRIFT' | 'VERIFY_REFERENCE' | 'MISSING_MOVE';
+        let rootMoves: string[] | undefined;
+        if (!rootBudgetSatisfied || !readiness || readiness.requiredWork === 'ROOT') {
+            // Missing verification is not a reason to discard a perfectly usable paid full-root choice.
+            while (rootCursor < stages.length && stages[rootCursor] != null && stages[rootCursor]! <= paidRootNodes) rootCursor++;
+            if (rootCursor >= stages.length) break;
+            nodes = stages[rootCursor++];
+            purpose = readiness?.status === 'REFERENCE_VALUE_DRIFT' || readiness?.status === 'UNRESOLVED_REFERENCE'
+                ? 'REFERENCE_DRIFT' : 'MISSING_REFERENCE';
+        } else if (readiness.requiredWork === 'REFERENCE_PROBE') {
+            // Explicit depth/time profiles keep their original limit. Actual
+            // observed work still has to satisfy the shared 400k proof floor.
+            nodes = maxNodes == null ? null : args.gradingPolicy.minimumReferenceProbeNodes;
+            if (nodes != null && nodes > maxNodes!) break;
+            const premise = `${readiness.rootSearchId}:${readiness.preferredMoveUci}`;
+            // An incomplete/immature probe is unresolved; never spin on an identical missing fact.
+            if (probedPremises.has(premise)) break;
+            probedPremises.add(premise);
+            purpose = 'VERIFY_REFERENCE'; rootMoves = [readiness.preferredMoveUci];
+        } else {
+            if (readiness.status !== 'READY' || originalCursor >= stages.length) break;
+            nodes = stages[originalCursor++];
+            purpose = 'MISSING_MOVE'; rootMoves = [moveUci];
+        }
+        if (nodes != null && remainingNodes != null && nodes > remainingNodes) break;
+        const remainingMs = Math.floor(deadline - performance.now());
+        if (remainingMs < 1) break;
+        if (nodes != null && remainingNodes != null) remainingNodes -= nodes;
+        dispatched++;
+        const limit = { ...args.limit, ...(nodes == null ? {} : { nodes }), timeoutMs: Math.min(args.limit.timeoutMs, remainingMs) };
+        let result: EvalResult | MultiPvResult;
+        try {
+            result = rootMoves
+                ? await args.engine.evalPosition({ fen: args.solutionFen, ...limit, rootMoves,
+                    previousFens, reuse: 'FRESH_REQUIRED', purpose })
+                : await args.engine.analyzeMultiPv({ fen: args.solutionFen, ...limit, multiPv: args.multiPv,
+                    previousFens, reuse: 'FRESH_REQUIRED', purpose });
+        } catch (error) {
+            if (args.limit.signal?.aborted) throw error;
+            if (performance.now() >= deadline) break;
+            throw error;
+        }
+        if (args.limit.signal?.aborted) throw new Error('Analysis aborted');
+        assessment = assessPracticePosition(positionArgs);
+        multiPvResult = rootSearch()?.result ?? undefined;
+        const current = project();
+        readiness = referenceReadiness();
+        const referenceReady = readiness?.status === 'READY';
+        if (nodes != null) passes.push({ nodes, purpose, searchId: result.searchEvidence?.id ?? null,
+            outcome: result.searchEvidence ? 'RETURNED' : 'UNATTRIBUTED',
+            bestMoveUci: current.newEval?.bestMoveUci ?? null, qualifies: current.confirmed,
+            cpLoss: referenceReady ? current.loss?.cp ?? null : null, winChanceLoss: referenceReady ? current.loss?.winningChance ?? null : null });
+    }
+    const latest = project();
+    const stable = latest.decision != null && latest.decision.status !== 'UNRESOLVED';
+    return { ...latest, ...(args.nodeBudgets ? { confirmationEvidence: { version: 2 as const, stable,
+        termination: stable ? latest.confirmed ? 'STABLE' as const : 'BELOW_THRESHOLD' as const
+            : latest.newEval ? 'MAX_BUDGET_UNSTABLE' as const : 'INCOMPLETE' as const, passes } } : {}) };
 }
 
 function confirmationBudgets(baseNodes: number, maxNodes: number): number[] {
     const budgets = [Math.max(1, Math.trunc(baseNodes))];
-    const cap = Math.max(budgets[0]!, Math.trunc(maxNodes));
-    while (budgets.at(-1)! < cap) {
-        const current = budgets.at(-1)!;
-        budgets.push(Math.min(cap, current * 2));
-    }
+    while (budgets.at(-1)! < maxNodes) budgets.push(Math.min(maxNodes, budgets.at(-1)! * 2));
     return budgets;
 }
 
-function nearCoverageThreshold(
-    loss: ReturnType<typeof evaluationLoss>,
-    args: {
-        minimumWinningChanceLoss: number;
-        fallbackMinimumLossCp: number;
-    },
-): boolean {
-    if (loss.winningChance != null) {
-        const margin = Math.max(0.01, args.minimumWinningChanceLoss * 0.5);
-        return (
-            Math.abs(loss.winningChance - args.minimumWinningChanceLoss) <=
-            margin
-        );
-    }
-    if (loss.cp != null) {
-        const margin = Math.max(20, args.fallbackMinimumLossCp * 0.25);
-        return Math.abs(loss.cp - args.fallbackMinimumLossCp) <= margin;
-    }
-    return true;
-}
-
-function confirmationLossesDisagree(
-    previous: ReturnType<typeof evaluationLoss>,
-    current: ReturnType<typeof evaluationLoss>,
-): boolean {
-    if (previous.winningChance != null && current.winningChance != null) {
-        return Math.abs(previous.winningChance - current.winningChance) > 0.015;
-    }
-    if (previous.cp != null && current.cp != null) {
-        return Math.abs(previous.cp - current.cp) > 40;
-    }
-    return true;
-}
-
 async function confirmCandidateAdaptively(args: {
-    engine: StockfishEngine;
-    beforeFen: string;
-    afterFen: string;
-    solutionFen: string;
-    minimumWinningChanceLoss: number;
-    fallbackMinimumLossCp: number;
-    gradingPolicy: GradingPolicyV3;
-    multiPv: number;
-    baseNodes: number;
-    maxNodes: number;
-    timeoutMs: number;
-    previousFens?: string[];
-    initialBestMoveUci: string;
-    initialLoss: ReturnType<typeof evaluationLoss>;
-    initialMetrics: TrainingMoveMetrics;
+    engine: StockfishEngine; pool: PositionAnalysisPool; beforeFen: string; afterFen: string; solutionFen: string;
+    minimumWinningChanceLoss: number; fallbackMinimumLossCp: number; gradingPolicy: AssessmentPolicy;
+    multiPv: number; baseNodes: number; maxNodes: number; timeoutMs: number; previousFens?: string[];
     signal?: AbortSignal;
-}): Promise<
-    ConfirmationCandidateResult & {
-        confirmationEvidence: AdaptiveConfirmationEvidence;
-    }
-> {
-    const budgets = confirmationBudgets(args.baseNodes, args.maxNodes);
-    let previousLoss = args.initialLoss;
-    let previousQualifies = true;
-    let previousGrade = gradeTrainingMove(
-        args.initialMetrics,
-        args.gradingPolicy,
-    );
-    let previousModel = args.initialMetrics.evidenceModel;
-
-    let latest: ConfirmationCandidateResult = { confirmed: false };
-    const passes: AdaptiveConfirmationEvidence['passes'] = [];
-
-    for (const [index, nodes] of budgets.entries()) {
-        latest = await confirmCandidate({
-            engine: args.engine,
-            beforeFen: args.beforeFen,
-            afterFen: args.afterFen,
-            solutionFen: args.solutionFen,
-            minimumWinningChanceLoss: args.minimumWinningChanceLoss,
-            fallbackMinimumLossCp: args.fallbackMinimumLossCp,
-            multiPv: args.multiPv,
-            gradingPolicy: args.gradingPolicy,
-            limit: { nodes, timeoutMs: args.timeoutMs, signal: args.signal },
-            previousFens: args.previousFens,
-        });
-        const complete = Boolean(
-            latest.newEval &&
-            latest.beforeEval &&
-            latest.afterEval &&
-            latest.loss,
-        );
-        const currentBestMove = normalizeUci(latest.newEval?.bestMoveUci ?? '');
-        passes.push({
-            nodes,
-            bestMoveUci: currentBestMove || null,
-            qualifies: latest.confirmed,
-            cpLoss: latest.loss?.cp ?? null,
-            winChanceLoss: latest.loss?.winningChance ?? null,
-        });
-
-        const currentGrade = latest.originalMetrics
-            ? gradeTrainingMove(latest.originalMetrics, args.gradingPolicy)
-            : null;
-        const originalConclusionChanged =
-            currentGrade?.status !== 'GRADED' ||
-            previousGrade.status !== 'GRADED' ||
-            currentGrade.accepted !== previousGrade.accepted;
-        const modelChanged =
-            latest.originalMetrics?.evidenceModel !== previousModel;
-        const disagreement =
-            originalConclusionChanged ||
-            modelChanged ||
-            !complete ||
-            previousQualifies !== latest.confirmed ||
-            (latest.loss != null &&
-                nearCoverageThreshold(latest.loss, args) &&
-                confirmationLossesDisagree(previousLoss, latest.loss));
-        const nearThreshold = latest.originalMetrics
-            ? (latest.originalMetrics.bestGapCp != null &&
-                  Math.abs(
-                      latest.originalMetrics.bestGapCp -
-                          args.gradingPolicy.success.maxCpLoss,
-                  ) <= 20) ||
-              (latest.originalMetrics.bestGapWinChance != null &&
-                  Math.abs(
-                      latest.originalMetrics.bestGapWinChance -
-                          args.gradingPolicy.success.maxWinChanceLoss,
-                  ) <= 0.02)
-            : true;
-        const isLast = index === budgets.length - 1;
-        const needsMore = !isLast && (disagreement || nearThreshold);
-
-        if (needsMore) {
-            if (latest.loss) previousLoss = latest.loss;
-            if (currentGrade) previousGrade = currentGrade;
-            previousModel = latest.originalMetrics?.evidenceModel;
-            previousQualifies = latest.confirmed;
-
-            continue;
-        }
-
-        const stable = complete && !disagreement;
-        const termination: AdaptiveConfirmationEvidence['termination'] =
-            !complete
-                ? 'INCOMPLETE'
-                : !stable
-                  ? 'MAX_BUDGET_UNSTABLE'
-                  : latest.confirmed
-                    ? 'STABLE'
-                    : 'BELOW_THRESHOLD';
-        return {
-            ...latest,
-            confirmed: latest.confirmed && stable,
-            confirmationEvidence: {
-                version: 1,
-                stable,
-                termination,
-                passes,
-            },
-        };
-    }
-
-    return {
-        ...latest,
-        confirmed: false,
-        confirmationEvidence: {
-            version: 1,
-            stable: false,
-            termination: 'INCOMPLETE',
-            passes,
-        },
-    };
+}): Promise<ConfirmationCandidateResult & { confirmationEvidence: AdaptiveConfirmationEvidence }> {
+    const result = await confirmCandidate({ ...args, minimumConfirmationNodes: args.baseNodes,
+        nodeBudgets: confirmationBudgets(args.baseNodes, args.maxNodes),
+        limit: { nodes: args.baseNodes, timeoutMs: args.timeoutMs, signal: args.signal } });
+    return { ...result, confirmationEvidence: result.confirmationEvidence ?? {
+        version: 2, stable: false, termination: 'INCOMPLETE', passes: [] } };
 }
 
 function normalizeUci(uci: string): string {
@@ -1740,56 +1490,6 @@ function engineScoreToWhitePov(
     };
 }
 
-function tablebaseScoreToWhitePov(
-    wdl: 'WIN' | 'DRAW' | 'LOSS' | 'UNKNOWN',
-    mover: 'w' | 'b',
-    dtz?: number,
-): PovScore | null {
-    if (wdl === 'UNKNOWN') return null;
-    const whiteWdl =
-        mover === 'w'
-            ? wdl
-            : wdl === 'WIN'
-              ? 'LOSS'
-              : wdl === 'LOSS'
-                ? 'WIN'
-                : 'DRAW';
-    return {
-        kind: 'tablebase',
-        wdl: whiteWdl,
-        pov: 'WHITE',
-        ...(dtz != null ? { dtz } : {}),
-    };
-}
-
-function verifiedEvaluationToWhitePov(
-    evaluation: VerifiedMoveEvaluation,
-    mover: 'w' | 'b',
-): PovScore | null {
-    if (evaluation.source === 'ENGINE') {
-        return engineScoreToWhitePov(evaluation.score, mover);
-    }
-    if (evaluation.source === 'TABLEBASE') {
-        return tablebaseScoreToWhitePov(evaluation.wdl, mover, evaluation.dtz);
-    }
-    return {
-        kind: 'tablebase',
-        wdl: 'DRAW',
-        pov: 'WHITE',
-    };
-}
-
-async function solutionHash(
-    input: Omit<
-        SolutionRevisionInput,
-        'solutionHash' | 'evidence' | 'generatorVersion' | 'configHash'
-    >,
-): Promise<string> {
-    return sha256Hex(
-        stableTrainingStringify(canonicalSolutionSemantics(input)),
-    );
-}
-
 const SOURCE_KIND_ORDER: readonly TrainingSourceKind[] = [
     'MY_MISTAKE',
     'MISSED_OPPORTUNITY',
@@ -1829,20 +1529,8 @@ function storeCanonicalTrainingMoment(
         return;
     }
     const existing = moments[index]!;
-    const rank = { VERIFIED: 3, AMBIGUOUS: 2, UNSTABLE: 1, INVALID: 0 };
-    const candidateRank = rank[candidate.solution.verificationStatus];
-    const existingRank = rank[existing.solution.verificationStatus];
-    const candidateHasDirectMistakeEvidence =
-        candidate.sourceKinds.includes('MY_MISTAKE');
-    const existingHasDirectMistakeEvidence =
-        existing.sourceKinds.includes('MY_MISTAKE');
-    const preferred =
-        candidateRank > existingRank ||
-        (candidateRank === existingRank &&
-            candidateHasDirectMistakeEvidence &&
-            !existingHasDirectMistakeEvidence)
-            ? candidate
-            : existing;
+    const preferred = candidate.solution.manifest.assessments.length >= existing.solution.manifest.assessments.length
+        ? candidate : existing;
     moments[index] = {
         ...preferred,
         sourceKinds: orderedMetadataUnion(
@@ -1862,379 +1550,29 @@ function storeCanonicalTrainingMoment(
 }
 
 async function buildTrainingMoment(args: {
-    game: NormalizedGame;
-    canonicalSourceGameId: string;
-    sourcePgnHash: string;
-    decisionPly: number;
-    fen: string;
-    originalMoveUci: string;
-    originalScoreBefore: PovScore;
-    originalScoreAfter: PovScore;
-    originalLoss: ReturnType<typeof evaluationLoss>;
-    originalMetrics: TrainingMoveMetrics;
-    practicalLessonEvidence?: unknown;
-    sourceKind: TrainingSourceKind;
-    lessonKind: TrainingLessonKind;
-    themes: string[];
-    solutionEval: EvalResult;
-    acceptedMovesUci: string[];
-    evaluatedLines: MultiPvLine[];
-    acceptanceFrontier?: AcceptanceFrontier;
-    engine: StockfishEngine;
-    tablebase?: TablebaseProvider;
-    opts: ResolvedOptions;
-    configHash: string;
-    previousFens: string[];
-    verificationCache: Map<string, Promise<ContinuationVerificationResult>>;
-    signal?: AbortSignal;
+    game: NormalizedGame; canonicalSourceGameId: string; sourcePgnHash: string; decisionPly: number;
+    fen: string; originalMoveUci: string; originalScoreBefore: PovScore; originalScoreAfter: PovScore;
+    originalLoss: ReturnType<typeof evaluationLoss>; sourceKind: TrainingSourceKind;
+    lessonKind: TrainingLessonKind; themes: string[]; pool: PositionAnalysisPool;
+    opts: ResolvedOptions; configHash: string; previousFens: string[];
+    exactRoot?: ReturnType<typeof assessPracticeExactPosition>;
 }): Promise<TrainingMomentCandidate> {
-    // Exact evidence may replace an engine reference only as a complete pair.
-    // UNKNOWN original outcomes leave the confirmed engine core intact.
-    let exactPair: Awaited<ReturnType<TablebaseProvider['probe']>> | null =
-        null;
-    if (args.tablebase && nonKingPieceCountFromFen(args.fen) <= 5) {
-        try {
-            const exact = await args.tablebase.probe(args.fen, {
-                signal: args.signal,
-            });
-            const original = exact?.moves.find(
-                (move) =>
-                    move.uci === args.originalMoveUci && move.wdl !== 'UNKNOWN',
-            );
-            if (
-                exact &&
-                exact.wdl !== 'UNKNOWN' &&
-                original &&
-                exact.moves.some((move) => move.wdl === exact.wdl)
-            ) {
-                const side = sideToMoveFromFen(args.fen);
-                const before = tablebaseScoreToWhitePov(exact.wdl, side)!;
-                const after = tablebaseScoreToWhitePov(original.wdl, side)!;
-                args = {
-                    ...args,
-                    originalScoreBefore: before,
-                    originalScoreAfter: after,
-                    originalLoss: {
-                        cp: null,
-                        winningChance: Math.max(
-                            0,
-                            (exact.wdl === 'WIN'
-                                ? 1
-                                : exact.wdl === 'DRAW'
-                                  ? 0.5
-                                  : 0) -
-                                (original.wdl === 'WIN'
-                                    ? 1
-                                    : original.wdl === 'DRAW'
-                                      ? 0.5
-                                      : 0),
-                        ),
-                    },
-                    originalMetrics: metricsFromMatchedOutcomeEvidence({
-                        moveUci: args.originalMoveUci,
-                        originalMoveUci: args.originalMoveUci,
-                        trainingSide: side,
-                        bestScore: before,
-                        submittedScore: after,
-                        originalScore: after,
-                        stable: true,
-                    }),
-                };
-                exactPair = exact;
-            }
-        } catch (error) {
-            if (args.signal?.aborted) throw error;
-        }
-    }
-    const key = `${args.sourcePgnHash}:${args.decisionPly}:${args.fen}`;
-    let pending = args.verificationCache.get(key);
-    if (!pending) {
-        pending = verifyConditionalContinuation({
-            fen: args.fen,
-            engine: args.engine,
-            tablebase: exactPair
-                ? {
-                      probe: async (fen, options) =>
-                          fen === args.fen
-                              ? exactPair
-                              : args.tablebase!.probe(fen, options),
-                  }
-                : args.tablebase,
-            options: {
-                maxPlies: args.opts.verifyContinuations
-                    ? args.opts.verificationMaxPlies
-                    : 1,
-                maxPositions: args.opts.verificationMaxPositions,
-                multiPv: args.opts.multiPv,
-                maxMultiPv: args.opts.maxMultiPv,
-                maxUserBranches: args.opts.maxAcceptedMoves,
-                gradingPolicy: args.opts.gradingPolicy,
-                nodesPerPosition: args.opts.verificationNodesPerPosition,
-                maxDepth: args.opts.verificationMaxDepth,
-                movetimeMs: args.opts.movetimeMs,
-                timeoutMs: args.opts.engineTimeoutMs,
-                signal: args.signal,
-                previousFens: args.previousFens,
-                seed: exactPair
-                    ? undefined
-                    : {
-                          fen: args.fen,
-                          bestMoveUci: args.solutionEval.bestMoveUci,
-                          lines: args.evaluatedLines,
-                          searchEvidence: args.solutionEval.searchEvidence,
-                      },
-            },
-        });
-        args.verificationCache.set(key, pending);
-    }
-    const verification = await pending;
-    const root = verification.root;
     const side = sideToMoveFromFen(args.fen);
-    const referenceId = verification.answerCoverage.referenceId;
-    const bestMoveUci =
-        root.acceptedMovesUci[0] ?? args.solutionEval.bestMoveUci;
-    const bestEvaluation = root.moveEvaluations?.find(
-        (move) => move.moveUci === bestMoveUci,
-    )?.evaluation;
-    const scoreAtStart = bestEvaluation
-        ? verifiedEvaluationToWhitePov(bestEvaluation, side)
-        : engineScoreToWhitePov(args.solutionEval.score, side);
-
-    const moveAssessments: SolutionMoveAssessmentInput[] = [];
-    const collectAssessments = (node: VerifiedSolutionNode) => {
-        if (node.role === 'USER') {
-            const nodeSide = sideToMoveFromFen(node.fen);
-            const preferred = node.moveEvaluations?.find(
-                (item) => item.moveUci === node.acceptedMovesUci[0],
-            )?.evaluation;
-            const referenceScore = preferred
-                ? verifiedEvaluationToWhitePov(preferred, nodeSide)
-                : null;
-            const referenceChance =
-                preferred?.source === 'ENGINE'
-                    ? engineWdlChance(preferred.wdl, nodeSide, side)
-                    : null;
-            for (const item of node.moveEvaluations ?? []) {
-                // The explicit matched original pass is authoritative at the root.
-                if (node === root && item.moveUci === args.originalMoveUci)
-                    continue;
-                const scoreAfter = verifiedEvaluationToWhitePov(
-                    item.evaluation,
-                    nodeSide,
-                );
-                const metrics = metricsFromMatchedOutcomeEvidence({
-                    moveUci: item.moveUci,
-                    originalMoveUci: args.originalMoveUci,
-                    trainingSide: side,
-                    bestScore: referenceScore,
-                    submittedScore: scoreAfter,
-                    originalScore: args.originalScoreAfter,
-                    bestWdlChance: referenceChance,
-                    submittedWdlChance:
-                        item.evaluation.source === 'ENGINE'
-                            ? engineWdlChance(
-                                  item.evaluation.wdl,
-                                  nodeSide,
-                                  side,
-                              )
-                            : null,
-                    stable: true,
-                });
-                const grade = gradeTrainingMove(
-                    metrics,
-                    args.opts.gradingPolicy,
-                );
-                if (grade.status !== 'GRADED') continue;
-                moveAssessments.push({
-                    positionKey: node.contextId,
-                    decisionIndex: Math.floor(node.ply / 2),
-                    fen: node.fen,
-                    moveUci: item.moveUci,
-                    source:
-                        item.evaluation.source === 'TABLEBASE'
-                            ? 'TABLEBASE'
-                            : 'PRECOMPUTED',
-                    grade: grade.grade,
-                    referenceId: node.referenceId ?? referenceId,
-                    tierStable: item.tierStable,
-                    scoreAfter,
-                    evidence: { ...metrics, evaluation: item.evaluation },
-                });
-            }
-        }
-        for (const branch of node.branches) collectAssessments(branch.child);
-    };
-    collectAssessments(root);
-    const originalGrade = gradeTrainingMove(
-        args.originalMetrics,
-        args.opts.gradingPolicy,
-    );
-    if (originalGrade.status === 'GRADED')
-        moveAssessments.push({
-            positionKey: root.contextId,
-            decisionIndex: 0,
-            fen: args.fen,
-            moveUci: args.originalMoveUci,
-            source: 'PRECOMPUTED',
-            grade: originalGrade.grade,
-            referenceId,
-            tierStable: true,
-            scoreAfter: args.originalScoreAfter,
-            evidence: {
-                ...args.originalMetrics,
-                comparisonSource: 'PAIRED_ROOT_ORIGINAL',
-            },
-        });
-    const acceptedMovesUci = root.acceptedMovesUci.filter((move) =>
-        moveAssessments.some(
-            (item) =>
-                item.moveUci === move &&
-                ['BEST', 'STRONG', 'GOOD'].includes(item.grade),
-        ),
-    );
-    const originalAccepted = moveAssessments.some(
-        (item) =>
-            item.moveUci === args.originalMoveUci &&
-            ['BEST', 'STRONG', 'GOOD'].includes(item.grade),
-    );
-    const trainable =
-        verification.status === 'VERIFIED' &&
-        acceptedMovesUci.length > 0 &&
-        !originalAccepted;
-    const frontier: AcceptanceFrontier = {
-        ...(root.acceptanceFrontier ?? {
-            version: 1,
-            status: 'OPEN',
-            targetCutoffCp: args.opts.gradingPolicy.success.maxCpLoss,
-            effectiveCutoffCp: null,
-            boundaryGapCp: null,
-            firstRejectedMoveUci: null,
-            moves: [],
-        }),
-        status: acceptedMovesUci.length ? 'STABLE' : 'OPEN',
-        moves: acceptedMovesUci.map((moveUci) => ({
-            moveUci,
-            tier: moveAssessments.find((item) => item.moveUci === moveUci)!
-                .grade as 'BEST' | 'STRONG' | 'GOOD',
-        })),
-    };
-    const assessedMovesUci = moveAssessments
-        .filter(
-            (item) =>
-                item.positionKey === root.contextId && item.decisionIndex === 0,
-        )
-        .map((item) => item.moveUci)
-        .sort();
-    const answerCoverage = {
-        ...verification.answerCoverage,
-        assessedMovesUci,
-        status: verification.answerCoverage.legalMovesUci.every((move) =>
-            assessedMovesUci.includes(move),
-        )
-            ? ('ALL_LEGAL_ASSESSED' as const)
-            : ('PARTIAL' as const),
-    };
-    root.answerCoverage = answerCoverage;
-    root.acceptanceFrontier = frontier;
-    root.acceptedMovesUci = acceptedMovesUci;
-    root.alternativesComplete = answerCoverage.status === 'ALL_LEGAL_ASSESSED';
-    root.branches = root.branches.filter((branch) =>
-        acceptedMovesUci.includes(branch.moveUci),
-    );
-    const decision = {
-        status: originalAccepted
-            ? ('NOT_A_MISTAKE' as const)
-            : trainable
-              ? ('CONFIRMED_MISTAKE' as const)
-              : ('UNRESOLVED' as const),
-        reason: originalAccepted
-            ? 'ORIGINAL_MOVE_QUALITY_CONFIRMED'
-            : trainable
-              ? 'MISTAKE_CONFIRMED'
-              : 'MISTAKE_COMPARISON_UNRESOLVED',
-    };
-    const solutionCore: Omit<
-        SolutionRevisionInput,
-        'solutionHash' | 'evidence' | 'generatorVersion' | 'configHash'
-    > = {
-        decision,
-        answerCoverage,
-        continuation: verification.continuation,
-        verificationStatus: verification.status,
-        solutionShape:
-            acceptedMovesUci.length > 1
-                ? 'MULTIPLE'
-                : acceptedMovesUci.length === 1
-                  ? 'UNIQUE'
-                  : 'OPEN',
-        gradingStrategy:
-            root.evidenceSource === 'TABLEBASE' ? 'TABLEBASE' : 'PRECOMPUTED',
-        continuationShape:
-            verification.bestLineUci.length > 1
-                ? 'CONDITIONAL_LINE'
-                : 'SINGLE_DECISION',
-        trainable,
-        bestMoveUci,
-        acceptedMovesUci,
-        acceptanceFrontier: frontier,
-        moveAssessments,
-        bestLineUci: verification.bestLineUci,
-        solutionTree: root,
-        scoreAtStart,
-        playedMoveScore: args.originalScoreAfter,
-        targetOutcome: { kind: 'MAXIMIZE_WINNING_CHANCE', score: scoreAtStart },
-        gradingPolicy: args.opts.gradingPolicy,
-    };
-    // The canonical solution tree already carries every verified node and its
-    // move evidence. Reference it from verifier metadata instead of serializing
-    // the same history-heavy tree twice in each API payload.
-    const { root: verifiedRoot, ...verifierMetadata } = verification;
-    const solution: SolutionRevisionInput = {
-        ...solutionCore,
-        solutionHash: await solutionHash(solutionCore),
-        evidence: {
-            verifier: {
-                ...verifierMetadata,
-                rootContextId: verifiedRoot.contextId,
-            },
-            extraction: {
-                originalLoss: args.originalLoss,
-                practicalLesson: args.practicalLessonEvidence ?? null,
-                rootEvaluation: args.solutionEval,
-            },
-        },
-        generatorVersion: 'backranq-training-extractor-v4',
-        configHash: args.configHash,
-    };
-    return {
-        sourceGameId: args.canonicalSourceGameId,
-        sourceProvider: args.game.provider,
-        sourcePlayedAt: args.game.playedAt,
-        sourcePgnHash: args.sourcePgnHash,
-        decisionPly: args.decisionPly,
-        fen: args.fen,
-        positionHistory: args.previousFens,
-        sideToMove: side,
-        originalMoveUci: args.originalMoveUci,
-        sourceKinds: [args.sourceKind],
-        lessonKinds: [args.lessonKind],
-        themes: [...new Set(args.themes)].sort(),
-        originalDecision: {
-            scoreBefore: args.originalScoreBefore,
-            scoreAfter: args.originalScoreAfter,
-            ...(args.originalLoss.cp != null
-                ? { cpLoss: args.originalLoss.cp }
-                : {}),
-            ...(args.originalLoss.winningChance != null
-                ? { winChanceLoss: args.originalLoss.winningChance }
-                : {}),
-        },
-        phase: phaseFromPosition({
-            fen: args.fen,
-            ply: args.decisionPly,
-        }).toUpperCase() as 'OPENING' | 'MIDDLEGAME' | 'ENDGAME',
-        solution,
-    };
+    const trainingSide = side === 'w' ? 'WHITE' as const : 'BLACK' as const;
+    const manifest = await buildPracticeMomentRevision({ pool: args.pool,
+        source: { gameId: args.canonicalSourceGameId, sourcePgnHash: args.sourcePgnHash,
+            decisionPly: args.decisionPly, contextId: practiceContextId(args.fen, args.previousFens, trainingSide),
+            fen: args.fen, positionHistory: args.previousFens, trainingSide, originalMoveUci: args.originalMoveUci },
+        executionProfileId: args.configHash, minimumConfirmationNodes: args.opts.confirmNodes ?? 1,
+        policy: args.opts.gradingPolicy, exactRoot: args.exactRoot });
+    if (!manifest) throw new Error('Confirmed decision lost its reference evidence');
+    return { sourceGameId: args.canonicalSourceGameId, sourceProvider: args.game.provider,
+        sourcePlayedAt: args.game.playedAt, sourcePgnHash: args.sourcePgnHash, decisionPly: args.decisionPly,
+        fen: args.fen, positionHistory: args.previousFens, sideToMove: side, originalMoveUci: args.originalMoveUci,
+        sourceKinds: [args.sourceKind], lessonKinds: [args.lessonKind], themes: [...new Set(args.themes)].sort(),
+        originalDecision: originalDecisionForPracticeManifest(manifest),
+        phase: phaseFromPosition({ fen: args.fen, ply: args.decisionPly }).toUpperCase() as 'OPENING' | 'MIDDLEGAME' | 'ENDGAME',
+        solution: { manifest, configHash: args.configHash } };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2257,6 +1595,9 @@ export async function extractTrainingMomentsFromGames(args: {
      * supply it; standalone callers receive a deterministic extractor hash.
      */
     analysisConfigHash?: string;
+    /** Existing decisions to confirm even when the broad scan no longer selects them. */
+    reassessDecisionPliesByGameId?:
+        ReadonlyMap<string, readonly number[]> | Readonly<Record<string, readonly number[]>>;
     onProgress?: (progress: TrainingMomentExtractionProgress) => void;
     strategy?: TrainingMomentExtractionStrategy;
     options?: TrainingMomentExtractionOptions;
@@ -2285,6 +1626,10 @@ export async function extractTrainingMomentsFromGames(args: {
         throw new Error('Resumable extraction requires exactly one game');
     if (firstPuzzle && (args.checkpoint || args.shouldYield))
         throw new Error('FIRST_PUZZLE does not support full-game checkpoints');
+    const pool = args.checkpoint?.analysisPool
+        ? PositionAnalysisPool.hydrate(args.checkpoint.analysisPool)
+        : new PositionAnalysisPool();
+    args = { ...args, engine: pool.wrap(args.engine) };
     const opts = resolveTrainingMomentExtractionOptions(args.options);
     const identity =
         (await args.engine.getIdentity?.().catch(() => null)) ?? null;
@@ -2300,11 +1645,8 @@ export async function extractTrainingMomentsFromGames(args: {
     ];
     const manifests: ExtractionCompletionManifest[] = [];
     const analysisMap = new Map<string, GameAnalysis>();
-    const verificationCache = new Map<
-        string,
-        Promise<ContinuationVerificationResult>
-    >();
     for (const [gameIndex, game] of selected.entries()) {
+        const gameWorkStart = args.checkpoint ? emptyExtractionWork() : pool.report();
         const sourceId = canonicalSourceGameId(
             args.canonicalSourceGameIdByGameId,
             game.id,
@@ -2382,6 +1724,13 @@ export async function extractTrainingMomentsFromGames(args: {
                 'Analysis checkpoint does not match source or extraction',
             );
         const startPly = resume?.nextPly ?? 0;
+        const targeting = args.reassessDecisionPliesByGameId;
+        const requestedPlies = targeting && 'get' in targeting && typeof targeting.get === 'function'
+            ? targeting.get(game.id) : (targeting as Readonly<Record<string, readonly number[]>> | undefined)?.[game.id];
+        const reassessDecisionPlies = firstPuzzle ? [] : [...new Set(resume?.reassessDecisionPlies ?? requestedPlies ?? [])].sort((a, b) => a - b);
+        if (reassessDecisionPlies.some(ply => !Number.isInteger(ply) || ply < 0 || ply >= moves.length))
+            throw new Error('Reassessment decision does not belong to the source game');
+        const reassessed = new Set(reassessDecisionPlies);
         const gameAnalysis: AnalyzedMove[] = [...(resume?.gameAnalysis ?? [])];
         const whiteMoveAccuracies = [...(resume?.whiteMoveAccuracies ?? [])];
         const blackMoveAccuracies = [...(resume?.blackMoveAccuracies ?? [])];
@@ -2455,19 +1804,21 @@ export async function extractTrainingMomentsFromGames(args: {
             pendingConfirmation?: TrainingMomentExtractionCheckpoint['pendingConfirmation'],
             pendingOpponentError?: boolean,
         ): TrainingMomentExtractionResult => ({
+            engineWork: pool.report(),
             moments,
             manifests: [],
             configSnapshot,
             configHash,
             analysis: opts.returnAnalysis ? analysisMap : undefined,
             checkpoint: {
-                version: 1,
+                version: 2,
                 gameId: game.id,
                 sourceGameId: sourceId,
                 sourcePgnHash: pgnHash,
                 configHash,
                 nextPly,
                 expectedPlies: moves.length,
+                reassessDecisionPlies,
                 moments,
                 gameAnalysis,
                 whiteMoveAccuracies,
@@ -2475,6 +1826,7 @@ export async function extractTrainingMomentsFromGames(args: {
                 extractionErrors: errors,
                 decisionReceipts: [...receipts],
                 previousMoveLoss: previousLoss,
+                analysisPool: pool.serialize(),
                 scanEvidence: scanRecords.length
                     ? scanRecords
                     : (resume?.scanEvidence ?? []),
@@ -2669,6 +2021,7 @@ export async function extractTrainingMomentsFromGames(args: {
                         continue;
                     }
                     const candidate =
+                        reassessed.has(ply) ||
                         (loss.winningChance ?? 0) >= opts.minWinningChanceLoss ||
                         (loss.cp ?? 0) >= opts.fallbackMinCpLoss ||
                         (best.score?.type === 'mate' &&
@@ -2707,13 +2060,24 @@ export async function extractTrainingMomentsFromGames(args: {
                     confirmationEvidence?: AdaptiveConfirmationEvidence;
                 };
                 try {
+                    let tablebase = null;
+                    if (!resume?.pendingConfirmation && args.tablebase && (pieceCountFromFen(fen) ?? Infinity) <= TABLEBASE_MAX_PIECES) {
+                        try { tablebase = await args.tablebase.probe(fen, { signal: args.signal }); }
+                        catch (error) { if (args.signal?.aborted) throw error; }
+                    }
+                    const exactRoot = assessPracticeExactPosition({ fen, positionHistory: previousFens,
+                        trainingSide: side === 'w' ? 'WHITE' : 'BLACK', originalMoveUci,
+                        policy: opts.gradingPolicy, tablebase });
                     confirmed =
                         resume?.pendingConfirmation && ply === startPly
                             ? resume.pendingConfirmation
+                            : exactRoot && exactRoot.decision.status !== 'UNRESOLVED'
+                              ? { exactRoot, confirmed: exactRoot.decision.status === 'CONFIRMED_MISTAKE', decision: exactRoot.decision }
                             : opts.confirmNodes != null &&
                                 opts.maxConfirmationNodes != null
                               ? await confirmCandidateAdaptively({
                                     engine: args.engine,
+                                    pool,
                                     beforeFen: fen,
                                     afterFen,
                                     solutionFen: fen,
@@ -2726,41 +2090,11 @@ export async function extractTrainingMomentsFromGames(args: {
                                     maxNodes: opts.maxConfirmationNodes,
                                     timeoutMs: opts.engineTimeoutMs,
                                     previousFens,
-                                    initialBestMoveUci: best.bestMoveUci,
-                                    initialLoss: loss,
-                                    initialMetrics:
-                                        metricsFromMatchedOutcomeEvidence({
-                                            moveUci: originalMoveUci,
-                                            originalMoveUci,
-                                            trainingSide: side,
-                                            bestScore: engineScoreToWhitePov(
-                                                best.score,
-                                                side,
-                                            ),
-                                            submittedScore: engineScoreToWhitePov(
-                                                after.score,
-                                                otherSide(side),
-                                            ),
-                                            originalScore: engineScoreToWhitePov(
-                                                after.score,
-                                                otherSide(side),
-                                            ),
-                                            bestWdlChance: engineWdlChance(
-                                                best.wdl,
-                                                side,
-                                                side,
-                                            ),
-                                            submittedWdlChance: engineWdlChance(
-                                                after.wdl,
-                                                otherSide(side),
-                                                side,
-                                            ),
-                                            stable: true,
-                                        }),
                                     signal: args.signal,
                                 })
                               : await confirmCandidate({
                                     engine: args.engine,
+                                    pool,
                                     beforeFen: fen,
                                     afterFen,
                                     solutionFen: fen,
@@ -2770,6 +2104,7 @@ export async function extractTrainingMomentsFromGames(args: {
                                     gradingPolicy: opts.gradingPolicy,
                                     multiPv: opts.multiPv,
                                     limit: analysisLimit(opts, true, args.signal),
+                                    minimumConfirmationNodes: opts.confirmNodes ?? 1,
                                     previousFens,
                                 });
                 } catch (error) {
@@ -2790,10 +2125,11 @@ export async function extractTrainingMomentsFromGames(args: {
                 )
                     return checkpoint(ply, true, confirmed, opponentError);
                 if (args.signal?.aborted) throw new Error('Analysis aborted');
-                const finalBest = confirmed.newEval;
-                const finalAfter = confirmed.afterEval;
+                const finalBest = confirmed.newEval ?? (confirmed.exactRoot ? best : undefined);
+                const finalAfter = confirmed.afterEval ?? (confirmed.exactRoot ? after : undefined);
                 const finalLoss = confirmed.loss ?? loss;
-                if (!confirmed.confirmed || !finalBest || !finalAfter) {
+                const canonicalDisproof = reassessed.has(ply) && confirmed.decision?.status === 'NOT_A_MISTAKE';
+                if ((!confirmed.confirmed && !canonicalDisproof) || !finalBest || !finalAfter) {
                     receipts.set(
                         ply,
                         decisionReceipt({
@@ -2825,117 +2161,10 @@ export async function extractTrainingMomentsFromGames(args: {
                     );
                     continue;
                 }
-                const originalMetrics = metricsFromMatchedOutcomeEvidence({
-                    moveUci: originalMoveUci,
-                    originalMoveUci,
-                    trainingSide: side,
-                    bestScore,
-                    submittedScore: playedScore,
-                    originalScore: playedScore,
-                    bestWdlChance: engineWdlChance(finalBest.wdl, side, side),
-                    submittedWdlChance: engineWdlChance(
-                        finalAfter.wdl,
-                        otherSide(side),
-                        side,
-                    ),
-                    stable: true,
-                });
-                const originalGrade = gradeTrainingMove(
-                    originalMetrics,
-                    opts.gradingPolicy,
-                );
-                if (originalGrade.status !== 'GRADED') {
-                    receipts.set(
-                        ply,
-                        decisionReceipt({
-                            ply,
-                            reason: 'MISTAKE_COMPARISON_UNRESOLVED',
-                            loss: finalLoss,
-                            confirmation: confirmed.confirmationEvidence,
-                        }),
-                    );
-                    continue;
-                }
-                if (originalGrade.accepted) {
-                    receipts.set(
-                        ply,
-                        decisionReceipt({
-                            ply,
-                            reason: 'ORIGINAL_MOVE_QUALITY_CONFIRMED',
-                            loss: finalLoss,
-                            confirmation: confirmed.confirmationEvidence,
-                        }),
-                    );
-                    continue;
-                }
-                const chance = winningChance(finalBest.score, finalBest.wdl);
-                const saturated =
-                    finalBest.score?.type === 'cp' &&
-                    finalAfter.score?.type === 'cp' &&
-                    finalBest.wdl &&
-                    finalAfter.wdl &&
-                    chance != null &&
-                    (chance >= 0.98 || chance <= 0.02) &&
-                    (finalLoss.winningChance ?? 0) < opts.minWinningChanceLoss;
-                let practicalLessonEvidence: unknown;
-                if (saturated) {
-                    // Concrete material consequence in the confirmed pair, not heuristic motif tags.
-                    const material = (position: string) => {
-                        const m = materialByColorFromFen(position);
-                        return side === 'w' ? m.w - m.b : m.b - m.w;
-                    };
-                    const bestEnd = applyUciPlies({
-                        fen,
-                        uciLine: finalBest.pvUci,
-                        maxPlies: 6,
-                    });
-                    const playedEnd = applyUciPlies({
-                        fen,
-                        uciLine: finalAfter.pvUci,
-                        maxPlies: 6,
-                    });
-                    if (
-                        !bestEnd ||
-                        !playedEnd ||
-                        material(bestEnd.fen) - material(playedEnd.fen) < 1.5
-                    ) {
-                        receipts.set(
-                            ply,
-                            decisionReceipt({
-                                ply,
-                                reason: 'NO_SUPPORTED_PRACTICAL_LESSON',
-                                loss: finalLoss,
-                                confirmation: confirmed.confirmationEvidence,
-                            }),
-                        );
-                        continue;
-                    }
-                    practicalLessonEvidence = {
-                        kind: 'BOUNDED_PV_MATERIAL_CONSEQUENCE',
-                        maxPlies: 6,
-                        materialDifferencePawns:
-                            material(bestEnd.fen) - material(playedEnd.fen),
-                        best: {
-                            pvUci: finalBest.pvUci.slice(0, 6),
-                            resultFen: bestEnd.fen,
-                            searchEvidence: finalBest.searchEvidence,
-                        },
-                        original: {
-                            pvUci: finalAfter.pvUci.slice(0, 6),
-                            resultFen: playedEnd.fen,
-                            searchEvidence: finalAfter.searchEvidence,
-                        },
-                        certainty: 'EMPIRICAL_ENGINE_LINE',
-                    };
-                }
-                const evaluatedLines = confirmed.multiPvResult?.lines ?? [];
-                const frontier = acceptanceFrontierFromMultiPv({
-                    lines: evaluatedLines,
-                    requestedMultiPv: opts.multiPv,
-                    alternativesComplete:
-                        confirmed.multiPvResult?.alternativesComplete,
-                    policy: opts.gradingPolicy,
-                });
+                if (confirmed.confirmed && !firstPuzzle && !confirmed.exactRoot) await supplementPracticeCoverage({ pool, engine: args.engine, fen,
+                    positionHistory: previousFens, trainingSide: side === 'w' ? 'WHITE' : 'BLACK',
+                    originalMoveUci, minimumConfirmationNodes: opts.confirmNodes ?? 1,
+                    policy: opts.gradingPolicy, signal: args.signal, timeoutMs: opts.engineTimeoutMs });
                 const built = await buildTrainingMoment({
                     game,
                     canonicalSourceGameId: sourceId,
@@ -2946,8 +2175,6 @@ export async function extractTrainingMomentsFromGames(args: {
                     originalScoreBefore: bestScore,
                     originalScoreAfter: playedScore,
                     originalLoss: finalLoss,
-                    originalMetrics,
-                    practicalLessonEvidence,
                     sourceKind: 'MY_MISTAKE',
                     lessonKind:
                         beforeCp != null &&
@@ -2963,17 +2190,7 @@ export async function extractTrainingMomentsFromGames(args: {
                         bestAtAfter: finalAfter,
                         swingCp: finalLoss.cp ?? 0,
                     }).tags,
-                    solutionEval: finalBest,
-                    acceptedMovesUci: frontier.moves.map((item) => item.moveUci),
-                    evaluatedLines,
-                    acceptanceFrontier: frontier,
-                    engine: args.engine,
-                    tablebase: args.tablebase,
-                    opts,
-                    configHash,
-                    previousFens,
-                    verificationCache,
-                    signal: args.signal,
+                    pool, opts, configHash, previousFens, exactRoot: confirmed.exactRoot,
                 });
                 if (args.signal?.aborted) throw new Error('Analysis aborted');
                 if (opponentError) {
@@ -2985,17 +2202,18 @@ export async function extractTrainingMomentsFromGames(args: {
                         ]),
                     ];
                 }
-                if (built.solution.trainable)
+                if (isTrainableSolution(built.solution) || reassessed.has(ply))
                     storeCanonicalTrainingMoment(moments, built);
                 receipts.set(ply, {
                     ...decisionReceipt({
                         ply,
-                        reason: built.solution.decision
-                            .reason as TrainingDecisionReceipt['reason'],
+                        reason: built.solution.manifest.decision.selection === 'INCLUDED' ? 'MISTAKE_CONFIRMED'
+                            : built.solution.manifest.decision.status === 'NOT_A_MISTAKE' ? 'ORIGINAL_MOVE_QUALITY_CONFIRMED'
+                            : built.solution.manifest.decision.status === 'UNRESOLVED' ? 'MISTAKE_COMPARISON_UNRESOLVED'
+                            : 'NO_MEANINGFUL_SELECTION_SIGNAL',
                         loss: finalLoss,
                         confirmation: confirmed.confirmationEvidence,
                     }),
-                    verificationStatus: built.solution.verificationStatus,
                     sourceKinds: built.sourceKinds,
                 });
                 if (
@@ -3003,6 +2221,7 @@ export async function extractTrainingMomentsFromGames(args: {
                     isLandingReadyTrainingMoment(built)
                 )
                     return {
+                        engineWork: pool.report(),
                         moments: [built],
                         manifests: [...manifests, manifest('COMPLETED', moves.length, scanned, errors, decisionOutcomes())],
                         configSnapshot,
@@ -3032,7 +2251,7 @@ export async function extractTrainingMomentsFromGames(args: {
                     (m) =>
                         m.sourceGameId === sourceId &&
                         m.decisionPly === analyzed.ply &&
-                        m.solution.trainable,
+                        isTrainableSolution(m.solution),
                 );
                 if (moment) {
                     analyzed.hasTrainingMoment = true;
@@ -3056,7 +2275,8 @@ export async function extractTrainingMomentsFromGames(args: {
                     }) ?? undefined,
                 analyzedAt: new Date().toISOString(),
                 trainingExtraction: {
-                    version: 1,
+                    version: 2,
+                    engineWork: extractionWorkSince(pool.report(), gameWorkStart),
                     trainingSide: userColor === 'w' ? 'WHITE' : 'BLACK',
                     thresholds: {
                         minWinChanceLoss: opts.minWinningChanceLoss,
@@ -3067,7 +2287,7 @@ export async function extractTrainingMomentsFromGames(args: {
                         confirmationBaseNodes: opts.confirmNodes,
                         confirmationMaxNodes: opts.maxConfirmationNodes,
                         multiPvStart: opts.multiPv,
-                        multiPvMax: opts.maxMultiPv,
+                        multiPvMax: Math.max(opts.multiPv, 3),
                     },
                     summary: {
                         userDecisions: decisions.length,
@@ -3085,6 +2305,7 @@ export async function extractTrainingMomentsFromGames(args: {
         }
     }
     return {
+        engineWork: pool.report(),
         moments,
         manifests,
         configSnapshot,

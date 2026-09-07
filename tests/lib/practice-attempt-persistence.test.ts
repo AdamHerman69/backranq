@@ -53,6 +53,7 @@ import {
     parseTrainingAttemptQueue,
 } from '@/lib/training/offlineQueue';
 import type { TrainingPromptDto } from '@/lib/training/api';
+import type { TrainingAttemptWriteRequest } from '@/lib/training/attemptApi';
 
 let cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -97,7 +98,7 @@ function mountPractice(storageUnavailable = false) {
     vi.stubGlobal('fetch', fetchMock);
     const prompt = {
         id: 'moment-a',
-        solutionRevisionId: 'revision-a',
+        solutionRevisionId: '22222222-2222-4222-8222-222222222222',
         fen: 'unused',
         sideToMove: 'w',
         grading: {},
@@ -120,14 +121,17 @@ function mountPractice(storageUnavailable = false) {
         prompt,
         terminalReason: 'REVEALED',
         request: {
-            kind: 'RECORD', clientAttemptId: 'attempt-a',
-            completedAt: '2026-07-30T08:00:00.000Z',
-            solutionRevisionId: 'revision-a', status: 'REVEALED', steps: [],
+            kind: 'RECORD', clientAttemptId: '11111111-1111-4111-8111-111111111111', momentRevisionId: '22222222-2222-4222-8222-222222222222',
+            playedAt: '2026-07-30T08:00:00.000Z', stepIndex: 0, contextId: 'root',
+            moveUci: 'e2e4', timeSpentMs: null, initialAssessmentId: null, initialCoverageGroupId: null, resolution: 'PENDING',
         },
     });
     return {
         hook, storage, complete, fetchMock,
-        refine: () => harness.refine!(prompt, {kind:'ENRICH',clientAttemptId:'attempt-a',solutionRevisionId:'revision-a',clientEvidenceId:'evidence-a',stepIndex:0,evaluatedAt:'2026-07-30T08:00:01.000Z',grade:'STRONG',clientEvidence:{}}),
+        completeDecision: (request: TrainingAttemptWriteRequest) => harness.complete!({
+            prompt, request, terminalReason: request.kind === 'REVEAL' ? 'REVEALED' : 'MOVE_SUBMITTED',
+        }),
+        refine: () => harness.refine!(prompt, {kind:'ENRICH',clientAttemptId:'11111111-1111-4111-8111-111111111111',momentRevisionId:'22222222-2222-4222-8222-222222222222',eventId:'33333333-3333-4333-8333-333333333333',stepIndex:0,sequence:1,supersedesEventId:null,evaluatedAt:'2026-07-30T08:00:01.000Z',resolution:'UNAVAILABLE',assessmentId:null,evaluation:null}),
         signal: () => attemptSignal,
         changeOwner: () => {
             harness.ownerId = 'owner-b';
@@ -155,7 +159,7 @@ it('keeps a completed online attempt durable if navigation aborts its POST', asy
     await Promise.resolve();
     await Promise.resolve();
     expect(test.signal()!.aborted).toBe(true);
-    expect(test.queue().map((entry) => entry.request.clientAttemptId)).toContain('attempt-a');
+    expect(test.queue().map((entry) => entry.request.clientAttemptId)).toContain('11111111-1111-4111-8111-111111111111');
     expect(test.storage.has(trainingQueueStorageKey('owner-b'))).toBe(false);
 });
 
@@ -165,7 +169,7 @@ it('does not flush a direct write twice and removes it only after server confirm
     expect(test.queue()).toHaveLength(1);
     await test.hook.flushQueue();
     expect(test.fetchMock).toHaveBeenCalledTimes(1);
-    test.respond({ attemptId: 'server-attempt-a', status: 'RECORDED' });
+    test.respond({ attemptId: 'server-11111111-1111-4111-8111-111111111111', status: 'RECORDED' });
     await vi.waitFor(() => expect(test.queue()).toEqual([]));
 });
 
@@ -175,10 +179,10 @@ it('preserves another result queued while the direct request is pending', async 
     const first = test.queue()[0]!;
     const concurrent = {
         ...first,
-        request: { ...first.request, clientAttemptId: 'attempt-b' },
+        request: { ...first.request, clientAttemptId: '44444444-4444-4444-8444-444444444444' },
     };
     test.storage.set(trainingQueueStorageKey('owner-a'), JSON.stringify([first, concurrent]));
-    test.respond({ attemptId: 'server-attempt-a', status: 'RECORDED' });
+    test.respond({ attemptId: 'server-11111111-1111-4111-8111-111111111111', status: 'RECORDED' });
     await vi.waitFor(() => expect(test.queue()).toEqual([concurrent]));
 });
 
@@ -212,7 +216,7 @@ it('leaves the original owner queue intact when the account changes during a wri
     test.complete();
     const original = test.queue();
     test.changeOwner();
-    test.respond({ attemptId: 'server-attempt-a', status: 'RECORDED' });
+    test.respond({ attemptId: 'server-11111111-1111-4111-8111-111111111111', status: 'RECORDED' });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(test.queue()).toEqual(original);
     expect(test.storage.has(trainingQueueStorageKey('owner-b'))).toBe(false);
@@ -234,7 +238,7 @@ it('defers the one-shot retry until an already active flush has settled', async 
     const first = test.queue()[0]!;
     test.storage.set(trainingQueueStorageKey('owner-a'), JSON.stringify([
         first,
-        { ...first, request: { ...first.request, clientAttemptId: 'older-attempt' } },
+        { ...first, request: { ...first.request, clientAttemptId: '55555555-5555-4555-8555-555555555555' } },
     ]));
     const flushing = test.hook.flushQueue();
     expect(test.fetchMock).toHaveBeenCalledTimes(2);
@@ -253,11 +257,48 @@ it('persists a refinement separately without removing its in-flight original eve
     const test = mountPractice();
     test.complete(); test.refine();
     expect(test.queue().map(entry=>entry.request.kind)).toEqual(['RECORD','ENRICH']);
-    expect(test.fetchMock).toHaveBeenCalledTimes(2);
+    expect(test.fetchMock).toHaveBeenCalledTimes(1);
     await test.hook.flushQueue();
-    expect(test.fetchMock).toHaveBeenCalledTimes(2);
-    test.respond({attemptId:'server-attempt-a',status:'RECORDED'},200,0);
+    expect(test.fetchMock).toHaveBeenCalledTimes(1);
+    test.respond({attemptId:'server-11111111-1111-4111-8111-111111111111',status:'RECORDED'},200,0);
     await vi.waitFor(()=>expect(test.queue().map(entry=>entry.request.kind)).toEqual(['ENRICH']));
-    test.respond({attemptId:'server-attempt-a',status:'ENRICHED',corrected:true},200,1);
+    await vi.waitFor(()=>expect(test.fetchMock).toHaveBeenCalledTimes(2));
+    test.respond({attemptId:'server-11111111-1111-4111-8111-111111111111',status:'ENRICHED',corrected:true},200,1);
     await vi.waitFor(()=>expect(test.queue()).toEqual([]));
+});
+
+it('keeps a known good first move ahead of revealing the next decision while its RECORD retries', async () => {
+    const test = mountPractice();
+    // The puzzle session has accepted the known first move and advanced to its
+    // next USER node. This harness exercises the real feed/outbox/HTTP path,
+    // independently of the already-tested board and continuation transitions.
+    const record: TrainingAttemptWriteRequest = {
+        kind: 'RECORD', clientAttemptId: '11111111-1111-4111-8111-111111111111',
+        momentRevisionId: '22222222-2222-4222-8222-222222222222',
+        stepIndex: 0, contextId: 'root', moveUci: 'g1f3',
+        playedAt: '2026-07-30T08:00:00.000Z', timeSpentMs: 500,
+        resolution: 'RESOLVED', initialAssessmentId: 'known-good-nf3', initialCoverageGroupId: null,
+    };
+    const reveal: TrainingAttemptWriteRequest = {
+        kind: 'REVEAL', clientAttemptId: record.clientAttemptId, momentRevisionId: record.momentRevisionId,
+        revealedAt: '2026-07-30T08:00:01.000Z',
+    };
+    const sent = () => test.fetchMock.mock.calls.map(([, options]) => JSON.parse(options.body));
+    test.completeDecision(record);
+    test.completeDecision(reveal);
+    await test.hook.flushQueue();
+    expect(sent()).toEqual([record]);
+    expect(test.queue().map(entry => entry.request)).toEqual([record, reveal]);
+
+    test.respond({ error: 'Rate limited' }, 429, 0);
+    await vi.waitFor(() => expect(sent()).toEqual([record, record]));
+    expect(test.queue().map(entry => entry.request)).toEqual([record, reveal]);
+
+    // Only successful persistence of the original step permits the reveal POST.
+    test.respond({ attemptId: 'server-attempt', status: 'PENDING', quality: 'UNKNOWN', tier: null, originalRelation: 'UNKNOWN', idempotentReplay: false }, 200, 1);
+    await vi.waitFor(() => expect(sent()).toEqual([record, record, reveal]));
+    test.respond({ attemptId: 'server-attempt', status: 'REVEALED', quality: 'UNKNOWN', tier: null, originalRelation: 'UNKNOWN', idempotentReplay: false }, 200, 2);
+    await vi.waitFor(() => expect(test.queue()).toEqual([]));
+    // The retry is byte-for-byte the same immutable step, not a new attempt.
+    expect(test.fetchMock.mock.calls[1][1].body).toBe(test.fetchMock.mock.calls[0][1].body);
 });

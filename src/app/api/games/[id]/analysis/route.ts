@@ -211,8 +211,6 @@ function configMatchesAnalysisQuality(
         extractor.nodesPerPosition === profile.nodesPerPosition &&
         extractor.confirmNodes === profile.confirmationNodes &&
         extractor.maxConfirmationNodes === profile.maxConfirmationNodes &&
-        extractor.verificationNodesPerPosition ===
-            profile.verificationNodesPerPosition &&
         extractor.themeLookaheadPlies === 4 &&
         extractor.returnAnalysis === true
     );
@@ -329,6 +327,16 @@ export async function PUT(
     if (!extractionManifest) {
         return NextResponse.json(
             { error: 'Invalid extraction manifest' },
+            { status: 400 }
+        );
+    }
+    const diagnosticStatuses = new Map(extractionManifest.decisionOutcomes.map(outcome => [outcome.decisionPly, outcome.status]));
+    if (trainingMomentValidation.moments.some(moment => {
+        const diagnostic = diagnosticStatuses.get(moment.decisionPly);
+        return diagnostic !== undefined && diagnostic !== moment.solution.manifest.decision.status;
+    })) {
+        return NextResponse.json(
+            { error: 'Extraction diagnostics contradict canonical practice decisions' },
             { status: 400 }
         );
     }
@@ -460,6 +468,7 @@ export async function PUT(
             playedAt: game.playedAt,
             pgn: game.pgn,
             configHash: computedConfigHash,
+            configSnapshot,
         })
     ) {
         return NextResponse.json(
