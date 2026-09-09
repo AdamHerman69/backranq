@@ -47,3 +47,33 @@ export function sourcePgnPositionFens(sourcePgn: string): string[] | null {
         return null;
     }
 }
+
+/**
+ * Validate the ordered subset of source moves with display evaluations. T2 may
+ * omit opponent endpoints; completion still refers to the entire source PGN.
+ */
+export function validateAnalyzedMovesAgainstPgn(
+    sourcePgn: string,
+    moves: readonly { ply: number; uci: string }[]
+): { sourcePlies: number } | null {
+    try {
+        const chess = new Chess();
+        chess.loadPgn(sourcePgn, { strict: false });
+        const history = chess.history({ verbose: true });
+        let previousPly = -1;
+        for (const move of moves) {
+            if (!Number.isSafeInteger(move.ply) || move.ply <= previousPly) {
+                return null;
+            }
+            const source = history[move.ply];
+            if (!source || move.uci.trim().toLowerCase() !==
+                `${source.from}${source.to}${source.promotion ?? ''}`) {
+                return null;
+            }
+            previousPly = move.ply;
+        }
+        return { sourcePlies: history.length };
+    } catch {
+        return null;
+    }
+}
