@@ -1,16 +1,24 @@
+import { Chess } from 'chess.js';
+import { parsePracticeMomentRevision } from '@/lib/training/practiceContract';
+import { practiceProfileMatchesConfig } from '@/lib/training/practiceSourceBinding';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashSourcePgn, validateAnalyzedMovesAgainstPgn } from '@/lib/chess/pgn';
 import { extractTrainingMomentsFromGames } from '@/lib/analysis/extractTrainingMoments';
 import { ScriptedExtractionEngine } from '../helpers/extraction-engine';
 import { mockPrismaModule } from '../helpers/route-mocks';
 
-async function produce(pgn: string, side: 'white' | 'black') {
+async function produce(pgn: string, side: 'white' | 'black', withMoment = false) {
     mockPrismaModule();
     const jobs = await import('@/lib/services/analysisJobs');
     const canonical = jobs.serverAnalysisConfigFromPreferences({ analysisQuality: 'T2' }).config;
     const restored = jobs.serverAnalysisConfigFromSnapshot({ snapshot: canonical.snapshot, hash: canonical.hash });
     expect(restored).not.toBeNull();
     const engine = new ScriptedExtractionEngine();
+    if (withMoment) {
+        const board = new Chess();
+        engine.set(board.fen(), [{ move: 'd2d4', cp: 100 }, { move: 'e2e4', cp: -200 }]);
+        board.move('e4'); engine.set(board.fen(), [{ move: 'e7e5', cp: 200 }]);
+    }
     const output = await extractTrainingMomentsFromGames({
         games: [{ id: 'chesscom:fixture', provider: 'chesscom', pgn,
             playedAt: '2026-08-01T00:00:00.000Z', timeClass: 'blitz',
@@ -32,13 +40,20 @@ async function produce(pgn: string, side: 'white' | 'black') {
             provider: 'CHESSCOM', playedAt: new Date('2026-08-01T00:00:00.000Z') }),
             updateMany: vi.fn().mockResolvedValue({ count: 1 }),
             findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'game-1' }) },
-        trainingMoment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        trainingMoment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn().mockResolvedValue({ id: 'moment-1' }), update: vi.fn() },
+        solutionRevision: { findFirst: vi.fn().mockResolvedValue(null),
+            create: vi.fn().mockImplementation(async ({ data }) => data) },
+        trainingMomentObservation: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+        notificationPreference: { upsert: vi.fn().mockResolvedValue({ timezone: 'UTC', digestHour: 18, emailPracticeReady: false }) },
+        user: { findUnique: vi.fn().mockResolvedValue({ email: null }) },
+        notification: { upsert: vi.fn().mockResolvedValue({ id: 'notification-1' }) },
     };
     const runs = await import('@/lib/services/analysisRuns');
     const args = { tx: tx as unknown as Parameters<typeof runs.completeAnalysisRunWithGameAnalysisInTransaction>[0]['tx'],
         runId: run.id, analysis: output.analysis!.get('chesscom:fixture')!,
         trainingMoments: output.moments, extractionManifest: output.manifests[0] };
-    return { tx, args, runs, engine };
+    return { tx, args, runs, engine, canonical };
 }
 
 describe('T2 producer through canonical analysis persistence', () => {
@@ -55,6 +70,38 @@ describe('T2 producer through canonical analysis persistence', () => {
         expect(tx.analysisRun.findFirst).toHaveBeenCalledTimes(2); // Includes real training persistence provenance binding.
         expect(tx.analyzedGame.updateMany).toHaveBeenCalledTimes(1);
         expect(engine.requests).toHaveLength(2); // Saving cannot add opponent searches.
+    });
+    it('persists a real nonempty T2 result through revision, observation, current pointer and success', async () => {
+        const { tx, args, runs, canonical } = await produce('1. e4 e5 *', 'white', true);
+        expect(args.trainingMoments).toHaveLength(1);
+        const moment = args.trainingMoments[0];
+        expect(moment.solution.manifest.selection.status).toBe('INCLUDED');
+        expect(practiceProfileMatchesConfig(moment.solution.manifest, canonical.hash, canonical.snapshot)).toBe(true);
+        await expect(runs.completeAnalysisRunWithGameAnalysisInTransaction(args)).resolves.toMatchObject({
+            run: { status: 'SUCCEEDED' }, trainingMoments: { upserted: 1 },
+        });
+        expect(tx.trainingMoment.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ status: 'ACTIVE' }) }));
+        const stored = tx.solutionRevision.create.mock.calls[0][0].data;
+        expect(stored).toMatchObject({ momentId: 'moment-1', configHash: canonical.hash, trainable: true });
+        expect(parsePracticeMomentRevision(stored.manifest).selection.status).toBe('INCLUDED');
+        expect(tx.trainingMoment.update).toHaveBeenCalledWith({ where: { id: 'moment-1' }, data: { currentSolutionRevisionId: stored.id } });
+        expect(tx.trainingMomentObservation.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ analysisRunId: 'run-1', solutionRevisionId: stored.id }) }));
+        expect(tx.notification.upsert).toHaveBeenCalledTimes(1);
+    });
+    it.each(['policy', 'budget', 'grading', 'ambiguous', 'wrong-envelope'] as const)('rejects a nonempty result with %s profile mismatch', async (mutation) => {
+        const { tx, args, runs, canonical } = await produce('1. e4 e5 *', 'white', true);
+        const snapshot = structuredClone(canonical.snapshot);
+        const extraction = snapshot.extraction as unknown as { extractor: Record<string, unknown> };
+        if (mutation === 'policy') extraction.extractor.selectionPolicyId = 'untrusted';
+        if (mutation === 'budget') extraction.extractor.confirmNodes = 123;
+        if (mutation === 'grading') extraction.extractor.gradingPolicy = {};
+        if (mutation === 'ambiguous') Object.assign(snapshot, { extractor: extraction.extractor });
+        if (mutation === 'wrong-envelope') Object.assign(snapshot, { executionMode: 'LOCAL_BROWSER' });
+        const run = await tx.analysisRun.findFirst();
+        tx.analysisRun.findFirst.mockResolvedValue({ ...run, configSnapshot: snapshot });
+        await expect(runs.completeAnalysisRunWithGameAnalysisInTransaction(args)).rejects.toThrow(/Practice profile does not match/);
+        expect(tx.solutionRevision.create).not.toHaveBeenCalled();
+        expect(tx.analysisRun.updateMany).not.toHaveBeenCalled();
     });
     it('rejects a manifest that substitutes sparse display count for full source count', async () => {
         const { tx, args, runs } = await produce('1. e4 e5 2. Nf3 *', 'black');

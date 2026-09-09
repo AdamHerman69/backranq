@@ -1,3 +1,4 @@
+import { EXTRACTION_CONFIG_VERSION } from '@/lib/analysis/extractionConfig';
 import { canonicalJson, type PracticeMomentRevision } from './practiceContract';
 import { originalComparisonForPracticeManifest, practiceScoreToWhitePov } from './practiceReview';
 
@@ -13,7 +14,18 @@ export function originalDecisionForPracticeManifest(manifest: PracticeMomentRevi
 }
 
 export function practiceProfileMatchesConfig(manifest: PracticeMomentRevision, configHash: string, snapshot: unknown): boolean {
-    if (!snapshot || typeof snapshot !== 'object' || !('extractor' in snapshot)) return false;
+    if (!snapshot || typeof snapshot !== 'object') return false;
+    // Browser runs store the extraction snapshot directly. Server runs store
+    // that same snapshot inside their execution/billing envelope.
+    if ('extraction' in snapshot) {
+        if ('extractor' in snapshot || !('executionMode' in snapshot) ||
+            snapshot.executionMode !== 'SERVER_QUEUE' || !('version' in snapshot) ||
+            snapshot.version !== EXTRACTION_CONFIG_VERSION) return false;
+        snapshot = snapshot.extraction;
+        if (!snapshot || typeof snapshot !== 'object' || !('version' in snapshot) ||
+            snapshot.version !== EXTRACTION_CONFIG_VERSION) return false;
+    }
+    if (!('extractor' in snapshot)) return false;
     const extractor = snapshot.extractor;
     if (!extractor || typeof extractor !== 'object' || !('confirmNodes' in extractor) || !('gradingPolicy' in extractor) || !('selectionPolicyId' in extractor)) return false;
     const minimum = extractor.confirmNodes === null ? 1 : extractor.confirmNodes;
