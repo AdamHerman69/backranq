@@ -13,13 +13,11 @@ import {
     SourcePgnChangedError,
 } from '@/lib/services/analysisRuns';
 import { dispatchPendingNotificationDeliveries } from '@/lib/notifications/delivery';
-import { Chess } from 'chess.js';
-import { moveToUci } from '@/lib/chess/utils';
 import {
     boundedJsonBody,
     isStrictIsoInstant,
 } from '@/lib/api/validation';
-import { hashSourcePgn, sourcePgnPositionFens } from '@/lib/chess/pgn';
+import { hashSourcePgn, sourcePgnPositionFens, validateAnalyzedMovesAgainstPgn } from '@/lib/chess/pgn';
 import { isCompleteExtractionManifest } from '@/lib/analysis/extractionManifest';
 import { EXTRACTION_CONFIG_VERSION } from '@/lib/analysis/extractionConfig';
 import {
@@ -148,11 +146,7 @@ function isGameAnalysis(value: unknown): value is GameAnalysis {
         isNonEmptyString(value.gameId, 512) &&
         Array.isArray(value.moves) &&
         value.moves.length <= MAX_ANALYZED_PLIES &&
-        value.moves.every(
-            (move, index) =>
-                isAnalyzedMove(move) &&
-                (move as Record<string, unknown>).ply === index
-        ) &&
+        value.moves.every(isAnalyzedMove) &&
         isNonEmptyString(value.analyzedAt, 64) &&
         isStrictIsoInstant(value.analyzedAt) &&
         (value.whiteAccuracy === undefined ||
@@ -171,25 +165,6 @@ function validateExtractionManifest(
     value: unknown
 ): ExtractionCompletionManifest | null {
     return isCompleteExtractionManifest(value) ? value : null;
-}
-
-function analysisMatchesPgn(analysis: GameAnalysis, pgn: string): boolean {
-    try {
-        const chess = new Chess();
-        chess.loadPgn(pgn);
-        const history = chess.history({ verbose: true });
-        if (history.length !== analysis.moves.length) return false;
-        return history.every((move, index) => {
-            const analyzed = analysis.moves[index];
-            return (
-                analyzed?.ply === index &&
-                analyzed.uci.trim().toLowerCase() ===
-                    moveToUci(move).toLowerCase()
-            );
-        });
-    } catch {
-        return false;
-    }
 }
 
 function hasBoundedJsonSize(value: unknown, maxBytes: number): boolean {
@@ -456,7 +431,8 @@ export async function PUT(
             { status: 400 }
         );
     }
-    if (!analysisMatchesPgn(analysis, game.pgn)) {
+    const sourceAnalysis = validateAnalyzedMovesAgainstPgn(game.pgn, analysis.moves);
+    if (!sourceAnalysis) {
         return NextResponse.json(
             { error: 'Analysis does not match source PGN' },
             { status: 400 }
@@ -483,7 +459,7 @@ export async function PUT(
     if (
         extractionManifest.sourceGameId !== id ||
         extractionManifest.sourcePgnHash !== hashSourcePgn(game.pgn) ||
-        extractionManifest.expectedPlies !== analysis.moves.length
+        extractionManifest.expectedPlies !== sourceAnalysis.sourcePlies
     ) {
         return NextResponse.json(
             { error: 'Extraction manifest mismatch' },

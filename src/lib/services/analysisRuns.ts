@@ -15,7 +15,7 @@ import {
     replaceTrainingMomentsInTransaction,
     type ReplaceTrainingMomentsResult,
 } from '@/lib/api/trainingMomentPersistence';
-import { hashSourcePgn } from '@/lib/chess/pgn';
+import { hashSourcePgn, validateAnalyzedMovesAgainstPgn } from '@/lib/chess/pgn';
 import { prisma } from '@/lib/prisma';
 import { recordPracticeReadyInTransaction } from '@/lib/notifications/service';
 import type { AnalysisDispatchFence } from '@/lib/services/analysisDispatchFence';
@@ -242,7 +242,7 @@ function assertCompleteExtractionManifest(args: {
     manifest: ExtractionCompletionManifest;
     gameId: string;
     sourcePgnHash: string;
-    analyzedPlies: number;
+    sourcePlies: number;
 }) {
     const manifest = args.manifest;
     if (
@@ -255,7 +255,7 @@ function assertCompleteExtractionManifest(args: {
         !Number.isSafeInteger(manifest.scannedPlies) ||
         manifest.scannedPlies < 0 ||
         manifest.scannedPlies !== manifest.expectedPlies ||
-        manifest.expectedPlies !== args.analyzedPlies ||
+        manifest.expectedPlies !== args.sourcePlies ||
         manifest.errors.length !== 0
     ) {
         throw new Error(
@@ -443,11 +443,18 @@ export async function completeAnalysisRunWithGameAnalysisInTransaction(
     ) {
         throw new SourcePgnChangedError();
     }
+    const sourceAnalysis = validateAnalyzedMovesAgainstPgn(
+        sourceGame.pgn,
+        args.analysis.moves
+    );
+    if (!sourceAnalysis) {
+        throw new Error('Analysis does not match source PGN');
+    }
     assertCompleteExtractionManifest({
         manifest: args.extractionManifest,
         gameId: run.gameId,
         sourcePgnHash: run.inputPgnHash,
-        analyzedPlies: args.analysis.moves.length,
+        sourcePlies: sourceAnalysis.sourcePlies,
     });
 
     const gameWrite = await args.tx.analyzedGame.updateMany({

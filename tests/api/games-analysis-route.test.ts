@@ -714,7 +714,40 @@ describe('PUT /api/games/[id]/analysis', () => {
         expect(prismaMock.trainingMoment.updateMany).not.toHaveBeenCalled();
     });
 
-    it('allows a complete empty extraction and saves analysis atomically', async () => {
+    it.each(['duplicate', 'wrong-move', 'wrong-completion-count'] as const)(
+        'rejects sparse local analysis with %s before a transaction', async (mutation) => {
+            const route = await importRoute();
+            const sourceGame = { ...ownedGame, pgn: '1. e4 e5 *' };
+            prismaMock.analyzedGame.findFirst.mockResolvedValue(sourceGame);
+            const analysis = structuredClone(validAnalysis);
+            if (mutation === 'duplicate') analysis.moves.push({ ...analysis.moves[0] });
+            if (mutation === 'wrong-move') analysis.moves[0].uci = 'd2d4';
+            const count = mutation === 'wrong-completion-count' ? 1 : 2;
+            const response = await route.PUT(createPutRequest({
+                analysis, trainingMoments: [],
+                extractionManifest: { ...validManifest, sourcePgnHash: hashSourcePgn(sourceGame.pgn),
+                    expectedPlies: count, scannedPlies: count },
+            }), routeParams());
+            expect(response.status).toBe(400);
+            await expect(readJson(response)).resolves.toMatchObject({ error: mutation === 'wrong-completion-count'
+                ? 'Extraction manifest mismatch' : 'Analysis does not match source PGN' });
+            expect((prismaMock as PrismaMockWithTransaction).$transaction).not.toHaveBeenCalled();
+        });
+
+    it.each(['dense', 'sparse-white', 'sparse-black'] as const)('saves complete %s analysis atomically', async (shape) => {
+        const sourceGame = { ...ownedGame,
+            pgn: shape === 'dense' ? ownedGame.pgn : shape === 'sparse-white' ? '1. e4 e5 *' : '1. e4 e5 2. Nf3 *',
+            ...(shape === 'sparse-black' ? { userSide: 'BLACK', whiteName: 'Grace', blackName: 'Ada' } : {}),
+        };
+        const fixturePgnHash = hashSourcePgn(sourceGame.pgn);
+        const analysis = structuredClone(validAnalysis);
+        const ply = shape === 'sparse-black' ? 1 : 0;
+        if (shape === 'sparse-black') {
+            analysis.moves[0] = { ...analysis.moves[0], ply, uci: 'e7e5', san: 'e5' };
+            analysis.trainingExtraction.trainingSide = 'BLACK';
+            analysis.trainingExtraction.decisions[0].ply = ply;
+        }
+        const expectedPlies = shape === 'dense' ? 1 : shape === 'sparse-white' ? 2 : 3;
         const route = await importRoute();
         const analyzedAt = new Date('2026-07-04T12:30:00.000Z');
         const completedRun = {
@@ -735,7 +768,7 @@ describe('PUT /api/games/[id]/analysis', () => {
             appVersion: null,
             configSnapshot: defaultConfigSnapshot,
             configHash: defaultConfigHash,
-            inputPgnHash: sourcePgnHash,
+            inputPgnHash: fixturePgnHash,
             startedAt: new Date('2026-07-04T12:29:00.000Z'),
             completedAt: analyzedAt,
             durationMs: 60_000,
@@ -757,14 +790,14 @@ describe('PUT /api/games/[id]/analysis', () => {
                     userId: 'user-1',
                     gameId: 'game-1',
                     configHash: defaultConfigHash,
-                    inputPgnHash: sourcePgnHash,
+                    inputPgnHash: fixturePgnHash,
                     startedAt: new Date('2026-07-04T12:29:00.000Z'),
                 }),
                 updateMany: vi.fn().mockResolvedValue({ count: 1 }),
                 findUniqueOrThrow: vi.fn().mockResolvedValue(completedRun),
             },
             analyzedGame: {
-                findFirst: vi.fn().mockResolvedValue(ownedGame),
+                findFirst: vi.fn().mockResolvedValue(sourceGame),
                 updateMany: vi.fn().mockResolvedValue({ count: 1 }),
                 findUniqueOrThrow: vi.fn().mockResolvedValue({
                     id: 'game-1',
@@ -780,16 +813,16 @@ describe('PUT /api/games/[id]/analysis', () => {
             trainingMomentObservation: {},
         };
 
-        prismaMock.analyzedGame.findFirst.mockResolvedValue(ownedGame);
+        prismaMock.analyzedGame.findFirst.mockResolvedValue(sourceGame);
         (prismaMock as PrismaMockWithTransaction).$transaction = vi.fn(
             async (callback) => callback(tx)
         );
 
         const response = await route.PUT(
             createPutRequest({
-                analysis: validAnalysis,
+                analysis: analysis,
                 trainingMoments: [],
-                extractionManifest: { ...validManifest, decisionOutcomes: [{ decisionPly: 0, status: 'UNRESOLVED', reason: 'MISTAKE_COMPARISON_UNRESOLVED' }] },
+                extractionManifest: { ...validManifest, sourcePgnHash: fixturePgnHash, expectedPlies, scannedPlies: expectedPlies, decisionOutcomes: [{ decisionPly: ply, status: 'UNRESOLVED', reason: 'MISTAKE_COMPARISON_UNRESOLVED' }] },
             }),
             routeParams()
         );
@@ -830,11 +863,11 @@ describe('PUT /api/games/[id]/analysis', () => {
             }),
         });
         expect(tx.analyzedGame.updateMany).toHaveBeenCalledWith({
-            where: { id: 'game-1', pgn: ownedGame.pgn },
+            where: { id: 'game-1', pgn: sourceGame.pgn },
             data: {
-                analysis: expect.objectContaining({ gameId: validAnalysis.gameId }),
-                whiteAccuracy: validAnalysis.whiteAccuracy,
-                blackAccuracy: validAnalysis.blackAccuracy,
+                analysis: expect.objectContaining({ gameId: analysis.gameId }),
+                whiteAccuracy: analysis.whiteAccuracy,
+                blackAccuracy: analysis.blackAccuracy,
                 analyzedAt: expect.any(Date),
                 currentAnalysisRunId: 'run-1',
                 currentAnalysisValid: true,
