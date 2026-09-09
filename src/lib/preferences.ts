@@ -344,12 +344,15 @@ export function analysisDefaultsToExtractOptions(
     a: AnalysisDefaults,
     opts?: { returnAnalysis?: boolean }
 ): TrainingMomentExtractionOptions {
+    const quality = analysisQualityProfile(a.analysisQuality);
     const trainingConfig = resolveTrainingConfig({
+        selectionPolicyId: quality.selectionPolicyId,
         coveragePreset: a.trainingCoveragePreset,
         gradingTolerance: a.trainingGradingTolerance,
     });
-    const quality = analysisQualityProfile(a.analysisQuality);
     return {
+        selectionPolicyId: quality.selectionPolicyId,
+        multiPv: quality.multiPv,
         nodesPerPosition: quality.nodesPerPosition,
         themeLookaheadPlies: 4,
         confirmNodes: quality.confirmationNodes,

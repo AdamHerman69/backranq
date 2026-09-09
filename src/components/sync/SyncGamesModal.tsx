@@ -1,5 +1,6 @@
 'use client';
 
+import { analysisQualityProfile, DEFAULT_ANALYSIS_QUALITY } from '@/lib/analysis/quality';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useSession } from 'next-auth/react';
@@ -868,7 +869,7 @@ export function SyncGamesModal({
                                     <span>
                                         <span style={{ display: 'block', fontWeight: 650 }}>Analyze in browser after import</span>
                                         <span style={{ display: 'block', opacity: 0.75 }}>
-                                            Free {currentStatus?.billing?.analysisQuality === 'STANDARD' ? 'Standard' : 'Thorough'} analysis. Uses this device and this tab must stay open.
+                                            Free {analysisQualityProfile(currentStatus?.billing?.analysisQuality ?? DEFAULT_ANALYSIS_QUALITY).label} analysis. Uses this device and this tab must stay open.
                                         </span>
                                     </span>
                                 </label>
@@ -884,7 +885,7 @@ export function SyncGamesModal({
                                     <span>
                                         <span style={{ display: 'block', fontWeight: 650 }}>Queue server analysis for new games</span>
                                         <span style={{ display: 'block', opacity: 0.75 }}>
-                                            Uses {currentStatus?.billing?.analysisQuality === 'STANDARD' ? 'Standard' : 'Thorough'} quality at {currentStatus?.billing?.creditsPerGame ?? 10} server credits per game and continues in the background.{' '}
+                                            Uses {analysisQualityProfile(currentStatus?.billing?.analysisQuality ?? DEFAULT_ANALYSIS_QUALITY).label} quality at {currentStatus?.billing?.creditsPerGame ?? 10} server credits per game and continues in the background.{' '}
                                             <Link href="/settings#analysis-defaults" style={{ textDecoration: 'underline' }}>
                                                 Change quality
                                             </Link>
@@ -1375,10 +1376,7 @@ export function SyncGamesModal({
                         <div>
                             Quality:{' '}
                             <strong>
-                                {currentStatus.billing.analysisQuality ===
-                                'STANDARD'
-                                    ? 'Standard'
-                                    : 'Thorough'}
+                                {analysisQualityProfile(currentStatus.billing.analysisQuality).label}
                             </strong>{' '}
                             · {currentStatus.billing.creditsPerGame} credits per
                             game

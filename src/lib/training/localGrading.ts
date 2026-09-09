@@ -1,12 +1,12 @@
 import { Chess } from 'chess.js';
 import { PositionAnalysisPool } from '@/lib/analysis/positionAnalysisPool';
 import { AnalysisWorkPlanner, type AnalysisWorkReason } from '@/lib/analysis/analysisWorkPlanner';
-import { mergePracticeEvidence, practiceEngineFingerprint, practiceEvidenceFromSnapshots } from '@/lib/analysis/practiceEvidence';
+import { mergePracticeEvidence, practiceEngineFingerprint, practiceEvidenceFromSnapshots, practiceScoreFromEngine } from '@/lib/analysis/practiceEvidence';
 import { collectPracticeExactEvidence } from '@/lib/analysis/practiceExactEvidence';
 import { ruleTerminalEvaluation } from '@/lib/analysis/ruleEvaluation';
 import type { EngineIdentity, StockfishEngine } from '@/lib/analysis/stockfishClient';
 import { lookupAnswer } from './answerIndex';
-import { createAssessmentEvaluator, type PracticeReferenceDrift } from './assessmentPolicy';
+import { createAssessmentEvaluator, isPointFirstPolicy, type PracticeReferenceDrift } from './assessmentPolicy';
 import { createPracticeValidationFacts, type PracticeValidationFacts } from './practiceValidationFacts';
 import { canonicalJson, practiceFingerprint, validatePracticeEvaluationPatch, type ComparisonFrame, type MoveAssessment, type PracticeEvaluationPatch, type PracticeScore, type Tier } from './practiceContract';
 import type { TrainingComparisonDto, TrainingGradingManifestDto, TrainingSolutionTreeNodeDto } from './api';
@@ -26,10 +26,35 @@ export type LocalMoveEvaluation = {
     comparison: TrainingComparisonDto | null;
     /** New compatible evidence has withdrawn support for the initial served quality. */
     invalidatedKnownQuality?: boolean;
+    /** The user followed the served recommendation; changed analysis does not withdraw that credit. */
+    followedRecommendation?: boolean;
 };
 export type LocalAnalysisSession = { pool: PositionAnalysisPool; frame: ComparisonFrame | null; referenceMoveUci: string | null; validationFacts: PracticeValidationFacts };
 export function createLocalAnalysisSession(): LocalAnalysisSession {
     return { pool: new PositionAnalysisPool(), frame: null, referenceMoveUci: null, validationFacts: createPracticeValidationFacts() };
+}
+/** Optional preparation only for an unready active reference, never a whole answer enumeration. */
+export async function prewarmLocalReference(args: {
+    engine: StockfishEngine; manifest: TrainingGradingManifestDto; node: TrainingSolutionTreeNodeDto;
+    session: LocalAnalysisSession; signal: AbortSignal;
+}): Promise<void> {
+    if (!isPointFirstPolicy(args.manifest.policySnapshot) || args.signal.aborted) return;
+    const preferred = args.node.answerIndex?.preferredMoveUci;
+    if (!preferred || gradeKnownLocalMove({ ...args, moveUci: preferred })) return;
+    const planner = new AnalysisWorkPlanner({ maxNodes: 100_000, maxWallMs: 2_000 });
+    const abort = () => planner.cancelGeneration(); args.signal.addEventListener('abort', abort, { once: true });
+    try {
+        await planner.enqueue({ id: `prewarm:${args.node.contextId}`, generation: planner.currentGeneration,
+            contextId: args.node.contextId, frameId: args.node.answerIndex?.frameId ?? null, attemptId: null,
+            reason: 'MISSING_REFERENCE', evidenceDependencies: [`missing:reference:${args.node.contextId}`],
+            priority: 'REQUIRED_REFERENCE', nodes: 100_000 }, async job => {
+            const result = await args.engine.analyzeMultiPv({ fen: args.node.fen, previousFens: args.node.positionHistory,
+                multiPv: 3, nodes: job.nodes, timeoutMs: job.timeoutMs, purpose: 'MISSING_REFERENCE', reuse: 'FRESH_REQUIRED',
+                signal: AbortSignal.any([job.signal, args.signal]), onSnapshot(snapshot) { args.session.pool.recordSnapshot(snapshot); job.onSnapshot(snapshot); } });
+            args.session.pool.recordResult(result); return result;
+        });
+    } catch { /* Optional work can be superseded or unavailable; the played move owns the next budget. */ }
+    finally { args.signal.removeEventListener('abort', abort); }
 }
 export type LocalGradingUpdate =
     | { kind: 'LIVE'; score: PovScore; depth: number }
@@ -79,6 +104,11 @@ export function gradeKnownLocalMove(args: {
 }): LocalMoveEvaluation | null {
     const known = gradeCanonicalKnownMove(args);
     if (!known || !args.session) return known;
+    // The served recommendation is an immutable instruction. A user who follows
+    // it keeps that credit; subsequent analysis may still correct its explanation.
+    if (isPointFirstPolicy(args.manifest.policySnapshot) && args.node.contextId === args.manifest.source.contextId
+        && args.moveUci === args.node.answerIndex?.preferredMoveUci && known.result.status === 'GRADED'
+        && known.result.quality === 'GOOD' && known.assessment) return known;
     const frame = args.manifest.frames.find(item => item.id === args.node.answerIndex?.frameId);
     const reference = frame && args.manifest.assessments.find(item => item.id === frame.referenceAssessmentId);
     if (!frame || !reference) return null;
@@ -337,6 +367,12 @@ export async function gradeUnknownLocalMove(args: {
                     purpose: reason, reuse: 'FRESH_REQUIRED', onSnapshot(snapshot) {
                         identity ??= snapshot.searchEvidence.engine;
                         session.pool.recordSnapshot(snapshot);
+                        const line = snapshot.bundleComplete ? snapshot.lines.find(item => item.pvUci[0] === args.moveUci) : undefined;
+                        if (line?.score && performance.now() - lastLiveAt >= 100) {
+                            lastLiveAt = performance.now();
+                            const score = practiceScoreToWhite(practiceScoreFromEngine(line.score, args.node.fen.split(' ')[1] === 'w' ? 'WHITE' : 'BLACK'));
+                            if (score) args.onUpdate?.({ kind: 'LIVE', score, depth: snapshot.depth });
+                        }
                         job.onSnapshot(snapshot);
                     } });
                 identity ??= result.searchEvidence?.engine ?? null;

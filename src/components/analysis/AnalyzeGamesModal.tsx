@@ -23,7 +23,7 @@ import {
   type PreferencesSchema,
 } from "@/lib/preferences";
 import { AnalysisDefaultsFields } from "@/components/analysis/AnalysisDefaultsFields";
-import { analysisCreditsPerGame } from "@/lib/analysis/quality";
+import { analysisCreditsPerGame, analysisQualityProfile } from "@/lib/analysis/quality";
 import {
   clearLastAnalysisCompletion,
   publishLibraryChanged,
@@ -282,7 +282,7 @@ export function AnalyzeGamesModal({
     if (analysisMode === "server") {
       const totalCredits = ids.length * creditsPerGame;
       const ok = window.confirm(
-        `Queue ${analysisDefaults.analysisQuality === "THOROUGH" ? "Thorough" : "Standard"} server analysis for ${ids.length} game${ids.length === 1 ? "" : "s"}? This will reserve ${totalCredits} server credits (${creditsPerGame} per game).`
+        `Queue ${analysisQualityProfile(analysisDefaults.analysisQuality).label} server analysis for ${ids.length} game${ids.length === 1 ? "" : "s"}? This will reserve ${totalCredits} server credits (${creditsPerGame} per game).`
       );
       if (!ok) return;
     }

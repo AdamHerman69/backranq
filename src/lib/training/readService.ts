@@ -372,7 +372,7 @@ export async function listPracticeFeed(args: {
             currentSolutionRevision: {
                 is: {
                     trainable: true,
-                    manifest: { path: ['decision', 'status'], equals: 'CONFIRMED_MISTAKE' },
+                    manifest: { path: ['selection', 'status'], equals: 'INCLUDED' },
                 },
             },
         },
@@ -427,7 +427,7 @@ export async function getTrainingMomentPrompt(args: {
             currentSolutionRevision: {
                 is: {
                     trainable: true,
-                    manifest: { path: ['decision', 'status'], equals: 'CONFIRMED_MISTAKE' },
+                    manifest: { path: ['selection', 'status'], equals: 'INCLUDED' },
                 },
             },
         },

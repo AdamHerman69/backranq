@@ -1,7 +1,7 @@
 import type { GameSource } from '@/lib/types/game';
 import { canonicalPracticeSemantics, type PracticeMomentRevision } from './practiceContract';
 
-export const TRAINING_CONTRACT_VERSION = 4 as const;
+export const TRAINING_CONTRACT_VERSION = 5 as const;
 export const TRAINING_MOMENT_KEY_VERSION = 1 as const;
 
 export const TRAINING_SOURCE_KINDS = [
@@ -50,15 +50,16 @@ export type TrainingMomentMetadata = {
     themes: string[];
 };
 
-/** Canonical v4 manifest plus the enclosing immutable analysis configuration. */
+/** Canonical v5 manifest plus the enclosing immutable analysis configuration. */
 export type SolutionRevisionInput = {
     manifest: PracticeMomentRevision;
     configHash: string;
 };
 
 export function isTrainableSolution(solution: SolutionRevisionInput): boolean {
-    return solution.manifest.decision.status === 'CONFIRMED_MISTAKE'
-        && solution.manifest.decision.selection === 'INCLUDED';
+    const { selection, rootAnswerIndex } = solution.manifest;
+    return selection.status === 'INCLUDED'
+        && rootAnswerIndex.legalMovesUci.includes(rootAnswerIndex.preferredMoveUci);
 }
 
 export type TrainingMomentCandidate = {

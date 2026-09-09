@@ -1,3 +1,4 @@
+import { CORROBORATED_SELECTION_POLICY_ID } from '@/lib/analysis/t2Policy';
 import { Chess } from 'chess.js';
 import { describe, expect, it, vi } from 'vitest';
 import { extractTrainingMomentsFromGames } from '@/lib/analysis/extractTrainingMoments';
@@ -17,7 +18,7 @@ function engineFixture() {
 }
 function run(engine: ScriptedExtractionEngine, extra: Partial<Parameters<typeof extractTrainingMomentsFromGames>[0]> = {}) {
     return extractTrainingMomentsFromGames({ engine, games: [source], selectedGameIds: new Set([source.id]), strategy: 'FIRST_PUZZLE',
-        options: { nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 800_000, multiPv: 3, returnAnalysis: true }, ...extra });
+        options: { selectionPolicyId: CORROBORATED_SELECTION_POLICY_ID, nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 800_000, multiPv: 3, returnAnalysis: true }, ...extra });
 }
 function work(engine: ScriptedExtractionEngine) { return engine.requests.filter(request => request.purpose !== 'GAME_SCAN' && request.purpose !== 'OPTIONAL_COVERAGE'); }
 
@@ -51,7 +52,7 @@ describe('extractor reference dependency planning', () => {
     });
 
     it('omits finite confirmation when the profile cannot pay a qualifying probe', async () => {
-        const engine = engineFixture(); const output = await run(engine, { options: { nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 200_000, multiPv: 3, returnAnalysis: true } });
+        const engine = engineFixture(); const output = await run(engine, { options: { selectionPolicyId: CORROBORATED_SELECTION_POLICY_ID, nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 200_000, multiPv: 3, returnAnalysis: true } });
         expect(output.moments).toEqual([]);
         expect(work(engine).map(request => [request.purpose, request.nodes])).toEqual([['MISSING_REFERENCE', 200_000]]);
         expect(output.analysis!.get(source.id)!.trainingExtraction.decisions[0].status).toBe('UNRESOLVED');
@@ -120,7 +121,7 @@ describe('extractor reference dependency planning', () => {
         };
         engine.transformIteration = (request, lines) => request.purpose === 'VERIFY_REFERENCE' && refreshes < 2
             ? lines.map(line => ({ ...line, cp: -100 - 100 * refreshes })) : lines;
-        const output = await run(engine, { options: { nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 800_000, multiPv: 2, returnAnalysis: true } });
+        const output = await run(engine, { options: { selectionPolicyId: CORROBORATED_SELECTION_POLICY_ID, nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 800_000, multiPv: 2, returnAnalysis: true } });
         expect(output.moments).toEqual([]);
         expect(work(engine).map(request => [request.purpose, request.nodes])).toEqual([
             ['MISSING_REFERENCE', 200_000], ['VERIFY_REFERENCE', 400_000], ['REFERENCE_DRIFT', 400_000],
@@ -164,7 +165,7 @@ describe('extractor reference dependency planning', () => {
         };
         const evalCalls = vi.spyOn(engine, 'evalPosition').mockImplementation(options => invoke(options, rawEval));
         vi.spyOn(engine, 'analyzeMultiPv').mockImplementation(options => invoke(options, rawMulti));
-        const output = await run(engine, { options: { nodesPerPosition: null, confirmNodes: null, maxConfirmationNodes: null, ...profile, multiPv: 3, returnAnalysis: true } });
+        const output = await run(engine, { options: { selectionPolicyId: CORROBORATED_SELECTION_POLICY_ID, nodesPerPosition: null, confirmNodes: null, maxConfirmationNodes: null, ...profile, multiPv: 3, returnAnalysis: true } });
         const confirmation = evalCalls.mock.calls.map(([options]) => options).filter(options => options.purpose !== 'GAME_SCAN');
         expect(confirmation.map(options => options.purpose)).toEqual(['VERIFY_REFERENCE', 'MISSING_MOVE']);
         for (const options of confirmation) {

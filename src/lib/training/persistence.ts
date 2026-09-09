@@ -1,3 +1,4 @@
+import { CORROBORATED_SELECTION_POLICY_ID } from './selectionPolicy';
 import { originalDecisionForPracticeManifest, practiceProfileMatchesConfig } from './practiceSourceBinding';
 import { randomUUID } from 'node:crypto';
 import { isCompleteExtractionManifest } from '@/lib/analysis/extractionManifest';
@@ -510,12 +511,15 @@ export async function persistTrainingMomentsInTransaction(
             : null;
 
         const metadata = mergeTrainingMomentMetadata(selected);
-        const unresolved = selected.solution.manifest.decision.status === 'UNRESOLVED';
-        const disproved = selected.solution.manifest.decision.status === 'NOT_A_MISTAKE';
+        const included = isTrainableSolution(selected.solution);
+        const corroborated = selected.solution.manifest.selection.policyId === CORROBORATED_SELECTION_POLICY_ID;
+        const unresolved = !included && corroborated && selected.solution.manifest.decision.status === 'UNRESOLVED';
+        const disproved = !included && !unresolved
+            && (!corroborated || selected.solution.manifest.decision.status === 'NOT_A_MISTAKE');
         const preserveCurrent = unresolved && currentRevision?.trainable === true;
         const status = disproved ? 'ARCHIVED' : unresolved
             ? preserveCurrent && currentRevision.configHash === args.analysisConfigHash ? 'ACTIVE' : 'UNSTABLE'
-            : selected.solution.manifest.decision.selection === 'INCLUDED' ? 'ACTIVE' : 'UNSTABLE';
+            : included ? 'ACTIVE' : 'UNSTABLE';
         const archivedAt = disproved ? new Date() : null;
         if (disproved && existing && existing.archivedAt === null) staleArchived++;
         const moment = await args.tx.trainingMoment.upsert({

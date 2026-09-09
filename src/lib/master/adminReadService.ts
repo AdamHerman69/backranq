@@ -2,6 +2,7 @@ import { parsePracticeMomentRevision } from '@/lib/training/practiceContract';
 import { prisma } from '@/lib/prisma';
 import type { WeeklyMasterAdminSnapshot } from '@/lib/master/adminContracts';
 import { WEEKLY_MASTER_SLOT_KEY } from '@/lib/master/config';
+import { originalComparisonForPracticeManifest } from '@/lib/training/practiceReview';
 
 const ADMIN_PAGE_LIMIT = 50;
 const ONBOARDING_FUNNEL_WINDOW_DAYS = 7;
@@ -12,8 +13,8 @@ function iso(value: Date | null | undefined): string | null {
 
 function evidenceSummary(args: { manifest: unknown }): string {
     const manifest = parsePracticeMomentRevision(args.manifest);
-    const original = manifest.assessments.find(a => a.id === manifest.decision.originalAssessmentId);
-    const parts = [manifest.decision.status, manifest.rootAnswerIndex.readiness.replaceAll('_', ' ')];
+    const original = originalComparisonForPracticeManifest(manifest);
+    const parts = [`Selection ${manifest.selection.status}`, `Answers ${manifest.rootAnswerIndex.readiness.replaceAll('_', ' ')}`];
     if (original?.metrics.lossCp != null) parts.push(`${Math.round(original.metrics.lossCp)} cp loss`);
     if (original?.metrics.lossExpectedScore != null) parts.push(`${Math.round(original.metrics.lossExpectedScore * 100)}% expected-score loss`);
     return parts.join(' · ');

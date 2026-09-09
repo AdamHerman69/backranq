@@ -208,6 +208,8 @@ function configMatchesAnalysisQuality(
     const extractor = value.extractor;
     const profile = analysisQualityProfile(quality);
     return (
+        extractor.selectionPolicyId === profile.selectionPolicyId &&
+        extractor.multiPv === profile.multiPv &&
         extractor.nodesPerPosition === profile.nodesPerPosition &&
         extractor.confirmNodes === profile.confirmationNodes &&
         extractor.maxConfirmationNodes === profile.maxConfirmationNodes &&

@@ -154,7 +154,7 @@ export async function advancePracticeDueSweep(sweepId: string) {
                   AND moment."status" = 'ACTIVE'::"TrainingMomentStatus"
                   AND moment."archivedAt" IS NULL
                   AND solution."trainable" = true
-                  AND solution."manifest"->'decision'->>'status' = 'CONFIRMED_MISTAKE'
+                  AND solution."manifest"->'selection'->>'status' = 'INCLUDED'
                   AND raw."solutionHash" = solution."solutionHash"
                   AND raw."configHash" = solution."configHash"
                 LIMIT 1

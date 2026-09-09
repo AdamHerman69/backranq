@@ -1,3 +1,4 @@
+import { deriveCorroboratedSelection } from '@/lib/training/selectionPolicy';
 import { Chess } from 'chess.js';
 import { ruleTerminalEvaluation } from '@/lib/analysis/ruleEvaluation';
 import { createAssessmentEvaluator, deriveDecisionAssessment } from '@/lib/training/assessmentPolicy';
@@ -42,14 +43,15 @@ const rootAnswerIndex = deriveAnswerIndex({ contextId, frameId: frame.id, legalM
 
 /** Only terminal moves are classified. Other legal queen/king moves remain unknown. */
 export const WARMUP_MANIFEST: PracticeMomentRevision = {
-    contractVersion: 4, momentId: ID, revisionId: ID,
+    contractVersion: 5, momentId: ID, revisionId: ID,
     // SHA256 of canonicalPracticeSemantics, verified by the focused warmup test.
-    semanticHash: '8b18024093a8eb2c6927e0004c1a4640fb60f425e795306e4dd8cbefa3748531',
+    semanticHash: "b0a1dc6b9347d023beffc8e5d28d41302d563f89eff0abd3bb474efffdd7eb9e",
     source: { gameId: 'curated-warmup', sourcePgnHash: 'curated-clean-finish-v4', decisionPly: 0,
         contextId, fen: ROOT_FEN, positionHistory: [], trainingSide: 'WHITE', originalMoveUci: ORIGINAL_MOVE },
     policyId: DEFAULT_ASSESSMENT_POLICY.id, policySnapshot: { ...DEFAULT_ASSESSMENT_POLICY },
     executionProfileId: 'warmup-exact-rules-v4', executionProfileSnapshot: { id: 'warmup-exact-rules-v4', minimumConfirmationNodes: 1 },
     generatorVersion: 'backranq-practice-v4',
+    selection: {} as PracticeMomentRevision['selection'],
     decision: deriveDecisionAssessment({ original: assessments.find(a => a.moveUci === ORIGINAL_MOVE)!,
         reference: assessments.find(a => a.moveUci === PREFERRED_MOVE)!, frame, evidence, minimumConfirmationNodes: 1 }),
     rootAnswerIndex,
@@ -59,6 +61,7 @@ export const WARMUP_MANIFEST: PracticeMomentRevision = {
             role: 'USER', answerIndex: rootAnswerIndex }], edges: [] },
     frames: [frame], assessments, coverageGroups: [], evidence,
 };
+WARMUP_MANIFEST.selection = deriveCorroboratedSelection(WARMUP_MANIFEST);
 export const WARMUP_PUZZLE: LandingPuzzleDto = {
     id: ID,
     prompt: { id: ID, solutionRevisionId: ID, fen: ROOT_FEN, sideToMove: 'w', grading: WARMUP_MANIFEST,

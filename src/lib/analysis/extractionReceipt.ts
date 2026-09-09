@@ -1,3 +1,4 @@
+import type { T2PointDecision } from './t2Policy';
 import { isExtractionWork, type ExtractionWork } from './extractionWork';
 
 export const EXTRACTION_DECISION_REASONS = [
@@ -43,6 +44,8 @@ export type AdaptiveConfirmationEvidence = {
 };
 
 export type TrainingDecisionReceipt = {
+    /** Selection allocation and point estimate, independent of answer support. */
+    t2Decision?: T2PointDecision;
     ply: number;
     status: ExtractionDecisionStatus;
     reason: ExtractionDecisionReason;

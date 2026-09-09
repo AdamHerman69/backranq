@@ -1,5 +1,5 @@
 import { emptyExtractionWork } from '@/lib/analysis/extractionWork';
-import { practiceV4Fixture } from '../helpers/practice-v4';
+import { practiceV4Fixture, rebuildPracticeFixture } from '../helpers/practice-v4';
 import { createHash } from 'node:crypto';
 import { canonicalJson, canonicalPracticeSemantics } from '@/lib/training/practiceContract';
 import { describe, expect, it, vi } from 'vitest';
@@ -56,7 +56,7 @@ describe('personal puzzle finder', () => {
     it('uses one FIRST_PUZZLE invocation for the newest game and never opens older games after success', async () => {
         const extractor = vi.fn(async (args: ExtractorArgs) => {
             expect(args.strategy).toBe('FIRST_PUZZLE');
-            expect(args.options).toMatchObject({ nodesPerPosition: 12_000, confirmNodes: 180_000, maxConfirmationNodes: 500_000 });
+            expect(args.options).toEqual({ returnAnalysis: false, selectionPolicyId: 'practice-selection-t2-v1' });
             return output([candidate(args.games[0]!.id)]);
         });
         const result = await findFirstVerifiedPersonalPuzzle({
@@ -72,7 +72,14 @@ describe('personal puzzle finder', () => {
         const extractor = vi.fn(async (args: ExtractorArgs) => {
             const id = args.games[0]!.id; calls.push(id);
             const found = candidate(id);
-            found.solution.manifest.decision.selection = id === 'oldest' ? 'INCLUDED' : 'OMITTED';
+            if (id !== 'oldest') {
+                for (const observation of Object.values(found.solution.manifest.evidence.observations)) {
+                    const original = observation.lines.find(line => line.moveUci === found.originalMoveUci);
+                    if (original) original.score = { kind: 'CP', cp: 20, pov: 'WHITE' };
+                }
+                rebuildPracticeFixture(found.solution.manifest);
+                expect(found.solution.manifest.selection.status).toBe('OMITTED');
+            }
             return output(id === 'newest' ? [] : [found]);
         });
         const result = await findFirstVerifiedPersonalPuzzle({

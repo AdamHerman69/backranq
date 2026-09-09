@@ -13,6 +13,7 @@ import {
     rankMasterCandidate,
 } from '@/lib/master/ranking';
 import { MasterSnapshotAnalysisError } from '@/lib/master/analysisErrors';
+import { isTrainableSolution } from '@/lib/training/contracts';
 
 type WeeklyMasterConfig = ReturnType<typeof weeklyMasterConfig>;
 
@@ -196,7 +197,7 @@ export async function analyzeMasterSnapshot(args: {
                             lessonKinds: moment.lessonKinds,
                             themes: moment.themes,
                             manifest: json(solution.manifest),
-                            trainable: solution.manifest.decision.selection === 'INCLUDED',
+                            trainable: isTrainableSolution(solution),
                             solutionHash: solution.manifest.semanticHash,
                             generatorVersion: solution.manifest.generatorVersion,
                             configHash: solution.configHash,
@@ -208,7 +209,7 @@ export async function analyzeMasterSnapshot(args: {
                         update: {
                             pipelineRunId: args.pipelineRunId,
                             manifest: json(solution.manifest),
-                            trainable: solution.manifest.decision.selection === 'INCLUDED',
+                            trainable: isTrainableSolution(solution),
                             ...ranking,
                             status: ranking.hardGatePassed
                                 ? 'ELIGIBLE'

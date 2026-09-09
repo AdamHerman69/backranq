@@ -1,6 +1,6 @@
 import { Chess } from 'chess.js';
 
-export const MAX_ASSESSMENT_POSITION_HISTORY = 256;
+export const MAX_ASSESSMENT_POSITION_HISTORY = 2048;
 
 export function repetitionPositionKey(fen: string): string | null {
     try {

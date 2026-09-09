@@ -3,6 +3,7 @@ import {
     serverAnalysisConfigFromSnapshot,
 } from '@/lib/services/analysisJobs';
 import { stableCanonicalStringify } from '@/lib/training/contracts';
+import { DEFAULT_ANALYSIS_QUALITY } from '@/lib/analysis/quality';
 
 export const WEEKLY_MASTER_SLOT_KEY = 'landing-weekly-master';
 export const WEEKLY_MASTER_LEASE_MS = 5 * 60_000;
@@ -169,7 +170,7 @@ export const DEFAULT_WEEKLY_MASTER_ROSTER: readonly WeeklyMasterRosterEntry[] = 
 
 export function weeklyMasterConfig() {
     const analysis = serverAnalysisConfigFromPreferences(undefined, {
-        analysisQuality: 'STANDARD',
+        analysisQuality: DEFAULT_ANALYSIS_QUALITY,
         trainingCoveragePreset: 'ALL_CONFIRMED',
         trainingGradingTolerance: 'PRACTICAL',
     });

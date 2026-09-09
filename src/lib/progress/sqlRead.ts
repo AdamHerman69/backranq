@@ -342,7 +342,7 @@ export async function readProgressPositionsSummary(args: {
                   AND moment."sourcePgnHash" = run."inputPgnHash"
                   AND revision."id" = moment."currentSolutionRevisionId"
                   AND revision."trainable"
-                  AND revision."manifest" @> '{"decision":{"status":"CONFIRMED_MISTAKE","selection":"INCLUDED"}}'::jsonb
+                  AND revision."manifest" @> '{"selection":{"status":"INCLUDED"}}'::jsonb
                   AND revision."configHash" = run."configHash"
                   AND EXISTS (
                       SELECT 1 FROM "TrainingMomentObservation" observation

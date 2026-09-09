@@ -1,3 +1,6 @@
+import { replayT2Game, runT2Game, type T2StrategyState } from './t2Strategy';
+import { T2_BUDGETS, T2_SELECTION_POLICY_ID, CORROBORATED_SELECTION_POLICY_ID, type SelectionPolicyId, type T2PointDecision } from './t2Policy';
+import type { T2SelectionInput } from '@/lib/training/selectionPolicy';
 import { emptyExtractionWork, extractionWorkSince, type ExtractionWork } from './extractionWork';
 import { assessPracticeReferenceReadiness } from '@/lib/training/assessmentPolicy';
 import { assessPracticeExactPosition } from './practiceExactEvidence';
@@ -60,6 +63,7 @@ import {
 type MistakeSeverity = 'small' | 'medium' | 'big';
 
 export type TrainingMomentExtractionOptions = {
+    selectionPolicyId?: SelectionPolicyId;
     movetimeMs?: number;
     /**
      * Preferred deterministic budget per position. Defaults to 100k nodes.
@@ -156,6 +160,7 @@ export type TrainingMomentExtractionResult = {
 };
 
 export type TrainingMomentExtractionCheckpoint = {
+    t2State?: T2StrategyState;
     version: 2;
     gameId: string;
     sourceGameId: string;
@@ -987,6 +992,7 @@ function tagsForCandidate(args: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ResolvedOptions = {
+    selectionPolicyId: SelectionPolicyId;
     movetimeMs: number;
     nodesPerPosition: number | null;
     maxDepth: number | null;
@@ -1006,6 +1012,15 @@ type ResolvedOptions = {
 export function resolveTrainingMomentExtractionOptions(
     options?: TrainingMomentExtractionOptions,
 ): ResolvedOptions {
+    const selectionPolicyId = options?.selectionPolicyId ?? T2_SELECTION_POLICY_ID;
+    if (![T2_SELECTION_POLICY_ID, CORROBORATED_SELECTION_POLICY_ID].includes(selectionPolicyId)) throw new Error('Unknown extraction selection policy');
+    if (selectionPolicyId === T2_SELECTION_POLICY_ID) {
+        return { selectionPolicyId, movetimeMs: 200, nodesPerPosition: T2_BUDGETS.scanNodes, maxDepth: null,
+            engineTimeoutMs: Math.max(1_000, options?.engineTimeoutMs ?? 30_000), minWinningChanceLoss: .03, fallbackMinCpLoss: 30,
+            gradingPolicy: normalizeGradingPolicy(options?.gradingPolicy, 'PRACTICAL', selectionPolicyId),
+            themeLookaheadPlies: options?.themeLookaheadPlies ?? 4, confirmMovetimeMs: null, confirmNodes: T2_BUDGETS.confirmationNodes,
+            maxConfirmationNodes: T2_BUDGETS.candidateNodes, multiPv: T2_BUDGETS.rootMultiPv, returnAnalysis: options?.returnAnalysis ?? false };
+    }
     const confirmNodes =
         options?.confirmNodes === null
             ? null
@@ -1027,6 +1042,7 @@ export function resolveTrainingMomentExtractionOptions(
         Math.min(16, Math.trunc(options?.multiPv ?? 5)),
     );
     return {
+        selectionPolicyId,
         movetimeMs: Math.max(1, Math.trunc(options?.movetimeMs ?? 200)),
         nodesPerPosition:
             options?.nodesPerPosition === null
@@ -1045,7 +1061,7 @@ export function resolveTrainingMomentExtractionOptions(
             Math.min(1, options?.minWinningChanceLoss ?? 0.03),
         ),
         fallbackMinCpLoss: Math.max(0, options?.fallbackMinCpLoss ?? 30),
-        gradingPolicy: normalizeGradingPolicy(options?.gradingPolicy),
+        gradingPolicy: normalizeGradingPolicy(options?.gradingPolicy, 'PRACTICAL', selectionPolicyId),
         themeLookaheadPlies: options?.themeLookaheadPlies ?? 4,
         confirmMovetimeMs: options?.confirmMovetimeMs ?? null,
         confirmNodes,
@@ -1556,6 +1572,7 @@ async function buildTrainingMoment(args: {
     lessonKind: TrainingLessonKind; themes: string[]; pool: PositionAnalysisPool;
     opts: ResolvedOptions; configHash: string; previousFens: string[];
     exactRoot?: ReturnType<typeof assessPracticeExactPosition>;
+    selectionInput?: T2SelectionInput;
 }): Promise<TrainingMomentCandidate> {
     const side = sideToMoveFromFen(args.fen);
     const trainingSide = side === 'w' ? 'WHITE' as const : 'BLACK' as const;
@@ -1564,7 +1581,7 @@ async function buildTrainingMoment(args: {
             decisionPly: args.decisionPly, contextId: practiceContextId(args.fen, args.previousFens, trainingSide),
             fen: args.fen, positionHistory: args.previousFens, trainingSide, originalMoveUci: args.originalMoveUci },
         executionProfileId: args.configHash, minimumConfirmationNodes: args.opts.confirmNodes ?? 1,
-        policy: args.opts.gradingPolicy, exactRoot: args.exactRoot });
+        policy: args.opts.gradingPolicy, exactRoot: args.exactRoot, selectionInput: args.selectionInput, selectionPolicyId: args.opts.selectionPolicyId });
     if (!manifest) throw new Error('Confirmed decision lost its reference evidence');
     return { sourceGameId: args.canonicalSourceGameId, sourceProvider: args.game.provider,
         sourcePlayedAt: args.game.playedAt, sourcePgnHash: args.sourcePgnHash, decisionPly: args.decisionPly,
@@ -1626,9 +1643,10 @@ export async function extractTrainingMomentsFromGames(args: {
         throw new Error('Resumable extraction requires exactly one game');
     if (firstPuzzle && (args.checkpoint || args.shouldYield))
         throw new Error('FIRST_PUZZLE does not support full-game checkpoints');
+    const poolLimits = { maxContexts: 4096, maxSearches: 8192 };
     const pool = args.checkpoint?.analysisPool
-        ? PositionAnalysisPool.hydrate(args.checkpoint.analysisPool)
-        : new PositionAnalysisPool();
+        ? PositionAnalysisPool.hydrate(args.checkpoint.analysisPool, poolLimits)
+        : new PositionAnalysisPool(poolLimits);
     args = { ...args, engine: pool.wrap(args.engine) };
     const opts = resolveTrainingMomentExtractionOptions(args.options);
     const identity =
@@ -1731,6 +1749,142 @@ export async function extractTrainingMomentsFromGames(args: {
         if (reassessDecisionPlies.some(ply => !Number.isInteger(ply) || ply < 0 || ply >= moves.length))
             throw new Error('Reassessment decision does not belong to the source game');
         const reassessed = new Set(reassessDecisionPlies);
+        if (opts.selectionPolicyId === T2_SELECTION_POLICY_ID) {
+            let replay: ReturnType<typeof replayT2Game>;
+            try { replay = replayT2Game(game); }
+            catch (error) {
+                manifests.push(manifest('INVALID_SOURCE', moves.length, 0, [error instanceof Error ? error.message : 'Invalid source'], []));
+                continue;
+            }
+            if (moves.length > MAX_ASSESSMENT_POSITION_HISTORY) {
+                manifests.push(manifest('INVALID_SOURCE', moves.length, 0, ['Source exceeds supported canonical history'], []));
+                continue;
+            }
+            if (resume && !resume.t2State) throw new Error('T2 checkpoint is missing strategy state');
+            const outcomeByPly = new Map<number, ExtractionCompletionManifest['decisionOutcomes'][number]>();
+            const builtByPly = new Map<number, TrainingMomentCandidate>();
+            const finishDecision = async (decision: T2PointDecision) => {
+                args.signal?.throwIfAborted();
+                const ply = decision.ply;
+                if (!decision.preferredMoveUci || !decision.referenceScore || !decision.originalScore
+                    || (!decision.admitted && !reassessed.has(ply))) return false;
+                const fen = replay.positions[ply]; const previousFens = replay.positions.slice(0, ply);
+                const comparison = decision.comparisonBasis;
+                const rootSearch = pool.find({ fen, previousFens }).find(s => s.evidence.id === decision.evidenceIds[0]);
+                const rootLine = rootSearch?.result?.lines.find(l => l.pvUci[0] === decision.preferredMoveUci);
+                const childFen = replay.positions[ply + 1];
+                const childSearch = pool.find({ fen: childFen, previousFens: replay.positions.slice(0, ply + 1) })
+                    .find(s => s.evidence.request.purpose === 'T2_SCAN');
+                const childLine = childSearch?.result?.lines.find(l => l.multipv === 1);
+                const beforeEval: EvalResult = { fen, bestMoveUci: decision.preferredMoveUci,
+                    pvUci: rootLine?.pvUci ?? [decision.preferredMoveUci], score: decision.referenceScore, wdl: decision.referenceWdl };
+                const afterEval: EvalResult = { fen: childFen, bestMoveUci: childLine?.pvUci[0] ?? '',
+                    pvUci: childLine?.pvUci ?? [], score: childLine?.score ?? null, wdl: childLine?.wdl };
+                const moment = await buildTrainingMoment({ game, canonicalSourceGameId: sourceId, sourcePgnHash: pgnHash,
+                    decisionPly: ply, fen, originalMoveUci: decision.originalMoveUci,
+                    originalScoreBefore: engineScoreToWhitePov(decision.referenceScore, userColor)!,
+                    originalScoreAfter: engineScoreToWhitePov(decision.originalScore, userColor)!,
+                    originalLoss: evaluationLoss({ score: decision.referenceScore, wdl: decision.referenceWdl }, { score: decision.originalScore, wdl: decision.originalWdl }),
+                    sourceKind: 'MY_MISTAKE', lessonKind: Math.abs(scoreToCp(decision.referenceScore) ?? Infinity) <= 100
+                        && (scoreToCp(decision.originalScore) ?? 0) < -100 ? 'SAVE_DRAW' : 'AVOID_MISTAKE',
+                    themes: tagsForCandidate({ fenBefore: fen, fenAfter: childFen, moverColor: userColor,
+                        bestAtBefore: beforeEval, bestAtAfter: afterEval, swingCp: decision.lossCp ?? 0 }).tags, pool, opts, configHash, previousFens,
+                    selectionInput: { policyId: T2_SELECTION_POLICY_ID, referenceSearchId: decision.evidenceIds[0],
+                        originalSearchId: decision.evidenceIds[1], comparisonBasis: comparison,
+                        preferredMoveUci: decision.preferredMoveUci } });
+                args.signal?.throwIfAborted();
+                if (ply > 0) {
+                    const opponent = pool.find({ fen: replay.positions[ply - 1], previousFens: replay.positions.slice(0, ply - 1) })
+                        .find(s => s.evidence.request.purpose === 'T2_SCAN')?.result?.lines[0];
+                    const currentScan = pool.find({ fen, previousFens }).find(s => s.evidence.request.purpose === 'T2_SCAN')?.result?.lines[0];
+                    if (opponent && currentScan) {
+                        const opponentLoss = evaluationLoss({ score: opponent.score, wdl: opponent.wdl },
+                            { score: negateScore(currentScan.score), wdl: currentScan.wdl ? reverseWdl(currentScan.wdl) : undefined });
+                        if ((opponentLoss.cp ?? 0) >= opts.fallbackMinCpLoss || (opponentLoss.winningChance ?? 0) >= opts.minWinningChanceLoss) {
+                            moment.sourceKinds.push('MISSED_OPPORTUNITY'); moment.lessonKinds.push('PUNISH_MISTAKE');
+                        }
+                    }
+                }
+                // The separately derived answer diagnostic may remain unresolved even for an included selection.
+                outcomeByPly.set(ply, { decisionPly: ply, status: moment.solution.manifest.decision.status,
+                    reason: moment.solution.manifest.decision.reason });
+                builtByPly.set(ply, moment);
+                if (isTrainableSolution(moment.solution) || reassessed.has(ply)) storeCanonicalTrainingMoment(moments, moment);
+                return firstPuzzle && isLandingReadyTrainingMoment(moment);
+            };
+            const result = await runT2Game({ replay, engine: args.engine, pool, signal: args.signal, timeoutMs: opts.engineTimeoutMs, state: resume?.t2State,
+                shouldYield: args.shouldYield, onProgress: (ply, phase) => args.onProgress?.({ runId, gameId: game.id,
+                    gameIndex, gameCount: selected.length, ply, plyCount: moves.length, phase, fen: replay.positions[ply],
+                    previousFen: replay.positions[ply - 1], positionHistory: replay.positions.slice(0, ply),
+                    userSide: userColor === 'w' ? 'white' : 'black' }), onDecision: firstPuzzle ? finishDecision : undefined });
+            if (result.yielded) {
+                return { engineWork: pool.report(), moments, manifests, configSnapshot, configHash,
+                    checkpoint: { version: 2, gameId: game.id, sourceGameId: sourceId, sourcePgnHash: pgnHash, configHash,
+                        nextPly: result.state.phase === 'SCAN' ? Math.min(moves.length, result.state.nextScanIndex) : moves.length,
+                        expectedPlies: moves.length, reassessDecisionPlies, moments, gameAnalysis: [], whiteMoveAccuracies: [],
+                        blackMoveAccuracies: [], extractionErrors: [], decisionReceipts: [], analysisPool: pool.serialize(), t2State: result.state },
+                    analysis: opts.returnAnalysis ? analysisMap : undefined };
+            }
+            if (!firstPuzzle) for (const decision of result.state.decisions) await finishDecision(decision);
+            const finalDecisions = firstPuzzle && result.stopped
+                ? result.state.decisions.filter(d => result.state.candidatePlies.slice(0, result.state.nextCandidateIndex).includes(d.ply))
+                : result.state.decisions;
+            const decisions: TrainingDecisionReceipt[] = finalDecisions.map(d => {
+                const saved = builtByPly.get(d.ply)?.solution.manifest.selection.status === 'INCLUDED';
+                const reason: TrainingDecisionReceipt['reason'] = saved ? 'MISTAKE_CONFIRMED'
+                    : d.reason === 'FORCED_MOVE' ? 'FORCED_MOVE'
+                    : d.estimate === 'GOOD' ? 'ORIGINAL_MOVE_QUALITY_CONFIRMED'
+                    : d.estimate === 'UNKNOWN' ? 'MISTAKE_COMPARISON_UNRESOLVED'
+                    : d.candidate ? 'NO_MEANINGFUL_SELECTION_SIGNAL' : 'BELOW_CANDIDATE_SIGNAL';
+                return { ply: d.ply, status: saved ? 'SAVED' : d.estimate === 'UNKNOWN' ? 'UNRESOLVED' : 'NOT_SAVED',
+                    reason, cpLoss: d.lossCp !== null && d.lossCp >= 0 ? d.lossCp : null,
+                    winChanceLoss: d.lossExpectedScore !== null && d.lossExpectedScore >= 0 ? d.lossExpectedScore : null, t2Decision: d };
+            });
+            const outcomes = finalDecisions.map(d => outcomeByPly.get(d.ply) ?? ({ decisionPly: d.ply,
+                status: d.estimate === 'GOOD' || d.reason === 'FORCED_MOVE' ? 'NOT_A_MISTAKE' as const : 'UNRESOLVED' as const,
+                reason: d.reason }));
+            manifests.push(manifest('COMPLETED', moves.length, moves.length, [], outcomes));
+            if (opts.returnAnalysis) {
+                const scans = new Map(result.state.scanSearchIds);
+                const paid = new Map(pool.serialize().searches.map(s => [s.evidence.id, s]));
+                const scoreAt = (ply: number) => paid.get(scans.get(ply) ?? '')?.result?.lines.find(l => l.multipv === 1);
+                const accuracies: Record<'w' | 'b', number[]> = { w: [], b: [] };
+                const analyzed: AnalyzedMove[] = replay.moves.flatMap((move, ply): AnalyzedMove[] => {
+                    const root = scoreAt(ply); const child = scoreAt(ply + 1);
+                    const exact = ruleTerminalEvaluation(replay.positions[ply + 1], replay.positions.slice(0, ply + 1));
+                    const before = root?.score ?? null; const after = child?.score ?? exact?.score ?? null;
+                    // T2 scans only player decisions and their children. Missing opponent endpoints
+                    // stay unanalysed rather than masquerading as zero-loss good moves.
+                    if (!before || !after) return [];
+                    const loss = evaluationLoss({ score: before }, { score: after ? negateScore(after) : null });
+                    const beforeCp = scoreToCp(before); const afterCp = scoreToCp(after);
+                    const accuracy = beforeCp !== null && afterCp !== null && new Chess(move.before).moves().length > 1
+                        ? lichessMoveAccuracyFromCps({ beforeCp, afterCp: -afterCp }).accuracy : undefined;
+                    if (accuracy !== undefined) accuracies[move.color].push(accuracy);
+                    const saved = builtByPly.get(ply)?.solution.manifest.selection.status === 'INCLUDED';
+                    return [{ ply, san: move.san, uci: `${move.from}${move.to}${move.promotion ?? ''}`, evalBefore: before, evalAfter: after, cpLoss: Math.max(0, loss.cp ?? 0),
+                        classification: classifyMove({ cpLoss: Math.max(0, loss.cp ?? 0), isBestMove: root?.pvUci[0] === `${move.from}${move.to}${move.promotion ?? ''}`,
+                            wasAlreadyLost: (beforeCp ?? 0) < -300 }), accuracy, bestMoveUci: root?.pvUci[0],
+                        bestMoveSan: root ? uciToSan(move.before, root.pvUci[0]) ?? undefined : undefined,
+                        hasTrainingMoment: saved, ...(saved ? { trainingMomentSource: 'MY_MISTAKE' as const } : {}) }];
+                });
+                const reasons = emptyExtractionReasonCounts();
+                for (const d of decisions) reasons[d.reason]++;
+                analysisMap.set(game.id, { gameId: game.id, moves: analyzed, analyzedAt: new Date().toISOString(),
+                    whiteAccuracy: lichessGameAccuracy({ moveAccuracies: accuracies.w }) ?? undefined,
+                    blackAccuracy: lichessGameAccuracy({ moveAccuracies: accuracies.b }) ?? undefined,
+                    trainingExtraction: { version: 2, engineWork: extractionWorkSince(pool.report(), gameWorkStart),
+                        trainingSide: userColor === 'w' ? 'WHITE' : 'BLACK',
+                        thresholds: { minWinChanceLoss: opts.minWinningChanceLoss, fallbackMinCpLoss: opts.fallbackMinCpLoss },
+                        budgets: { scanNodes: T2_BUDGETS.scanNodes, confirmationBaseNodes: T2_BUDGETS.confirmationNodes,
+                            confirmationMaxNodes: T2_BUDGETS.candidateNodes, multiPvStart: T2_BUDGETS.rootMultiPv, multiPvMax: T2_BUDGETS.rootMultiPv },
+                        summary: { userDecisions: decisions.length, savedPositions: decisions.filter(d => d.status === 'SAVED').length,
+                            unresolvedDecisions: decisions.filter(d => d.status === 'UNRESOLVED').length, reasons }, decisions } });
+            }
+            if (firstPuzzle && result.stopped) return { engineWork: pool.report(), moments, manifests, configSnapshot, configHash,
+                analysis: opts.returnAnalysis ? analysisMap : undefined };
+            continue;
+        }
         const gameAnalysis: AnalyzedMove[] = [...(resume?.gameAnalysis ?? [])];
         const whiteMoveAccuracies = [...(resume?.whiteMoveAccuracies ?? [])];
         const blackMoveAccuracies = [...(resume?.blackMoveAccuracies ?? [])];

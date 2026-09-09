@@ -125,10 +125,10 @@ describe('training moment contracts', () => {
 });
 
 describe('training config normalization', () => {
-    it('defaults to broad scan coverage with adaptive practice-v4 grading', () => {
-        expect(resolveTrainingConfig()).toMatchObject({ version: 4, coveragePreset: 'ALL_CONFIRMED',
+    it('defaults to broad scan coverage with adaptive point-first grading', () => {
+        expect(resolveTrainingConfig()).toMatchObject({ version: 5, coveragePreset: 'ALL_CONFIRMED',
             minWinChanceLoss: 0.03, fallbackMinCpLoss: 30, gradingTolerance: 'PRACTICAL',
-            gradingPolicy: { version: 4, minToleranceCp: 100, maxToleranceCp: 300, winningToleranceFraction: 0.6, maxExpectedScoreLoss: 0.1 } });
+            gradingPolicy: { version: 4, id: 'practice-v5-point-first', minToleranceCp: 100, maxToleranceCp: 300, winningToleranceFraction: 0.6, maxExpectedScoreLoss: 0.1 } });
     });
     it('rejects malformed policies instead of silently changing the declared contract', () => {
         const policy = normalizeGradingPolicy(undefined);

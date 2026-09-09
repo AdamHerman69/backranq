@@ -1,5 +1,6 @@
 'use client';
 
+import { analysisQualityProfile, DEFAULT_ANALYSIS_QUALITY } from '@/lib/analysis/quality';
 import * as React from 'react';
 import { useSession } from 'next-auth/react';
 import {
@@ -843,9 +844,7 @@ export function GameAutomationSettingsCard({
                                 <span>
                                     Analysis quality:{' '}
                                     <strong>
-                                        {billing?.analysisQuality === 'STANDARD'
-                                            ? 'Standard'
-                                            : 'Thorough'}
+                                        {analysisQualityProfile(billing?.analysisQuality ?? DEFAULT_ANALYSIS_QUALITY).label}
                                     </strong>{' '}
                                     ·{' '}
                                     {capacity?.creditsPerGame ??
@@ -932,7 +931,7 @@ export function GameAutomationSettingsCard({
                 open={enableConfirmOpen}
                 onOpenChange={setEnableConfirmOpen}
                 title="Enable automatic server analysis?"
-                description={`Rows set to Import + analyze use ${billing?.analysisQuality === 'STANDARD' ? 'Standard' : 'Thorough'} analysis at ${capacity?.creditsPerGame ?? billing?.creditsPerGame ?? 10} credits per game, even while Backranq is closed. Personal caps, your credit reserve and plan limits are always enforced.`}
+                description={`Rows set to Import + analyze use ${analysisQualityProfile(billing?.analysisQuality ?? DEFAULT_ANALYSIS_QUALITY).label} analysis at ${capacity?.creditsPerGame ?? billing?.creditsPerGame ?? 10} credits per game, even while Backranq is closed. Personal caps, your credit reserve and plan limits are always enforced.`}
                 confirmLabel="Save and enable analysis"
                 onConfirm={() => {
                     setEnableConfirmOpen(false);

@@ -1,3 +1,5 @@
+import { isTrainableSolution } from './contracts';
+import { originalComparisonForPracticeManifest } from './practiceReview';
 import { createHash } from 'node:crypto';
 import { acquireTransactionAdvisoryLock } from '@/lib/db/advisoryLock';
 import { Prisma, type PrismaClient, type TrainingAttempt, type TrainingAttemptStep } from '@prisma/client';
@@ -39,7 +41,7 @@ async function ownedStream(tx: Prisma.TransactionClient, args: { userId: string;
     try { manifest = parsePracticeMomentRevision(revision.manifest); } catch { invalid('Invalid stored Practice revision'); }
     if (manifest.momentId !== moment.id || manifest.revisionId !== revision.id || manifest.semanticHash !== revision.solutionHash ||
         manifest.source.gameId !== moment.gameId || manifest.source.contextId !== manifest.rootAnswerIndex.contextId ||
-        !revision.trainable || manifest.decision.selection !== 'INCLUDED') invalid('Revision is not a trainable owned moment');
+        !revision.trainable || !isTrainableSolution({ manifest, configHash: revision.configHash })) invalid('Revision is not a trainable owned moment');
     return { moment, revision, manifest };
 }
 
@@ -125,7 +127,20 @@ function awaitsContinuation(manifest: PracticeMomentRevision, steps: TrainingAtt
 }
 
 async function updateAggregate(tx: Prisma.TransactionClient, attempt: TrainingAttempt, eventKey: string, at: Date, manifest: PracticeMomentRevision) {
-    const steps = await tx.trainingAttemptStep.findMany({ where: { attemptId: attempt.id }, orderBy: { stepIndex: 'asc' } });
+    const recordedSteps = await tx.trainingAttemptStep.findMany({ where: { attemptId: attempt.id }, orderBy: { stepIndex: 'asc' } });
+    // Analytical corrections remain in the step and immutable assessment events.
+    // Following the recommendation we actually accepted cannot become a lapse.
+    const steps = recordedSteps.map(step => {
+        const initial = manifest.assessments.find(a => a.id === step.initialAssessmentId);
+        const followedRecommendation = step.stepIndex === 0 && step.contextId === manifest.source.contextId
+            && step.moveUci === manifest.rootAnswerIndex.preferredMoveUci && step.initialResolution === 'RESOLVED'
+            && initial?.moveUci === step.moveUci && initial.contextId === step.contextId
+            && initial.frameId === manifest.rootAnswerIndex.frameId
+            && manifest.rootAnswerIndex.assessmentIds.includes(initial.id)
+            && initial.quality === 'GOOD' && initial.qualitySupport === 'SUPPORTED';
+        return followedRecommendation ? { ...step, resolution: 'RESOLVED' as const, quality: 'GOOD' as const,
+            tier: step.quality === 'GOOD' ? step.tier : null } : step;
+    });
     const status = attempt.revealedAt ? 'REVEALED' as const : steps.some(s => s.resolution === 'PENDING') || !steps.length || awaitsContinuation(manifest, steps) ? 'PENDING' as const : steps.some(s => s.resolution === 'UNAVAILABLE') ? 'UNAVAILABLE' as const : 'RESOLVED' as const;
     const quality = status === 'RESOLVED' ? steps.some(s => s.quality === 'BELOW_STANDARD') ? 'BELOW_STANDARD' as const : 'GOOD' as const : 'UNKNOWN' as const;
     const tierOrder = ['SUBPAR', 'GOOD', 'STRONG', 'BEST'] as const;
@@ -160,7 +175,7 @@ export async function recordTrainingAttempt(args: { userId: string; momentId: st
         const assessment = request.kind === 'RECORD' ? indexedAssessment(manifest, request.contextId, request.moveUci, request.initialAssessmentId, request.initialCoverageGroupId) : neutral;
         const at = new Date(request.kind === 'RECORD' ? request.playedAt : request.revealedAt);
         if (previous.length && at < previous[previous.length - 1].playedAt) invalid('Played events must have chronological timestamps');
-        const originalMetrics = manifest.assessments.find(item => item.id === manifest.decision.originalAssessmentId)?.metrics;
+        const originalMetrics = originalComparisonForPracticeManifest(manifest).metrics;
         if (!attempt) attempt = await tx.trainingAttempt.create({ data: { userId: args.userId, trainingMomentId: moment.id, solutionRevisionId: revision.id, clientAttemptId: request.clientAttemptId, clientPayloadHash: hash, attemptedAt: at, userMoveUci: request.kind === 'RECORD' ? request.moveUci : null, timeSpentMs: request.kind === 'RECORD' ? request.timeSpentMs : null, contextPhase: moment.phase, contextCpLoss: originalMetrics?.lossCp == null ? null : Math.max(0, originalMetrics.lossCp), contextWinChanceLoss: originalMetrics?.lossExpectedScore == null ? null : Math.max(0, originalMetrics.lossExpectedScore), contextSourceKinds: moment.sourceKinds, contextLessonKinds: moment.lessonKinds, contextThemes: moment.themes, contextProvider: moment.game.provider, contextTimeClass: moment.game.timeClass, contextConfigHash: revision.configHash, contextSolutionHash: revision.solutionHash } });
         if (request.kind === 'REVEAL') attempt = await tx.trainingAttempt.update({ where: { id: attempt.id }, data: { revealedAt: at, revealPayloadHash: hash } });
         else await tx.trainingAttemptStep.create({ data: { attemptId: attempt.id, stepIndex: request.stepIndex, contextId: request.contextId, fenBefore: fen!, moveUci: request.moveUci, playedAt: at, timeSpentMs: request.timeSpentMs, initialAssessmentId: request.initialAssessmentId, initialCoverageGroupId: request.initialCoverageGroupId, initialResolution: request.resolution, payloadHash: hash, resolution: request.resolution, ...assessment } });

@@ -1,5 +1,6 @@
+import { T2_SELECTION_POLICY_ID, type SelectionPolicyId } from '@/lib/analysis/t2Policy';
 import { TRAINING_CONTRACT_VERSION } from './contracts';
-import { DEFAULT_ASSESSMENT_POLICY, type AssessmentPolicy } from './practiceContract';
+import { DEFAULT_ASSESSMENT_POLICY, T2_ASSESSMENT_POLICY, type AssessmentPolicy } from './practiceContract';
 
 export const TRAINING_COVERAGE_PRESETS = [
     'ALL_CONFIRMED',
@@ -18,6 +19,7 @@ export type TrainingGradingTolerance =
     (typeof TRAINING_GRADING_TOLERANCES)[number];
 
 export type TrainingConfigInput = {
+    selectionPolicyId?: SelectionPolicyId;
     coveragePreset?: TrainingCoveragePreset;
     minWinChanceLoss?: number;
     fallbackMinCpLoss?: number;
@@ -90,7 +92,8 @@ function validTolerance(
 
 export function normalizeGradingPolicy(
     input: AssessmentPolicy | undefined,
-    tolerance: TrainingGradingTolerance = 'PRACTICAL'
+    tolerance: TrainingGradingTolerance = 'PRACTICAL',
+    selectionPolicyId: SelectionPolicyId = T2_SELECTION_POLICY_ID
 ): AssessmentPolicy {
     if (input) {
         const keys = Object.keys(DEFAULT_ASSESSMENT_POLICY);
@@ -103,7 +106,7 @@ export function normalizeGradingPolicy(
             || input.strongMaxLossExpectedScore > input.maxExpectedScoreLoss) throw new Error('Invalid v4 assessment policy');
         return structuredClone(input);
     }
-    const policy = structuredClone(DEFAULT_ASSESSMENT_POLICY);
+    const policy = structuredClone(selectionPolicyId === T2_SELECTION_POLICY_ID ? T2_ASSESSMENT_POLICY : DEFAULT_ASSESSMENT_POLICY);
     if (tolerance === 'STRICT') return { ...policy, id: `${policy.id}:strict`,
         minToleranceCp: 75, maxToleranceCp: 225, winningToleranceFraction: 0.45,
         maxExpectedScoreLoss: 0.075, bestMaxLossCp: 10, bestMaxLossExpectedScore: 0.01,
@@ -140,7 +143,8 @@ export function resolveTrainingConfig(
         gradingTolerance,
         gradingPolicy: normalizeGradingPolicy(
             input.gradingPolicy,
-            gradingTolerance
+            gradingTolerance,
+            input.selectionPolicyId
         ),
     };
 }

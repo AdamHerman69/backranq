@@ -107,11 +107,55 @@ try {
     }
 
     await prisma.user.count();
+    await verifyAnalysisQualityCredits();
     console.log(
         `Database contract passed for ${applicationTables.length} application tables, ${internalTables.length} Prisma internal table, and ${roles.length} untrusted roles.`
     );
 } finally {
     await prisma.$disconnect();
+}
+
+/** Exercise the real table and all quality/mode prices; roll back every probe row. */
+async function verifyAnalysisQualityCredits() {
+    const rollback = new Error('Rollback successful quality-contract probes');
+    let checked = 0;
+    try {
+        await prisma.$transaction(async (tx) => {
+            const user = await tx.user.create({ data: { name: 'Database contract probe' } });
+            const game = await tx.analyzedGame.create({ data: {
+                userId: user.id, provider: 'CHESSCOM', externalId: 'quality-contract-probe',
+                pgn: '1. e4 *', plyCount: 1, sourcePgnHash: 'quality-contract-probe',
+                sourceUsername: 'Database contract probe', userSide: 'WHITE',
+                whiteName: 'Database contract probe', blackName: 'Opponent',
+                playedAt: new Date(), timeClass: 'BLITZ', analysis: {},
+            } });
+            for (const analysisQuality of ['T2', 'STANDARD', 'THOROUGH']) {
+                for (const executionMode of ['SERVER_QUEUE', 'LOCAL_BROWSER', 'EXTERNAL_WORKER']) {
+                    const expected = executionMode === 'SERVER_QUEUE' ? analysisQuality === 'STANDARD' ? 7 : 10 : 0;
+                    for (const creditCost of [0, 7, 10]) {
+                        await tx.$executeRawUnsafe('SAVEPOINT quality_contract_probe');
+                        let failure;
+                        try {
+                            await tx.analysisRun.create({ data: {
+                                userId: user.id, gameId: game.id, executionMode, analysisQuality, creditCost,
+                                inputPgnHash: game.sourcePgnHash, configHash: 'quality-contract-probe',
+                            } });
+                        } catch (error) { failure = error; }
+                        await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT quality_contract_probe');
+                        await tx.$executeRawUnsafe('RELEASE SAVEPOINT quality_contract_probe');
+                        const label = `${analysisQuality}/${executionMode}/${creditCost}`;
+                        if (creditCost === expected && failure) throw new Error(`Valid AnalysisRun price rejected: ${label}`, { cause: failure });
+                        if (creditCost !== expected && (!failure || !String(failure).includes('AnalysisRun_quality_credit_contract_check'))) {
+                            throw new Error(`Invalid AnalysisRun price not rejected by quality constraint: ${label}`, { cause: failure });
+                        }
+                        checked++;
+                    }
+                }
+            }
+            throw rollback;
+        }, { timeout: 30_000 });
+    } catch (error) { if (error !== rollback) throw error; }
+    console.log(`Analysis quality credit contract passed ${checked} real-table insert probes; all probe rows rolled back.`);
 }
 
 async function verifyNoRolePrivileges(table) {

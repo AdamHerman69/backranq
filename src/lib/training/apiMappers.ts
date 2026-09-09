@@ -1,6 +1,6 @@
 import type { TrainingComparisonDto, TrainingPromptDto, TrainingReviewDto } from './api';
 import type { PovScore, TrainingLessonKind, TrainingSourceKind } from './contracts';
-import { stableCanonicalStringify } from './contracts';
+import { isTrainableSolution, stableCanonicalStringify } from './contracts';
 import { parsePracticeMomentRevision } from './practiceContract';
 import { reviewForPracticeManifest } from './practiceReview';
 import { gameSourceToUi } from '@/lib/games/dbMappings';
@@ -22,7 +22,7 @@ export function toTrainingPromptDto(row: MomentRow & {
         || manifest.source.fen !== row.fen || manifest.source.originalMoveUci !== row.originalMoveUci
         || manifest.source.trainingSide !== (row.sideToMove === 'w' ? 'WHITE' : 'BLACK')
         || stableCanonicalStringify(manifest.source.positionHistory) !== stableCanonicalStringify(row.positionHistory)
-        || manifest.decision.status !== 'CONFIRMED_MISTAKE' || manifest.decision.selection !== 'INCLUDED') {
+        || !isTrainableSolution({ manifest, configHash: manifest.executionProfileId })) {
         throw new Error('Practice manifest does not match the source decision');
     }
     return { id: row.id, solutionRevisionId: row.currentSolutionRevisionId, fen: row.fen,

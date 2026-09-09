@@ -140,7 +140,7 @@ function position(
             id: 'revision-current',
             solutionHash: 'solution-one',
             configHash: 'config-1',
-            manifest: { decision: { status: 'CONFIRMED_MISTAKE', selection: 'INCLUDED' } },
+            manifest: { selection: { status: 'INCLUDED' }, decision: { status: 'UNRESOLVED', selection: 'OMITTED' } },
             trainable: true,
         },
         observations: [
@@ -229,7 +229,7 @@ describe('aggregateProgressSnapshot', () => {
                         id: 'revision-current',
                         solutionHash: 'solution-one',
                         configHash: 'config-1',
-                        manifest: { decision: { status: 'UNRESOLVED', selection: 'EXCLUDED' } },
+                        manifest: { selection: { status: 'OMITTED' }, decision: { status: 'UNRESOLVED', selection: 'OMITTED' } },
                         trainable: true,
                     },
                 }),
@@ -600,7 +600,7 @@ describe('aggregateProgressSnapshot', () => {
                         id: 'revision-current',
                         solutionHash: 'solution-new',
                         configHash: 'config-new',
-                        manifest: { decision: { status: 'CONFIRMED_MISTAKE', selection: 'INCLUDED' } },
+                        manifest: { selection: { status: 'INCLUDED' }, decision: { status: 'UNRESOLVED', selection: 'OMITTED' } },
                         trainable: true,
                     },
                     observations: [

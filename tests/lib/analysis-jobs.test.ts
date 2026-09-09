@@ -718,7 +718,7 @@ describe('analysis run snapshot integrity', () => {
             completedAt: null,
             durationMs: null,
             consumedCredits: 0,
-            analysisQuality: 'THOROUGH',
+            analysisQuality: 'T2',
             creditCost: 10,
             lastError: null,
         };

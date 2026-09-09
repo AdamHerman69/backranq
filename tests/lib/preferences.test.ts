@@ -8,14 +8,14 @@ import {
 } from '@/lib/preferences';
 
 describe('analysis preference bounds', () => {
-    it('resolves the Thorough profile by default', () => {
+    it('resolves the T2 profile by default', () => {
         const defaults = pickAnalysisDefaults(defaultPreferences());
         const options = analysisDefaultsToExtractOptions(defaults);
 
         expect(options).toMatchObject({
             nodesPerPosition: 100_000,
             confirmNodes: 200_000,
-            maxConfirmationNodes: 1_600_000,
+            maxConfirmationNodes: 400_000,
             themeLookaheadPlies: 4,
         });
     });

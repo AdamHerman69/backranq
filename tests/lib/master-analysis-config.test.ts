@@ -5,6 +5,7 @@ import {
 } from '@/lib/master/config';
 import { hashAnalysisConfig } from '@/lib/services/analysisRuns';
 import { analyzeMasterSnapshot } from '@/lib/master/analysis';
+import { T2_SELECTION_POLICY_ID } from '@/lib/analysis/t2Policy';
 
 const { findSnapshot } = vi.hoisted(() => ({ findSnapshot: vi.fn() }));
 vi.mock('@/lib/prisma', () => ({
@@ -14,6 +15,7 @@ vi.mock('@/lib/prisma', () => ({
 describe('Master enqueue-time analysis provenance', () => {
     it('accepts the current canonical analysis snapshot and matching options', () => {
         expect(hasCurrentMasterAnalysisConfig(weeklyMasterConfig().analysis)).toBe(true);
+        expect(weeklyMasterConfig().analysis.options.selectionPolicyId).toBe(T2_SELECTION_POLICY_ID);
     });
 
     it('rejects an old nested version even with a correct hash and current Master version', () => {

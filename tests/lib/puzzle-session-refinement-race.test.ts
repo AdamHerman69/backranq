@@ -30,10 +30,14 @@ it('records before grading, enriches one move, and ignores rejected work from a 
                 onRefined: (_, value) => window.events.push(value) });
             useEffect(() => { window.control = { session,
                 move: moveUci => { const chess = new Chess(prompt.fen); chess.move({from: moveUci.slice(0,2),to:moveUci.slice(2,4)}); return session.submitMove({moveUci,fenAfterMove:chess.fen()}); },
-                next: () => session.activatePrompt({...prompt,id:'next',solutionRevisionId:'next-revision'}, new StockfishClient()) }; });
+                next: () => session.activatePrompt({...prompt,id:'next',solutionRevisionId:'next-revision'}, new StockfishClient()),
+                nextRecommended: () => { const grading=structuredClone(prompt.grading); grading.policyId='practice-v5-point-first';
+                    grading.rootAnswerIndex.preferredMoveUci='d2d4'; grading.continuation.nodes[0].answerIndex=grading.rootAnswerIndex;
+                    session.activatePrompt({...prompt,grading,id:'recommended',solutionRevisionId:'recommended-revision'},new StockfishClient()); } }; });
             return React.createElement('div', {'data-phase':session.phase, 'data-prompt':session.prompt?.solutionRevisionId,
                 'data-marker':session.presentation.marker?.grade ?? '', 'data-stage':session.presentation.stage,
-                'data-fen':session.displayFen, 'data-refinement':session.refinement ?? ''});
+                'data-fen':session.displayFen, 'data-refinement':session.refinement ?? '', 'data-hint':session.answerHint ?? '',
+                'data-credit':String(session.recommendationCreditRetained), 'data-quality':session.quality});
         }
         createRoot(document.getElementById('root')).render(React.createElement(Harness));
     `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, platform: 'browser', format: 'iife', write: false,
@@ -44,6 +48,7 @@ it('records before grading, enriches one move, and ignores rejected work from a 
                 export class StockfishClient { constructor(){ this.terminated=false; (window.engines??=[]).push(this); } cancelAll(){} terminate(){this.terminated=true;} getIdentity(){return Promise.resolve({});} }
             ` : `
                 export function createLocalAnalysisSession(){return {pool:{},frame:null,referenceMoveUci:null};}
+                export function prewarmLocalReference(){return Promise.resolve();}
                 export function gradeKnownLocalMove(args){
                     window.knownSession=args.session;
                     if(window.invalidateKnown && args.session)return null;
@@ -70,6 +75,7 @@ it('records before grading, enriches one move, and ignores rejected work from a 
         await page.waitForFunction(() => Boolean((window as unknown as { control?: unknown }).control));
         await page.evaluate(() => { const test = window as unknown as { control: { move(move: string): void } }; void test.control.move('g1f3'); });
         await page.waitForFunction(() => (window as unknown as { pending?: unknown }).pending);
+        expect(await page.locator('[data-hint]').getAttribute('data-hint')).toContain('Not among the 3 current engine lines');
         expect(await page.evaluate(() => (window as unknown as { order: string[] }).order)).toEqual(['RECORD', 'ENGINE']);
         expect(await page.evaluate(() => (window as unknown as { pendingPaintBeforeEngine: boolean }).pendingPaintBeforeEngine)).toBe(true);
         expect(await page.locator('[data-phase]').getAttribute('data-phase')).toBe('SUBMITTING');
@@ -211,6 +217,32 @@ it('records before grading, enriches one move, and ignores rejected work from a 
         })).toBe(true);
         await page.evaluate(() => (window as unknown as {pending: {reject(error: Error): void}}).pending.reject(new Error('counter remains unresolved')));
         await page.waitForFunction(() => document.querySelector('[data-phase]')?.getAttribute('data-phase') === 'REVEALED');
+        // Analytical corrections remain recorded, but following the served v5
+        // recommendation cannot turn an accepted attempt into a penalty.
+        await page.evaluate(() => {
+            const test = window as unknown as {invalidateKnown: boolean; control: {nextRecommended(): void}};
+            test.invalidateKnown = false; test.control.nextRecommended();
+        });
+        await page.waitForFunction(() => document.querySelector('[data-phase]')?.getAttribute('data-phase') === 'READY');
+        const protectedStart = await page.evaluate(() => (window as unknown as {events: unknown[]}).events.length);
+        await page.evaluate(() => { void (window as unknown as {control: {move(move: string): Promise<void>}}).control.move('d2d4'); });
+        await page.waitForFunction(() => (window as unknown as {order: string[]}).order.filter(item => item === 'ENGINE').length === 7);
+        await page.evaluate(() => (window as unknown as {pending: {args: {onUpdate(value: unknown): void}}}).pending.args.onUpdate({kind:'INVALIDATED', evaluation: {
+            result: {status:'UNRESOLVED',reason:'UNSTABLE_EVIDENCE'}, invalidatedKnownQuality:true,
+            source:'CLIENT_EVALUATED',assessment:null,patch:null,refinementNeeded:false,scoreAfter:null,comparison:null,
+        }}));
+        await page.waitForFunction(() => document.querySelector('[data-credit]')?.getAttribute('data-credit') === 'true');
+        expect(await page.locator('[data-phase]').getAttribute('data-phase')).toBe('GRADED');
+        await page.evaluate(() => (window as unknown as {pending: {resolve(value: unknown): void}}).pending.resolve({
+            result: {status:'GRADED',quality:'BELOW_STANDARD',tier:'SUBPAR',accepted:false,originalRelation:'WORSE'},
+            source:'CLIENT_EVALUATED',assessment:{id:'changed-recommendation',quality:'BELOW_STANDARD'},patch:null,refinementNeeded:false,scoreAfter:null,comparison:null,
+        }));
+        await page.waitForFunction(() => document.querySelector('[data-refinement]')?.getAttribute('data-refinement') === 'REFINED');
+        expect(await page.locator('[data-quality]').getAttribute('data-quality')).toBe('GOOD');
+        expect(await page.locator('[data-marker]').getAttribute('data-marker')).toBe('GOOD');
+        expect(await page.evaluate(index => (window as unknown as {events: unknown[]}).events.slice(index), protectedStart)).toMatchObject([
+            {kind:'RECORD',resolution:'RESOLVED'}, {kind:'ENRICH',resolution:'UNAVAILABLE'}, {kind:'ENRICH',resolution:'RESOLVED',assessmentId:'changed-recommendation'},
+        ]);
         expect(errors).toEqual([]);
     } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 20_000);

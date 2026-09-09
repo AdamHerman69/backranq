@@ -1,5 +1,6 @@
 'use client';
 
+import { analysisQualityProfile } from '@/lib/analysis/quality';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import Link from 'next/link';
@@ -495,9 +496,7 @@ export function GameActions({
             ) : (
                 <div className="px-1 text-xs text-muted-foreground">
                     Analysis uses{' '}
-                    {serverAnalysisCapacity.analysisQuality === 'THOROUGH'
-                        ? 'Thorough'
-                        : 'Standard'}{' '}
+                    {analysisQualityProfile(serverAnalysisCapacity.analysisQuality).label}{' '}
                     quality. Browser analysis is free; background analysis costs{' '}
                     {serverAnalysisCapacity.creditsPerGame} credits per game.{' '}
                     <Link href="/settings#analysis-defaults" className="underline">
@@ -525,9 +524,7 @@ export function GameActions({
                     <div>
                         <dt className="text-muted-foreground">Quality</dt>
                         <dd className="font-semibold">
-                            {serverAnalysisCapacity.analysisQuality === 'THOROUGH'
-                                ? 'Thorough'
-                                : 'Standard'}
+                            {analysisQualityProfile(serverAnalysisCapacity.analysisQuality).label}
                         </dd>
                     </div>
                     <div>
@@ -577,9 +574,7 @@ export function GameActions({
                         <dt className="text-muted-foreground">Credit cost</dt>
                         <dd className="font-semibold">
                             {serverAnalysisCapacity.creditsPerGame} credits ·{' '}
-                            {serverAnalysisCapacity.analysisQuality === 'THOROUGH'
-                                ? 'Thorough'
-                                : 'Standard'}
+                            {analysisQualityProfile(serverAnalysisCapacity.analysisQuality).label}
                         </dd>
                     </div>
                     <div>

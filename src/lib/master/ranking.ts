@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { TrainingMomentCandidate } from '@/lib/training/contracts';
-import { stableCanonicalStringify } from '@/lib/training/contracts';
+import { isTrainableSolution, stableCanonicalStringify } from '@/lib/training/contracts';
 
 export type MasterCandidateRanking = {
     hardGatePassed: boolean;
@@ -38,7 +38,7 @@ export function rankMasterCandidate(args: {
     const cpLoss = args.moment.originalDecision.cpLoss ?? 0;
     const winChanceLoss = args.moment.originalDecision.winChanceLoss ?? 0;
 
-    if (solution.decision.selection !== 'INCLUDED') reasons.push('NOT_TRAINABLE');
+    if (!isTrainableSolution(args.moment.solution)) reasons.push('NOT_TRAINABLE');
     if (solution.rootAnswerIndex.readiness !== 'ALL_MOVES_CLASSIFIED') reasons.push('OPEN_SOLUTION');
     if (solution.decision.status !== 'CONFIRMED_MISTAKE') {
         reasons.push('DECISION_NOT_CONFIRMED');

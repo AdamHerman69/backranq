@@ -3,7 +3,7 @@ import {
     isLandingReadyTrainingMoment,
 } from '@/lib/analysis/extractTrainingMoments';
 import type { StockfishEngine } from '@/lib/analysis/stockfishClient';
-import { LichessTablebaseClient } from '@/lib/analysis/tablebase';
+import { T2_SELECTION_POLICY_ID } from '@/lib/analysis/t2Policy';
 import type { NormalizedGame } from '@/lib/types/game';
 import { resolveGameAnalysisProvenance } from '@/lib/games/analysisProvenance';
 
@@ -39,13 +39,10 @@ export async function findFirstVerifiedPersonalPuzzle(args: {
                 new Date(right.playedAt).getTime() -
                 new Date(left.playedAt).getTime()
         );
-    const tablebase = new LichessTablebaseClient();
     const extractor = args.extractor ?? extractTrainingMomentsFromGames;
     const options = {
         returnAnalysis: false,
-        nodesPerPosition: 12_000,
-        confirmNodes: 180_000,
-        maxConfirmationNodes: 500_000,
+        selectionPolicyId: T2_SELECTION_POLICY_ID,
     };
 
     for (const [gameIndex, game] of games.entries()) {
@@ -54,7 +51,6 @@ export async function findFirstVerifiedPersonalPuzzle(args: {
             games: [game],
             selectedGameIds: new Set([game.id]),
             engine: args.engine,
-            tablebase,
             signal: args.signal,
             strategy: 'FIRST_PUZZLE',
             onProgress: (progress) => {
