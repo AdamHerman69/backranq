@@ -223,6 +223,7 @@ export async function analysisBatchSummary(
         by: ['status'],
         where: { batchId: batch.id },
         _count: { _all: true },
+        _max: { updatedAt: true },
     });
     const linkedRuns = await prisma.analysisRun.groupBy({
         by: ['status'],
@@ -235,21 +236,46 @@ export async function analysisBatchSummary(
             },
         },
         _count: { _all: true },
+        _max: { completedAt: true },
     });
     const items = countsByStatus(jobCounts);
     const runs = countsByStatus(linkedRuns);
+    const pending = (items.PENDING ?? 0) + (items.PLANNING ?? 0);
+    // A linked item without its run is unfinished, not a successful empty batch.
+    const missingRuns = Math.max(0, (items.QUEUED ?? 0) + (items.ATTACHED ?? 0)
+        - Object.values(runs).reduce((sum, count) => sum + count, 0));
+    const allItemsPresent = Object.values(items).reduce((sum, count) => sum + count, 0) === batch.totalItems;
+    const terminal = allItemsPresent && pending === 0 && missingRuns === 0
+        && (runs.QUEUED ?? 0) === 0 && (runs.RUNNING ?? 0) === 0;
+    const successful = (runs.SUCCEEDED ?? 0) + (items.SKIPPED ?? 0);
+    const unsuccessful = (items.FAILED ?? 0) + (items.CANCELLED ?? 0)
+        + (runs.FAILED ?? 0) + (runs.CANCELLED ?? 0);
+    // Persisted aggregates are refreshed by maintenance; polling must reflect
+    // completed immutable runs immediately, without waiting for that refresh.
+    const status = batch.status === 'CANCELLED' ? 'CANCELLED'
+        : terminal ? unsuccessful === 0 ? 'COMPLETED' : successful === 0 ? 'FAILED' : 'PARTIAL'
+        : pending > 0 ? batch.status === 'PENDING' ? 'PENDING' : 'PLANNING' : 'QUEUED';
+    const terminalDates = [
+        ...jobCounts.filter(row => ['SKIPPED', 'FAILED', 'CANCELLED'].includes(row.status))
+            .map(row => row._max.updatedAt),
+        ...linkedRuns.filter(row => ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(row.status))
+            .map(row => row._max.completedAt),
+    ].filter((date): date is Date => date !== null);
+    const completedAt = batch.status === 'CANCELLED' ? batch.completedAt
+        : terminal ? batch.completedAt ?? (terminalDates.length
+            ? new Date(Math.max(...terminalDates.map(date => date.getTime()))) : null) : null;
     return {
         id: batch.id,
         requestId: batch.requestId,
-        status: batch.status,
+        status,
         force: batch.force,
         analysisQuality: batch.analysisQuality,
         creditCost: batch.creditCost,
         configHash: batch.configHash,
         counts: {
             total: batch.totalItems,
-            pending: (items.PENDING ?? 0) + (items.PLANNING ?? 0),
-            queued: runs.QUEUED ?? 0,
+            pending,
+            queued: (runs.QUEUED ?? 0) + missingRuns,
             attached: items.ATTACHED ?? 0,
             skipped: items.SKIPPED ?? 0,
             failed: items.FAILED ?? 0,
@@ -259,7 +285,7 @@ export async function analysisBatchSummary(
             jobFailed: runs.FAILED ?? 0,
             jobCancelled: runs.CANCELLED ?? 0,
         },
-        completedAt: batch.completedAt,
+        completedAt,
         lastError: batch.lastError,
         createdAt: batch.createdAt,
         updatedAt: batch.updatedAt,

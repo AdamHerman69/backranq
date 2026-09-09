@@ -245,7 +245,7 @@ describe('durable analysis batch planning', () => {
     it('does not count a skipped historical run as newly succeeded', async () => {
         const service = await importService();
         prismaMock.analysisBatchItem.groupBy.mockResolvedValue([
-            { status: 'SKIPPED', _count: { _all: 1 } },
+            { status: 'SKIPPED', _count: { _all: 1 }, _max: { updatedAt: new Date('2026-08-12T00:00:00.000Z') } },
         ]);
         prismaMock.analysisRun.groupBy.mockResolvedValue([]);
 
@@ -277,5 +277,71 @@ describe('durable analysis batch planning', () => {
                 },
             })
         );
+    });
+
+    it('returns completed status and the last run completion while the stored batch is still queued', async () => {
+        const service = await importService();
+        const completedAt = new Date('2026-09-09T08:00:30Z');
+        const batchId = '11111111-1111-4111-8111-111111111111';
+        const batch = { id: batchId, userId: 'user-1', status: 'QUEUED', totalItems: 3,
+            completedAt: null, createdAt: new Date('2026-09-09T08:00:00Z') };
+        prismaMock.analysisBatch.findFirst.mockResolvedValue(batch);
+        prismaMock.analysisBatchItem.findMany.mockResolvedValue([]);
+        prismaMock.analysisBatchItem.groupBy.mockResolvedValue([
+            { status: 'QUEUED', _count: { _all: 3 }, _max: { updatedAt: batch.createdAt } },
+        ]);
+        prismaMock.analysisRun.groupBy.mockResolvedValue([
+            { status: 'SUCCEEDED', _count: { _all: 3 }, _max: { completedAt } },
+        ]);
+
+        const response = await service.getOwnedAnalysisBatch('user-1', batchId);
+
+        expect(response?.batch).toMatchObject({ status: 'COMPLETED', completedAt,
+            counts: { total: 3, pending: 0, queued: 0, running: 0, succeeded: 3 } });
+        expect(prismaMock.analysisBatch.findFirst).toHaveBeenCalledWith({ where: { id: batchId, userId: 'user-1' } });
+        vi.doMock('@/lib/auth', () => ({ auth: async () => ({ user: { id: 'user-1' } }) }));
+        const route = await import('@/app/api/analysis/batches/[id]/route');
+        const http = await route.GET(new Request(`http://localhost/api/analysis/batches/${batchId}`), { params: Promise.resolve({ id: batchId }) });
+        expect(http.status).toBe(200);
+        expect(http.headers.get('cache-control')).toBe('private, no-store');
+        expect(await http.json()).toMatchObject({ batch: { status: 'COMPLETED', completedAt: completedAt.toISOString(),
+            counts: { pending: 0, queued: 0, running: 0, succeeded: 3 } } });
+        expect(prismaMock.analysisBatch.update).not.toHaveBeenCalled();
+        expect(prismaMock.analysisBatch.updateMany).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { name: 'mixed success and failure', items: ['QUEUED', 'ATTACHED'], runs: ['SUCCEEDED', 'FAILED'], expected: 'PARTIAL', queued: 0 },
+        { name: 'all run failures', items: ['QUEUED'], runs: ['FAILED'], expected: 'FAILED', queued: 0 },
+        { name: 'cancelled linked run', items: ['ATTACHED'], runs: ['CANCELLED'], expected: 'FAILED', queued: 0 },
+        { name: 'skipped and failed planning', items: ['SKIPPED', 'FAILED'], runs: [], expected: 'PARTIAL', queued: 0 },
+        { name: 'pending planning', items: ['PENDING'], runs: [], expected: 'PLANNING', queued: 0 },
+        { name: 'active planning lease', items: ['PLANNING'], runs: [], expected: 'PLANNING', queued: 0 },
+        { name: 'running linked run', items: ['QUEUED'], runs: ['RUNNING'], expected: 'QUEUED', queued: 0 },
+        { name: 'queued linked run', items: ['QUEUED'], runs: ['QUEUED'], expected: 'QUEUED', queued: 1 },
+        { name: 'missing linked run', items: ['QUEUED', 'ATTACHED'], runs: ['SUCCEEDED'], expected: 'QUEUED', queued: 1 },
+        { name: 'cancelled planning item', items: ['CANCELLED'], runs: [], expected: 'FAILED', queued: 0 },
+    ])('projects $name without prematurely completing unfinished work', async ({ items, runs, expected, queued }) => {
+        const service = await importService();
+        const completedAt = new Date('2026-09-09T08:00:30Z');
+        prismaMock.analysisBatchItem.groupBy.mockResolvedValue(items.map(status => ({ status, _count: { _all: 1 }, _max: { updatedAt: completedAt } })));
+        prismaMock.analysisRun.groupBy.mockResolvedValue(runs.map(status => ({ status, _count: { _all: 1 }, _max: { completedAt } })));
+        const terminal = ['COMPLETED', 'PARTIAL', 'FAILED'].includes(expected);
+        const response = await service.analysisBatchSummary({ id: 'batch-1', status: 'QUEUED',
+            totalItems: items.length, completedAt: null } as never);
+        expect(response.status).toBe(expected);
+        expect(response.counts.queued).toBe(queued);
+        expect(response.completedAt).toEqual(terminal ? completedAt : null);
+    });
+
+    it('preserves explicit batch cancellation and does not complete missing batch items', async () => {
+        const service = await importService();
+        const completedAt = new Date('2026-09-09T08:00:30Z');
+        prismaMock.analysisBatchItem.groupBy.mockResolvedValue([]);
+        prismaMock.analysisRun.groupBy.mockResolvedValue([]);
+        const incomplete = await service.analysisBatchSummary({ id: 'batch-1', status: 'QUEUED', totalItems: 1, completedAt: null } as never);
+        expect(incomplete).toMatchObject({ status: 'QUEUED', completedAt: null });
+        const cancelled = await service.analysisBatchSummary({ id: 'batch-1', status: 'CANCELLED', totalItems: 1, completedAt } as never);
+        expect(cancelled).toMatchObject({ status: 'CANCELLED', completedAt });
     });
 });
