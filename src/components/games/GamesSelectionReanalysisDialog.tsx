@@ -1,3 +1,4 @@
+import { analysisQualityProfile } from '@/lib/analysis/quality';
 import { ActionConfirmDialog } from '@/components/ui/ActionConfirmDialog';
 import type { ManualServerAnalysisCapacity } from '@/lib/games/serverAnalysisCapacity';
 import Link from 'next/link';
@@ -59,9 +60,7 @@ export function GamesSelectionReanalysisDialog({
                 <div>
                     <dt className="text-muted-foreground">Quality</dt>
                     <dd className="font-semibold">
-                        {serverAnalysisCapacity.analysisQuality === 'THOROUGH'
-                            ? 'Thorough'
-                            : 'Standard'}{' '}
+                        {analysisQualityProfile(serverAnalysisCapacity.analysisQuality).label}{' '}
                         ·{' '}
                         <Link
                             href="/settings#analysis-defaults"

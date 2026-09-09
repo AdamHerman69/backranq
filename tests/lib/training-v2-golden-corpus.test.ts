@@ -1,3 +1,4 @@
+import { CORROBORATED_SELECTION_POLICY_ID } from '@/lib/analysis/t2Policy';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Chess } from 'chess.js';
@@ -32,7 +33,7 @@ async function runCorpus() {
             white: { name: fixture.usernameColor === 'white' ? 'adam' : 'opponent' }, black: { name: fixture.usernameColor === 'black' ? 'adam' : 'opponent' },
             provenance: { username: 'adam', userSide: fixture.usernameColor as 'white' | 'black' } };
         const output = await extractTrainingMomentsFromGames({ games: [source], selectedGameIds: new Set([source.id]), engine,
-            options: { nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 800_000, multiPv: 3 } });
+            options: { selectionPolicyId: CORROBORATED_SELECTION_POLICY_ID, nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 800_000, multiPv: 3 } });
         expect(output.manifests).toMatchObject([{ complete: true, errors: [] }]);
         expect(output.moments.map(moment => ({ decisionPly: moment.decisionPly, bestMoveUci: moment.solution.manifest.rootAnswerIndex.preferredMoveUci })), fixture.id).toEqual(fixture.expectedMoments);
         for (const moment of output.moments) {

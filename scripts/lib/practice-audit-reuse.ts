@@ -1,3 +1,4 @@
+import { deriveCorroboratedSelection } from '@/lib/training/selectionPolicy';
 import { createHash } from 'node:crypto';
 import {
     canonicalJson, canonicalPracticeSemantics, DEFAULT_ASSESSMENT_POLICY, legalMovesUci,
@@ -61,15 +62,16 @@ export function projectPaidComparator(args: {
     const minimumConfirmationNodes = args.minimumConfirmationNodes ?? 800_000;
     const rootAnswerIndex = deriveAnswerIndex({ contextId: source.contextId, frameId: frame.id, legalMovesUci: legal, preferredMoveUci, assessments, coverageGroups: [] });
     const profileId = 'audit-paid-comparator-projection';
-    const manifest: PracticeMomentRevision = { contractVersion: 4, momentId: `audit:${source.contextId}`, revisionId: frameId,
+    const manifest: PracticeMomentRevision = { contractVersion: 5, momentId: `audit:${source.contextId}`, revisionId: frameId,
         semanticHash: '0'.repeat(64), source, policyId: policy.id, policySnapshot: policy,
         executionProfileId: profileId, executionProfileSnapshot: { id: profileId, minimumConfirmationNodes },
-        generatorVersion: 'audit-comparator-reprojection',
+        generatorVersion: 'audit-comparator-reprojection', selection: {} as PracticeMomentRevision['selection'],
         decision: deriveDecisionAssessment({ original, reference, frame, evidence, minimumConfirmationNodes, policy }),
         rootAnswerIndex, frames: [frame], assessments, coverageGroups: [], evidence,
         continuation: { mode: 'SINGLE_DECISION', explanationLines: [], edges: [], nodes: [{ id: source.contextId,
             contextId: source.contextId, fen: source.fen, positionHistory: source.positionHistory, trainingSide: source.trainingSide,
             role: 'USER', answerIndex: rootAnswerIndex }] } };
+    manifest.selection = deriveCorroboratedSelection(manifest);
     manifest.semanticHash = digest(canonicalJson(canonicalPracticeSemantics(manifest)));
     // This is the authority boundary: every raw record, scope, bound, immutable
     // ID, ordering link and derived label is checked by the current validator.

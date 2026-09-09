@@ -1,3 +1,8 @@
+Aktuální výchozí implementace je T2 s kontraktem Practice v5, popsaná v
+[Practice T2 integration](practice-t2-integration.md). Níže je historický záznam
+původního režimu s důkladným potvrzováním, který zůstává dostupný pro výzkumné
+porovnání; jeho podmínky zařazení nepopisují výchozí T2.
+
 Implementace schváleného návrhu extrakce — 2026-09-06
 
 Cílový kontrakt v4, reuse potvrzovacích výsledků a rychlé Practice jsou popsány

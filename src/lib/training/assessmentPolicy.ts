@@ -24,6 +24,7 @@ export function normalizeScore(score: PracticeScore, side: Side): PracticeScore 
     return { ...score, outcome: score.outcome === 'DRAW' ? 'DRAW' : score.outcome === 'WIN' ? 'LOSS' : 'WIN', pov: side };
 }
 const rank = (outcome: Outcome) => ({ LOSS: 0, DRAW: 1, WIN: 2 })[outcome];
+export const isPointFirstPolicy = (policy: Pick<AssessmentPolicy, 'id'>): boolean => ['practice-v5-point-first', 'practice-v5-point-first:strict', 'practice-v5-point-first:lenient'].includes(policy.id);
 function lineE(line: ObservationLine, side: Side): number | null {
     if (!line.wdl) return null;
     const value = expectedScore(line.wdl);
@@ -32,6 +33,11 @@ function lineE(line: ObservationLine, side: Side): number | null {
 function pointQuality(reference: PracticeScore, move: PracticeScore, referenceE: number | null, moveE: number | null, frame: ComparisonFrame, policy: AssessmentPolicy): 'GOOD' | 'BELOW_STANDARD' | 'UNKNOWN' {
     if (reference.kind === 'EXACT' && move.kind === 'EXACT') return rank(move.outcome) >= rank(reference.outcome) ? 'GOOD' : 'BELOW_STANDARD';
     if (reference.kind === 'MATE' && move.kind === 'MATE') return reference.winner === move.winner ? 'GOOD' : move.winner === move.pov ? 'UNKNOWN' : 'BELOW_STANDARD';
+    if (isPointFirstPolicy(policy) && frame.model === 'MATCHED_WDL' && referenceE !== null && moveE !== null
+        && ((reference.kind === 'CP' && move.kind === 'MATE') || (reference.kind === 'MATE' && move.kind === 'CP'))) {
+        const loss = referenceE - moveE;
+        return loss < 0 ? 'UNKNOWN' : loss <= policy.maxExpectedScoreLoss ? 'GOOD' : 'BELOW_STANDARD';
+    }
     if (reference.kind !== 'CP' || move.kind !== 'CP' || frame.model === 'EXACT_OUTCOME') return 'UNKNOWN';
     if (frame.model === 'MATCHED_WDL' && (referenceE === null || moveE === null)) return 'UNKNOWN';
     if (frame.model === 'CP_ONLY' && (referenceE !== null || moveE !== null)) return 'UNKNOWN';
@@ -89,6 +95,60 @@ export function createAssessmentEvaluator(evidence: EvidenceStore, facts?: Pract
     });
 }
 type Sample = { observation: AnalysisObservation; search: SearchRecord; line: ObservationLine; score: PracticeScore; e: number | null };
+
+/** A completed observed point is evidence; a requested node budget is not. */
+function pointFirstSamples(frame: ComparisonFrame, input: AssessmentInput, move: string, prepared: AssessmentEvidenceContext): Sample[] {
+    return prepared.observations.flatMap(observation => {
+        const search = prepared.evidence.searches[observation.searchId];
+        if (observation.contextId !== frame.contextId || observation.engineFingerprint !== frame.engineFingerprint
+            || search.request.trainingSide !== input.trainingSide || !prepared.validObservation(observation)) return [];
+        const line = observation.lines.find(item => item.moveUci === move);
+        if (!line) return [];
+        const score = normalizeScore(line.score, input.trainingSide);
+        const realE = lineE(line, input.trainingSide);
+        return [{ observation, search, line, score, e: realE }];
+    });
+}
+const afterPoint = (a: Sample, b: Sample) => a.search.sequence > b.search.sequence
+    || a.search.sequence === b.search.sequence && a.observation.snapshotIndex > b.observation.snapshotIndex;
+function pointModelConsistent(sample: Sample, frame: ComparisonFrame): boolean {
+    if (sample.score.kind === 'MATE' && sample.score.plies <= 0) return false;
+    if (frame.model === 'CP_ONLY') return sample.line.wdl === null;
+    if (frame.model !== 'MATCHED_WDL' || sample.e === null || sample.search.engineIdentity.wdlModel === null) return false;
+    // A mate claim cannot turn a conflicting WDL vector into certainty. Preserve
+    // the actual vector; matched mate evidence must agree at the exact endpoint.
+    return sample.score.kind !== 'MATE' || sample.e === (sample.score.winner === sample.score.pov ? 1 : 0);
+}
+function usablePoint(sample: Sample, frame: ComparisonFrame, policy: AssessmentPolicy): boolean {
+    return sample.search.completion === 'COMPLETED' && sample.observation.bundleComplete && sample.line.bound === 'UNBOUNDED'
+        && (sample.score.kind === 'MATE' || sample.observation.nodes >= policy.latestSupportNodes && sample.search.reportedNodes >= policy.latestSupportNodes)
+        && pointModelConsistent(sample, frame);
+}
+function pointFirstRoot(frame: ComparisonFrame, input: AssessmentInput, policy: AssessmentPolicy, prepared: AssessmentEvidenceContext): Sample | null {
+    const roots = pointFirstSamples(frame, input, input.referenceMoveUci, prepared).filter(sample =>
+        sample.search.request.rootScopeUci.length === prepared.legalCount(sample.search.request.fen) && usablePoint(sample, frame, policy));
+    const latestRoot = prepared.observations.findLast(observation => observation.contextId === frame.contextId
+        && observation.engineFingerprint === frame.engineFingerprint && observation.bundleComplete && prepared.validObservation(observation)
+        && prepared.evidence.searches[observation.searchId].request.trainingSide === input.trainingSide
+        && prepared.evidence.searches[observation.searchId].completion === 'COMPLETED'
+        && observation.rootScopeUci.length === prepared.legalCount(prepared.evidence.searches[observation.searchId].request.fen));
+    const root = roots.at(-1);
+    return root && latestRoot?.id === root.observation.id && latestRoot.lines[0]?.moveUci === input.referenceMoveUci ? root : null;
+}
+function pointFirstCounter(root: Sample, frame: ComparisonFrame, input: AssessmentInput, policy: AssessmentPolicy, prepared: AssessmentEvidenceContext): Sample | null {
+    const moves = new Set(prepared.observations.filter(o => o.contextId === frame.contextId).flatMap(o => o.lines.map(l => l.moveUci)));
+    for (const move of moves) for (const raw of pointFirstSamples(frame, input, move, prepared)) {
+        const sample = { ...raw, score: normalizeScore(raw.score, root.score.pov), e: raw.e === null ? null : raw.score.pov === root.score.pov ? raw.e : 1 - raw.e };
+        if (!afterPoint(sample, root) || sample.search.engineIdentity.wdlModel !== root.search.engineIdentity.wdlModel) continue;
+        const normalizedBound = sample.line.score.pov === sample.score.pov ? sample.line.bound : sample.line.bound === 'LOWER' ? 'UPPER' : sample.line.bound === 'UPPER' ? 'LOWER' : 'UNBOUNDED';
+        if (normalizedBound === 'UNBOUNDED' || normalizedBound === 'LOWER') {
+            if (assessReferenceDrift(root.score, sample.score, normalizedBound === 'UNBOUNDED' ? root.e : null, normalizedBound === 'UNBOUNDED' ? sample.e : null, policy)) return sample;
+        }
+        if (move === input.referenceMoveUci && (normalizedBound === 'UNBOUNDED' || normalizedBound === 'UPPER')
+            && assessReferenceDrift(sample.score, root.score, normalizedBound === 'UNBOUNDED' ? sample.e : null, normalizedBound === 'UNBOUNDED' ? root.e : null, policy)) return sample;
+    }
+    return null;
+}
 export function validObservation(observation: AnalysisObservation, store: EvidenceStore, facts?: PracticeValidationFacts): boolean {
     try {
         const search = store.searches[observation.searchId];
@@ -232,6 +292,16 @@ function preparedReferenceReadiness(args: PracticeReferenceReadinessInput, prepa
         const exact = exactSample(input, frame, referenceMoveUci, true, prepared);
         if (exact) { result.evidenceIds.push(exact.record.id); return finish('READY', null); }
         return finish('MISSING_ROOT', 'ROOT');
+    }
+    if (isPointFirstPolicy(policy)) {
+        const root = pointFirstRoot(frame, input, policy, prepared);
+        if (!root) return finish('UNRESOLVED_REFERENCE', 'ROOT');
+        result.rootSearchId = root.search.id; result.evidenceIds.push(root.observation.id);
+        const actor: Side = root.search.request.fen.split(' ')[1] === 'w' ? 'WHITE' : 'BLACK';
+        const actorRoot = { ...root, score: normalizeScore(root.score, actor), e: root.e === null ? null : actor === root.score.pov ? root.e : 1 - root.e };
+        const counter = pointFirstCounter(actorRoot, frame, input, policy, prepared);
+        if (counter) { result.counterEvidenceIds.push(counter.observation.id); return finish('REFERENCE_VALUE_DRIFT', 'ROOT'); }
+        return finish('READY', null);
     }
     const fullRootObservations = prepared.observations.filter(observation => observation.contextId === frame.contextId
         && observation.engineFingerprint === frame.engineFingerprint && observation.bundleComplete
@@ -404,7 +474,13 @@ function supportedInterval(reference: Sample[], move: Sample[], frame: Compariso
         const outcomes = reference.flatMap(r => move.map(m => pointQuality(r.score, m.score, null, null, frame, policy)));
         return { quality: outcomes.every(q => q === quality), tier: quality === 'BELOW_STANDARD' ? 'SUBPAR' : 'GOOD' };
     }
-    if (!reference.every(r => r.score.kind === 'CP') || !move.every(m => m.score.kind === 'CP')) return { quality: false, tier: null };
+    if (!reference.every(r => r.score.kind === 'CP') || !move.every(m => m.score.kind === 'CP')) {
+        if (!isPointFirstPolicy(policy) || frame.model !== 'MATCHED_WDL' || reference.some(r => r.e === null) || move.some(m => m.e === null)) return { quality: false, tier: null };
+        const refE = interval(reference.map(r => r.e!), policy.expectedScoreSupportMargin, true);
+        const moveE = interval(move.map(m => m.e!), policy.expectedScoreSupportMargin, true);
+        const stable = reference.every(r => move.every(m => refE.every(re => moveE.every(me => pointQuality(r.score, m.score, re, me, frame, policy) === quality))));
+        return { quality: stable, tier: stable ? quality === 'BELOW_STANDARD' ? 'SUBPAR' : 'GOOD' : null };
+    }
     const refCp = interval(reference.map(r => r.score.kind === 'CP' ? r.score.cp : 0), policy.cpSupportMargin);
     const moveCp = interval(move.map(m => m.score.kind === 'CP' ? m.score.cp : 0), policy.cpSupportMargin);
     const refE: (number | null)[] = frame.model === 'MATCHED_WDL' ? interval(reference.map(r => r.e!), policy.expectedScoreSupportMargin, true) : [null];
@@ -478,6 +554,41 @@ function assessPreparedMove(frame: ComparisonFrame, input: AssessmentInput, poli
             output.observationIds = [...new Set([reference.record.id, move.record.id, ...(original ? [original.record.id] : [])])];
             if (output.originalRelation !== 'SAME_MOVE') output.originalRelation = relation(move.score, original?.score ?? null, null, null, policy);
         }
+    } else if (isPointFirstPolicy(policy)) {
+        const root = pointFirstRoot(frame, input, policy, prepared);
+        const window = pointFirstSamples(frame, input, input.moveUci, prepared);
+        const move = window.findLast(sample => usablePoint(sample, frame, policy));
+        const original = pointFirstSamples(frame, input, input.originalMoveUci, prepared).findLast(sample => usablePoint(sample, frame, policy));
+        const latest = window.at(-1);
+        output.score = (move ?? latest)?.score ?? null;
+        output.observationIds = [...new Set([root?.observation.id, move?.observation.id, original?.observation.id, latest?.observation.id].filter((id): id is string => Boolean(id)))];
+        if (root && move && root.search.engineIdentity.wdlModel === move.search.engineIdentity.wdlModel) {
+            const counter = pointFirstCounter(root, frame, input, policy, prepared);
+            if (counter) output.observationIds.push(counter.observation.id);
+            output.metrics.lossCp = root.score.kind === 'CP' && move.score.kind === 'CP' ? root.score.cp - move.score.cp : null;
+            output.metrics.lossExpectedScore = root.e !== null && move.e !== null ? root.e - move.e : null;
+            const same = input.moveUci === input.referenceMoveUci;
+            const quality = same ? 'GOOD' : pointQuality(root.score, move.score, root.e, move.e, frame, policy);
+            const support = same ? { quality: true, tier: 'BEST' as const } : supportedInterval([root], [move], frame, quality, policy);
+            const tail = window.filter(sample => afterPoint(sample, move));
+            output.observationIds.push(...tail.map(sample => sample.observation.id));
+            const coherentTail = tail.every(sample => sample.search.engineIdentity.wdlModel === root.search.engineIdentity.wdlModel
+                && (sample.line.bound === 'UNBOUNDED'
+                    ? pointModelConsistent(sample, frame) && pointQuality(root.score, sample.score, root.e, sample.e, frame, policy) === quality && supportedInterval([root], [sample], frame, quality, policy).quality
+                    : compatibleBounds([move, sample], policy)));
+            output.qualitySupport = quality === 'UNKNOWN' ? 'NONE' : 'PROVISIONAL';
+            if (!counter && quality !== 'UNKNOWN' && support.quality && coherentTail) {
+                output.quality = quality; output.qualitySupport = 'SUPPORTED';
+                output.tier = support.tier; output.tierSupport = support.tier ? 'SUPPORTED' : 'NONE';
+            }
+            if (original && original.search.engineIdentity.wdlModel === move.search.engineIdentity.wdlModel) {
+                output.metrics.recoveredCp = original.score.kind === 'CP' && move.score.kind === 'CP' ? move.score.cp - original.score.cp : null;
+                output.metrics.recoveredExpectedScore = original.e !== null && move.e !== null ? move.e - original.e : null;
+                if (output.originalRelation !== 'SAME_MOVE') output.originalRelation = relation(move.score, original.score, output.metrics.recoveredCp, output.metrics.recoveredExpectedScore, policy);
+            }
+        }
+        output.observationIds = [...new Set(output.observationIds)];
+        output.source = output.observationIds.some(id => input.evidence.searches[input.evidence.observations[id]?.searchId]?.engineIdentity.source === 'CLIENT_ENGINE') ? 'CLIENT_ENGINE' : 'SERVER_ENGINE';
     } else {
         const refWindow = samples(frame, input, input.referenceMoveUci, true, prepared); const moveWindow = samples(frame, input, input.moveUci, false, prepared); const originalWindow = samples(frame, input, input.originalMoveUci, false, prepared);
         const refs = refWindow.filter(sample => sample.line.bound === 'UNBOUNDED'); const moves = moveWindow.filter(sample => sample.line.bound === 'UNBOUNDED'); const originals = originalWindow.filter(sample => sample.line.bound === 'UNBOUNDED');
@@ -545,6 +656,13 @@ function assessPreparedMove(frame: ComparisonFrame, input: AssessmentInput, poli
     if (output.tierSupport !== 'SUPPORTED') output.pending.push('TIER');
     if (output.originalRelation === 'UNKNOWN') output.pending.push('ORIGINAL_COMPARISON');
     output.pending.push('EXPLANATION');
+    // Prisma's JSON numeric transport may shorten binary floating-point tails.
+    // Canonicalize derived display metrics only, after grading and support have
+    // consumed the untouched evidence. This is not a tolerance for verdicts.
+    for (const key of ['lossCp', 'lossExpectedScore', 'recoveredCp', 'recoveredExpectedScore'] as const) {
+        const value = output.metrics[key];
+        if (value !== null) output.metrics[key] = Number(value.toFixed(12));
+    }
     return output;
 }
 /** Negative losses beyond observation margins require a new frame, not clamping. */

@@ -1,7 +1,8 @@
-import type { assessPracticeExactPosition } from './practiceExactEvidence';
+import { deriveCorroboratedSelection, deriveT2Selection, deriveT2ExactSelection, T2_SELECTION_POLICY_ID, originalSelectionContext, type T2SelectionInput } from '@/lib/training/selectionPolicy';
+import { collectPracticeExactEvidence, type assessPracticeExactPosition } from './practiceExactEvidence';
 import { Chess } from 'chess.js';
 import { PositionAnalysisPool } from './positionAnalysisPool';
-import { practiceEngineFingerprint, practiceEvidenceFromSnapshots } from './practiceEvidence';
+import { practiceEngineFingerprint, practiceEvidenceFromSnapshots, mergePracticeEvidence } from './practiceEvidence';
 import { createAssessmentEvaluator, deriveDecisionAssessment } from '@/lib/training/assessmentPolicy';
 import { deriveAnswerIndex } from '@/lib/training/answerIndex';
 import {
@@ -15,12 +16,12 @@ import { stableCanonicalStringify } from '@/lib/training/contracts';
 export function assessPracticePosition(args: {
     pool: PositionAnalysisPool; fen: string; positionHistory: string[];
     trainingSide: Side; originalMoveUci: string; minimumConfirmationNodes: number;
-    policy?: AssessmentPolicy;
+    policy?: AssessmentPolicy; referenceSearchId?: string;
 }) {
     const policy = args.policy ?? DEFAULT_ASSESSMENT_POLICY;
     const legal = legalMovesUci(args.fen);
     const searches = args.pool.find({ fen: args.fen, previousFens: args.positionHistory });
-    const referenceSearch = searches.findLast(search => search.result && !search.result.terminal
+    const referenceSearch = searches.findLast(search => (!args.referenceSearchId || search.evidence.id === args.referenceSearchId) && search.result && !search.result.terminal
         && search.evidence.request.rootMoves.length === legal.length && search.result.lines[0]?.pvUci[0]);
     if (!referenceSearch?.result) return null;
     const preferredMoveUci = referenceSearch.result.lines[0]?.pvUci[0];
@@ -61,10 +62,11 @@ export async function buildPracticeMomentRevision(args: {
     pool: PositionAnalysisPool; source: SourceDecision; executionProfileId: string;
     minimumConfirmationNodes: number; policy?: AssessmentPolicy;
     exactRoot?: ReturnType<typeof assessPracticeExactPosition>;
+    selectionInput?: T2SelectionInput; selectionPolicyId?: string;
 }): Promise<PracticeMomentRevision | null> {
     const root = args.exactRoot ?? assessPracticePosition({ ...args, fen: args.source.fen,
         positionHistory: args.source.positionHistory, trainingSide: args.source.trainingSide,
-        originalMoveUci: args.source.originalMoveUci });
+        originalMoveUci: args.source.originalMoveUci, referenceSearchId: args.selectionInput?.referenceSearchId });
     if (!root) return null;
     const policy = args.policy ?? DEFAULT_ASSESSMENT_POLICY;
     const board = new Chess(args.source.fen);
@@ -75,12 +77,12 @@ export async function buildPracticeMomentRevision(args: {
         explanation.push(move);
     }
     const manifest: PracticeMomentRevision = {
-        contractVersion: 4,
+        contractVersion: 5,
         momentId: `source:${practiceFingerprint([args.source.gameId, args.source.sourcePgnHash, args.source.decisionPly])}`,
         revisionId: `analysis:${root.frame.id}`, semanticHash: '0'.repeat(64), source: args.source,
         policyId: policy.id, policySnapshot: structuredClone(policy), executionProfileId: args.executionProfileId,
         executionProfileSnapshot: { id: args.executionProfileId, minimumConfirmationNodes: Math.max(1, args.minimumConfirmationNodes) },
-        generatorVersion: 'backranq-practice-v4', decision: root.decision,
+        generatorVersion: 'backranq-practice-v5', selection: deriveCorroboratedSelection({ ...root, source: args.source, frames: [root.frame] }), decision: root.decision,
         rootAnswerIndex: root.rootAnswerIndex,
         continuation: { mode: 'SINGLE_DECISION',
             explanationLines: explanation.length ? [{ startContextId: args.source.contextId,
@@ -90,6 +92,23 @@ export async function buildPracticeMomentRevision(args: {
                 role: 'USER', answerIndex: root.rootAnswerIndex }], edges: [] },
         frames: [root.frame], assessments: root.assessments, coverageGroups: [], evidence: root.evidence,
     };
+    if (args.exactRoot && args.selectionPolicyId === T2_SELECTION_POLICY_ID) {
+        manifest.selection = deriveT2ExactSelection(manifest);
+    } else if (args.selectionInput) {
+        if (args.selectionInput.comparisonBasis === 'PARENT_CHILD_SCAN') {
+            const child = originalSelectionContext(args.source);
+            const searches = args.pool.find({ fen: child.fen, previousFens: child.positionHistory })
+                .filter(search => search.evidence.id === args.selectionInput!.originalSearchId);
+            const childEvidence = practiceEvidenceFromSnapshots(searches.flatMap(search => search.snapshots),
+                args.source.trainingSide, searches.filter(search => search.result).map(search => search.evidence));
+            manifest.evidence = mergePracticeEvidence(manifest.evidence, childEvidence);
+        }
+        if (args.selectionInput.originalSearchId?.startsWith('rule:')) {
+            const collected = collectPracticeExactEvidence(args.source);
+            manifest.evidence = mergePracticeEvidence(manifest.evidence, collected.evidence);
+        }
+        manifest.selection = deriveT2Selection(manifest, args.selectionInput);
+    }
     manifest.semanticHash = await sha256Hex(stableCanonicalStringify(canonicalPracticeSemantics(manifest)));
     return manifest;
 }

@@ -7,13 +7,13 @@ import { AnalysisWorkPlanner } from '@/lib/analysis/analysisWorkPlanner';
 import type { GradedPracticeResult, PracticeResult, RecordTrainingAttemptRequest, EnrichTrainingAttemptRequest,
     RevealedPracticeResult, TrainingPromptDto, TrainingReviewDto, TrainingSolutionTreeNodeDto } from '@/lib/training/api';
 import { newClientId } from '@/lib/training/clientIds';
-import { createLocalAnalysisSession, gradeKnownLocalMove, gradeUnknownLocalMove, localContinuationForMove,
+import { createLocalAnalysisSession, gradeKnownLocalMove, gradeUnknownLocalMove, localContinuationForMove, prewarmLocalReference,
     type LocalMoveEvaluation, type LocalGradingUpdate } from '@/lib/training/localGrading';
 import { buildPostMoveStory } from '@/lib/training/postMoveStory';
 import { boardPresentationReducer, initialBoardPresentation } from '@/lib/training/boardPresentation';
 import { reviewFromTrainingResponse, type TrainerAttemptPhase } from '@/lib/training/trainerState';
 import type { PovScore } from '@/lib/training/contracts';
-import { lookupAnswer } from '@/lib/training/answerIndex';
+import { lookupAnswer, observedAnswerRank } from '@/lib/training/answerIndex';
 import type { PracticeMomentRevision, Tier } from '@/lib/training/practiceContract';
 import { practiceScoreToWhitePov, referenceProjectionForPracticeComparison } from '@/lib/training/practiceReview';
 
@@ -32,7 +32,7 @@ export type PuzzleSessionOptions = {
 };
 type Submission = { node: TrainingSolutionTreeNodeDto; stepIndex: number; moveUci: string; fenAfterMove: string;
     sequenceId: number; generation: number; attemptId: string; prompt: TrainingPromptDto; eventSequence: number;
-    lastEventId: string | null; lastEvaluationKey: string | null; lastSupportedQuality: 'GOOD' | 'BELOW_STANDARD' | null };
+    lastEventId: string | null; lastEvaluationKey: string | null; lastSupportedQuality: 'GOOD' | 'BELOW_STANDARD' | null; followedRecommendation: boolean };
 function rootNode(prompt: TrainingPromptDto | null): TrainingSolutionTreeNodeDto | null {
     const node = prompt?.grading.continuation.nodes.find(item => item.contextId === prompt.grading.source.contextId && item.role === 'USER');
     if (node) return { ...node, ply: 0 };
@@ -70,6 +70,8 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     const [presentation, dispatchPresentation] = useReducer(boardPresentationReducer, undefined, () => initialBoardPresentation());
     const [engineClient, setEngineClient] = useState<StockfishClient | null>(null);
     const [liveEvaluation, setLiveEvaluation] = useState<{ score: PovScore; depth: number } | null>(null);
+    const [answerHint, setAnswerHint] = useState<string | null>(null);
+    const [recommendationCreditRetained, setRecommendationCreditRetained] = useState(false);
     const promptRef = useRef(prompt);
     const nodeRef = useRef(rootNode(prompt));
     const engineRef = useRef<StockfishClient | null>(null);
@@ -80,6 +82,8 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     const startedAt = useRef(Date.now());
     const locked = useRef(false);
     const abortRef = useRef<AbortController | null>(null);
+    const prewarmAbortRef = useRef<AbortController | null>(null);
+    const prewarmWorkRef = useRef<Promise<void> | null>(null);
     const plannerRef = useRef<AnalysisWorkPlanner | null>(null);
     const analysisRef = useRef(createLocalAnalysisSession());
     const submissionRef = useRef<Submission | null>(null);
@@ -99,12 +103,15 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     const reset = useCallback((next: TrainingPromptDto | null) => {
         generationRef.current += 1;
         abortRef.current?.abort(); plannerRef.current?.cancelGeneration();
+        prewarmAbortRef.current?.abort(); prewarmWorkRef.current = null;
         engineRef.current?.cancelAll();
         analysisRef.current = createLocalAnalysisSession(); plannerRef.current = null;
         promptRef.current = next; nodeRef.current = rootNode(next); attemptIdRef.current = null;
         submissionRef.current = null; rootReviewRef.current = null; rootGradeRef.current = null; reviewPositionRef.current = null; userStepIndexRef.current = 0; locked.current = false; startedAt.current = Date.now();
         setPrompt(next); setSolveFen(next?.fen ?? null); setDisplayFen(next?.fen ?? null);
         setPhase('READY'); setResponse(null); setReviewFallback(false); setLiveEvaluation(null); setPresentationSettled(true);
+        setAnswerHint(null);
+        setRecommendationCreditRetained(false);
         dispatchPresentation({ type: 'RESET', sequenceId: ++sequenceRef.current });
     }, []);
     const activatePrompt = useCallback((next: TrainingPromptDto, transferredEngine?: StockfishClient | null) => {
@@ -119,14 +126,24 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     useEffect(() => {
         if (!options.prewarmEngine || !prompt || document.hidden) return;
         const generation = generationRef.current;
+        const onVisibility = () => { if (document.hidden) prewarmAbortRef.current?.abort(); };
+        document.addEventListener('visibilitychange', onVisibility);
         const timer = window.setTimeout(() => {
             if (generation !== generationRef.current || document.hidden) return;
-            try { void getOrCreateEngine().getIdentity().catch(() => undefined); } catch { /* A played move can retry startup. */ }
+            try {
+                const engine = getOrCreateEngine();
+                void engine.getIdentity().catch(() => undefined);
+                const node = nodeRef.current;
+                if (node) {
+                    const abort = new AbortController(); prewarmAbortRef.current = abort;
+                    prewarmWorkRef.current = prewarmLocalReference({ engine, manifest: prompt.grading, node, session: analysisRef.current, signal: abort.signal });
+                }
+            } catch { /* A played move can retry startup. */ }
         }, 0);
-        return () => window.clearTimeout(timer);
+        return () => { window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisibility); prewarmAbortRef.current?.abort(); };
     }, [getOrCreateEngine, options.prewarmEngine, prompt]);
     useEffect(() => () => {
-        generationRef.current += 1; abortRef.current?.abort(); plannerRef.current?.cancelGeneration(); engineRef.current?.terminate();
+        generationRef.current += 1; abortRef.current?.abort(); prewarmAbortRef.current?.abort(); plannerRef.current?.cancelGeneration(); engineRef.current?.terminate();
     }, []);
 
     const emitEnrichment = useCallback((submission: Submission, value: LocalMoveEvaluation | null) => {
@@ -148,7 +165,18 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     const applyEvaluation = useCallback((value: LocalMoveEvaluation, submission: Submission, persist: boolean) => {
         if (submission.generation !== generationRef.current) return;
         if (value.result.status !== 'GRADED') {
+            setAnswerHint(null);
             if (persist) emitEnrichment(submission, null);
+            if (submission.followedRecommendation) {
+                setRecommendationCreditRetained(true);
+                rootGradeRef.current = 'GOOD';
+                if (rootReviewRef.current) rootReviewRef.current = { ...rootReviewRef.current, comparison: null };
+                setResponse({ status: 'GRADED', attemptId: submission.attemptId, quality: 'GOOD', tier: null, accepted: true,
+                    originalRelation: 'UNKNOWN', refinement: 'UNRESOLVED', review: rootReviewRef.current ?? submission.prompt.review });
+                setPhase('GRADED'); setPresentationSettled(true); setReviewFallback(false);
+                if (!reviewPositionRef.current) dispatchPresentation({ type: 'GRADE_REVEAL', sequenceId: submission.sequenceId, moveUci: submission.moveUci, grade: 'GOOD' });
+                return;
+            }
             if (value.invalidatedKnownQuality) {
                 if (submission.stepIndex === 0) {
                     rootGradeRef.current = null;
@@ -166,6 +194,12 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
             return;
         }
         if (persist) emitEnrichment(submission, value);
+        setAnswerHint(null);
+        if (submission.followedRecommendation && value.result.quality !== 'GOOD') {
+            setRecommendationCreditRetained(true);
+            value = { ...value, followedRecommendation: true, result: { ...value.result, quality: 'GOOD', accepted: true, tier: null } };
+        }
+        if (value.result.status !== 'GRADED') return;
         const grade: Tier = value.result.tier ?? (value.result.quality === 'GOOD' ? 'GOOD' : 'SUBPAR');
         const previousQuality = submission.lastSupportedQuality;
         submission.lastSupportedQuality = value.result.quality;
@@ -192,7 +226,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
             dispatchPresentation({ type: 'SETTLE', sequenceId: submission.sequenceId });
         }
         // Supported quality is immediately actionable; no grade animation timer delays Next.
-        const continuation = value.result.accepted ? localContinuationForMove({ manifest: submission.prompt.grading,
+        const continuation = value.result.accepted && !value.followedRecommendation ? localContinuationForMove({ manifest: submission.prompt.grading,
             node: submission.node, moveUci: submission.moveUci }) : null;
         if (continuation) {
             reviewPositionRef.current = null;
@@ -214,6 +248,9 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         if (!detail) plannerRef.current = planner;
         let emittedSupport = false;
         try {
+            // Submit cancels optional work before this wait; do not compete for the engine queue.
+            await prewarmWorkRef.current;
+            if (generation !== generationRef.current || abort.signal.aborted) return;
             const value = await gradeUnknownLocalMove({ engine: getOrCreateEngine,
                 retryEngine: () => { if (generation !== generationRef.current) throw new Error('Practice changed'); stopEngine(); return getOrCreateEngine(); },
                 manifest: submission.prompt.grading, node: submission.node, moveUci: submission.moveUci,
@@ -245,12 +282,16 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
             if (chess.fen() !== fenAfterMove) return;
         } catch { return; }
         locked.current = true;
+        prewarmAbortRef.current?.abort();
         attemptIdRef.current ??= newClientId();
         const submission: Submission = { node, stepIndex: userStepIndexRef.current++, moveUci, fenAfterMove, sequenceId: ++sequenceRef.current,
-            generation: generationRef.current, attemptId: attemptIdRef.current, prompt: activePrompt, eventSequence: 0, lastEventId: null, lastEvaluationKey: null, lastSupportedQuality: null };
+            generation: generationRef.current, attemptId: attemptIdRef.current, prompt: activePrompt, eventSequence: 0, lastEventId: null, lastEvaluationKey: null, lastSupportedQuality: null, followedRecommendation: false };
         submissionRef.current = submission;
         reviewPositionRef.current = null;
         const known = gradeKnownLocalMove({ manifest: activePrompt.grading, node, moveUci, session: analysisRef.current });
+        submission.followedRecommendation = submission.stepIndex === 0 && node.contextId === activePrompt.grading.source.contextId
+            && activePrompt.grading.contractVersion === 5 && moveUci === node.answerIndex?.preferredMoveUci
+            && known?.result.status === 'GRADED' && known.result.quality === 'GOOD' && known.assessment?.qualitySupport === 'SUPPORTED';
         const lookup = node.answerIndex ? lookupAnswer(node.answerIndex, moveUci, activePrompt.grading.assessments, activePrompt.grading.coverageGroups) : null;
         // RECORD precedes any await/engine work: later quality enriches this exact event.
         onCompleted.current?.({ prompt: activePrompt, terminalReason: 'MOVE_SUBMITTED', request: {
@@ -260,6 +301,9 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
             timeSpentMs: Math.min(86_400_000, Math.max(0, Date.now() - startedAt.current)),
         } });
         setSolveFen(fenAfterMove); setDisplayFen(fenAfterMove); setReviewFallback(false); setLiveEvaluation(null); setResponse(null);
+        const estimate = !known && node.answerIndex ? observedAnswerRank(node.answerIndex, moveUci, activePrompt.grading) : null;
+        setAnswerHint(estimate ? estimate.rank !== null ? `Ranked ${estimate.rank} in the current engine lines; checking the move.`
+            : `Not among the ${estimate.lineCount} current engine ${estimate.lineCount === 1 ? 'line' : 'lines'}; checking the move.` : null);
         dispatchPresentation({ type: 'RESET', sequenceId: submission.sequenceId });
         dispatchPresentation({ type: 'USER_MOVE', sequenceId: submission.sequenceId, moveUci });
         if (known) {
@@ -284,6 +328,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
         const activePrompt = promptRef.current;
         if (!activePrompt || locked.current || (phase !== 'READY' && phase !== 'AWAITING_MOVE')) return;
         locked.current = true; attemptIdRef.current ??= newClientId();
+        prewarmAbortRef.current?.abort(); setAnswerHint(null);
         setResponse({ status: 'REVEALED', attemptId: attemptIdRef.current, review: rootReviewRef.current ?? activePrompt.review });
         setDisplayFen(activePrompt.fen); setPhase('REVEALED'); setReviewFallback(false); setPresentationSettled(true);
         dispatchPresentation({ type: 'RESET', sequenceId: ++sequenceRef.current });
@@ -318,7 +363,7 @@ export function usePuzzleSession(options: PuzzleSessionOptions = {}) {
     }, [phase, runEvaluation]);
     return { prompt, positionFen: solveFen, solveFen, displayFen, phase, grade,
         quality: response?.status === 'GRADED' ? response.quality : 'UNKNOWN',
-        originalRelation: response?.status === 'GRADED' ? response.originalRelation : 'UNKNOWN', liveEvaluation,
+        originalRelation: response?.status === 'GRADED' ? response.originalRelation : 'UNKNOWN', liveEvaluation, answerHint, recommendationCreditRetained,
         refinement: response?.status === 'GRADED' ? response.refinement : undefined,
         unresolved: response?.status === 'UNRESOLVED' ? { reason: response.reason } : null,
         review, reviewFallback, story, attemptTerminal, presentationSettled, presentation,

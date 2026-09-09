@@ -1,5 +1,6 @@
 "use client";
 
+import { analysisQualityProfile } from '@/lib/analysis/quality';
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -519,7 +520,7 @@ export function BackgroundAnalysisBar() {
               <div>
                 Current balance: <strong>{billing.currentBalance}</strong> •
                 Reservable now: <strong>{billing.reservableGames} games</strong> •
-                Quality: <strong>{billing.analysisQuality === "THOROUGH" ? "Thorough" : "Standard"}</strong> •
+                Quality: <strong>{analysisQualityProfile(billing.analysisQuality).label}</strong> •
                 Balance after maximum cost:{" "}
                 <strong>{Math.max(0, billing.currentBalance - serverReviewIds.length * billing.creditsPerGame)}</strong>
               </div>

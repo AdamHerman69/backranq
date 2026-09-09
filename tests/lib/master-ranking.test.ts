@@ -103,6 +103,15 @@ describe('Weekly Master candidate ranking', () => {
         );
     });
 
+    it('separates Practice eligibility from the stricter curated publication gate', () => {
+        const moment = candidate();
+        moment.solution.manifest.decision.status = 'UNRESOLVED';
+        moment.solution.manifest.decision.selection = 'OMITTED';
+        const ranking = rankMasterCandidate({ moment, playedAt: new Date(), personPriority: 90 });
+        expect(ranking.rejectionReasons).not.toContain('NOT_TRAINABLE');
+        expect(ranking.rejectionReasons).toContain('DECISION_NOT_CONFIRMED');
+    });
+
     it('includes the featured person in deterministic candidate identity', () => {
         expect(
             masterCandidateKey({

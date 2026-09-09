@@ -287,7 +287,7 @@ export function TrainingTrainer({
             training.presentation.stage !== 'USER_MOVE'
         ) {
             return {
-                message: training.liveEvaluation ? formatLiveEvaluation(training.liveEvaluation.score, training.prompt?.sideToMove ?? 'w') : feedback.message,
+                message: training.liveEvaluation ? formatLiveEvaluation(training.liveEvaluation.score, training.prompt?.sideToMove ?? 'w') : training.answerHint ?? feedback.message,
                 tone: 'neutral' as const,
                 busy: true,
             };
@@ -561,7 +561,9 @@ export function TrainingTrainer({
                                 }}
                             />
 
-                            {training.refinement ? <p className="mt-2 text-sm text-muted-foreground" role="status">
+                            {training.recommendationCreditRetained ? <p className="mt-2 text-sm text-muted-foreground" role="status">
+                                The analysis changed. You followed the recommendation, so this attempt keeps its credit.
+                            </p> : training.refinement ? <p className="mt-2 text-sm text-muted-foreground" role="status">
                                 {training.refinement === 'PENDING' ? 'Refining this move’s assessment…' : training.refinement === 'CORRECTED' ? 'Further analysis corrected the initial verdict. Your attempt is preserved.' : training.refinement === 'REFINED' ? 'Assessment refined by local analysis.' : 'The initial verdict stands; a finer assessment remains unresolved.'}
                             </p> : null}
                             <div

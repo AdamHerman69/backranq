@@ -3,9 +3,10 @@ import { sha256Hex } from '@/lib/crypto/sha256';
 import { assessPracticeReferenceReadiness, createAssessmentEvaluator, deriveDecisionAssessment, expectedScore, orderedObservations, practiceRootBoundsCompatible, validExactRecord, validObservation } from './assessmentPolicy';
 import { deriveAnswerIndex, lookupAnswer } from './answerIndex';
 import { createPracticeValidationFacts } from './practiceValidationFacts';
+import { originalSelectionContext, validatePracticeSelection, canonicalSelectionSemantics } from './selectionPolicy';
 
-/** Canonical, JSON-only Practice v4 transport. No legacy payloads are accepted. */
-export const PRACTICE_CONTRACT_VERSION = 4 as const;
+/** Canonical, JSON-only Practice v5 transport. No legacy payloads are accepted. */
+export const PRACTICE_CONTRACT_VERSION = 5 as const;
 export type Side = 'WHITE' | 'BLACK';
 export type Outcome = 'WIN' | 'DRAW' | 'LOSS';
 export type Quality = 'GOOD' | 'BELOW_STANDARD' | 'UNKNOWN';
@@ -35,6 +36,36 @@ export const DEFAULT_ASSESSMENT_POLICY: AssessmentPolicy = {
     cpSupportMargin: 20, expectedScoreSupportMargin: 0.02, minimumDepthGap: 2, minimumSupportNodes: 25_000, latestSupportNodes: 100_000, minimumCompletedSupportingSearches: 2, minimumReferenceProbeNodes: 400_000,
     originalComparisonCp: 50, originalComparisonExpectedScore: 0.05,
     selectionExpectedScoreLoss: 0.08, selectionCpLoss: 100, saturationCp: 300,
+};
+/** Cheap point evidence is enough to recommend a move; grading retains explicit uncertainty. */
+export const T2_ASSESSMENT_POLICY: AssessmentPolicy = {
+    ...DEFAULT_ASSESSMENT_POLICY, id: 'practice-v5-point-first',
+    minimumSupportNodes: 25_000, latestSupportNodes: 25_000,
+    minimumDepthGap: 1, minimumCompletedSupportingSearches: 1, minimumReferenceProbeNodes: 25_000,
+};
+export const T2_STRICT_ASSESSMENT_POLICY: AssessmentPolicy = {
+    ...T2_ASSESSMENT_POLICY, id: `${T2_ASSESSMENT_POLICY.id}:strict`,
+    minToleranceCp: 75, maxToleranceCp: 225, winningToleranceFraction: 0.45,
+    maxExpectedScoreLoss: 0.075, bestMaxLossCp: 10, bestMaxLossExpectedScore: 0.01,
+    strongMaxLossCp: 30, strongMaxLossExpectedScore: 0.03,
+};
+export const T2_LENIENT_ASSESSMENT_POLICY: AssessmentPolicy = {
+    ...T2_ASSESSMENT_POLICY, id: `${T2_ASSESSMENT_POLICY.id}:lenient`,
+    minToleranceCp: 130, maxToleranceCp: 390, winningToleranceFraction: 0.78,
+    maxExpectedScoreLoss: 0.13, bestMaxLossCp: 30, bestMaxLossExpectedScore: 0.03,
+    strongMaxLossCp: 70, strongMaxLossExpectedScore: 0.07,
+};
+export type SelectionComparison = {
+    basis: 'SAME_ROOT' | 'PARENT_CHILD' | 'EXACT_OUTCOME';
+    referenceMoveUci: string; originalMoveUci: string;
+    referenceScore: PracticeScore; originalScore: PracticeScore;
+    referenceWdl: Wdl | null; originalWdl: Wdl | null;
+    referenceObservationId: string | null; originalObservationId: string | null;
+    referenceExactId: string | null; originalExactId: string | null;
+};
+export type PracticeSelection = {
+    policyId: string; status: 'INCLUDED' | 'OMITTED'; reason: string;
+    comparison: SelectionComparison | null;
 };
 export type SourceDecision = {
     gameId: string; sourcePgnHash: string; decisionPly: number; contextId: string;
@@ -105,9 +136,9 @@ export type Continuation = {
     edges: { from: string; to: string; moveUci: string }[];
 };
 export type PracticeMomentRevision = {
-    contractVersion: 4; momentId: string; revisionId: string; semanticHash: string;
+    contractVersion: 5; momentId: string; revisionId: string; semanticHash: string;
     source: SourceDecision; policyId: string; policySnapshot: AssessmentPolicy;
-    executionProfileId: string; executionProfileSnapshot: { id: string; minimumConfirmationNodes: number }; generatorVersion: string; decision: DecisionAssessment;
+    executionProfileId: string; executionProfileSnapshot: { id: string; minimumConfirmationNodes: number }; generatorVersion: string; selection: PracticeSelection; decision: DecisionAssessment;
     rootAnswerIndex: AnswerIndex; continuation: Continuation;
     frames: ComparisonFrame[]; assessments: MoveAssessment[]; coverageGroups: CoverageGroup[]; evidence: EvidenceStore;
 };
@@ -238,8 +269,16 @@ const assessmentSchema = object<MoveAssessment>({
 const coverageSchema = object<CoverageGroup>({ id: textSchema, contextId: textSchema, frameId: textSchema, movesUci: array(uciSchema, true), conclusion: enumeration('BELOW_STANDARD'), basis: enumeration('EXACT_OUTCOME', 'ALL_SCOPE_ASSESSED', 'CP_SCOPE_UPPER_BOUND'), evidenceIds: array(textSchema, true) });
 const indexSchema = object<AnswerIndex>({ contextId: textSchema, frameId: textSchema, legalMovesUci: array(uciSchema, true), assessmentIds: array(textSchema, true), coverageGroupIds: array(textSchema, true), preferredMoveUci: uciSchema, unresolvedMovesUci: array(uciSchema, true), readiness: enumeration('PARTIAL', 'ALL_MOVES_CLASSIFIED') });
 const decisionSchema = object<DecisionAssessment>({ status: enumeration('CONFIRMED_MISTAKE', 'NOT_A_MISTAKE', 'UNRESOLVED'), reason: textSchema, originalAssessmentId: textSchema, referenceAssessmentId: textSchema, selection: enumeration('INCLUDED', 'OMITTED'), selectionReason: textSchema, selectionSignal: enumeration('EXACT_OUTCOME_LOSS', 'EXPECTED_SCORE_LOSS', 'NON_SATURATED_CP_LOSS', 'NONE'), evidenceIds: array(textSchema, true) });
+const selectionComparisonSchema = object<SelectionComparison>({
+    basis: enumeration('SAME_ROOT', 'PARENT_CHILD', 'EXACT_OUTCOME'),
+    referenceMoveUci: uciSchema, originalMoveUci: uciSchema,
+    referenceScore: scoreSchema, originalScore: scoreSchema, referenceWdl: nullable(wdlSchema), originalWdl: nullable(wdlSchema),
+    referenceObservationId: nullable(textSchema), originalObservationId: nullable(textSchema),
+    referenceExactId: nullable(textSchema), originalExactId: nullable(textSchema),
+});
+const selectionSchema = object<PracticeSelection>({ policyId: textSchema, status: enumeration('INCLUDED', 'OMITTED'), reason: textSchema, comparison: nullable(selectionComparisonSchema) });
 const continuationSchema = object<Continuation>({ mode: enumeration('SINGLE_DECISION', 'VERIFIED_BRANCHES'), explanationLines: array(object<Continuation['explanationLines'][number]>({ startContextId: textSchema, movesUci: array(uciSchema), stopReason: textSchema })), nodes: array(object<Continuation['nodes'][number]>({ id: textSchema, contextId: textSchema, fen: textSchema, positionHistory: array(textSchema), trainingSide: sideSchema, role: enumeration('USER', 'OPPONENT', 'TERMINAL'), answerIndex: nullable(indexSchema) })), edges: array(object<Continuation['edges'][number]>({ from: textSchema, to: textSchema, moveUci: uciSchema })) });
-const revisionSchema = object<PracticeMomentRevision>({ contractVersion: enumeration(4), momentId: textSchema, revisionId: textSchema, semanticHash: textSchema, source: sourceSchema, policyId: textSchema, policySnapshot: policySchema, executionProfileId: textSchema, executionProfileSnapshot: object<PracticeMomentRevision['executionProfileSnapshot']>({ id: textSchema, minimumConfirmationNodes: positiveCount }), generatorVersion: textSchema, decision: decisionSchema, rootAnswerIndex: indexSchema, continuation: continuationSchema, frames: array(frameSchema), assessments: array(assessmentSchema), coverageGroups: array(coverageSchema), evidence: evidenceSchema });
+const revisionSchema = object<PracticeMomentRevision>({ contractVersion: enumeration(5), momentId: textSchema, revisionId: textSchema, semanticHash: textSchema, source: sourceSchema, policyId: textSchema, policySnapshot: policySchema, executionProfileId: textSchema, executionProfileSnapshot: object<PracticeMomentRevision['executionProfileSnapshot']>({ id: textSchema, minimumConfirmationNodes: positiveCount }), generatorVersion: textSchema, selection: selectionSchema, decision: decisionSchema, rootAnswerIndex: indexSchema, continuation: continuationSchema, frames: array(frameSchema), assessments: array(assessmentSchema), coverageGroups: array(coverageSchema), evidence: evidenceSchema });
 const patchSchema = object<PracticeEvaluationPatch>({ frame: frameSchema, assessments: array(assessmentSchema), evidence: evidenceSchema });
 export const PRACTICE_MOMENT_JSON_SCHEMA = { $schema: 'https://json-schema.org/draft/2020-12/schema', ...revisionSchema.json };
 export const PRACTICE_EVALUATION_PATCH_JSON_SCHEMA = { $schema: 'https://json-schema.org/draft/2020-12/schema', ...patchSchema.json };
@@ -259,7 +298,7 @@ export function canonicalPracticeSemantics(revision: PracticeMomentRevision): un
     const index = (i: AnswerIndex) => ({ contextId: i.contextId, frame: frame(i.frameId), legalMovesUci: [...i.legalMovesUci].sort(), preferredMoveUci: i.preferredMoveUci, unresolvedMovesUci: [...i.unresolvedMovesUci].sort(), readiness: i.readiness, assessments: sorted(i.assessmentIds.map(id => assessmentById.get(id)).filter((a): a is MoveAssessment => Boolean(a)).map(assessment)), coverageGroups: sorted(revision.coverageGroups.filter(g => i.coverageGroupIds.includes(g.id)).map(coverage)) });
     const nodeKey = (id: string) => revision.continuation.nodes.find(n => n.id === id)?.contextId ?? null;
     return {
-        contractVersion: 4, source: revision.source, policyId: revision.policyId, policySnapshot: revision.policySnapshot,
+        contractVersion: 5, selection: canonicalSelectionSemantics(revision.selection), source: revision.source, policyId: revision.policyId, policySnapshot: revision.policySnapshot,
         decision: { status: revision.decision.status, reason: revision.decision.reason, selection: revision.decision.selection, selectionReason: revision.decision.selectionReason, selectionSignal: revision.decision.selectionSignal, original: assessmentById.has(revision.decision.originalAssessmentId) ? assessment(assessmentById.get(revision.decision.originalAssessmentId)!) : null, reference: assessmentById.has(revision.decision.referenceAssessmentId) ? assessment(assessmentById.get(revision.decision.referenceAssessmentId)!) : null },
         rootAnswerIndex: index(revision.rootAnswerIndex), frames: sorted(revision.frames.map(f => frame(f.id))),
         assessments: sorted(revision.assessments.map(a => ({ ...assessment(a), frame: frame(a.frameId) }))), coverageGroups: sorted(revision.coverageGroups.map(coverage)),
@@ -316,6 +355,9 @@ function validatePolicy(policy: AssessmentPolicy): void {
     requireCondition(policy.winningToleranceFraction <= 1 && [policy.maxExpectedScoreLoss, policy.bestMaxLossExpectedScore, policy.strongMaxLossExpectedScore, policy.expectedScoreSupportMargin, policy.originalComparisonExpectedScore, policy.selectionExpectedScoreLoss].every(n => n <= 1), 'Invalid expected-score policy threshold');
     // The current policy ID denotes these exact rules. New calibration gets a new ID.
     if (policy.id === DEFAULT_ASSESSMENT_POLICY.id) equal(policy, DEFAULT_ASSESSMENT_POLICY, 'Policy snapshot does not match its registered ID');
+    for (const registered of [T2_ASSESSMENT_POLICY, T2_STRICT_ASSESSMENT_POLICY, T2_LENIENT_ASSESSMENT_POLICY]) {
+        if (policy.id === registered.id) equal(policy, registered, 'Policy snapshot does not match its registered ID');
+    }
 }
 function validateEvidence(store: EvidenceStore, contexts: Map<string, {fen: string; positionHistory: string[]; trainingSide: Side}>, positions: RevisionPositionValidation): void {
     const physical = new Set<string>();
@@ -386,13 +428,17 @@ function validateAssessments(revision: Pick<PracticeMomentRevision, 'source' | '
         equal(assessment, derived, `Assessment ${assessment.id} is not implied by its evidence and policy`);
     }
 }
-function revisionContexts(revision: Pick<PracticeMomentRevision, 'source' | 'continuation'>, positions: RevisionPositionValidation): Map<string, {fen: string; positionHistory: string[]; trainingSide: Side}> {
+function revisionContexts(revision: Pick<PracticeMomentRevision, 'source' | 'continuation' | 'selection'>, positions: RevisionPositionValidation): Map<string, {fen: string; positionHistory: string[]; trainingSide: Side}> {
     const contexts = new Map<string, {fen: string; positionHistory: string[]; trainingSide: Side}>();
     for (const item of [revision.source, ...revision.continuation.nodes]) {
         requireCondition(item.contextId === positions.contextId(item.fen, item.positionHistory, item.trainingSide), 'Context ID does not include canonical position/history/side');
         const value = { fen: item.fen, positionHistory: item.positionHistory, trainingSide: item.trainingSide };
         const existing = contexts.get(item.contextId); if (existing) equal(existing, value, 'Context collision');
         contexts.set(item.contextId, value);
+    }
+    if (revision.selection.comparison?.basis === 'PARENT_CHILD') {
+        const child = originalSelectionContext(revision.source);
+        contexts.set(child.contextId, { fen: child.fen, positionHistory: child.positionHistory, trainingSide: child.trainingSide });
     }
     return contexts;
 }
@@ -484,7 +530,8 @@ function validateRevisionSemantics(revision: PracticeMomentRevision, options: { 
     requireCondition(revision.decision.evidenceIds.every(id => evidenceHas(revision.evidence, id)), 'Decision has unresolved evidence');
     const expectedDecision = deriveDecisionAssessment({ original, reference, frame: rootFrame, evidence: revision.evidence, minimumConfirmationNodes: revision.executionProfileSnapshot.minimumConfirmationNodes, policy: revision.policySnapshot });
     equal(revision.decision, expectedDecision, 'Decision is not implied by its supported assessments');
-    if (revision.decision.selection === 'INCLUDED') requireCondition(positions.legal(revision.source.fen).length > 1, 'Forced single move is not a Practice prompt');
+    validatePracticeSelection(revision);
+    if (revision.selection.status === 'INCLUDED') requireCondition(positions.legal(revision.source.fen).length > 1, 'Forced single move is not a Practice prompt');
 }
 /** Strict shape + chess/evidence/policy validation. Publication supplies the profile budget. */
 export function parsePracticeMomentRevision(input: unknown, options: { minimumConfirmationNodes?: number } = {}): PracticeMomentRevision {

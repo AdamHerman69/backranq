@@ -8,8 +8,8 @@ import type { PracticeMomentRevision, MoveAssessment } from '@/lib/training/prac
 // Here the persistence boundary receives the validated value and is exercised with a transactional store.
 vi.mock('@/lib/training/practiceContract', async importOriginal => {
     const original = await importOriginal<typeof import('@/lib/training/practiceContract')>();
-    return { ...original, parsePracticeMomentRevision: (value: unknown) => (value as { contractVersion?: number }).contractVersion === 4 ? original.parsePracticeMomentRevision(value) : value,
-        validatePracticeEvaluationPatch: (revision: PracticeMomentRevision, patch: Parameters<typeof original.validatePracticeEvaluationPatch>[1]) => revision.contractVersion === 4 ? original.validatePracticeEvaluationPatch(revision, patch) : ({ success: true, value: patch }) };
+    return { ...original, parsePracticeMomentRevision: (value: unknown) => (value as { contractVersion?: number }).contractVersion === 5 ? original.parsePracticeMomentRevision(value) : value,
+        validatePracticeEvaluationPatch: (revision: PracticeMomentRevision, patch: Parameters<typeof original.validatePracticeEvaluationPatch>[1]) => revision.contractVersion === 5 ? original.validatePracticeEvaluationPatch(revision, patch) : ({ success: true, value: patch }) };
 });
 const userId = '11111111-1111-4111-8111-111111111111';
 const momentId = '22222222-2222-4222-8222-222222222222';
@@ -64,9 +64,31 @@ function harness() {
     return { tables, write: (request = record()) => recordTrainingAttempt({ userId, momentId, request, dependencies }), refine: (request = enrich()) => enrichTrainingAttempt({ userId, momentId, request, dependencies }), dependencies };
 }
 beforeEach(() => {
-    manifest = { momentId, revisionId, semanticHash: 'semantic', source: { gameId: 'game', contextId: 'root', fen: 'root-fen' }, rootAnswerIndex: { contextId: 'root', frameId: 'frame', legalMovesUci: ['e2e4', 'a2a3'], assessmentIds: ['good', 'bad'] }, decision: { selection: 'INCLUDED' }, assessments: [good, bad], continuation: { mode: 'SINGLE_DECISION', nodes: [], edges: [] } } as unknown as PracticeMomentRevision;
+    manifest = { momentId, revisionId, semanticHash: 'semantic', source: { gameId: 'game', contextId: 'root', fen: 'root-fen', trainingSide: 'WHITE' }, rootAnswerIndex: { contextId: 'root', frameId: 'frame', preferredMoveUci: 'e2e4', legalMovesUci: ['e2e4', 'a2a3'], assessmentIds: ['good', 'bad'] }, selection: { policyId: 'practice-selection-t2-v1', status: 'INCLUDED', reason: 'POINT_MISTAKE', comparison: { basis: 'SAME_ROOT', referenceMoveUci: 'e2e4', originalMoveUci: 'a2a3', referenceScore: { kind: 'CP', cp: 30, pov: 'WHITE' }, originalScore: { kind: 'CP', cp: -200, pov: 'WHITE' }, referenceWdl: null, originalWdl: null, referenceObservationId: 'root', originalObservationId: 'root', referenceExactId: null, originalExactId: null } }, decision: { selection: 'OMITTED', status: 'UNRESOLVED' }, assessments: [good, bad], continuation: { mode: 'SINGLE_DECISION', nodes: [], edges: [] } } as unknown as PracticeMomentRevision;
 });
-describe('Practice v4 attempt events', () => {
+describe('Practice v5 attempt events', () => {
+    it('accepts a selected prompt with pending original grades and retains its selection metrics', async () => {
+        expect(manifest.decision.status).toBe('UNRESOLVED');
+        const h = harness();
+        expect(await h.write()).toMatchObject({ status: 'PENDING', quality: 'UNKNOWN' });
+        expect(h.tables.trainingAttempt[0]).toMatchObject({ contextCpLoss: 230 });
+    });
+    it('keeps recommendation credit while retaining a later contradictory analytical assessment', async () => {
+        const h = harness();
+        expect(await h.write(record({ initialAssessmentId: good.id, resolution: 'RESOLVED' })))
+            .toMatchObject({ status: 'RESOLVED', quality: 'GOOD' });
+        const corrected = { ...bad, moveUci: good.moveUci };
+        expect(await h.refine(enrich(1, corrected))).toMatchObject({ status: 'RESOLVED', quality: 'GOOD' });
+        expect(h.tables.trainingAttemptAssessmentRevision[0]).toMatchObject({ quality: 'BELOW_STANDARD' });
+        expect(h.tables.trainingAttemptStep[0]).toMatchObject({ quality: 'BELOW_STANDARD' });
+        expect(h.tables.practiceReviewState[0]).toMatchObject({ successes: 1, lapses: 0 });
+    });
+    it('rejects omitted selection even when its stored trainable flag is true', async () => {
+        manifest.selection.status = 'OMITTED';
+        const h = harness();
+        await expect(h.write()).rejects.toThrow(/trainable owned moment/);
+        expect(h.tables.trainingAttempt).toHaveLength(0);
+    });
     it('persists an unresolved played move once without a mastery penalty', async () => {
         const h = harness();
         expect(await h.write()).toMatchObject({ status: 'PENDING', quality: 'UNKNOWN' });

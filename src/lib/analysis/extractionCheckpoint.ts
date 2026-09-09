@@ -1,3 +1,4 @@
+import { T2_BUDGETS } from './t2Policy';
 import { PositionAnalysisPool } from './positionAnalysisPool';
 import type { TrainingMomentExtractionCheckpoint } from './extractTrainingMoments';
 import { MAX_ASSESSMENT_POSITION_HISTORY } from '@/lib/training/assessmentIdentity';
@@ -21,11 +22,38 @@ function evaluation(value: unknown): boolean {
         (value.score.type === 'cp' || value.score.type === 'mate') && finite(value.score.value));
 }
 
+function t2State(value: unknown, expectedPlies: number): boolean {
+    if (!isRecord(value) || value.version !== 1 || !['SCAN', 'VERIFY', 'COMPLETE'].includes(String(value.phase))
+        || !Number.isInteger(value.nextScanIndex) || Number(value.nextScanIndex) < 0 || Number(value.nextScanIndex) > expectedPlies + 1
+        || !Number.isInteger(value.nextCandidateIndex) || Number(value.nextCandidateIndex) < 0
+        || !finite(value.postSpent) || value.postSpent < 0 || value.postSpent > T2_BUDGETS.gameNodes
+        || value.postSpent % T2_BUDGETS.confirmationNodes !== 0
+        || !Array.isArray(value.scanSearchIds) || !value.scanSearchIds.every(pair => Array.isArray(pair) && pair.length === 2
+            && Number.isInteger(pair[0]) && pair[0] >= 0 && pair[0] <= expectedPlies && typeof pair[1] === 'string')
+        || new Set(value.scanSearchIds.map(pair => pair[0])).size !== value.scanSearchIds.length
+        || !Array.isArray(value.candidatePlies) || !value.candidatePlies.every(ply => Number.isInteger(ply) && ply >= 0 && ply < expectedPlies)
+        || new Set(value.candidatePlies).size !== value.candidatePlies.length
+        || Number(value.nextCandidateIndex) > value.candidatePlies.length
+        || !Array.isArray(value.decisions) || !value.decisions.every(d => isRecord(d) && Number.isInteger(d.ply)
+            && Number(d.ply) >= 0 && Number(d.ply) < expectedPlies && typeof d.originalMoveUci === 'string'
+            && (d.preferredMoveUci === null || typeof d.preferredMoveUci === 'string')
+            && typeof d.candidate === 'boolean' && typeof d.admitted === 'boolean' && typeof d.reason === 'string'
+            && ['GOOD', 'BELOW_STANDARD', 'UNKNOWN'].includes(String(d.estimate))
+            && (d.lossCp === null || finite(d.lossCp)) && (d.lossExpectedScore === null || finite(d.lossExpectedScore))
+            && ['SAME_ROOT', 'PARENT_CHILD_SCAN'].includes(String(d.comparisonBasis)) && strings(d.evidenceIds))) return false;
+    if (value.phase === 'SCAN') return value.decisions.length === 0 && value.candidatePlies.length === 0 && value.nextCandidateIndex === 0 && value.postSpent === 0;
+    return value.decisions.length === value.candidatePlies.length
+        && value.decisions.every(d => (value.candidatePlies as number[]).includes(d.ply))
+        && new Set(value.decisions.map(d => d.ply)).size === value.decisions.length
+        && (value.phase !== 'COMPLETE' || value.nextCandidateIndex === value.candidatePlies.length);
+}
+
 /** Reads the current extractor-owned checkpoint, including its reusable evidence. */
 export function parseExtractionCheckpoint(value: unknown): TrainingMomentExtractionCheckpoint {
     if (!isRecord(value)) throw new Error('Analysis checkpoint is not an object');
     if (
         value.version !== 2 ||
+        (value.t2State !== undefined && !t2State(value.t2State, Number(value.expectedPlies))) ||
         typeof value.gameId !== 'string' ||
         typeof value.sourceGameId !== 'string' ||
         typeof value.sourcePgnHash !== 'string' ||
@@ -56,6 +84,10 @@ export function parseExtractionCheckpoint(value: unknown): TrainingMomentExtract
             (value.pendingConfirmation.afterEval != null && !evaluation(value.pendingConfirmation.afterEval))))
     ) throw new Error('Analysis checkpoint has an invalid shape');
     if (!isRecord(value.analysisPool)) throw new Error('Analysis checkpoint is missing its evidence pool');
-    PositionAnalysisPool.hydrate(value.analysisPool as unknown as Parameters<typeof PositionAnalysisPool.hydrate>[0]);
+    const pool = PositionAnalysisPool.hydrate(value.analysisPool as unknown as Parameters<typeof PositionAnalysisPool.hydrate>[0], { maxContexts: 4096, maxSearches: 8192 });
+    if (isRecord(value.t2State)) {
+        const ids = new Set(pool.serialize().searches.map(search => search.evidence.id));
+        if ((value.t2State.scanSearchIds as Array<[number, string]>).some(([, id]) => !ids.has(id))) throw new Error('T2 checkpoint is missing scan evidence');
+    }
     return value as unknown as TrainingMomentExtractionCheckpoint;
 }

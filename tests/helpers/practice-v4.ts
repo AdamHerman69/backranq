@@ -1,3 +1,4 @@
+import { deriveCorroboratedSelection } from '@/lib/training/selectionPolicy';
 import { createHash } from 'node:crypto';
 import { Chess } from 'chess.js';
 import {
@@ -55,13 +56,14 @@ export function practiceV4Fixture(): PracticeMomentRevision {
     const frame: ComparisonFrame = { id: 'frame', contextId, policyId: DEFAULT_ASSESSMENT_POLICY.id, engineFingerprint, model: 'CP_ONLY', referenceAssessmentId: 'assessment-e2e4', status: 'CURRENT', supersededById: null };
     const assessments = ['e2e4', 'd2d4', 'a2a3'].map(moveUci => assessMove(frame, { id: `assessment-${moveUci}`, moveUci, trainingSide, referenceMoveUci: 'e2e4', originalMoveUci: 'a2a3', evidence }));
     const revision: PracticeMomentRevision = {
-        contractVersion: 4, momentId: 'moment', revisionId: 'revision', semanticHash: '0'.repeat(64),
+        contractVersion: 5, momentId: 'moment', revisionId: 'revision', semanticHash: '0'.repeat(64),
         source: { gameId: 'game', sourcePgnHash: 'pgn-hash', decisionPly: 0, contextId, fen, positionHistory: [], trainingSide, originalMoveUci: 'a2a3' },
         policyId: DEFAULT_ASSESSMENT_POLICY.id, policySnapshot: { ...DEFAULT_ASSESSMENT_POLICY }, executionProfileId: 'fixture-profile', executionProfileSnapshot: { id: 'fixture-profile', minimumConfirmationNodes: 100_000 }, generatorVersion: 'fixture-v4',
-        decision: deriveDecisionAssessment({ original: assessments[2], reference: assessments[0], frame, evidence, minimumConfirmationNodes: 100_000 }),
+        selection: {} as PracticeMomentRevision['selection'], decision: deriveDecisionAssessment({ original: assessments[2], reference: assessments[0], frame, evidence, minimumConfirmationNodes: 100_000 }),
         rootAnswerIndex: deriveAnswerIndex({ contextId, frameId: frame.id, legalMovesUci: legal, preferredMoveUci: 'e2e4', assessments, coverageGroups: [] }),
         continuation: { mode: 'SINGLE_DECISION', explanationLines: [], nodes: [], edges: [] }, frames: [frame], assessments, coverageGroups: [], evidence,
     };
+    revision.selection = deriveCorroboratedSelection(revision);
     revision.semanticHash = createHash('sha256').update(canonicalJson(canonicalPracticeSemantics(revision))).digest('hex');
     return revision;
 }
@@ -94,6 +96,7 @@ export function rebuildPracticeFixture(revision: PracticeMomentRevision): Practi
         minimumConfirmationNodes: revision.executionProfileSnapshot.minimumConfirmationNodes, policy: revision.policySnapshot });
     revision.rootAnswerIndex = deriveAnswerIndex({ contextId: frame.contextId, frameId: frame.id,
         legalMovesUci: legalMovesUci(revision.source.fen), preferredMoveUci: preferred, assessments, coverageGroups: revision.coverageGroups });
+    revision.selection = deriveCorroboratedSelection(revision);
     revision.semanticHash = createHash('sha256').update(canonicalJson(canonicalPracticeSemantics(revision))).digest('hex');
     return revision;
 }

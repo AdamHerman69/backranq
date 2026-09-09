@@ -10,15 +10,15 @@ import {
 } from '@/lib/services/analysisJobs';
 
 describe('analysis quality contract', () => {
-    it('ships Thorough as the 10-credit default', () => {
+    it('ships T2 as the 10-credit default', () => {
         const resolved = serverAnalysisConfigFromPreferences({});
 
-        expect(resolved.config.analysisQuality).toBe('THOROUGH');
+        expect(resolved.config.analysisQuality).toBe('T2');
         expect(resolved.config.creditCost).toBe(10);
         expect(resolved.options).toMatchObject({
             nodesPerPosition: 100_000,
             confirmNodes: 200_000,
-            maxConfirmationNodes: 1_600_000,
+            maxConfirmationNodes: 400_000,
         });
     });
 

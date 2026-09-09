@@ -52,3 +52,20 @@ export function lookupAnswer(index: AnswerIndex, moveUci: string, assessments: r
 export function deriveRootAnswerIndex(revision: Pick<PracticeMomentRevision, 'source' | 'frames' | 'assessments' | 'coverageGroups'>, frame: ComparisonFrame, preferredMoveUci: string): AnswerIndex {
     return deriveAnswerIndex({ contextId: revision.source.contextId, frameId: frame.id, legalMovesUci: legalMovesUci(revision.source.fen), preferredMoveUci, assessments: revision.assessments, coverageGroups: revision.coverageGroups });
 }
+
+export type ObservedAnswerRank = { rank: number | null; lineCount: number; observationId: string };
+/** Display-only rank from a validated completed full-root bundle. Absence never grades a move. */
+export function observedAnswerRank(index: AnswerIndex, moveUci: string, manifest: Pick<PracticeMomentRevision, 'frames' | 'evidence'>): ObservedAnswerRank | null {
+    if (!index.legalMovesUci.includes(moveUci)) return null;
+    const frame = manifest.frames.find(item => item.id === index.frameId && item.status === 'CURRENT');
+    if (!frame) return null;
+    const observation = Object.values(manifest.evidence.observations).filter(item => {
+        const search = manifest.evidence.searches[item.searchId];
+        return item.contextId === index.contextId && item.engineFingerprint === frame.engineFingerprint && item.bundleComplete
+            && item.lines.every(line => line.bound === 'UNBOUNDED') && search?.completion === 'COMPLETED'
+            && item.rootScopeUci.length === index.legalMovesUci.length;
+    }).sort((a, b) => manifest.evidence.searches[a.searchId].sequence - manifest.evidence.searches[b.searchId].sequence || a.snapshotIndex - b.snapshotIndex).at(-1);
+    if (!observation) return null;
+    const offset = observation.lines.findIndex(line => line.moveUci === moveUci);
+    return { rank: offset < 0 ? null : offset + 1, lineCount: observation.lines.length, observationId: observation.id };
+}

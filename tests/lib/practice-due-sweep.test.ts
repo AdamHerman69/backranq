@@ -94,7 +94,7 @@ describe('durable practice due sweep', () => {
                 query.indexOf('LEFT JOIN LATERAL')
             );
             expect(query).toContain(
-                `solution."manifest"->'decision'->>'status' = 'CONFIRMED_MISTAKE'`
+                `solution."manifest"->'selection'->>'status' = 'INCLUDED'`
             );
         }
         expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(1);

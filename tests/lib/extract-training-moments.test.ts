@@ -1,3 +1,4 @@
+import { CORROBORATED_SELECTION_POLICY_ID } from '@/lib/analysis/t2Policy';
 import { Chess } from 'chess.js';
 import { describe, expect, it, vi } from 'vitest';
 import { extractTrainingMomentsFromGames, tacticalMoveFacts, type TrainingMomentExtractionOptions } from '@/lib/analysis/extractTrainingMoments';
@@ -12,7 +13,7 @@ import { claimableDraw, ruleTerminalEvaluation } from '@/lib/analysis/ruleEvalua
 import { PositionAnalysisPool } from '@/lib/analysis/positionAnalysisPool';
 
 const START = new Chess().fen();
-const options: TrainingMomentExtractionOptions = { nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 800_000, multiPv: 3, returnAnalysis: true };
+const options: TrainingMomentExtractionOptions = { selectionPolicyId: CORROBORATED_SELECTION_POLICY_ID, nodesPerPosition: 100_000, confirmNodes: 200_000, maxConfirmationNodes: 800_000, multiPv: 3, returnAnalysis: true };
 function game(pgn: string, id = 'fixture', side: 'white' | 'black' | 'unknown' = 'white'): NormalizedGame {
     return { id, provider: 'lichess', playedAt: '2026-01-01T00:00:00.000Z', timeClass: 'rapid', white: { name: side === 'white' ? 'adam' : 'opponent' }, black: { name: side === 'black' ? 'adam' : 'opponent' }, pgn, provenance: { username: 'adam', userSide: side } };
 }

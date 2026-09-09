@@ -6,10 +6,10 @@
     "physicalRecordsUnchanged": true
   },
   "manifest": {
-    "contractVersion": 4,
+    "contractVersion": 5,
     "momentId": "source:3aa6c5933a19045f",
     "revisionId": "analysis:context:66badc4e9f6b7dca:frame:8e85a85ab786c86e",
-    "semanticHash": "515c8c7c2be636988502b5a1d583b1509a1e52a5629590f2f1037527c4c7e435",
+    "semanticHash": "7af673bd2876f44f6a7a2dbdb90bd3fdb7589b940843cc157110447634f98504",
     "source": {
       "gameId": "chesscom:2f0bf96f-3749-11f1-aa68-e459e801000f",
       "sourcePgnHash": "380cd0f3473c380539adb3e1f8ac4e503c471bfcb7d6d58972e7f5ced0f03e48",
@@ -396,7 +396,7 @@
         },
         "metrics": {
           "lossCp": 10,
-          "lossExpectedScore": 0.019499999999999962,
+          "lossExpectedScore": 0.0195,
           "recoveredCp": 644,
           "recoveredExpectedScore": 0.4495,
           "preservesExactOutcome": null
@@ -441,7 +441,7 @@
         },
         "metrics": {
           "lossCp": 15,
-          "lossExpectedScore": 0.032999999999999974,
+          "lossExpectedScore": 0.033,
           "recoveredCp": 639,
           "recoveredExpectedScore": 0.436,
           "preservesExactOutcome": null
@@ -484,7 +484,7 @@
         },
         "metrics": {
           "lossCp": 14,
-          "lossExpectedScore": 0.02999999999999997,
+          "lossExpectedScore": 0.03,
           "recoveredCp": 640,
           "recoveredExpectedScore": 0.439,
           "preservesExactOutcome": null
@@ -529,7 +529,7 @@
         },
         "metrics": {
           "lossCp": 3,
-          "lossExpectedScore": 0.004999999999999949,
+          "lossExpectedScore": 0.005,
           "recoveredCp": 651,
           "recoveredExpectedScore": 0.464,
           "preservesExactOutcome": null
@@ -570,7 +570,7 @@
         },
         "metrics": {
           "lossCp": 2,
-          "lossExpectedScore": 0.0024999999999999467,
+          "lossExpectedScore": 0.0025,
           "recoveredCp": 652,
           "recoveredExpectedScore": 0.4665,
           "preservesExactOutcome": null
@@ -612,7 +612,7 @@
         },
         "metrics": {
           "lossCp": 14,
-          "lossExpectedScore": 0.02999999999999997,
+          "lossExpectedScore": 0.03,
           "recoveredCp": 640,
           "recoveredExpectedScore": 0.439,
           "preservesExactOutcome": null
@@ -698,7 +698,7 @@
         },
         "metrics": {
           "lossCp": 15,
-          "lossExpectedScore": 0.03149999999999997,
+          "lossExpectedScore": 0.0315,
           "recoveredCp": 639,
           "recoveredExpectedScore": 0.4375,
           "preservesExactOutcome": null
@@ -743,7 +743,7 @@
         },
         "metrics": {
           "lossCp": 4,
-          "lossExpectedScore": 0.00599999999999995,
+          "lossExpectedScore": 0.006,
           "recoveredCp": 650,
           "recoveredExpectedScore": 0.463,
           "preservesExactOutcome": null
@@ -784,7 +784,7 @@
         },
         "metrics": {
           "lossCp": -10,
-          "lossExpectedScore": -0.013000000000000012,
+          "lossExpectedScore": -0.013,
           "recoveredCp": 664,
           "recoveredExpectedScore": 0.482,
           "preservesExactOutcome": null
@@ -823,7 +823,7 @@
         },
         "metrics": {
           "lossCp": 4,
-          "lossExpectedScore": 0.00599999999999995,
+          "lossExpectedScore": 0.006,
           "recoveredCp": 650,
           "recoveredExpectedScore": 0.463,
           "preservesExactOutcome": null
@@ -3792,6 +3792,12 @@
         }
       },
       "exact": {}
+    },
+    "selection": {
+      "policyId": "practice-selection-corroborated-v1",
+      "status": "INCLUDED",
+      "reason": "EXPECTED_SCORE_LOSS",
+      "comparison": null
     }
   },
   "assessment": {
@@ -3810,7 +3816,7 @@
     },
     "metrics": {
       "lossCp": 19,
-      "lossExpectedScore": 0.044499999999999984,
+      "lossExpectedScore": 0.0445,
       "recoveredCp": 635,
       "recoveredExpectedScore": 0.4245,
       "preservesExactOutcome": null
@@ -3869,7 +3875,7 @@
         },
         "metrics": {
           "lossCp": -10,
-          "lossExpectedScore": -0.013000000000000012,
+          "lossExpectedScore": -0.013,
           "recoveredCp": 664,
           "recoveredExpectedScore": 0.482,
           "preservesExactOutcome": null
@@ -3908,7 +3914,7 @@
         },
         "metrics": {
           "lossCp": 19,
-          "lossExpectedScore": 0.044499999999999984,
+          "lossExpectedScore": 0.0445,
           "recoveredCp": 635,
           "recoveredExpectedScore": 0.4245,
           "preservesExactOutcome": null

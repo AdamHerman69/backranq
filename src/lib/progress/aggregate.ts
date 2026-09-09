@@ -235,12 +235,12 @@ function positionIsEligible(
         !revision ||
         revision.id !== position.currentSolutionRevisionId ||
         !revision.trainable ||
-        !hasConfirmedDecision(revision.manifest) ||
+        !hasIncludedSelection(revision.manifest) ||
         revision.configHash !== run.configHash
     ) {
         return false;
     }
-    // A same-policy unavailable rerun does not erase prior confirmed evidence.
+    // A same-policy unavailable corroborated rerun does not erase prior selected evidence.
     return position.observations.some(
         (observation) =>
             observation.solutionRevisionId === revision.id &&
@@ -248,14 +248,13 @@ function positionIsEligible(
     );
 }
 
-function hasConfirmedDecision(value: unknown) {
+function hasIncludedSelection(value: unknown) {
     return (
         value !== null &&
         typeof value === 'object' &&
         !Array.isArray(value) &&
-        'decision' in value && value.decision !== null && typeof value.decision === 'object' &&
-        'status' in value.decision && value.decision.status === 'CONFIRMED_MISTAKE' &&
-        'selection' in value.decision && value.decision.selection === 'INCLUDED'
+        'selection' in value && value.selection !== null && typeof value.selection === 'object' &&
+        'status' in value.selection && value.selection.status === 'INCLUDED'
     );
 }
 

@@ -8,6 +8,17 @@ const migrationPath = join(
 );
 
 describe('analysis quality contract migration', () => {
+    it('adds T2 server pricing in a migration after its enum value is committed', async () => {
+        const sql = await readFile(join(process.cwd(), 'prisma/migrations/20260909115345_practice_t2_credit_contract/migration.sql'), 'utf8');
+        expect(sql).toContain('DROP CONSTRAINT "AnalysisRun_quality_credit_contract_check"');
+        expect(sql).toContain('ADD CONSTRAINT "AnalysisRun_quality_credit_contract_check"');
+        expect(sql).toContain('"analysisQuality" IN (\'THOROUGH\', \'T2\')');
+        expect(sql).toContain('"analysisQuality" = \'STANDARD\'');
+        expect(sql).toContain('"creditCost" = 7');
+        expect(sql).toContain('"creditCost" = 10');
+        expect(sql).toContain('"executionMode" <> \'SERVER_QUEUE\' AND "creditCost" = 0');
+        expect(sql).not.toContain('ADD VALUE');
+    });
     it('clears every incompatible analysis and training projection', async () => {
         const sql = await readFile(migrationPath, 'utf8');
 

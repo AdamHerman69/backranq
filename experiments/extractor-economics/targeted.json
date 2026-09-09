@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "seed": "backranq-blitz-economics-v1",
+  "month": "2026-08",
+  "outputDirectory": "artifacts/extractor-study/targeted-v1",
+  "discovery": {
+    "seedAccounts": [
+      "adam1a4",
+      "annacramling"
+    ],
+    "maxAccounts": 250,
+    "maxRequests": 400,
+    "requestDelayMs": 250,
+    "accountsPerBucket": 4,
+    "developmentAccountsPerBucket": 1,
+    "gamesPerAccount": 8,
+    "minPlies": 20,
+    "maxPlies": 120,
+    "ratingEdges": [
+      1200,
+      1600,
+      2000
+    ]
+  },
+  "profiles": [
+    {
+      "id": "E0",
+      "mode": "POINT",
+      "scanNodes": 100000,
+      "rootMultiPv": 5,
+      "additional": "NONE",
+      "rounds": [],
+      "postScanGameNodes": 10000000,
+      "postScanCandidateNodes": 1200000
+    },
+    {
+      "id": "T0",
+      "mode": "POINT",
+      "scanNodes": 100000,
+      "rootMultiPv": 3,
+      "additional": "TARGETED",
+      "rounds": [
+        200000
+      ],
+      "postScanGameNodes": 2000000,
+      "postScanCandidateNodes": 400000
+    }
+  ],
+  "limits": {
+    "globalNodes": 2000000000,
+    "globalCpuSeconds": 3600,
+    "perJobNodes": 30000000,
+    "perJobSeconds": 180
+  },
+  "reference": {
+    "enabled": false,
+    "scanNodes": 400000,
+    "rootNodes": 4000000,
+    "moveNodes": 4000000,
+    "positionsPerGame": 6
+  }
+}

@@ -360,6 +360,25 @@ describe('PUT /api/games/[id]/analysis', () => {
         expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
     });
 
+    it.each(['selectionPolicyId', 'multiPv'] as const)('rejects a T2 snapshot with mismatched %s before data access', async (field) => {
+        const route = await importRoute();
+        const snapshot = createExtractionConfigSnapshot({ engine: null,
+            extractor: resolveTrainingMomentExtractionOptions(analysisDefaultsToExtractOptions({
+                ...standardAnalysisDefaults, analysisQuality: 'T2',
+            }, { returnAnalysis: true })),
+        });
+        if (field === 'selectionPolicyId') snapshot.extractor.selectionPolicyId = defaultConfigSnapshot.extractor.selectionPolicyId;
+        else snapshot.extractor.multiPv = 5;
+        const response = await route.PUT(createPutRequest({ analysis: validAnalysis, trainingMoments: [],
+            extractionManifest: validManifest, analysisQuality: 'T2', configSnapshot: snapshot,
+            configHash: hashAnalysisConfig(snapshot),
+        }), routeParams());
+        expect(response.status).toBe(400);
+        await expect(readJson(response)).resolves.toEqual({ error: 'Analysis quality does not match configSnapshot' });
+        expect(prismaMock.analyzedGame.findFirst).not.toHaveBeenCalled();
+        expect((prismaMock as PrismaMockWithTransaction).$transaction).not.toHaveBeenCalled();
+    });
+
     it('rejects analysis without the required extraction receipt', async () => {
         const route = await importRoute();
         const analysisWithoutReceipt: Partial<GameAnalysis> = {

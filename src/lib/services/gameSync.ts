@@ -1,6 +1,7 @@
 import type { NormalizedGame, TimeClass } from '@/lib/types/game';
 import { EXPECTED_OWNER_HEADER } from '@/lib/auth/ownerContract';
 import type { GameAutomationRules } from '@/lib/preferences';
+import type { AnalysisQuality } from '@/lib/analysis/quality';
 
 export type SyncProvider = 'lichess' | 'chesscom';
 
@@ -49,7 +50,7 @@ export type SyncStatus = {
         outstandingReservations: number;
         monthlyRemaining: number;
         reservableCredits: number;
-        analysisQuality: 'STANDARD' | 'THOROUGH';
+        analysisQuality: AnalysisQuality;
         creditsPerGame: number;
         reservableGames: number;
         limitingFactor: string | null;
@@ -212,7 +213,7 @@ export type EnqueueServerAnalysisJobsResult = {
             configHash: string | null;
             durationMs: number | null;
             consumedCredits: number | null;
-            analysisQuality: 'STANDARD' | 'THOROUGH';
+            analysisQuality: AnalysisQuality;
             creditCost: number;
         } | null;
     }>;

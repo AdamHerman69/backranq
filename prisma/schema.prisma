@@ -188,6 +188,7 @@ enum AnalysisRunStatus {
 }
 
 enum AnalysisQuality {
+  T2
   STANDARD
   THOROUGH
 }

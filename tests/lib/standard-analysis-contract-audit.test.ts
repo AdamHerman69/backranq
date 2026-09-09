@@ -5,6 +5,7 @@ import { hashSourcePgn } from '@/lib/chess/pgn';
 import { originalDecisionForPracticeManifest } from '@/lib/training/practiceSourceBinding';
 import { persistTrainingMomentsInTransaction, type PersistableTrainingMoment } from '@/lib/training/persistence';
 import { practicePositionFixture } from '../helpers/practice-position';
+import { CORROBORATED_SELECTION_POLICY_ID } from '@/lib/training/selectionPolicy';
 const sourcePgn = '[White "Audit player"]\n[Black "Opponent"]\n\n1. d4 *';
 const sourcePgnHash = hashSourcePgn(sourcePgn);
 const rootFen = new Chess().fen();
@@ -16,7 +17,7 @@ function transaction() {
     const value = moment();
     const current = { id: 'revision-current', momentId: 'moment-1', solutionHash: value.solution.manifest.semanticHash, configHash: 'config-1', generatorVersion: value.solution.manifest.generatorVersion, manifest: value.solution.manifest, trainable: true };
     return {
-        analysisRun: { findFirst: vi.fn().mockResolvedValue({ id: 'run-1', configSnapshot: { extractor: { confirmNodes: 100_000, gradingPolicy: value.solution.manifest.policySnapshot } } }) },
+        analysisRun: { findFirst: vi.fn().mockResolvedValue({ id: 'run-1', configSnapshot: { extractor: { selectionPolicyId: CORROBORATED_SELECTION_POLICY_ID, confirmNodes: 100_000, gradingPolicy: value.solution.manifest.policySnapshot } } }) },
         trainingMoment: { findUnique: vi.fn().mockResolvedValue({ id: 'moment-1', momentKey: 'stored', sourcePgnHash, decisionPly: 0, fen: rootFen, positionHistory: [], sideToMove: 'w', originalMoveUci: 'd2d4', ...value.originalDecision, currentSolutionRevisionId: current.id, sourceKinds: value.sourceKinds, lessonKinds: value.lessonKinds, themes: value.themes }), upsert: vi.fn().mockResolvedValue({ id: 'moment-1' }), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         solutionRevision: { findUnique: vi.fn().mockResolvedValue(current), findFirst: vi.fn().mockResolvedValue({ revision: 1 }), create: vi.fn().mockImplementation(({ data }) => ({ id: 'revision-new', momentId: data.momentId, solutionHash: data.solutionHash })) },
         trainingMomentObservation: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },

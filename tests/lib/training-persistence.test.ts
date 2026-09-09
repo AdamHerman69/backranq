@@ -1,6 +1,7 @@
 import { practicePositionFixture } from '../helpers/practice-position';
 import { originalDecisionForPracticeManifest } from '@/lib/training/practiceSourceBinding';
-import { practiceV4Fixture } from '../helpers/practice-v4';
+import { practiceV4Fixture, rebuildPracticeFixture } from '../helpers/practice-v4';
+import { deriveT2Selection } from '@/lib/training/selectionPolicy';
 import { describe, expect, it, vi } from 'vitest';
 import {
     type SolutionRevisionInput,
@@ -80,7 +81,7 @@ function existingMoment(
 function transaction() {
     const tx = {
         analysisRun: {
-            findFirst: vi.fn().mockResolvedValue({ id: 'run-1', configSnapshot: { extractor: { confirmNodes: 100_000, gradingPolicy: solution().manifest.policySnapshot } } }),
+            findFirst: vi.fn().mockResolvedValue({ id: 'run-1', configSnapshot: { extractor: { confirmNodes: 100_000, gradingPolicy: solution().manifest.policySnapshot, selectionPolicyId: solution().manifest.selection.policyId } } }),
         },
         trainingMoment: {
             findUnique: vi.fn().mockResolvedValue(null),
@@ -143,6 +144,34 @@ function persist(
 }
 
 describe('canonical training persistence', () => {
+    it('activates a selected T2 moment while its answer-derived diagnostic is still unresolved', async () => {
+        const input = solution();
+        for (const id of ['reference-probe', 'corroborating-search']) {
+            for (const observationId of input.manifest.evidence.searches[id].observationIds) delete input.manifest.evidence.observations[observationId];
+            delete input.manifest.evidence.searches[id];
+        }
+        rebuildPracticeFixture(input.manifest);
+        input.manifest.selection = deriveT2Selection(input.manifest, { referenceSearchId: 'search', comparisonBasis: 'SAME_ROOT', preferredMoveUci: 'e2e4' });
+        input.manifest.semanticHash = solutionSemanticsHash(input);
+        expect(input.manifest.decision.status).toBe('UNRESOLVED');
+        expect(input.manifest.selection.status).toBe('INCLUDED');
+        const tx = transaction();
+        tx.analysisRun.findFirst.mockResolvedValue({ id: 'run-1', configSnapshot: { extractor: {
+            confirmNodes: 100_000, gradingPolicy: input.manifest.policySnapshot, selectionPolicyId: input.manifest.selection.policyId,
+        } } });
+        const result = await persist(tx, [moment({ solution: input, originalDecision: originalDecisionForPracticeManifest(input.manifest) })]);
+        expect(result.upserted).toBe(1);
+        expect(tx.trainingMoment.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ status: 'ACTIVE' }) }));
+        expect(tx.solutionRevision.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ trainable: true }) }));
+    });
+    it('rejects a selection policy different from the authoritative analysis run before writes', async () => {
+        const tx = transaction();
+        tx.analysisRun.findFirst.mockResolvedValue({ id: 'run-1', configSnapshot: { extractor: {
+            confirmNodes: 100_000, gradingPolicy: solution().manifest.policySnapshot, selectionPolicyId: 'practice-selection-t2-v1',
+        } } });
+        await expect(persist(tx, [moment()])).rejects.toThrow(/profile/i);
+        expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
+    });
     it('merges avoid and missed-opportunity metadata into one stable moment', async () => {
         const tx = transaction();
         const result = await persist(tx, [
@@ -179,7 +208,7 @@ describe('canonical training persistence', () => {
             })
         );
         expect(tx.solutionRevision.create).toHaveBeenCalledTimes(1);
-        expect(tx.solutionRevision.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ manifest: expect.objectContaining({ contractVersion: 4, momentId: 'moment-1', revisionId: expect.any(String) }), trainable: true }) }));
+        expect(tx.solutionRevision.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ manifest: expect.objectContaining({ contractVersion: 5, momentId: 'moment-1', revisionId: expect.any(String) }), trainable: true }) }));
     });
 
     it('rejects conflicting solution hashes for one canonical decision', async () => {
@@ -483,7 +512,7 @@ describe('authoritative revision binding', () => {
     });
     it('rejects a self-consistent profile whose budget is not the authoritative run budget', async () => {
         const tx = transaction();
-        tx.analysisRun.findFirst.mockResolvedValue({ id: 'run-1', configSnapshot: { extractor: { confirmNodes: 200_000, gradingPolicy: solution().manifest.policySnapshot } } });
+        tx.analysisRun.findFirst.mockResolvedValue({ id: 'run-1', configSnapshot: { extractor: { confirmNodes: 200_000, gradingPolicy: solution().manifest.policySnapshot, selectionPolicyId: solution().manifest.selection.policyId } } });
         await expect(persist(tx, [moment()])).rejects.toThrow(/profile/i);
         expect(tx.trainingMoment.upsert).not.toHaveBeenCalled();
     });

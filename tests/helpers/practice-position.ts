@@ -1,3 +1,4 @@
+import { deriveCorroboratedSelection } from '@/lib/training/selectionPolicy';
 import { createHash } from 'node:crypto';
 import { Chess } from 'chess.js';
 import { DEFAULT_ASSESSMENT_POLICY, canonicalJson, canonicalPracticeSemantics, legalMovesUci, parsePracticeMomentRevision, practiceContextId, type AssessmentPolicy, type ComparisonFrame, type PracticeMomentRevision, type SearchRecord, type Side } from '@/lib/training/practiceContract';
@@ -18,10 +19,10 @@ export function practicePositionFixture(args: {
     const configHash = args.configHash ?? 'fixture-profile';
     const budget = args.confirmationNodes ?? 100_000;
     const manifest: PracticeMomentRevision = {
-        contractVersion: 4, momentId: args.momentId ?? 'moment', revisionId: args.revisionId ?? 'revision', semanticHash: '0'.repeat(64),
+        contractVersion: 5, momentId: args.momentId ?? 'moment', revisionId: args.revisionId ?? 'revision', semanticHash: '0'.repeat(64),
         source: { gameId: args.gameId ?? 'game', sourcePgnHash: args.sourcePgnHash ?? 'pgn-hash', decisionPly: args.decisionPly ?? 0, contextId: practiceContextId(fen, history, side), fen, positionHistory: history, trainingSide: side, originalMoveUci: args.originalMoveUci },
         policyId: policy.id, policySnapshot: policy, executionProfileId: configHash, executionProfileSnapshot: { id: configHash, minimumConfirmationNodes: budget }, generatorVersion: 'fixture-v4',
-        decision: {} as PracticeMomentRevision['decision'], rootAnswerIndex: {} as PracticeMomentRevision['rootAnswerIndex'], continuation: { mode: 'SINGLE_DECISION', explanationLines: [], nodes: [], edges: [] },
+        selection: {} as PracticeMomentRevision['selection'], decision: {} as PracticeMomentRevision['decision'], rootAnswerIndex: {} as PracticeMomentRevision['rootAnswerIndex'], continuation: { mode: 'SINGLE_DECISION', explanationLines: [], nodes: [], edges: [] },
         frames: [], assessments: [], coverageGroups: [], evidence: { searches: {}, observations: {}, exact: {} },
     };
     const addContext = (position: string, positions: string[], best: string, original: string, scores: Record<string, number> = {}) => {
@@ -86,6 +87,7 @@ export function practicePositionFixture(args: {
         manifest.continuation.mode = 'VERIFIED_BRANCHES'; manifest.continuation.nodes = full;
         manifest.continuation.explanationLines[0].movesUci = path;
     }
+    manifest.selection = deriveCorroboratedSelection(manifest);
     manifest.semanticHash = createHash('sha256').update(canonicalJson(canonicalPracticeSemantics(manifest))).digest('hex');
     return parsePracticeMomentRevision(manifest);
 }

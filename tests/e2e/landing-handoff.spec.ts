@@ -1,3 +1,4 @@
+import { Chess } from 'chess.js';
 import { createHash } from 'node:crypto';
 import { canonicalJson, canonicalPracticeSemantics } from '../../src/lib/training/practiceContract';
 import { deriveRootAnswerIndex } from '../../src/lib/training/answerIndex';
@@ -115,22 +116,32 @@ test('replaces started warm-up input with live scan and automatically enables th
     await page.route('**/api/master-puzzle', (route) =>
         route.fulfill({ json: { state: 'unavailable' } })
     );
-    // Only delivery is slowed to make intermediate frames observable; the real
-    // browser Stockfish still calculates every position and final answer.
+    // Hold completion delivery, not computation. The real browser Stockfish can
+    // finish the first scan while the test inspects paused playback; releasing
+    // the barrier resumes the unchanged extractor without relying on wall time.
     await page.addInitScript(() => {
         const NativeWorker = window.Worker;
         const lifetimes: Array<{ terminated: boolean }> = [];
-        Object.assign(window, { stockfishLifetimes: lifetimes });
+        const completions: Array<() => void> = [];
+        let held = true;
+        Object.assign(window, { stockfishLifetimes: lifetimes, landingWorkerDelivery: {
+            pending: () => completions.length,
+            release() { held = false; for (const deliver of completions.splice(0)) deliver(); },
+        } });
         window.Worker = class extends NativeWorker {
             private readonly lifetime = { terminated: false };
+            private readonly isEngine: boolean;
             constructor(url: string | URL, options?: WorkerOptions) {
                 super(url, options);
-                if (String(url).includes('backranq-engine.worker')) lifetimes.push(this.lifetime);
+                this.isEngine = String(url).includes('backranq-engine.worker');
+                if (this.isEngine) lifetimes.push(this.lifetime);
             }
             terminate() { this.lifetime.terminated = true; super.terminate(); }
             set onmessage(handler: ((this: Worker, event: MessageEvent) => unknown) | null) {
                 super.onmessage = handler ? (event) => {
-                    setTimeout(() => handler.call(this, event), 80);
+                    const deliver = () => { if (!this.lifetime.terminated) handler.call(this, event); };
+                    if (this.isEngine && held && event.data?.type === 'done') completions.push(deliver);
+                    else deliver();
                 } : null;
             }
         };
@@ -148,15 +159,22 @@ test('replaces started warm-up input with live scan and automatically enables th
     await page.getByRole('button', { name: 'Pause game playback' }).click();
     const pausedFen = await scan.getAttribute('data-scan-fen');
     await expect(page.getByText('Playback paused · analysis continues')).toBeVisible();
-    await page.waitForTimeout(300);
+    await expect.poll(() => page.evaluate(() =>
+        (window as unknown as { landingWorkerDelivery: { pending(): number } }).landingWorkerDelivery.pending()
+    )).toBeGreaterThan(0);
     await expect(scan).toHaveAttribute('data-scan-fen', pausedFen!);
-    await page.getByRole('button', { name: 'Resume game playback' }).click();
-    await expect(scan).toHaveAttribute('data-scan-phase', 'CONFIRMING', { timeout: 30_000 });
-    const decisionFen = await scan.getAttribute('data-scan-fen');
+    // T2 may accept an obvious loss directly from the scan, with no CONFIRMING
+    // phase. Capture the actual paused board before allowing the handoff.
+    const replay = new Chess(); replay.loadPgn(gamesResponse.games[0].pgn);
+    const decisionFen = replay.history({ verbose: true }).find(move => move.san === 'Ba3')!.before;
     const persistentBoard = await page.locator('[data-board-fen]').elementHandle();
     const persistentSquare = await page.locator('[data-landing-board] [data-square="a1"]').elementHandle();
     const boardBefore = await page.locator('[data-board-fen]').boundingBox();
     await page.screenshot({ path: 'artifacts/homepage-scan-desktop.png' });
+    await page.getByRole('button', { name: 'Resume game playback' }).click();
+    await page.evaluate(() =>
+        (window as unknown as { landingWorkerDelivery: { release(): void } }).landingWorkerDelivery.release()
+    );
     await expect(page.getByRole('heading', { name: 'A position you actually played' }))
         .toBeVisible({ timeout: 30_000 });
     await expect(page.locator('[data-board-fen]')).toHaveAttribute('data-board-fen', decisionFen!);

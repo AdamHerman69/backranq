@@ -2,12 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { practicePositionFixture } from '../helpers/practice-position';
 import { Chess } from 'chess.js';
 import { practiceV4Fixture, rebuildPracticeFixture } from '../helpers/practice-v4';
-import { createLocalAnalysisSession, gradeKnownLocalMove, gradeUnknownLocalMove, localContinuationForMove } from '@/lib/training/localGrading';
+import { createLocalAnalysisSession, gradeKnownLocalMove, gradeUnknownLocalMove, localContinuationForMove, prewarmLocalReference } from '@/lib/training/localGrading';
 import { createAnalysisSnapshot, createBoundAnalysisSnapshot, createSearchEvidence, resolveEngineSearchContext, type AnalysisLimit, type EngineIdentity, type StockfishEngine } from '@/lib/analysis/stockfishClient';
 import { practiceEngineFingerprint } from '@/lib/analysis/practiceEvidence';
 import { AnalysisWorkPlanner } from '@/lib/analysis/analysisWorkPlanner';
 import { deriveAnswerIndex, deriveRootAnswerIndex } from '@/lib/training/answerIndex';
-import { validatePracticeEvaluationPatch } from '@/lib/training/practiceContract';
+import { T2_ASSESSMENT_POLICY, validatePracticeEvaluationPatch } from '@/lib/training/practiceContract';
 import type { TrainingSolutionTreeNodeDto } from '@/lib/training/api';
 import { WARMUP_MANIFEST } from '@/lib/onboarding/warmupPuzzle';
 import { STOCKFISH_ARTIFACT_ID } from '@/lib/analysis/stockfishMetadata';
@@ -54,6 +54,43 @@ function fakeEngine(score: number | (() => number) = 15, rootScore = 30, rootMov
 }
 
 describe('Practice v4 local grading', () => {
+    it('point-first reuses paid recommendation and grades an unknown answer in one completed comparison', async () => {
+        const args = fixture(); args.manifest.policyId = T2_ASSESSMENT_POLICY.id; args.manifest.policySnapshot = { ...T2_ASSESSMENT_POLICY };
+        args.manifest.frames[0].policyId = T2_ASSESSMENT_POLICY.id; rebuildPracticeFixture(args.manifest); args.node.answerIndex = args.manifest.rootAnswerIndex;
+        const { engine, requests } = fakeEngine();
+        expect((await gradeUnknownLocalMove({ ...args, engine, moveUci: 'e2e4' })).result).toMatchObject({ quality: 'GOOD' });
+        expect(requests).toHaveLength(0);
+        const result = await gradeUnknownLocalMove({ ...args, engine, moveUci: 'g1f3' });
+        expect(result.result).toMatchObject({ quality: 'GOOD' });
+        expect(requests.map(r => [r.rootMoves, r.nodes])).toEqual([[['g1f3'], 25_000]]);
+        expect(validatePracticeEvaluationPatch(args.manifest, result.patch).success).toBe(true);
+    });
+    it('point-first preserves credit for the immutable offered recommendation after a local counter', () => {
+        const args = fixture(); args.manifest.policyId = T2_ASSESSMENT_POLICY.id; args.manifest.policySnapshot = { ...T2_ASSESSMENT_POLICY };
+        args.manifest.frames[0].policyId = T2_ASSESSMENT_POLICY.id; rebuildPracticeFixture(args.manifest); args.node.answerIndex = args.manifest.rootAnswerIndex;
+        const session = createLocalAnalysisSession();
+        const context = resolveEngineSearchContext({ fen: args.node.fen, rootMoves: ['e2e4'] });
+        session.pool.recordSnapshot(createBoundAnalysisSnapshot('offered-counter', 0, identity, context, { nodes: 100_000, multiPv: 1 },
+            [{ multipv: 1, pvUci: ['e2e4'], depth: 14, nodes: 1000, score: { type: 'cp', value: -500 }, bound: 'UPPER' }])!);
+        expect(gradeKnownLocalMove({ ...args, session, moveUci: 'e2e4' })?.result).toMatchObject({ quality: 'GOOD', accepted: true });
+        expect(gradeKnownLocalMove({ ...args, session, moveUci: 'd2d4' })).toBeNull();
+    });
+    it('bounds optional reference preparation and does no work for ready, legacy or cancelled prompts', async () => {
+        const args = fixture(); const session = createLocalAnalysisSession(); const { engine, requests } = fakeEngine();
+        await prewarmLocalReference({ ...args, engine, session, signal: new AbortController().signal });
+        expect(requests).toHaveLength(0);
+        args.manifest.policySnapshot = { ...T2_ASSESSMENT_POLICY }; args.manifest.policyId = T2_ASSESSMENT_POLICY.id;
+        args.manifest.frames[0].policyId = T2_ASSESSMENT_POLICY.id;
+        await prewarmLocalReference({ ...args, engine, session, signal: new AbortController().signal });
+        expect(requests).toHaveLength(0);
+        args.manifest.assessments = [];
+        await prewarmLocalReference({ ...args, engine, session, signal: AbortSignal.abort() });
+        expect(requests).toHaveLength(0);
+        await prewarmLocalReference({ ...args, engine, session, signal: new AbortController().signal });
+        expect(requests).toHaveLength(1); expect(requests[0]).toMatchObject({ nodes: 100_000, multiPv: 3 });
+        expect(requests[0].timeoutMs).toBeLessThanOrEqual(2_000);
+        expect(session.pool.find({ fen: args.node.fen, previousFens: [] }).length).toBe(1);
+    });
     it('rejects a stale known answer after this session has learned a compatible reference counter', async () => {
         const args = fixture(); const session = createLocalAnalysisSession();
         const context = resolveEngineSearchContext({ fen: args.node.fen, rootMoves: ['e2e4'] });

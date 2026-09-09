@@ -115,6 +115,11 @@ jobs:
           BACKRANQ_POSTGRES_INTEGRATION: 'true'
         run: pnpm vitest run tests/lib/practice-v4-migration-postgres.integration.test.ts
 
+      - name: Verify v5 cutover sources, projections and credit settlement
+        env:
+          BACKRANQ_POSTGRES_INTEGRATION: 'true'
+        run: pnpm vitest run tests/lib/practice-v5-migration-postgres.integration.test.ts
+
       - name: Verify PostgreSQL locking and Progress aggregate parity
         env:
           BACKRANQ_POSTGRES_INTEGRATION: 'true'

@@ -25,7 +25,7 @@ describe('bounded practice feed queries', () => {
                 text.indexOf('LEFT JOIN LATERAL')
             );
             expect(text).toContain(
-                `solution."manifest"->'decision'->>'status' = 'CONFIRMED_MISTAKE'`
+                `solution."manifest"->'selection'->>'status' = 'INCLUDED'`
             );
             expect(text).toContain(
                 `raw."solutionHash" = solution."solutionHash"`
@@ -110,7 +110,7 @@ describe('bounded practice feed queries', () => {
             );
             expect(text).toContain('NOT EXISTS');
             expect(text).toContain(
-                `solution."manifest"->'decision'->>'status' = 'CONFIRMED_MISTAKE'`
+                `solution."manifest"->'selection'->>'status' = 'INCLUDED'`
             );
             expect(text).toContain(
                 `state."solutionHash" = solution."solutionHash"`
