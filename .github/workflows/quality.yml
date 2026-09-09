@@ -120,6 +120,12 @@ jobs:
           BACKRANQ_POSTGRES_INTEGRATION: 'true'
         run: pnpm vitest run tests/lib/practice-v5-migration-postgres.integration.test.ts
 
+      - name: Verify nonempty T2 Stockfish extraction persists into PostgreSQL
+        env:
+          BACKRANQ_POSTGRES_INTEGRATION: 'true'
+          BACKRANQ_T2_LIVE_ENGINE: 'true'
+        run: pnpm vitest run tests/lib/t2-server-persistence-postgres.integration.test.ts
+
       - name: Verify PostgreSQL locking and Progress aggregate parity
         env:
           BACKRANQ_POSTGRES_INTEGRATION: 'true'
